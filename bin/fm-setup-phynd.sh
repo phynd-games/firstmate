@@ -93,6 +93,21 @@ herdr_version() {
   herdr --version 2>/dev/null | awk '{print $2; exit}'
 }
 
+herdr_live_handoff_if_needed() {
+  local status protocol binary
+  status=$(herdr status --json 2>/dev/null || true)
+  [ -n "$status" ] || return 0
+  if ! printf '%s' "$status" | node -e 'let s=""; process.stdin.on("data", c => s += c).on("end", () => { try { process.exit(JSON.parse(s).server?.restart_needed === true ? 0 : 1); } catch { process.exit(1); } });'; then
+    return 0
+  fi
+  protocol=$(printf '%s' "$status" | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).client?.protocol || ""')
+  binary=$(command -v herdr)
+  [ -n "$protocol" ] || fail 'Herdr reports an incompatible server but no client protocol for live handoff.'
+  printf 'Updating the running Herdr server without stopping its panes...\n'
+  herdr server live-handoff --import-exe "$binary" --expected-protocol "$protocol" --expected-version "$(herdr_version)" \
+    || fail 'Herdr server live handoff failed; rerun setup after resolving the Herdr server state.'
+}
+
 install_or_update_herdr() {
   local version brew_prefix
   version=$(herdr_version || true)
@@ -118,6 +133,7 @@ install_or_update_herdr() {
   command -v herdr >/dev/null 2>&1 || fail 'Herdr installation completed but herdr is not on PATH.'
   version=$(herdr_version || true)
   version_at_least "${version:-0.0.0}" 0.8.0 || fail "Herdr ${version:-unknown} is below the required 0.8.0 minimum."
+  herdr_live_handoff_if_needed
   printf 'Herdr: %s\n' "$version"
 }
 
