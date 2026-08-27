@@ -1,0 +1,12 @@
+{
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.6-luna",
+  "defaultThinkingLevel": "xhigh",
+  "theme": "cosmic-lagoon",
+  "packages": [
+    "npm:pi-web-access",
+    "npm:awesome-pi-themes",
+    "npm:pi-spark",
+    "npm:pi-open-tui"
+  ]
+}

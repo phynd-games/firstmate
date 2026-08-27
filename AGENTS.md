@@ -18,6 +18,19 @@ Outside hard rule 1's concrete captain-approved project operation exception, you
 For all other project-specific work, delegate coding, investigation, planning, bug reproduction, and audits to a crewmate you spawn and supervise, or to a secondmate whose registered scope fits.
 A secondmate is a crewmate with an isolated firstmate home and a charter, not a second architecture.
 
+## 1a. Phynd product workspace
+
+The primary product workspace is the Phynd Cloud monorepo at https://github.com/phynd-games/phynd-cloud, normally available locally at `/Users/criz/RizDevDrive/phynd-cloud`.
+Treat that monorepo as the canonical place to build and evolve the Phynd product line rather than creating parallel repositories without the captain's approval.
+For the Phynd setup, Herdr is the default runtime backend for the Pi captain running Luna xhigh, and `bin/fm-setup-phynd.sh` writes that local backend selection.
+The setup also enables Herdr presentation spaces so each new task gets its own visible workspace instead of being buried in the captain's workspace.
+Read the monorepo root `AGENTS.md` and the most specific app-level guidance before dispatching work, and keep changes inside the owning app or package boundary.
+The backend uses Rust for Lambda workloads where the owning app specifies Rust, and every API route is an independently deployed Lambda with its own least-privilege AWS IAM policy.
+Do not combine routes into a shared Lambda or broaden an IAM policy without explicit architecture approval and an accompanying security review.
+The Flagship TV application is Solid JavaScript, and the mobile application is Expo with React Native.
+Use Sandcastle from Matt Pocock's tooling and the configured model-and-harness dispatch profiles for isolated agent work whenever available.
+Choose a model and harness combination that preserves local tool access and complies with the applicable provider and service terms, and never work around a provider's usage or safety controls.
+
 Hard rules, in priority order:
 
 1. **Never write to a project.**
@@ -68,15 +81,16 @@ config/crew-harness  crewmate harness override; LOCAL, gitignored; absent or "de
 config/crew-dispatch.json  optional crewmate dispatch profiles; LOCAL, gitignored; firstmate-maintained but human-editable natural-language rules that choose a per-task harness/model/effort profile (section 4). Inherited by secondmate homes
 config/secondmate-harness  harness the PRIMARY uses to launch SECONDMATE agents, optionally followed by a model and effort token on the same line ("<harness> [<model>] [<effort>]"; section 4); LOCAL, gitignored; absent or "default" harness falls back to config/crew-harness then firstmate's own. The primary's own setting; NOT inherited into secondmate homes (secondmates do not spawn secondmates)
 config/backlog-backend  backlog backend override; LOCAL, gitignored; absent or "tasks-axi" = default tasks-axi backend, "manual" = force routine backlog updates to hand-editing; inherited by secondmate homes (section 10)
-config/backend  runtime session-provider backend override for new tasks; LOCAL, gitignored; absent = falls through to runtime auto-detection (the runtime firstmate itself is executing inside), then tmux; tmux is the verified reference backend (docs/tmux-backend.md), while herdr, zellij, orca, and cmux are experimental spawn backends (docs/herdr-backend.md, docs/zellij-backend.md, docs/orca-backend.md, docs/cmux-backend.md) - herdr and cmux can also be selected by runtime auto-detection, zellij and orca never are (always explicit), and codex-app is not accepted; see docs/codex-app-backend.md; inherited by secondmate homes under the primary-authoritative contract in secondmate-provisioning
+config/backend  runtime session-provider backend override for new tasks; LOCAL, gitignored; Phynd setup writes `herdr`; absent = falls through to runtime auto-detection (the runtime firstmate itself is executing inside), then tmux; tmux is the verified reference backend (docs/tmux-backend.md), while herdr, zellij, orca, and cmux are experimental spawn backends (docs/herdr-backend.md, docs/zellij-backend.md, docs/orca-backend.md, docs/cmux-backend.md) - herdr and cmux can also be selected by runtime auto-detection, zellij and orca never are (always explicit), and codex-app is not accepted; see docs/codex-app-backend.md; inherited by secondmate homes under the primary-authoritative contract in secondmate-provisioning
 config/calm     Pi Calm presentation preference; LOCAL, gitignored, and not inherited; see docs/configuration.md "Pi Calm preference"
 config/supervision-branch-model config/supervision-branch-effort  Pi supervision-branch model and reasoning-effort pins written by /supervision-model; LOCAL, gitignored, independently settable, and not inherited; see docs/configuration.md "Pi supervision branch model and effort"
 config/startup-memory-budget     primary-authoritative per-home startup-memory budget; LOCAL, gitignored, materialized as 7,500 estimated tokens by locked primary bootstrap and inherited into secondmate homes; see docs/configuration.md "Startup memory budget"
 config/stow-pass-horizon  optional presence flag opting this home in to /stow's default-off pass-count decay horizon; LOCAL, gitignored, and not inherited; see docs/configuration.md "Stow pass horizon"
-config/herdr-presentation-spaces  optional "off" opt-out from, or "on" opt-in to, Herdr's default-on disposable single-task visual projection, which is unconfigured-default-on only at or above a Herdr version floor; LOCAL, gitignored; inherited by secondmate homes; see docs/herdr-backend.md "Presentation spaces"
+config/herdr-presentation-spaces  optional "off" opt-out from, or "on" opt-in to, Herdr's disposable single-task visual projection; Phynd setup writes `on`; LOCAL, gitignored; inherited by secondmate homes; see docs/herdr-backend.md "Presentation spaces"
 config/trace-context  optional presence flag enabling default-off native W3C trace-context propagation to spawned agents; LOCAL, gitignored; inherited by secondmate homes; see docs/configuration.md "Trace context propagation" and docs/trace-context.md
 config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored; read fresh on every cmux CLI call and passed through without ever overriding an operator's own ambient CMUX_SOCKET_PASSWORD when absent (docs/cmux-backend.md "Setup")
 config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
+bin/fm-setup-phynd.sh  engineer workstation setup: installs Pi, installs configured Pi packages, and applies the checked-in Phynd Pi defaults
 config/watched-tools.json  optional list of the tools this home depends on, read by the update check armed with bin/fm-tool-update-check.sh; LOCAL, gitignored, firstmate-maintained but human-editable, and NOT inherited by secondmate homes; see docs/configuration.md "Watched tool updates"
 config/x-mode.env    generated Relay watcher cadence; LOCAL, gitignored; source before arming watcher when present
 data/                personal fleet records; LOCAL, gitignored as a whole
