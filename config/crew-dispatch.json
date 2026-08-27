@@ -1,6 +1,15 @@
 {
   "rules": [
     {
+      "when": "Reviewing open pull requests, auditing existing changes, or checking PRs for defects without implementing fixes.",
+      "use": {
+        "harness": "pi",
+        "model": "openai-codex/gpt-5.6-luna",
+        "effort": "xhigh"
+      },
+      "why": "Use a dedicated Luna worker at xhigh for bounded PR review and audit work so the captain session can remain responsive."
+    },
+    {
       "when": "New feature design or architecture work, including selecting an approach before implementation.",
       "use": {
         "harness": "claude",
