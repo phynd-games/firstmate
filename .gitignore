@@ -10,4 +10,8 @@ scratchpad*
 __pycache__/
 *.pyc
 .env
-config/
+config/*
+!config/
+!config/backend
+!config/crew-dispatch.json
+!config/herdr-presentation-spaces

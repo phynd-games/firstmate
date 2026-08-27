@@ -60,8 +60,8 @@ The setup never overwrites an existing path that is not a Git checkout.
 
 ## Default configuration
 
-The checked-in defaults live in `defaults/pi-settings.json`, `defaults/pi-open-tui.json`, and `defaults/phynd-concise.md`.
-The setup script merges Pi settings without deleting unrelated settings and installs the concise communication prompt for Claude Code.
+The checked-in defaults live in `.pi/settings.json`, `defaults/pi-settings.json`, `defaults/pi-open-tui.json`, and `defaults/phynd-concise.md`.
+`.pi/settings.json` makes Pi use the Phynd captain defaults immediately in every trusted Firstmate clone, while the setup script applies the same defaults globally without deleting unrelated settings and installs the concise communication prompt for Claude Code.
 
 | Purpose | Default |
 | --- | --- |
@@ -77,8 +77,9 @@ The setup script merges Pi settings without deleting unrelated settings and inst
 | Hard code | Pi + Sol high, or Claude Code + Fable xhigh |
 | Visible output | Concise by default, without reducing reasoning or verification depth |
 
-Local fleet routing is stored in the gitignored `config/crew-dispatch.json`.
-Local runtime selection is stored in `config/backend` and `config/herdr-presentation-spaces`.
+Opinionated Phynd fleet routing is checked in under `config/crew-dispatch.json`.
+Opinionated runtime selection is checked in under `config/backend` and `config/herdr-presentation-spaces`.
+Other operational state under `config/`, `data/`, and `state/` remains local and ignored.
 
 ## Working model
 
