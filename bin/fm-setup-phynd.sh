@@ -45,6 +45,7 @@ if [ "$#" -gt 0 ]; then
 fi
 
 PATH="$HOME/.local/bin:$PATH"
+npm_prefix=""
 if command -v npm >/dev/null 2>&1; then
   npm_prefix=$(npm prefix --global 2>/dev/null || true)
   if [ -n "$npm_prefix" ]; then
@@ -52,6 +53,23 @@ if command -v npm >/dev/null 2>&1; then
   fi
 fi
 export PATH
+
+persist_path() {
+  local path_entry=$1 profile=$2 line
+  [ -n "$path_entry" ] || return 0
+  line="export PATH=\"$path_entry:\$PATH\""
+  [ -f "$profile" ] || touch "$profile"
+  grep -Fqx "$line" "$profile" 2>/dev/null || printf '%s\n' "$line" >> "$profile"
+}
+
+case "${SHELL##*/}" in
+  bash) SHELL_PROFILE="$HOME/.bash_profile" ;;
+  *) SHELL_PROFILE="$HOME/.zprofile" ;;
+esac
+persist_path "$HOME/.local/bin" "$SHELL_PROFILE"
+if [ -n "$npm_prefix" ]; then
+  persist_path "$npm_prefix/bin" "$SHELL_PROFILE"
+fi
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -114,6 +132,7 @@ install_or_update_pi() {
   if [ -n "$npm_prefix" ]; then
     PATH="$npm_prefix/bin:$PATH"
     export PATH
+    persist_path "$npm_prefix/bin" "$SHELL_PROFILE"
   fi
 
   command -v pi >/dev/null 2>&1 || fail 'Pi installation completed but pi is not on PATH. Add npm global bin and ~/.local/bin to PATH, then re-run setup.'
@@ -202,6 +221,8 @@ while IFS= read -r package; do
   [ -n "$package" ] || continue
   pi install "$package"
 done < <(node -e 'for (const p of require(process.argv[1]).packages) console.log(p)' "$SETTINGS_SOURCE")
+printf 'Refreshing installed Pi extensions...\n'
+pi update --extensions
 
 printf 'Phynd Pi setup complete.\n'
 printf 'Default model: openai-codex/gpt-5.6-luna with xhigh thinking.\n'
