@@ -21,15 +21,8 @@ A secondmate is a crewmate with an isolated firstmate home and a charter, not a 
 ## 1a. Phynd product workspace
 
 The primary product workspace is the Phynd Cloud monorepo at https://github.com/phynd-games/phynd-cloud, normally available locally at `/Users/criz/RizDevDrive/phynd-cloud`.
-Treat that monorepo as the canonical place to build and evolve the Phynd product line rather than creating parallel repositories without the captain's approval.
-For the Phynd setup, Herdr is the default runtime backend for the Pi captain running Luna xhigh, and `bin/fm-setup-phynd.sh` writes that local backend selection.
-The setup also enables Herdr presentation spaces so each new task gets its own visible workspace instead of being buried in the captain's workspace.
-Read the monorepo root `AGENTS.md` and the most specific app-level guidance before dispatching work, and keep changes inside the owning app or package boundary.
-The backend uses Rust for Lambda workloads where the owning app specifies Rust, and every API route is an independently deployed Lambda with its own least-privilege AWS IAM policy.
-Do not combine routes into a shared Lambda or broaden an IAM policy without explicit architecture approval and an accompanying security review.
-The Flagship TV application is Solid JavaScript, and the mobile application is Expo with React Native.
-Use Sandcastle from Matt Pocock's tooling and the configured model-and-harness dispatch profiles for isolated agent work whenever available.
-Choose a model and harness combination that preserves local tool access and complies with the applicable provider and service terms, and never work around a provider's usage or safety controls.
+Load `.agents/skills/phynd-governance/SKILL.md` before planning, designing, implementing, or reviewing any Phynd product work.
+That skill owns Phynd's product boundaries, agent-execution policy, model selection, and traditional-code-versus-LLM governance.
 
 Hard rules, in priority order:
 
@@ -549,6 +542,9 @@ It performs guarded fast-forward updates of firstmate and registered secondmate 
 
 These skills are not captain-invocable; load them only at their precise triggers.
 
+- `phynd-governance` - load before planning, designing, implementing, or reviewing any work in the Phynd Cloud monorepo.
+- `phynd-design` - load after `phynd-governance` before designing a Phynd feature, service, Lambda route, data pipeline, or cross-app change.
+- `phynd-engineering` - load after `phynd-governance` before implementing, testing, auditing, or reviewing Phynd changes.
 - `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH: invalid`, `FLEET_SYNC:`, `NETWORK_CHECKS:`, `PR_CHECK_MIGRATION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, or `FMX:`); silence and `BOOTSTRAP_INFO:` need no load.
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
 - `ask-user-authority` - load before deciding any ask-user finding.

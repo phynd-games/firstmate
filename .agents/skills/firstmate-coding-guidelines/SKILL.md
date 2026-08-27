@@ -104,6 +104,11 @@ Every such check needs two tests, because they fail for different reasons:
 
 Record the dated per-harness result in `docs/verification/runtime-backends.md`, and point at the live guard as the command that refreshes it, rather than leaving a version-scoped observation to rot into a false claim.
 
+## Phynd self-review handoff
+
+When the changed project is the Phynd Cloud monorepo, load `phynd-governance` and `phynd-engineering` during self-review, and load `phynd-design` for design or architecture work.
+The self-review must verify the deterministic-tool rule, Python and conventional-ML suitability, route-specific IAM scope, and the separation between LLM-assisted checker authoring and non-LLM quality execution.
+
 ## Documentation change review
 
 For every changed maintained prose surface, identify its inventory audience, authoritative owner, current-behavior relevance, destination for supporting evidence, and any unique safety fact that removal could lose.

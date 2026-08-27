@@ -90,6 +90,7 @@ bin/fm-peek.sh <task-id>
 ## Documentation
 
 - [Configuration](docs/configuration.md)
+- [Phynd governance skill](.agents/skills/phynd-governance/SKILL.md)
 - [Herdr backend](docs/herdr-backend.md)
 - [tmux backend](docs/tmux-backend.md)
 - [Zellij backend](docs/zellij-backend.md)
