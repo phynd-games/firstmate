@@ -9,11 +9,18 @@ set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PI_HOME=${PI_CODING_AGENT_HOME:-"$HOME/.pi/agent"}
-CONFIG_DIR=${FM_HOME:-"$ROOT"}/config
+HOME_ROOT=${FM_HOME:-"$ROOT"}
+CONFIG_DIR=${FM_CONFIG_OVERRIDE:-"$HOME_ROOT/config"}
+DATA_DIR=${FM_DATA_OVERRIDE:-"$HOME_ROOT/data"}
+PROJECTS_DIR=${FM_PROJECTS_OVERRIDE:-"$HOME_ROOT/projects"}
 SETTINGS_SOURCE="$ROOT/defaults/pi-settings.json"
 OPEN_TUI_SOURCE="$ROOT/defaults/pi-open-tui.json"
 CONCISE_SOURCE="$ROOT/defaults/phynd-concise.md"
 CLAUDE_HOME=${CLAUDE_CONFIG_DIR:-"$HOME/.claude"}
+PHYND_PROJECT_DIR=${PHYND_PROJECT_DIR:-"$PROJECTS_DIR/phynd-cloud"}
+if [[ "$PHYND_PROJECT_DIR" != /* ]]; then
+  PHYND_PROJECT_DIR="$HOME_ROOT/$PHYND_PROJECT_DIR"
+fi
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -52,6 +59,38 @@ install_or_update_herdr() {
 }
 
 install_or_update_herdr
+
+provision_phynd_project() {
+  local fresh=0 today
+  if [ -e "$PHYND_PROJECT_DIR" ]; then
+    [ -d "$PHYND_PROJECT_DIR/.git" ] || fail "Phynd project path exists but is not a Git checkout: $PHYND_PROJECT_DIR"
+  else
+    command -v gh >/dev/null 2>&1 || fail 'gh is required to clone the Phynd Cloud monorepo.'
+    mkdir -p "$(dirname "$PHYND_PROJECT_DIR")"
+    printf 'Cloning Phynd Cloud monorepo...\n'
+    gh repo clone phynd-games/phynd-cloud "$PHYND_PROJECT_DIR"
+    fresh=1
+  fi
+
+  mkdir -p "$DATA_DIR"
+  if [ ! -f "$DATA_DIR/projects.md" ]; then
+    printf '# Registered projects\n\n' > "$DATA_DIR/projects.md"
+  fi
+  if ! grep -Fq -- '- phynd-cloud ' "$DATA_DIR/projects.md"; then
+    today=$(date +%F)
+    printf '%s\n' "- phynd-cloud [no-mistakes-prod-only] - Canonical Phynd Cloud product monorepo (added $today)" >> "$DATA_DIR/projects.md"
+  fi
+
+  if [ "$fresh" -eq 1 ] && command -v no-mistakes >/dev/null 2>&1; then
+    printf 'Initializing the Phynd project validation gate...\n'
+    (cd "$PHYND_PROJECT_DIR" && no-mistakes init && no-mistakes doctor)
+  elif [ "$fresh" -eq 1 ]; then
+    printf 'NOTICE: no-mistakes is unavailable; run no-mistakes init in %s before dispatching gated work.\n' "$PHYND_PROJECT_DIR" >&2
+  fi
+  printf 'Phynd project: %s\n' "$PHYND_PROJECT_DIR"
+}
+
+provision_phynd_project
 
 if ! command -v pi >/dev/null 2>&1; then
   command -v npm >/dev/null 2>&1 || fail 'pi is missing and npm is not installed.'
@@ -115,6 +154,6 @@ printf 'Default model: openai-codex/gpt-5.6-luna with xhigh thinking.\n'
 printf 'Default Firstmate backend: herdr.\n'
 printf 'Herdr presentation spaces: on (one visible workspace per task).\n'
 printf 'Theme: cosmic-lagoon.\n'
-printf 'Launch with: pi\n'
+printf 'Next: from this directory run herdr, then launch pi inside the Herdr terminal.\n'
 printf 'Claude concise prompt: %s\n' "$CLAUDE_HOME/phynd-concise.md"
 printf 'Claude launch: claude --append-system-prompt-file %s\n' "$CLAUDE_HOME/phynd-concise.md"

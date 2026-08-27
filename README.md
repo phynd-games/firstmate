@@ -33,9 +33,11 @@ Read that repository's root `AGENTS.md` and the most specific app guidance befor
 
 ```sh
 gh auth login
-git clone https://github.com/phynd-cloud/firstmate
+git clone https://github.com/phynd-games/firstmate
 cd firstmate
 bin/fm-setup-phynd.sh
+herdr
+# In the Herdr terminal, from this directory:
 pi
 ```
 
@@ -47,9 +49,14 @@ The setup script:
 4. Applies the checked-in Pi defaults after Pi installation.
 5. Selects Herdr as the Firstmate backend.
 6. Enables one visible Herdr presentation workspace per task.
+7. Clones and registers `phynd-games/phynd-cloud` under `projects/phynd-cloud` when it is absent.
+8. Initializes the project's no-mistakes gate when a fresh clone and the command are available.
 
+Run `herdr` from the Firstmate directory, then launch `pi` inside the Herdr terminal so the captain and visible workers share the Herdr session.
 Approve the project trust prompt when Pi starts so the tracked Firstmate extensions load.
 The script does not modify Pi credentials or authentication files.
+Set `PHYND_PROJECT_DIR` to use another existing Phynd Cloud checkout path.
+The setup never overwrites an existing path that is not a Git checkout.
 
 ## Default configuration
 
