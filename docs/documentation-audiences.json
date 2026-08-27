@@ -113,6 +113,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": "defaults/phynd-concise.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/ahoy/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -149,6 +153,18 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/phynd-design/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/phynd-engineering/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/phynd-governance/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/firstmate-orca/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -158,6 +174,10 @@
     },
     {
       "path": ".agents/skills/harness-adapters/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/communication-discipline/SKILL.md",
       "audience": "agent-runtime"
     },
     {

@@ -12,6 +12,8 @@ PI_HOME=${PI_CODING_AGENT_HOME:-"$HOME/.pi/agent"}
 CONFIG_DIR=${FM_HOME:-"$ROOT"}/config
 SETTINGS_SOURCE="$ROOT/defaults/pi-settings.json"
 OPEN_TUI_SOURCE="$ROOT/defaults/pi-open-tui.json"
+CONCISE_SOURCE="$ROOT/defaults/phynd-concise.md"
+CLAUDE_HOME=${CLAUDE_CONFIG_DIR:-"$HOME/.claude"}
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -65,10 +67,12 @@ while IFS= read -r package; do
   pi install "$package"
 done < <(node -e 'for (const p of require(process.argv[1]).packages) console.log(p)' "$SETTINGS_SOURCE")
 
-mkdir -p "$PI_HOME" "$CONFIG_DIR"
+mkdir -p "$PI_HOME" "$CONFIG_DIR" "$CLAUDE_HOME"
 printf 'herdr\n' > "$CONFIG_DIR/backend"
 printf 'on\n' > "$CONFIG_DIR/herdr-presentation-spaces"
 chmod 600 "$CONFIG_DIR/backend" "$CONFIG_DIR/herdr-presentation-spaces"
+cp "$CONCISE_SOURCE" "$CLAUDE_HOME/phynd-concise.md"
+chmod 600 "$CLAUDE_HOME/phynd-concise.md"
 
 node - "$SETTINGS_SOURCE" "$PI_HOME/settings.json" <<'NODE'
 const fs = require("node:fs");
@@ -112,3 +116,5 @@ printf 'Default Firstmate backend: herdr.\n'
 printf 'Herdr presentation spaces: on (one visible workspace per task).\n'
 printf 'Theme: cosmic-lagoon.\n'
 printf 'Launch with: pi\n'
+printf 'Claude concise prompt: %s\n' "$CLAUDE_HOME/phynd-concise.md"
+printf 'Claude launch: claude --append-system-prompt-file %s\n' "$CLAUDE_HOME/phynd-concise.md"

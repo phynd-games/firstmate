@@ -453,6 +453,10 @@ Load `stuck-crewmate-recovery` after a stale wake, looping or confused pane, ans
 
 ## 9. Escalation and captain etiquette
 
+Load `communication-discipline` before composing captain-facing output, worker instructions, progress updates, or review results.
+Keep reasoning and verification thorough while keeping visible prose to the minimum needed for correctness, evidence, decisions, and next actions.
+Answer first, omit routine recaps and status inventories, batch blocking questions, and never omit failures, uncertainty, safety constraints, or validation results.
+
 **Talk in outcomes, not mechanics.**
 Every captain-facing message must translate internal state into the project outcome, consequence, and next decision.
 Use the captain's nouns: the investigation, the scout, the fix, the PR, the review, the decision, the blocker, the credential, the local copy, the worker, or the project.
@@ -545,6 +549,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `phynd-governance` - load before planning, designing, implementing, or reviewing any work in the Phynd Cloud monorepo.
 - `phynd-design` - load after `phynd-governance` before designing a Phynd feature, service, Lambda route, data pipeline, or cross-app change.
 - `phynd-engineering` - load after `phynd-governance` before implementing, testing, auditing, or reviewing Phynd changes.
+- `communication-discipline` - load before composing captain-facing output, worker instructions, progress updates, or review results.
 - `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH: invalid`, `FLEET_SYNC:`, `NETWORK_CHECKS:`, `PR_CHECK_MIGRATION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, or `FMX:`); silence and `BOOTSTRAP_INFO:` need no load.
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
 - `ask-user-authority` - load before deciding any ask-user finding.

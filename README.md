@@ -53,8 +53,8 @@ The script does not modify Pi credentials or authentication files.
 
 ## Default configuration
 
-The checked-in defaults live in `defaults/pi-settings.json` and `defaults/pi-open-tui.json`.
-The setup script merges them into the user's global Pi configuration without deleting unrelated settings.
+The checked-in defaults live in `defaults/pi-settings.json`, `defaults/pi-open-tui.json`, and `defaults/phynd-concise.md`.
+The setup script merges Pi settings without deleting unrelated settings and installs the concise communication prompt for Claude Code.
 
 | Purpose | Default |
 | --- | --- |
@@ -68,6 +68,7 @@ The setup script merges them into the user's global Pi configuration without del
 | Cheap code | Pi + Luna xhigh |
 | Feature design / architecture | Claude Code + Fable high |
 | Hard code | Pi + Sol high, or Claude Code + Fable xhigh |
+| Visible output | Concise by default, without reducing reasoning or verification depth |
 
 Local fleet routing is stored in the gitignored `config/crew-dispatch.json`.
 Local runtime selection is stored in `config/backend` and `config/herdr-presentation-spaces`.
