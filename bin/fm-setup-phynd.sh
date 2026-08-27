@@ -22,6 +22,37 @@ if [[ "$PHYND_PROJECT_DIR" != /* ]]; then
   PHYND_PROJECT_DIR="$HOME_ROOT/$PHYND_PROJECT_DIR"
 fi
 
+usage() {
+  cat <<'USAGE'
+Usage: bin/fm-setup-phynd.sh
+
+Installs or updates Herdr, installs Pi, installs the configured Pi packages,
+clones/registers the Phynd Cloud monorepo, and applies Phynd defaults.
+USAGE
+}
+
+if [ "$#" -gt 0 ]; then
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+fi
+
+PATH="$HOME/.local/bin:$PATH"
+if command -v npm >/dev/null 2>&1; then
+  npm_prefix=$(npm prefix --global 2>/dev/null || true)
+  if [ -n "$npm_prefix" ]; then
+    PATH="$npm_prefix/bin:$PATH"
+  fi
+fi
+export PATH
+
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
@@ -45,12 +76,26 @@ herdr_version() {
 }
 
 install_or_update_herdr() {
-  local version
+  local version brew_prefix
   version=$(herdr_version || true)
   if [ -z "$version" ] || ! version_at_least "$version" 0.8.0; then
     printf 'Installing/updating Herdr to the latest release (minimum 0.8.0)...\n'
-    curl -fsSL https://herdr.dev/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
+    if [ "$(uname -s)" = Darwin ] && command -v brew >/dev/null 2>&1; then
+      if brew list --formula herdr >/dev/null 2>&1; then
+        brew upgrade herdr || true
+      else
+        brew install herdr
+      fi
+      brew_prefix=$(brew --prefix 2>/dev/null || true)
+      if [ -n "$brew_prefix" ]; then
+        PATH="$brew_prefix/bin:$PATH"
+        export PATH
+      fi
+    else
+      curl -fsSL https://herdr.dev/install.sh | sh
+      PATH="$HOME/.local/bin:$PATH"
+      export PATH
+    fi
   fi
   command -v herdr >/dev/null 2>&1 || fail 'Herdr installation completed but herdr is not on PATH.'
   version=$(herdr_version || true)
@@ -59,6 +104,23 @@ install_or_update_herdr() {
 }
 
 install_or_update_herdr
+
+install_or_update_pi() {
+  local npm_prefix
+  command -v npm >/dev/null 2>&1 || fail 'npm is required to install or update Pi.'
+  printf 'Installing/updating Pi...\n'
+  npm install --global @earendil-works/pi-coding-agent
+  npm_prefix=$(npm prefix --global 2>/dev/null || true)
+  if [ -n "$npm_prefix" ]; then
+    PATH="$npm_prefix/bin:$PATH"
+    export PATH
+  fi
+
+  command -v pi >/dev/null 2>&1 || fail 'Pi installation completed but pi is not on PATH. Add npm global bin and ~/.local/bin to PATH, then re-run setup.'
+  printf 'Pi: %s\n' "$(pi --version 2>/dev/null | head -n 1)"
+}
+
+install_or_update_pi
 
 provision_phynd_project() {
   local fresh=0 today
@@ -91,20 +153,6 @@ provision_phynd_project() {
 }
 
 provision_phynd_project
-
-if ! command -v pi >/dev/null 2>&1; then
-  command -v npm >/dev/null 2>&1 || fail 'pi is missing and npm is not installed.'
-  printf 'Installing Pi...\n'
-  npm install --global @earendil-works/pi-coding-agent
-fi
-
-command -v pi >/dev/null 2>&1 || fail 'Pi installation completed but pi is not on PATH.'
-
-printf 'Installing Pi packages...\n'
-while IFS= read -r package; do
-  [ -n "$package" ] || continue
-  pi install "$package"
-done < <(node -e 'for (const p of require(process.argv[1]).packages) console.log(p)' "$SETTINGS_SOURCE")
 
 mkdir -p "$PI_HOME" "$CONFIG_DIR" "$CLAUDE_HOME"
 printf 'herdr\n' > "$CONFIG_DIR/backend"
@@ -149,6 +197,12 @@ const merge = (left, right) => {
 fs.writeFileSync(targetPath, `${JSON.stringify(merge(current, source), null, 2)}\n`, { mode: 0o600 });
 NODE
 
+printf 'Installing Pi packages...\n'
+while IFS= read -r package; do
+  [ -n "$package" ] || continue
+  pi install "$package"
+done < <(node -e 'for (const p of require(process.argv[1]).packages) console.log(p)' "$SETTINGS_SOURCE")
+
 printf 'Phynd Pi setup complete.\n'
 printf 'Default model: openai-codex/gpt-5.6-luna with xhigh thinking.\n'
 printf 'Default Firstmate backend: herdr.\n'
@@ -157,3 +211,4 @@ printf 'Theme: cosmic-lagoon.\n'
 printf 'Next: from this directory run herdr, then launch pi inside the Herdr terminal.\n'
 printf 'Claude concise prompt: %s\n' "$CLAUDE_HOME/phynd-concise.md"
 printf 'Claude launch: claude --append-system-prompt-file %s\n' "$CLAUDE_HOME/phynd-concise.md"
+printf 'If herdr or pi is not found in a new shell, add %s and your npm global bin to PATH.\n' "$HOME/.local/bin"
