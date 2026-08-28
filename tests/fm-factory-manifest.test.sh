@@ -191,6 +191,8 @@ elif mode == "empty-source-ref":
     doc["tasks"][0]["source_refs"] = []
 elif mode == "unknown-source-ref":
     doc["tasks"][0]["source_refs"] = ["E999.99"]
+elif mode == "nonbmp-title":
+    doc["tasks"][0]["title"] = "😀"
 elif mode not in ("valid", "bad-hash"):
     raise SystemExit(f"unknown mode: {mode}")
 canonical = (json.dumps(doc, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
@@ -313,10 +315,15 @@ PY
 
 test_long_chain_and_surrogate_inputs() {
   local long_manifest="$TMP_ROOT/long-chain-manifest.json" long_report="$TMP_ROOT/long-chain-report.json"
+  local unicode_manifest="$TMP_ROOT/unicode-manifest.json" unicode_report="$TMP_ROOT/unicode-report.json"
   local surrogate_manifest="$TMP_ROOT/surrogate-manifest.json" surrogate_report="$TMP_ROOT/surrogate-report.json" rc
   write_long_chain_manifest "$long_manifest"
   "$CLI" validate-manifest --manifest "$long_manifest" --source "$SOURCE" >"$long_report" || fail "long dependency chain should validate without recursion failure"
   json_assert "$long_report" "r['valid'] is True and r['graph']['task_count'] == 1001 and r['graph']['cycle_count'] == 0 and r['graph']['wave_count'] == 1001" "long dependency chain report differs"
+
+  write_manifest nonbmp-title "$unicode_manifest"
+  "$CLI" validate-manifest --manifest "$unicode_manifest" --source "$SOURCE" >"$unicode_report" || fail "valid escaped surrogate pair should validate"
+  json_assert "$unicode_report" "r['valid'] is True" "valid escaped surrogate pair should not be rejected"
 
   write_manifest valid "$surrogate_manifest"
   python3 - "$surrogate_manifest" <<'PY'

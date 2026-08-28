@@ -124,8 +124,17 @@ def _contains_lone_surrogate(value: Any) -> bool:
     while pending:
         current = pending.pop()
         if isinstance(current, str):
-            if any(0xD800 <= ord(character) <= 0xDFFF for character in current):
-                return True
+            index = 0
+            while index < len(current):
+                codepoint = ord(current[index])
+                if 0xD800 <= codepoint <= 0xDBFF:
+                    if index + 1 >= len(current) or not 0xDC00 <= ord(current[index + 1]) <= 0xDFFF:
+                        return True
+                    index += 2
+                    continue
+                if 0xDC00 <= codepoint <= 0xDFFF:
+                    return True
+                index += 1
         elif isinstance(current, dict):
             pending.extend(current.keys())
             pending.extend(current.values())
