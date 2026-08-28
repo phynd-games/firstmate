@@ -46,7 +46,7 @@
       "required": ["state", "approval_id", "scope"],
       "properties": {
         "state": {"enum": ["draft", "captain_approved", "active", "quiescing", "complete", "rolled_back"]},
-        "approval_id": {"type": ["string", "null"]},
+        "approval_id": {"type": ["string", "null"], "minLength": 1},
         "scope": {"type": "array", "items": {"type": "string", "pattern": "^M[0-9]+-[0-9]{3}$"}, "uniqueItems": true}
       }
     },

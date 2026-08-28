@@ -98,6 +98,8 @@ execution-manifest firstmate.m1-execution-manifest.v1
 task firstmate.execution-task.v1
 route firstmate.route-request.v1
 EOF
+  json_assert "$TMP_ROOT/schema-execution-manifest.json" "r['properties']['authority']['properties']['approval_id']['minLength'] == 1" "approval IDs must be non-empty in the published schema"
+  json_assert "$TMP_ROOT/schema-task.json" "r['properties']['source_refs']['minItems'] == 1" "source references must be non-empty in the published schema"
   pass "public CLI exposes all four versioned schemas"
 }
 
@@ -185,6 +187,10 @@ elif mode == "unknown-dependency":
     doc["tasks"][2]["dependencies"] = ["M1-999"]
 elif mode == "cycle":
     doc["tasks"][0]["dependencies"] = ["M1-003"]
+elif mode == "empty-source-ref":
+    doc["tasks"][0]["source_refs"] = []
+elif mode == "unknown-source-ref":
+    doc["tasks"][0]["source_refs"] = ["E999.99"]
 elif mode not in ("valid", "bad-hash"):
     raise SystemExit(f"unknown mode: {mode}")
 canonical = (json.dumps(doc, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
@@ -225,6 +231,8 @@ test_malformed_manifest_fixtures() {
   run_invalid_manifest bad-route schema.enum
   run_invalid_manifest unknown-dependency graph.unknown-dependency
   run_invalid_manifest cycle graph.cycle
+  run_invalid_manifest empty-source-ref schema.min-items
+  run_invalid_manifest unknown-source-ref provenance.unknown-source-ref
   run_invalid_manifest bad-hash manifest.hash-mismatch
   write_manifest valid "$manifest"
   mutate_source count-mismatch "$source"
@@ -235,6 +243,28 @@ test_malformed_manifest_fixtures() {
   [ "$rc" -eq 1 ] || fail "source-drift manifest fixture should exit 1, got $rc"
   error_codes_include "$report" manifest.source-hash-mismatch
   pass "malformed manifest fixtures reject routes, edges, cycles, hash drift, and source drift"
+}
+
+test_malformed_json_limits() {
+  local oversized="$TMP_ROOT/oversized-integer.json" deep="$TMP_ROOT/deep-json.json" report rc
+  python3 - "$oversized" "$deep" <<'PY'
+import pathlib
+import sys
+
+pathlib.Path(sys.argv[1]).write_bytes(b'{"value":' + b'9' * 5000 + b'}')
+pathlib.Path(sys.argv[2]).write_bytes(b'[' * 2000 + b']' * 2000)
+PY
+  for fixture in "$oversized" "$deep"; do
+    report="$fixture.report"
+    set +e
+    "$CLI" validate-source --source "$fixture" --expected-sha256 "$(sha256_file "$fixture")" >"$report"
+    rc=$?
+    set -e
+    [ "$rc" -eq 1 ] || fail "malformed JSON should exit 1, got $rc"
+    json_assert "$report" "r['valid'] is False and r['errors']" "malformed JSON should produce a validation report"
+  done
+  error_codes_include "$oversized.report" json.parse-limit
+  pass "oversized integers and deep JSON produce deterministic validation reports"
 }
 
 test_read_only_execution() {
@@ -257,4 +287,5 @@ test_provenance_rejection
 test_malformed_source_fixtures
 test_normalized_manifest
 test_malformed_manifest_fixtures
+test_malformed_json_limits
 test_read_only_execution

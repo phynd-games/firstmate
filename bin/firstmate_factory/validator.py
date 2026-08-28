@@ -128,6 +128,10 @@ def _parse_json(data: bytes, errors: Errors) -> Any | None:
             "json.syntax", "$",
             f"invalid JSON at line {exc.lineno} column {exc.colno}",
         )
+    except ValueError:
+        errors.add("json.parse-limit", "$", "JSON value exceeds supported limits")
+    except RecursionError:
+        errors.add("json.depth", "$", "JSON nesting exceeds supported depth")
     return None
 
 
@@ -531,6 +535,7 @@ def validate_source_bytes(
         "flat_task_count": actual_count,
         "nested_flat_equal": nested_records == flat_records and len(nested_records) == actual_count,
         "nested_task_count": len(nested_records),
+        "task_ids": sorted(flat_records),
     })
     report["graph"] = graph
     report["errors"] = errors.sorted()
@@ -572,7 +577,7 @@ def _validate_execution_task(task: Any, path: str, errors: Errors) -> dict[str, 
     _string_list(task["artifacts"], f"{path}.artifacts", errors)
     _string_list(task["acceptance"], f"{path}.acceptance", errors, minimum=1)
     _string_list(task["rollback"], f"{path}.rollback", errors)
-    _string_list(task["source_refs"], f"{path}.source_refs", errors, SOURCE_ID)
+    _string_list(task["source_refs"], f"{path}.source_refs", errors, SOURCE_ID, minimum=1)
     return task if valid_id else None
 
 
@@ -622,6 +627,7 @@ def validate_execution_manifest_bytes(
         "matches": False,
         "source_valid": False,
     }
+    source_task_ids: set[str] | None = None
     if len(source_graph_bindings) != 1:
         errors.add(
             "manifest.source-binding",
@@ -637,6 +643,11 @@ def validate_execution_manifest_bytes(
             source_report = validate_source_bytes(source_data, bound_sha256)
             source_provenance["source_valid"] = source_report["valid"]
             source_provenance["validation_errors"] = source_report["errors"]
+            source_graph = source_report.get("graph", {})
+            if isinstance(source_graph, dict):
+                task_ids = source_graph.get("task_ids")
+                if isinstance(task_ids, list):
+                    source_task_ids = {task_id for task_id in task_ids if isinstance(task_id, str)}
         else:
             source_provenance["validation_errors"] = []
         if bound_sha256 != source_sha256:
@@ -687,6 +698,20 @@ def validate_execution_manifest_bytes(
         else:
             records[task_id] = validated
             task_locations[task_id] = path
+
+    if source_task_ids is not None:
+        for task_id in sorted(records):
+            source_refs = records[task_id].get("source_refs")
+            if not isinstance(source_refs, list):
+                continue
+            task_path = task_locations[task_id]
+            for index, source_ref in enumerate(source_refs):
+                if isinstance(source_ref, str) and source_ref not in source_task_ids:
+                    errors.add(
+                        "provenance.unknown-source-ref",
+                        f"{task_path}.source_refs[{index}]",
+                        f"unknown source task: {source_ref}",
+                    )
 
     acceptance_tasks = _string_list(
         document["acceptance_tasks"], "$.acceptance_tasks", errors,
