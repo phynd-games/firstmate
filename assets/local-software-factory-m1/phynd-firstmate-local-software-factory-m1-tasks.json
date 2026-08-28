@@ -1,0 +1,3239 @@
+{
+  "schema": "phynd-firstmate-m1-task-graph.v1",
+  "title": "Phynd Firstmate Local Software Factory \u2014 Milestone 1",
+  "generated": "2026-08-28",
+  "task_count": 121,
+  "epics": [
+    {
+      "id": "E0",
+      "title": "Prompt architecture and quality baseline",
+      "goal": "Fix the verbosity failure before asking the factory to design or implement anything else.",
+      "phase": "Foundation",
+      "tasks": [
+        [
+          "E0.01",
+          "Inventory every prompt surface",
+          "Document the current Pi system prompt files, AGENTS/CLAUDE context, communication-discipline skill, role prompts, setup-time prompt copies, and child-harness prompt injection.",
+          "Prompt inventory with owner, scope, precedence, and hash.",
+          "No prompt source or injection path remains implicit.",
+          [],
+          "Luna xhigh + Python"
+        ],
+        [
+          "E0.02",
+          "Create the prompt evaluation corpus",
+          "Build representative prompts for compact chat, detailed technical design, implementation plan, task graph, PR review, incident response, setup diagnosis, and Lavish artifact delivery.",
+          "Versioned fixtures under tests/fixtures/prompt-policy.",
+          "Every output mode and high-risk failure is represented.",
+          [
+            "E0.01"
+          ],
+          "Python"
+        ],
+        [
+          "E0.03",
+          "Build a repeatable prompt evaluation runner",
+          "Launch isolated Pi/Luna xhigh sessions against current and candidate prompts; capture tool calls, output artifacts, token counts, and required-section coverage.",
+          "Python eval CLI with JSON results.",
+          "The same fixture can compare prompt versions without hand scoring.",
+          [
+            "E0.02"
+          ],
+          "Python"
+        ],
+        [
+          "E0.04",
+          "Define output-mode schema",
+          "Add CHAT, ARTIFACT, BRIEF, REVIEW, and INCIDENT modes with explicit completeness and presentation requirements.",
+          "phynd.output-contract.v1 JSON schema.",
+          "Every task has one resolved output contract before dispatch.",
+          [
+            "E0.01"
+          ],
+          "Python"
+        ],
+        [
+          "E0.05",
+          "Write the scoped Firstmate driver prompt",
+          "Replace the global concision wording with a small mode-aware driver contract: concise chat, complete artifacts, complete briefs, evidence-first reviews, mandatory Lavish artifact gate.",
+          "defaults/phynd-driver-append-system.md.",
+          "The prompt contains no arbitrary output-length target and explicitly exempts artifacts, specs, code, tests, and evidence from concision.",
+          [
+            "E0.04"
+          ],
+          "Luna xhigh"
+        ],
+        [
+          "E0.06",
+          "Refactor communication-discipline",
+          "Limit brevity rules to chat and progress. Replace the blanket ban on implementation tours with a rule that requested implementation detail belongs in the artifact, not chat.",
+          "Updated communication-discipline skill.",
+          "A requested design or task list cannot be shortened by this skill.",
+          [
+            "E0.04",
+            "E0.05"
+          ],
+          "Luna xhigh"
+        ],
+        [
+          "E0.07",
+          "Add role-specific worker prompt capsules",
+          "Create minimal prompts for design author, adversarial reviewer, implementer, PR self-reviewer, incident investigator, and route scout.",
+          "Versioned role prompt files.",
+          "Children receive only role-relevant constraints; the driver prompt is not sprayed globally.",
+          [
+            "E0.05"
+          ],
+          "Luna xhigh"
+        ],
+        [
+          "E0.08",
+          "Scope Pi prompt injection to the Firstmate code root",
+          "Install the driver contract as project-local .pi/APPEND_SYSTEM.md rather than a global prompt that affects unrelated projects.",
+          "Managed project-local prompt installation.",
+          "A Pi worker in another repository does not inherit the Firstmate driver presentation policy.",
+          [
+            "E0.05"
+          ],
+          "Python"
+        ],
+        [
+          "E0.09",
+          "Remove unscoped Claude concision injection",
+          "Stop treating ~/.claude/phynd-concise.md as a universal launch prompt. Claude workers receive an explicit role prompt through their launch profile.",
+          "Setup migration and compatibility warning.",
+          "Existing user-owned files are never deleted; stale Firstmate-managed copies are detected and retired safely.",
+          [
+            "E0.07"
+          ],
+          "Python"
+        ],
+        [
+          "E0.10",
+          "Report active prompt provenance at session start",
+          "Expose driver prompt version/hash, output-mode policy version, and role-prompt version in the startup digest.",
+          "Prompt provenance block.",
+          "The captain can prove which prompt governed the session.",
+          [
+            "E0.08"
+          ],
+          "Python"
+        ],
+        [
+          "E0.11",
+          "Run current-versus-candidate A/B evaluation",
+          "Measure chat compactness, artifact completeness, required-section recall, Lavish invocation, unsupported claims, and decision surfacing.",
+          "Evaluation report in Lavish.",
+          "Candidate preserves or improves chat signal while achieving 100% required artifact coverage on golden fixtures.",
+          [
+            "E0.03",
+            "E0.05",
+            "E0.06",
+            "E0.08"
+          ],
+          "Luna xhigh + Python"
+        ],
+        [
+          "E0.12",
+          "Human-approve the prompt policy",
+          "Present the A/B report and exact prompt in Lavish with Approve, Revise, and Reject controls.",
+          "Prompt approval receipt bound to prompt hash.",
+          "No later milestone uses the new prompt until explicit approval.",
+          [
+            "E0.11"
+          ],
+          "Lavish + human"
+        ]
+      ]
+    },
+    {
+      "id": "E1",
+      "title": "Mandatory Lavish artifact execution",
+      "goal": "Make rich human review a hard workflow for artifact-class deliverables instead of a model preference.",
+      "phase": "Foundation",
+      "tasks": [
+        [
+          "E1.01",
+          "Add phynd-lavish-delivery skill",
+          "Create the single owner for Lavish help/design/playbook discovery, artifact authoring, open, poll, feedback, revision, acceptance, and retirement.",
+          "Internal skill with narrow AGENTS trigger.",
+          "The full workflow is stated once and loaded whenever lavish_required=true.",
+          [
+            "E0.12"
+          ],
+          "Luna xhigh"
+        ],
+        [
+          "E1.02",
+          "Define artifact-class detection",
+          "Resolve plan, design, comparison, diagram, table-heavy report, roadmap, HTML artifact, and structured human decision into lavish_required=true.",
+          "Deterministic deliverable classifier.",
+          "The model cannot silently choose prose for a required artifact.",
+          [
+            "E0.04"
+          ],
+          "Python"
+        ],
+        [
+          "E1.03",
+          "Add Lavish requirement to task envelopes",
+          "Carry artifact type, lavish_required, human_review_required, and acceptance key from intake through brief, spawn, task state, and completion.",
+          "Schema and lifecycle changes.",
+          "Missing required fields fail before spawn.",
+          [
+            "E1.02"
+          ],
+          "Python"
+        ],
+        [
+          "E1.04",
+          "Resolve current Lavish guidance before authoring",
+          "Execute lavish-axi --help, lavish-axi design, and every matching playbook before writing the first HTML revision.",
+          "Guidance receipt with CLI version and playbook IDs.",
+          "An artifact cannot claim the Lavish path if guidance was skipped.",
+          [
+            "E1.01",
+            "E1.03"
+          ],
+          "Worker + Lavish"
+        ],
+        [
+          "E1.05",
+          "Create the Phynd artifact shell",
+          "Provide a responsive, offline-first HTML shell with print support, stable annotation targets, diagrams, tables, decisions, task export, and strong mobile behavior.",
+          "Reusable artifact template.",
+          "Pass light, dark, narrow, print, and no-network rendering checks.",
+          [
+            "E1.04"
+          ],
+          "Fable high + Lavish"
+        ],
+        [
+          "E1.06",
+          "Open artifacts through Lavish",
+          "Use the CLI against the canonical HTML path and record the session identity.",
+          "Artifact-open receipt.",
+          "No artifact is presented as reviewable until Lavish confirms the session.",
+          [
+            "E1.05"
+          ],
+          "Lavish"
+        ],
+        [
+          "E1.07",
+          "Arm durable Lavish feedback",
+          "Register the existing fm-procevent-lavish adapter and bind feedback to the task and owning worker.",
+          "Durable feedback source.",
+          "A restart after arm can still route captured feedback to the correct task.",
+          [
+            "E1.06"
+          ],
+          "Python + existing adapter"
+        ],
+        [
+          "E1.08",
+          "Keep the artifact owner alive",
+          "Prevent teardown while a Lavish review remains open; route every feedback batch to the same worker unless recovery proves replacement is necessary.",
+          "Artifact-owner lifecycle rule.",
+          "Context is preserved across iterative design feedback.",
+          [
+            "E1.07"
+          ],
+          "Firstmate driver"
+        ],
+        [
+          "E1.09",
+          "Add explicit artifact decisions",
+          "Embed Approve, Revise, and Stop controls using Lavish structured input. An empty close is not approval.",
+          "Keyed human decision contract.",
+          "Implementation begins only on an explicit approval bound to the current artifact hash.",
+          [
+            "E1.05",
+            "E1.07"
+          ],
+          "Lavish + Python"
+        ],
+        [
+          "E1.10",
+          "Write artifact review receipts",
+          "Record artifact hash, Lavish version, playbooks, layout checks, feedback rounds, final decision, and decision actor.",
+          "phynd.artifact-review.v1 receipt.",
+          "Any byte change invalidates approval until re-reviewed.",
+          [
+            "E1.09"
+          ],
+          "Python"
+        ],
+        [
+          "E1.11",
+          "Integrate layout issue handling",
+          "Surface Lavish layout findings, let the human queue selected repairs, and require a newer clean render for resolution.",
+          "Layout evidence in review receipt.",
+          "A prior check at one viewport cannot clear a failure at another viewport.",
+          [
+            "E1.06",
+            "E1.10"
+          ],
+          "Lavish"
+        ],
+        [
+          "E1.12",
+          "Test the full Lavish loop",
+          "Cover missing CLI, unsupported version, open failure, feedback, Send & End, empty close, interrupted poll, restart recovery, stale artifact, and owner replacement.",
+          "Portable tests plus live opt-in test.",
+          "Every bypass attempt either blocks or is accurately labeled degraded.",
+          [
+            "E1.07",
+            "E1.08",
+            "E1.09",
+            "E1.10",
+            "E1.11"
+          ],
+          "Python + shell"
+        ]
+      ]
+    },
+    {
+      "id": "E2",
+      "title": "Python factory kernel and full routing",
+      "goal": "Keep the captain-facing driver fixed on Luna xhigh while Python makes routing inspectable, testable, and future-API ready.",
+      "phase": "Core",
+      "tasks": [
+        [
+          "E2.01",
+          "Create the Python package boundary",
+          "Add firstmate_factory with modules for schemas, intake, routing, advisors, task graph, design gate, events, artifacts, setup, and API contracts.",
+          "Importable stdlib-first package and CLI.",
+          "Shell scripts become adapters; policy logic has one Python owner.",
+          [
+            "E0.12"
+          ],
+          "Python"
+        ],
+        [
+          "E2.02",
+          "Define canonical task schemas",
+          "Specify task_type, complexity, risk, uncertainty, artifact, capabilities, delivery mode, authority, output contract, and provenance.",
+          "phynd.task-request.v1 and validators.",
+          "Unknown enums, missing mandatory fields, and conflicting provenance fail deterministically.",
+          [
+            "E2.01"
+          ],
+          "Python"
+        ],
+        [
+          "E2.03",
+          "Define profile and role catalog",
+          "Record driver, route scout, design author, adversaries, implementers, PR reviewers, validators, and incident roles with exact harness/model/effort requirements.",
+          "phynd.profile-catalog.v1.",
+          "The main driver profile is immutable: Pi + Luna + xhigh.",
+          [
+            "E2.02"
+          ],
+          "Python"
+        ],
+        [
+          "E2.04",
+          "Encode the task-type \u00d7 complexity matrix",
+          "Implement the complete matrix in this design, with risk overlays and same-or-stronger fallback rules.",
+          "Versioned routing policy.",
+          "Golden fixtures cover every matrix cell and risk overlay.",
+          [
+            "E2.03"
+          ],
+          "Python"
+        ],
+        [
+          "E2.05",
+          "Normalize captain intent",
+          "Have Luna propose a structured request with evidence; validate and canonicalize it in Python before policy evaluation.",
+          "Normalized request plus field provenance.",
+          "Raw prose never enters the deterministic rule evaluator.",
+          [
+            "E2.02"
+          ],
+          "Luna xhigh + Python"
+        ],
+        [
+          "E2.06",
+          "Implement deterministic routing",
+          "Apply complexity floors, risk floors, capability eligibility, required gates, and exact role selection.",
+          "phynd.route-decision.v1.",
+          "Same inputs and policy produce byte-stable decisions except IDs and timestamps.",
+          [
+            "E2.04",
+            "E2.05"
+          ],
+          "Python"
+        ],
+        [
+          "E2.07",
+          "Integrate live harness catalogs",
+          "Verify harness, model, effort, tool access, and authentication through current adapter discovery rather than name inference.",
+          "Candidate eligibility evidence.",
+          "Unsupported profiles are removed only with concrete catalog evidence.",
+          [
+            "E2.03",
+            "E2.06"
+          ],
+          "Python + harness adapters"
+        ],
+        [
+          "E2.08",
+          "Integrate quota only inside the safe set",
+          "Reuse current quota evidence after class, risk, capability, effort, and review floors are fixed.",
+          "Candidate accounting and selection trace.",
+          "Quota can select among safe peers but cannot lower any floor.",
+          [
+            "E2.07"
+          ],
+          "Python"
+        ],
+        [
+          "E2.09",
+          "Add structured route-assist interface",
+          "Define a typed advisor contract that may return evidence, uncertainty, and raise recommendations but cannot directly select a lower route.",
+          "phynd.route-advice.v1.",
+          "The final deterministic decision records whether advice was used or ignored.",
+          [
+            "E2.06"
+          ],
+          "Python"
+        ],
+        [
+          "E2.10",
+          "Implement Python statistics baseline",
+          "Use historical structured outcomes for completion-horizon, failure-rate, and route-risk estimates without free-text ML.",
+          "Deterministic advisory statistics.",
+          "Unavailable or sparse data becomes unknown, never a downgrade.",
+          [
+            "E2.09"
+          ],
+          "Python"
+        ],
+        [
+          "E2.11",
+          "Add optional ML shadow advisor",
+          "Provide a plugin point for calibrated structured prediction only after sufficient labeled outcomes; allow only raise-level or require-review suggestions.",
+          "Disabled-by-default ML shadow plugin.",
+          "No model output can lower risk, effort, capability, review, or authority.",
+          [
+            "E2.10"
+          ],
+          "Python + conventional ML"
+        ],
+        [
+          "E2.12",
+          "Add Claude semantic route scout",
+          "For unresolved semantic or architectural ambiguity, spawn a read-only Claude Code/Fable scout with a strict JSON return schema and evidence references.",
+          "Route-scout workflow.",
+          "The scout does not edit, spawn children, or authorize work.",
+          [
+            "E2.09"
+          ],
+          "Claude/Fable high"
+        ],
+        [
+          "E2.13",
+          "Adjudicate conflicting route advice",
+          "When Luna classification, Python evidence, or Claude scout conflict, choose the monotonic safer route or abstain for the captain.",
+          "Conflict decision trace.",
+          "No array order, cost, or model preference resolves a safety conflict.",
+          [
+            "E2.10",
+            "E2.12"
+          ],
+          "Python"
+        ],
+        [
+          "E2.14",
+          "Bind route decision to briefs",
+          "Compile objective, role, exact profile, artifact contract, design hash, gates, acceptance, and return schema into the worker brief.",
+          "Hash-bound executable brief.",
+          "A worker can execute without reconstructing routing intent.",
+          [
+            "E2.06",
+            "E1.03"
+          ],
+          "Python"
+        ],
+        [
+          "E2.15",
+          "Bind route decision to spawn",
+          "Require fm-spawn to receive and verify the exact route decision; refuse harness/model/effort mismatch before external launch.",
+          "Fail-closed spawn seam.",
+          "Changing any selected axis after decision causes refusal.",
+          [
+            "E2.14"
+          ],
+          "Python + shell"
+        ],
+        [
+          "E2.16",
+          "Fix every Firstmate and secondmate driver to Luna xhigh",
+          "Ensure primary and persistent secondmate drivers launch as Pi/Luna xhigh; only their project workers vary by policy.",
+          "Driver-profile enforcement.",
+          "No routing policy can move the captain-facing driver to another model.",
+          [
+            "E2.03",
+            "E2.15"
+          ],
+          "Python + Herdr"
+        ],
+        [
+          "E2.17",
+          "Build routing shadow and evaluation",
+          "Compare current prose routing to candidate Python decisions, classify differences, and collect outcomes.",
+          "Shadow report and golden corpus.",
+          "No live enforcement until unsafe downgrade count is zero and human review passes.",
+          [
+            "E2.06",
+            "E2.13",
+            "E2.15"
+          ],
+          "Python + Lavish"
+        ]
+      ]
+    },
+    {
+      "id": "E3",
+      "title": "Human-first design gate",
+      "goal": "Front-load human judgment into a reviewed design, then let the factory execute without repeatedly asking for design intent.",
+      "phase": "Core",
+      "tasks": [
+        [
+          "E3.01",
+          "Classify when design is required",
+          "Require a design for cross-app changes, new services, data contracts, migrations, production/security work, novel architecture, C3/C4 complexity, or explicit captain request.",
+          "Design-required decision in route output.",
+          "A worker cannot begin implementation while required design evidence is absent.",
+          [
+            "E2.04"
+          ],
+          "Python"
+        ],
+        [
+          "E3.02",
+          "Create design artifact contracts",
+          "Define mandatory sections: goal, current evidence, desired behavior, boundaries, architecture, interfaces, state, failure modes, security, rollout, rollback, tests, and task graph.",
+          "phynd.design-artifact.v1 rubric.",
+          "Every required section has deterministic presence and evidence checks.",
+          [
+            "E1.05",
+            "E3.01"
+          ],
+          "Python"
+        ],
+        [
+          "E3.03",
+          "Select the design author",
+          "Use Fable high for standard architecture, Fable xhigh for hard/critical architecture, or Luna xhigh for bounded designs when Fable is unavailable and degraded independence is acceptable.",
+          "Author route.",
+          "Profile choice and degradation are explicit in the design receipt.",
+          [
+            "E2.04"
+          ],
+          "Python"
+        ],
+        [
+          "E3.04",
+          "Freeze the candidate design",
+          "Hash the exact HTML and supporting evidence before adversarial review.",
+          "Immutable candidate record.",
+          "Reviewers evaluate the same bytes.",
+          [
+            "E3.02",
+            "E3.03"
+          ],
+          "Python"
+        ],
+        [
+          "E3.05",
+          "Run technical/failure adversary",
+          "Use Sol high to attack architecture, concurrency, state, security, authority, migration, rollback, performance, and cost.",
+          "Evidence-backed finding set.",
+          "Every P0/P1 names a concrete failure mechanism.",
+          [
+            "E3.04"
+          ],
+          "Pi/Sol high"
+        ],
+        [
+          "E3.06",
+          "Run implementation-completeness adversary",
+          "Use Luna xhigh to test file/module ownership, interfaces, sequencing, acceptance tests, operational clarity, and whether a coding agent can build without guessing.",
+          "Completeness findings.",
+          "Missing executable detail blocks implementation readiness.",
+          [
+            "E3.04"
+          ],
+          "Pi/Luna xhigh"
+        ],
+        [
+          "E3.07",
+          "Add a distinct-model gate for critical designs",
+          "Require at least one different model/context for R3/R4 or C4 designs; scope-only same-model review is insufficient unless the captain accepts degradation.",
+          "Independence evidence.",
+          "The receipt never overstates reviewer independence.",
+          [
+            "E3.05",
+            "E3.06"
+          ],
+          "Python"
+        ],
+        [
+          "E3.08",
+          "Implement finding ledger and closure authority",
+          "Track finding severity, mechanism, evidence, required change, disposition, and closer. Authors may fix but cannot clear P0/P1.",
+          "phynd.design-review.v1 ledger.",
+          "Serious findings require reviewer or captain closure.",
+          [
+            "E3.05",
+            "E3.06"
+          ],
+          "Python"
+        ],
+        [
+          "E3.09",
+          "Present design in Lavish for human decision",
+          "Show the resolved design, surviving findings, accepted risks, and exact execution scope with structured Approve, Revise, and Stop controls.",
+          "Human review session.",
+          "No implementation transition occurs on close, silence, or implied approval.",
+          [
+            "E1.09",
+            "E3.08"
+          ],
+          "Lavish + human"
+        ],
+        [
+          "E3.10",
+          "Write the design approval receipt",
+          "Bind human approval, design hash, review hashes, accepted risks, task-graph version, and authority scope.",
+          "phynd.design-approval.v1.",
+          "Any material design edit invalidates approval.",
+          [
+            "E3.09"
+          ],
+          "Python"
+        ],
+        [
+          "E3.11",
+          "Compile approved design into a task graph",
+          "Generate bounded tasks, dependencies, exact routes, acceptance checks, PR boundaries, and expected artifacts from the approved design.",
+          "phynd.task-graph.v1.",
+          "Every task traces to an approved design section and acceptance criterion.",
+          [
+            "E3.10"
+          ],
+          "Luna xhigh + Python"
+        ],
+        [
+          "E3.12",
+          "Detect implementation drift",
+          "Classify deviations in architecture, scope, authority, security, migration, and acceptance; material drift returns to Lavish, bounded fixes remain autonomous.",
+          "Drift gate.",
+          "The factory cannot silently implement a different design.",
+          [
+            "E3.10",
+            "E3.11"
+          ],
+          "Python"
+        ],
+        [
+          "E3.13",
+          "Test design-gate bypasses",
+          "Cover stale design, missing adversary, same-model overclaim, author self-clear, silent close, accepted risk without captain, and drift after approval.",
+          "Design-gate test suite.",
+          "All unsafe paths block before implementation.",
+          [
+            "E3.07",
+            "E3.08",
+            "E3.10",
+            "E3.12"
+          ],
+          "Python"
+        ]
+      ]
+    },
+    {
+      "id": "E4",
+      "title": "Hands-off dark local software factory",
+      "goal": "Execute the approved task graph with sparse human interruption and strong evidence.",
+      "phase": "Factory",
+      "tasks": [
+        [
+          "E4.01",
+          "Define task-graph runtime states",
+          "Model ready, running, waiting, blocked, review, fixing, PR-ready, landed, failed, and superseded states without replacing existing Firstmate authority.",
+          "Task-graph runtime schema.",
+          "State transitions are legal, idempotent, and recoverable.",
+          [
+            "E3.11"
+          ],
+          "Python"
+        ],
+        [
+          "E4.02",
+          "Implement dependency scheduler",
+          "Release tasks when dependencies and design gates are satisfied; serialize only semantic conflicts and shared mutable external state.",
+          "Deterministic scheduler.",
+          "Same-file overlap alone does not block independent work.",
+          [
+            "E4.01"
+          ],
+          "Python"
+        ],
+        [
+          "E4.03",
+          "Compile worker briefs from graph nodes",
+          "Include exact design references, route decision, constraints, acceptance tests, validation commands, and return record.",
+          "Self-contained task brief.",
+          "Workers never have to infer global plan intent.",
+          [
+            "E2.14",
+            "E3.11"
+          ],
+          "Python"
+        ],
+        [
+          "E4.04",
+          "Spawn exact worker profiles",
+          "Use existing Firstmate isolation and Herdr backends with route-bound harness/model/effort.",
+          "Spawn integration.",
+          "Every worker is isolated and matches its decision.",
+          [
+            "E2.15",
+            "E4.03"
+          ],
+          "Firstmate + Herdr"
+        ],
+        [
+          "E4.05",
+          "Normalize worker milestones",
+          "Translate existing status, backend state, no-mistakes state, and artifact events into typed factory events.",
+          "Append-only factory event stream.",
+          "Chat prose is never the sole state authority.",
+          [
+            "E4.01",
+            "E4.04"
+          ],
+          "Python"
+        ],
+        [
+          "E4.06",
+          "Implement sparse captain communication",
+          "Dark mode hides routine progress and surfaces only design decisions, credentials, destructive authority, failed validation, unrecoverable blockers, and final outcomes.",
+          "Factory presentation policy.",
+          "Hands-off execution produces no periodic no-change chatter.",
+          [
+            "E0.06",
+            "E4.05"
+          ],
+          "Luna xhigh"
+        ],
+        [
+          "E4.07",
+          "Add bounded automatic recovery",
+          "Recover dead agents, retry transient tool failures, reconcile stale state, and preserve unlanded work within explicit attempt limits.",
+          "Recovery policy.",
+          "Repeated failure escalates with evidence instead of looping.",
+          [
+            "E4.05"
+          ],
+          "Python + existing recovery"
+        ],
+        [
+          "E4.08",
+          "Implement task replanning within approved bounds",
+          "Allow Luna xhigh to split or reorder tasks when the design and acceptance remain unchanged; record the graph diff.",
+          "Bounded replan record.",
+          "Material drift invokes E3.12 rather than self-authorizing.",
+          [
+            "E3.12",
+            "E4.02"
+          ],
+          "Luna xhigh + Python"
+        ],
+        [
+          "E4.09",
+          "Resolve repository PR self-review capability",
+          "Search trusted base-revision project skills/commands for pr-self-review and select the repository-owned contract.",
+          "Review-capability receipt.",
+          "Candidate branch cannot replace the gate that judges it.",
+          [
+            "E0.12"
+          ],
+          "Python"
+        ],
+        [
+          "E4.10",
+          "Run PR self-review on final head",
+          "For Phynd Cloud, execute the exact committed pr-self-review procedure, including Keanu lenses, adversarial verification, fixes, and proof.",
+          "Head-bound self-review attestation.",
+          "Any new commit makes the attestation stale.",
+          [
+            "E4.09"
+          ],
+          "Luna xhigh or Sol high by diff class"
+        ],
+        [
+          "E4.11",
+          "Route self-review by diff complexity",
+          "Use Luna xhigh for C1/C2 diffs; use Sol high plus an independent skeptic for C3/C4, security, migration, or production changes.",
+          "Review route decision.",
+          "The implementer cannot be the only verifier of a serious finding.",
+          [
+            "E2.04",
+            "E4.10"
+          ],
+          "Python"
+        ],
+        [
+          "E4.12",
+          "Integrate no-mistakes without duplicating it",
+          "Keep no-mistakes authoritative for its review/fix/test/document/push/PR/CI pipeline; use self-review as readiness, not a competing verdict.",
+          "Delivery integration.",
+          "No serial manual clean-verdict gate is added beside no-mistakes.",
+          [
+            "E4.10"
+          ],
+          "Existing pipeline"
+        ],
+        [
+          "E4.13",
+          "Track PR and CI outcomes",
+          "Bind task graph node, design hash, route, self-review, no-mistakes run, PR head, and CI state.",
+          "PR outcome record.",
+          "A PR cannot be reported ready against a different head.",
+          [
+            "E4.12"
+          ],
+          "Python"
+        ],
+        [
+          "E4.14",
+          "Verify design compliance before PR-ready",
+          "Check implemented interfaces, files, behavior, tests, and accepted constraints against the approved design.",
+          "Design-compliance attestation.",
+          "Unapproved drift blocks PR-ready.",
+          [
+            "E3.12",
+            "E4.13"
+          ],
+          "Luna xhigh + deterministic checks"
+        ],
+        [
+          "E4.15",
+          "Preserve captain merge authority",
+          "Stop at green PR-ready unless the project's explicit yolo posture authorizes merge; never broaden destructive or security authority.",
+          "Merge gate integration.",
+          "No factory task infers merge authority.",
+          [
+            "E4.13"
+          ],
+          "Firstmate"
+        ],
+        [
+          "E4.16",
+          "Complete and clean tasks safely",
+          "Confirm landing, close obligations, retain artifacts/evidence, and use existing guarded teardown.",
+          "Terminal task record.",
+          "No unlanded work is discarded.",
+          [
+            "E4.15"
+          ],
+          "Python + existing teardown"
+        ],
+        [
+          "E4.17",
+          "Build the factory control-room artifact",
+          "Use Lavish to show approved design, task graph, active workers, decisions, PRs, failures, and final outcomes without becoming authority.",
+          "Local factory board.",
+          "The board can disappear without changing execution.",
+          [
+            "E1.12",
+            "E4.05",
+            "E4.13"
+          ],
+          "Lavish"
+        ],
+        [
+          "E4.18",
+          "Run end-to-end dark-factory scenarios",
+          "Execute a routine feature, hard migration, design revision, failed worker recovery, stale self-review, and multiple parallel tasks.",
+          "E2E evidence report.",
+          "Only expected human decisions interrupt the run.",
+          [
+            "E4.07",
+            "E4.08",
+            "E4.14",
+            "E4.17"
+          ],
+          "Full fleet"
+        ]
+      ]
+    },
+    {
+      "id": "E5",
+      "title": "Idempotent zero-touch setup and Herdr launch",
+      "goal": "Turn fm-setup into the only command required to install, update, repair, and enter the Firstmate experience.",
+      "phase": "Factory",
+      "tasks": [
+        [
+          "E5.01",
+          "Define the setup product contract",
+          "Default command means ensure tested toolchain, ensure repos/config, doctor, ensure Herdr/Firstmate, and attach. Define --no-launch, doctor, repair, update, and --json.",
+          "Setup CLI contract.",
+          "Rerunning the default command is safe and convergent.",
+          [],
+          "Luna xhigh + Python"
+        ],
+        [
+          "E5.02",
+          "Create a tested toolchain lock",
+          "Pin compatible versions, URLs, checksums, feature probes, and update policy for Python, Node, Git/GH, Herdr, Pi, Lavish, AXIs, no-mistakes, and treehouse.",
+          "config/toolchain.lock.json.",
+          "Setup never blindly installs untested latest versions.",
+          [
+            "E5.01"
+          ],
+          "Python"
+        ],
+        [
+          "E5.03",
+          "Replace the large setup shell with a two-stage bootstrap",
+          "Keep a tiny POSIX entry script that locates or bootstraps a managed Python runtime, then execs the Python setup application.",
+          "bin/fm-setup and firstmate_factory.setup.",
+          "All stateful setup logic is testable Python.",
+          [
+            "E5.01"
+          ],
+          "Python"
+        ],
+        [
+          "E5.04",
+          "Add setup lock and resumable journal",
+          "Prevent concurrent installers and record completed/started phases with immutable inputs.",
+          "Mode-0600 journal under managed state.",
+          "Kill at any phase and rerun without corruption or duplicate work.",
+          [
+            "E5.03"
+          ],
+          "Python"
+        ],
+        [
+          "E5.05",
+          "Implement platform and architecture adapters",
+          "Support macOS arm64/x64 and Linux arm64/x64 with explicit unsupported-platform failure.",
+          "Platform module.",
+          "No command is selected by fuzzy OS guessing.",
+          [
+            "E5.03"
+          ],
+          "Python"
+        ],
+        [
+          "E5.06",
+          "Create a managed install root",
+          "Install tools under ~/.local/share/phynd-firstmate with stable shims in ~/.local/bin and a managed shell-profile block.",
+          "Managed toolchain layout.",
+          "No duplicate PATH lines and no mutation outside owned blocks.",
+          [
+            "E5.05"
+          ],
+          "Python"
+        ],
+        [
+          "E5.07",
+          "Bootstrap Python without prior Python",
+          "Download and verify a tested standalone runtime or uv-managed Python when a compatible interpreter is absent.",
+          "Self-hosting Python bootstrap.",
+          "A fresh supported machine can reach the Python setup phase without manual Python installation.",
+          [
+            "E5.02",
+            "E5.05"
+          ],
+          "Shell + Python"
+        ],
+        [
+          "E5.08",
+          "Install and update managed Node/npm",
+          "Download verified Node artifacts into the managed toolchain instead of requiring Homebrew or a preexisting npm.",
+          "Managed Node installation.",
+          "Pi and AXIs can install on a machine with no prior Node.",
+          [
+            "E5.02",
+            "E5.06"
+          ],
+          "Python"
+        ],
+        [
+          "E5.09",
+          "Ensure Git and GitHub CLI",
+          "Use verified managed binaries where supported or a platform package adapter with explicit elevation/device-flow handling.",
+          "Git/GH readiness step.",
+          "Missing Git/GH no longer produces an instruction to install them manually.",
+          [
+            "E5.05",
+            "E5.06"
+          ],
+          "Python"
+        ],
+        [
+          "E5.10",
+          "Install or update Herdr safely",
+          "Install the tested stable version; use herdr update --handoff or live handoff when a server is active; validate required workspace/agent APIs.",
+          "Herdr ensure step.",
+          "Running panes survive a compatible update; incompatible state fails with recovery instructions.",
+          [
+            "E5.02",
+            "E5.06"
+          ],
+          "Python + Herdr"
+        ],
+        [
+          "E5.11",
+          "Install or update Pi",
+          "Install the tested Pi version with supply-chain-safe flags and verify model/thinking CLI support.",
+          "Pi ensure step.",
+          "The driver can be launched with Luna and xhigh on every supported platform.",
+          [
+            "E5.08",
+            "E5.02"
+          ],
+          "Python"
+        ],
+        [
+          "E5.12",
+          "Install or update Lavish and AXIs",
+          "Install tested Lavish, gh-axi, chrome-devtools-axi, tasks-axi, and quota-axi; run idempotent hook/setup commands where supported.",
+          "AXI ensure step.",
+          "Lavish CLI and the Firstmate Lavish adapter pass smoke checks; Pi does not depend on unsupported Lavish session hooks.",
+          [
+            "E5.08",
+            "E1.01"
+          ],
+          "Python"
+        ],
+        [
+          "E5.13",
+          "Install or update no-mistakes and treehouse",
+          "Use tested installers/versions and feature probes.",
+          "Validation/worktree readiness.",
+          "No project work starts if required features are absent.",
+          [
+            "E5.02",
+            "E5.06"
+          ],
+          "Python"
+        ],
+        [
+          "E5.14",
+          "Ensure the Firstmate fork safely",
+          "Fast-forward a clean clone or install a new versioned code root and atomically switch the managed current link; never overwrite dirty/diverged work.",
+          "Firstmate code ensure step.",
+          "Updates cannot destroy local changes.",
+          [
+            "E5.09"
+          ],
+          "Python"
+        ],
+        [
+          "E5.15",
+          "Ensure Phynd Cloud safely",
+          "Clone/register if absent; guarded fetch/fast-forward only when safe; preserve local work and submodules.",
+          "Project readiness step.",
+          "A dirty or divergent clone is preserved and surfaced, not reset.",
+          [
+            "E5.09",
+            "E5.14"
+          ],
+          "Python"
+        ],
+        [
+          "E5.16",
+          "Initialize and verify no-mistakes",
+          "Run init/doctor idempotently for required projects and verify canonical lint/test commands.",
+          "Project validation readiness.",
+          "Setup blocks launch only on actionable validation prerequisites.",
+          [
+            "E5.13",
+            "E5.15"
+          ],
+          "Python"
+        ],
+        [
+          "E5.17",
+          "Reconcile configuration by ownership",
+          "Merge only Firstmate-owned keys for Pi, Herdr, dispatch, prompt, and presentation settings; back up before changing user files.",
+          "Config reconciler.",
+          "Repeated runs produce no diff and never clobber unrelated user settings.",
+          [
+            "E0.08",
+            "E5.14"
+          ],
+          "Python"
+        ],
+        [
+          "E5.18",
+          "Install driver prompt and role prompts",
+          "Materialize project-local Pi APPEND_SYSTEM and managed child role prompts with hashes and provenance.",
+          "Prompt installation step.",
+          "The active driver prompt is guaranteed before launch.",
+          [
+            "E0.12",
+            "E5.17"
+          ],
+          "Python"
+        ],
+        [
+          "E5.19",
+          "Handle authentication as a resumable gate",
+          "Detect GH and model-provider auth; automatically start supported device/browser login and resume setup after confirmation.",
+          "Authentication phase.",
+          "The user is never told to research a separate install command; unavoidable identity interaction is explicit and resumable.",
+          [
+            "E5.09",
+            "E5.11"
+          ],
+          "Python"
+        ],
+        [
+          "E5.20",
+          "Ensure a named Herdr session",
+          "Start or attach to a dedicated phynd-firstmate session using the headless server path when needed.",
+          "Stable Herdr session.",
+          "Reruns do not create duplicate servers.",
+          [
+            "E5.10"
+          ],
+          "Python + Herdr"
+        ],
+        [
+          "E5.21",
+          "Find or create the Firstmate workspace",
+          "Match canonical code root and label; reuse a healthy workspace or create one and capture its root pane.",
+          "Stable workspace identity.",
+          "Reruns do not create duplicate workspaces.",
+          [
+            "E5.20",
+            "E5.14"
+          ],
+          "Python + Herdr"
+        ],
+        [
+          "E5.22",
+          "Find, recover, or start the driver agent",
+          "Reuse a live firstmate agent; recover a dead one without discarding state; otherwise start Pi/Luna/xhigh with exact FM_HOME and managed PATH.",
+          "Stable Firstmate agent.",
+          "Exactly one live driver exists in the named session.",
+          [
+            "E2.16",
+            "E5.18",
+            "E5.21"
+          ],
+          "Python + Herdr"
+        ],
+        [
+          "E5.23",
+          "Focus and attach automatically",
+          "Focus the Firstmate workspace and exec herdr --session phynd-firstmate. When already inside Herdr, focus the target instead of nesting a client.",
+          "Zero-extra-command launch.",
+          "Successful setup ends with the user looking at the Firstmate window.",
+          [
+            "E5.22"
+          ],
+          "Python + Herdr"
+        ],
+        [
+          "E5.24",
+          "Add doctor, repair, and machine-readable output",
+          "Report owned paths, versions, feature probes, auth, prompt hash, session/workspace/agent state, and safe remediation.",
+          "Doctor/repair commands and JSON schema.",
+          "Every failure names the exact phase and safe next action.",
+          [
+            "E5.04",
+            "E5.23"
+          ],
+          "Python"
+        ],
+        [
+          "E5.25",
+          "Build setup fault-injection tests",
+          "Cover clean machine, partial install, old/new versions, no network, bad checksum, concurrent setup, dirty repo, running Herdr, stale workspace, auth interruption, kill/restart, and shell-profile idempotency.",
+          "Portable setup test suite.",
+          "All supported failure points converge or fail without damage.",
+          [
+            "E5.07",
+            "E5.12",
+            "E5.14",
+            "E5.17",
+            "E5.22",
+            "E5.24"
+          ],
+          "Python"
+        ],
+        [
+          "E5.26",
+          "Run real platform smoke matrix",
+          "Opt-in tests on macOS arm64/x64 and Linux arm64/x64 using clean user homes and real Herdr/Pi/Lavish.",
+          "Dated verification record.",
+          "Each platform reaches an attached Firstmate pane from one command.",
+          [
+            "E5.25"
+          ],
+          "Real hosts"
+        ],
+        [
+          "E5.27",
+          "Add guarded rollback",
+          "Retain prior tested toolchain/code root and allow atomic rollback when an update fails doctor or launch.",
+          "Rollback command.",
+          "Rollback never rewrites project work or task state.",
+          [
+            "E5.14",
+            "E5.24"
+          ],
+          "Python"
+        ]
+      ]
+    },
+    {
+      "id": "E6",
+      "title": "Local-agent interface seam for the future cloud",
+      "goal": "Keep milestone one local while making the Python core callable by other engineer-local agents later.",
+      "phase": "Future seam",
+      "tasks": [
+        [
+          "E6.01",
+          "Stabilize service-neutral schemas",
+          "Keep intake, route, task graph, events, decisions, artifact feedback, and outcomes independent of terminal UI and file path details.",
+          "Versioned JSON schemas.",
+          "The same schemas can be used by CLI, Unix socket, or cloud API.",
+          [
+            "E2.02",
+            "E4.05"
+          ],
+          "Python"
+        ],
+        [
+          "E6.02",
+          "Expose a local Python CLI facade",
+          "Provide submit, status, events, answer, artifact-feedback, and cancel commands against the same factory core.",
+          "firstmate-factory CLI.",
+          "No CLI path bypasses policy or authority.",
+          [
+            "E6.01"
+          ],
+          "Python"
+        ],
+        [
+          "E6.03",
+          "Add cursor-based local event reads",
+          "Support deterministic event consumption with after/cursor semantics.",
+          "Event cursor contract.",
+          "Restarting a client cannot silently skip events.",
+          [
+            "E6.01"
+          ],
+          "Python"
+        ],
+        [
+          "E6.04",
+          "Design the loopback/Unix-socket adapter",
+          "Specify a local-only HTTP or JSON-RPC adapter, per-user token, peer identity, rate limit, and audit records.",
+          "Post-M1 API design artifact.",
+          "No external network listener is enabled in milestone one.",
+          [
+            "E6.01",
+            "E6.02"
+          ],
+          "Fable high + Lavish"
+        ],
+        [
+          "E6.05",
+          "Map external requests to a paired human",
+          "Require every local-agent request to resolve an engineer/captain authority and decision channel.",
+          "Paired-human identity contract.",
+          "No agent-to-factory call creates anonymous authority.",
+          [
+            "E6.04"
+          ],
+          "Python"
+        ],
+        [
+          "E6.06",
+          "Map artifact feedback into the Lavish contract",
+          "Represent queued feedback and decisions in the same schema the local API will later expose.",
+          "Artifact feedback API contract.",
+          "Remote/local clients cannot forge approval without the paired human identity.",
+          [
+            "E1.10",
+            "E6.04"
+          ],
+          "Python"
+        ],
+        [
+          "E6.07",
+          "Document cloud evolution boundaries",
+          "Separate per-engineer local factory, remote worker execution, multi-tenant control plane, secrets, tenancy, audit, and policy distribution.",
+          "Cloud-lens architecture appendix.",
+          "Milestone one does not acquire distributed-system scope.",
+          [
+            "E6.04"
+          ],
+          "Fable high"
+        ],
+        [
+          "E6.08",
+          "Contract-test CLI and future adapter",
+          "Run the same conformance suite against in-process core and CLI; reserve adapter tests for the later implementation.",
+          "API conformance suite.",
+          "Behavior is transport-independent.",
+          [
+            "E6.02",
+            "E6.03"
+          ],
+          "Python"
+        ]
+      ]
+    },
+    {
+      "id": "E7",
+      "title": "Evaluation, rollout, and trust promotion",
+      "goal": "Promote from reviewed design to trusted factory based on evidence, not confidence theater.",
+      "phase": "Rollout",
+      "tasks": [
+        [
+          "E7.01",
+          "Build the complete routing fixture matrix",
+          "Cover every task type \u00d7 complexity cell, risk overlay, capability, profile availability, quota state, and advisor conflict.",
+          "Golden route fixtures.",
+          "Unsafe downgrade count is zero.",
+          [
+            "E2.17"
+          ],
+          "Python"
+        ],
+        [
+          "E7.02",
+          "Measure prompt policy continuously",
+          "Run the E0 corpus on each prompt, communication-skill, or driver-model change.",
+          "Prompt quality report.",
+          "Chat brevity and artifact completeness remain within approved bounds.",
+          [
+            "E0.11"
+          ],
+          "Python"
+        ],
+        [
+          "E7.03",
+          "Measure Lavish artifact quality",
+          "Check required sections, annotation targets, layout, mobile, print, decision controls, source evidence, and task export.",
+          "Artifact conformance report.",
+          "No required artifact is accepted as a static unreviewed page.",
+          [
+            "E1.12"
+          ],
+          "Python + Lavish"
+        ],
+        [
+          "E7.04",
+          "Measure design-adversary effectiveness",
+          "Use known flawed designs to test serious-finding recall, false-positive rejection, and author self-clear prevention.",
+          "Design review benchmark.",
+          "All curated critical defects are found or the route abstains.",
+          [
+            "E3.13"
+          ],
+          "Sol/Fable/Luna"
+        ],
+        [
+          "E7.05",
+          "Measure factory autonomy",
+          "Track human interruptions, unnecessary asks, worker retries, design drift, PR rework, first-pass validation, and time to PR-ready.",
+          "Factory scorecard.",
+          "Routine approved plans run without human interruption except defined authority gates.",
+          [
+            "E4.18"
+          ],
+          "Python"
+        ],
+        [
+          "E7.06",
+          "Measure setup convergence",
+          "Track install/update/repair success, launch latency, duplicate prevention, and rollback on the platform matrix.",
+          "Setup scorecard.",
+          "One command reaches a healthy attached driver on every supported clean image.",
+          [
+            "E5.26"
+          ],
+          "Python"
+        ],
+        [
+          "E7.07",
+          "Run shadow mode",
+          "Use the new prompt, artifact contract, and router in observation mode while current routing remains live.",
+          "Shadow difference report in Lavish.",
+          "No unexplained lower route or skipped Lavish requirement.",
+          [
+            "E2.17",
+            "E7.02",
+            "E7.03"
+          ],
+          "Full fleet"
+        ],
+        [
+          "E7.08",
+          "Human-review enforcement change",
+          "Present shadow outcomes, failures, degraded paths, and exact policy diffs in Lavish.",
+          "Enforcement approval receipt.",
+          "Live routing/gates are not enabled without explicit approval.",
+          [
+            "E7.07"
+          ],
+          "Lavish + human"
+        ],
+        [
+          "E7.09",
+          "Enable prompt and Lavish gates first",
+          "Promote the revised driver prompt and artifact requirements before enabling factory routing.",
+          "Stage-one enforcement.",
+          "Subsequent implementation benefits from the corrected quality contract.",
+          [
+            "E0.12",
+            "E1.12",
+            "E7.08"
+          ],
+          "Python"
+        ],
+        [
+          "E7.10",
+          "Enable deterministic routing and design gate",
+          "Bind route decisions and approved designs to new tasks.",
+          "Stage-two enforcement.",
+          "No new required-design task reaches implementation without approval.",
+          [
+            "E2.17",
+            "E3.13",
+            "E7.08"
+          ],
+          "Python"
+        ],
+        [
+          "E7.11",
+          "Enable dark factory execution",
+          "Allow approved task graphs to execute autonomously under existing authority and quality gates.",
+          "Stage-three enforcement.",
+          "Only defined human decisions interrupt execution.",
+          [
+            "E4.18",
+            "E7.10"
+          ],
+          "Full fleet"
+        ],
+        [
+          "E7.12",
+          "Run rollback drills",
+          "Disable each enforcement layer independently and prove current Firstmate behavior and unlanded work remain intact.",
+          "Rollback evidence.",
+          "Rollback never discards work or weakens authority silently.",
+          [
+            "E5.27",
+            "E7.11"
+          ],
+          "Python"
+        ],
+        [
+          "E7.13",
+          "Publish operator and maintainer documentation",
+          "Document one-command startup, prompt modes, Lavish loop, routing, design approval, factory behavior, failures, recovery, and future API seam.",
+          "Current-behavior docs and maintainer architecture.",
+          "A new engineer can launch and understand the factory without oral history.",
+          [
+            "E7.11"
+          ],
+          "Luna xhigh + Lavish"
+        ],
+        [
+          "E7.14",
+          "Record milestone-one acceptance",
+          "Human reviews final evidence and chooses Accept, Extend, or Roll Back.",
+          "Milestone acceptance receipt.",
+          "The milestone closes only on an explicit decision.",
+          [
+            "E7.12",
+            "E7.13"
+          ],
+          "Lavish + human"
+        ]
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "E0.01",
+      "epic": "E0",
+      "epic_title": "Prompt architecture and quality baseline",
+      "phase": "Foundation",
+      "title": "Inventory every prompt surface",
+      "detail": "Document the current Pi system prompt files, AGENTS/CLAUDE context, communication-discipline skill, role prompts, setup-time prompt copies, and child-harness prompt injection.",
+      "output": "Prompt inventory with owner, scope, precedence, and hash.",
+      "acceptance": "No prompt source or injection path remains implicit.",
+      "dependencies": [],
+      "owner": "Luna xhigh + Python"
+    },
+    {
+      "id": "E0.02",
+      "epic": "E0",
+      "epic_title": "Prompt architecture and quality baseline",
+      "phase": "Foundation",
+      "title": "Create the prompt evaluation corpus",
+      "detail": "Build representative prompts for compact chat, detailed technical design, implementation plan, task graph, PR review, incident response, setup diagnosis, and Lavish artifact delivery.",
+      "output": "Versioned fixtures under tests/fixtures/prompt-policy.",
+      "acceptance": "Every output mode and high-risk failure is represented.",
+      "dependencies": [
+        "E0.01"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E0.03",
+      "epic": "E0",
+      "epic_title": "Prompt architecture and quality baseline",
+      "phase": "Foundation",
+      "title": "Build a repeatable prompt evaluation runner",
+      "detail": "Launch isolated Pi/Luna xhigh sessions against current and candidate prompts; capture tool calls, output artifacts, token counts, and required-section coverage.",
+      "output": "Python eval CLI with JSON results.",
+      "acceptance": "The same fixture can compare prompt versions without hand scoring.",
+      "dependencies": [
+        "E0.02"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E0.04",
+      "epic": "E0",
+      "epic_title": "Prompt architecture and quality baseline",
+      "phase": "Foundation",
+      "title": "Define output-mode schema",
+      "detail": "Add CHAT, ARTIFACT, BRIEF, REVIEW, and INCIDENT modes with explicit completeness and presentation requirements.",
+      "output": "phynd.output-contract.v1 JSON schema.",
+      "acceptance": "Every task has one resolved output contract before dispatch.",
+      "dependencies": [
+        "E0.01"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E0.05",
+      "epic": "E0",
+      "epic_title": "Prompt architecture and quality baseline",
+      "phase": "Foundation",
+      "title": "Write the scoped Firstmate driver prompt",
+      "detail": "Replace the global concision wording with a small mode-aware driver contract: concise chat, complete artifacts, complete briefs, evidence-first reviews, mandatory Lavish artifact gate.",
+      "output": "defaults/phynd-driver-append-system.md.",
+      "acceptance": "The prompt contains no arbitrary output-length target and explicitly exempts artifacts, specs, code, tests, and evidence from concision.",
+      "dependencies": [
+        "E0.04"
+      ],
+      "owner": "Luna xhigh"
+    },
+    {
+      "id": "E0.06",
+      "epic": "E0",
+      "epic_title": "Prompt architecture and quality baseline",
+      "phase": "Foundation",
+      "title": "Refactor communication-discipline",
+      "detail": "Limit brevity rules to chat and progress. Replace the blanket ban on implementation tours with a rule that requested implementation detail belongs in the artifact, not chat.",
+      "output": "Updated communication-discipline skill.",
+      "acceptance": "A requested design or task list cannot be shortened by this skill.",
+      "dependencies": [
+        "E0.04",
+        "E0.05"
+      ],
+      "owner": "Luna xhigh"
+    },
+    {
+      "id": "E0.07",
+      "epic": "E0",
+      "epic_title": "Prompt architecture and quality baseline",
+      "phase": "Foundation",
+      "title": "Add role-specific worker prompt capsules",
+      "detail": "Create minimal prompts for design author, adversarial reviewer, implementer, PR self-reviewer, incident investigator, and route scout.",
+      "output": "Versioned role prompt files.",
+      "acceptance": "Children receive only role-relevant constraints; the driver prompt is not sprayed globally.",
+      "dependencies": [
+        "E0.05"
+      ],
+      "owner": "Luna xhigh"
+    },
+    {
+      "id": "E0.08",
+      "epic": "E0",
+      "epic_title": "Prompt architecture and quality baseline",
+      "phase": "Foundation",
+      "title": "Scope Pi prompt injection to the Firstmate code root",
+      "detail": "Install the driver contract as project-local .pi/APPEND_SYSTEM.md rather than a global prompt that affects unrelated projects.",
+      "output": "Managed project-local prompt installation.",
+      "acceptance": "A Pi worker in another repository does not inherit the Firstmate driver presentation policy.",
+      "dependencies": [
+        "E0.05"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E0.09",
+      "epic": "E0",
+      "epic_title": "Prompt architecture and quality baseline",
+      "phase": "Foundation",
+      "title": "Remove unscoped Claude concision injection",
+      "detail": "Stop treating ~/.claude/phynd-concise.md as a universal launch prompt. Claude workers receive an explicit role prompt through their launch profile.",
+      "output": "Setup migration and compatibility warning.",
+      "acceptance": "Existing user-owned files are never deleted; stale Firstmate-managed copies are detected and retired safely.",
+      "dependencies": [
+        "E0.07"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E0.10",
+      "epic": "E0",
+      "epic_title": "Prompt architecture and quality baseline",
+      "phase": "Foundation",
+      "title": "Report active prompt provenance at session start",
+      "detail": "Expose driver prompt version/hash, output-mode policy version, and role-prompt version in the startup digest.",
+      "output": "Prompt provenance block.",
+      "acceptance": "The captain can prove which prompt governed the session.",
+      "dependencies": [
+        "E0.08"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E0.11",
+      "epic": "E0",
+      "epic_title": "Prompt architecture and quality baseline",
+      "phase": "Foundation",
+      "title": "Run current-versus-candidate A/B evaluation",
+      "detail": "Measure chat compactness, artifact completeness, required-section recall, Lavish invocation, unsupported claims, and decision surfacing.",
+      "output": "Evaluation report in Lavish.",
+      "acceptance": "Candidate preserves or improves chat signal while achieving 100% required artifact coverage on golden fixtures.",
+      "dependencies": [
+        "E0.03",
+        "E0.05",
+        "E0.06",
+        "E0.08"
+      ],
+      "owner": "Luna xhigh + Python"
+    },
+    {
+      "id": "E0.12",
+      "epic": "E0",
+      "epic_title": "Prompt architecture and quality baseline",
+      "phase": "Foundation",
+      "title": "Human-approve the prompt policy",
+      "detail": "Present the A/B report and exact prompt in Lavish with Approve, Revise, and Reject controls.",
+      "output": "Prompt approval receipt bound to prompt hash.",
+      "acceptance": "No later milestone uses the new prompt until explicit approval.",
+      "dependencies": [
+        "E0.11"
+      ],
+      "owner": "Lavish + human"
+    },
+    {
+      "id": "E1.01",
+      "epic": "E1",
+      "epic_title": "Mandatory Lavish artifact execution",
+      "phase": "Foundation",
+      "title": "Add phynd-lavish-delivery skill",
+      "detail": "Create the single owner for Lavish help/design/playbook discovery, artifact authoring, open, poll, feedback, revision, acceptance, and retirement.",
+      "output": "Internal skill with narrow AGENTS trigger.",
+      "acceptance": "The full workflow is stated once and loaded whenever lavish_required=true.",
+      "dependencies": [
+        "E0.12"
+      ],
+      "owner": "Luna xhigh"
+    },
+    {
+      "id": "E1.02",
+      "epic": "E1",
+      "epic_title": "Mandatory Lavish artifact execution",
+      "phase": "Foundation",
+      "title": "Define artifact-class detection",
+      "detail": "Resolve plan, design, comparison, diagram, table-heavy report, roadmap, HTML artifact, and structured human decision into lavish_required=true.",
+      "output": "Deterministic deliverable classifier.",
+      "acceptance": "The model cannot silently choose prose for a required artifact.",
+      "dependencies": [
+        "E0.04"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E1.03",
+      "epic": "E1",
+      "epic_title": "Mandatory Lavish artifact execution",
+      "phase": "Foundation",
+      "title": "Add Lavish requirement to task envelopes",
+      "detail": "Carry artifact type, lavish_required, human_review_required, and acceptance key from intake through brief, spawn, task state, and completion.",
+      "output": "Schema and lifecycle changes.",
+      "acceptance": "Missing required fields fail before spawn.",
+      "dependencies": [
+        "E1.02"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E1.04",
+      "epic": "E1",
+      "epic_title": "Mandatory Lavish artifact execution",
+      "phase": "Foundation",
+      "title": "Resolve current Lavish guidance before authoring",
+      "detail": "Execute lavish-axi --help, lavish-axi design, and every matching playbook before writing the first HTML revision.",
+      "output": "Guidance receipt with CLI version and playbook IDs.",
+      "acceptance": "An artifact cannot claim the Lavish path if guidance was skipped.",
+      "dependencies": [
+        "E1.01",
+        "E1.03"
+      ],
+      "owner": "Worker + Lavish"
+    },
+    {
+      "id": "E1.05",
+      "epic": "E1",
+      "epic_title": "Mandatory Lavish artifact execution",
+      "phase": "Foundation",
+      "title": "Create the Phynd artifact shell",
+      "detail": "Provide a responsive, offline-first HTML shell with print support, stable annotation targets, diagrams, tables, decisions, task export, and strong mobile behavior.",
+      "output": "Reusable artifact template.",
+      "acceptance": "Pass light, dark, narrow, print, and no-network rendering checks.",
+      "dependencies": [
+        "E1.04"
+      ],
+      "owner": "Fable high + Lavish"
+    },
+    {
+      "id": "E1.06",
+      "epic": "E1",
+      "epic_title": "Mandatory Lavish artifact execution",
+      "phase": "Foundation",
+      "title": "Open artifacts through Lavish",
+      "detail": "Use the CLI against the canonical HTML path and record the session identity.",
+      "output": "Artifact-open receipt.",
+      "acceptance": "No artifact is presented as reviewable until Lavish confirms the session.",
+      "dependencies": [
+        "E1.05"
+      ],
+      "owner": "Lavish"
+    },
+    {
+      "id": "E1.07",
+      "epic": "E1",
+      "epic_title": "Mandatory Lavish artifact execution",
+      "phase": "Foundation",
+      "title": "Arm durable Lavish feedback",
+      "detail": "Register the existing fm-procevent-lavish adapter and bind feedback to the task and owning worker.",
+      "output": "Durable feedback source.",
+      "acceptance": "A restart after arm can still route captured feedback to the correct task.",
+      "dependencies": [
+        "E1.06"
+      ],
+      "owner": "Python + existing adapter"
+    },
+    {
+      "id": "E1.08",
+      "epic": "E1",
+      "epic_title": "Mandatory Lavish artifact execution",
+      "phase": "Foundation",
+      "title": "Keep the artifact owner alive",
+      "detail": "Prevent teardown while a Lavish review remains open; route every feedback batch to the same worker unless recovery proves replacement is necessary.",
+      "output": "Artifact-owner lifecycle rule.",
+      "acceptance": "Context is preserved across iterative design feedback.",
+      "dependencies": [
+        "E1.07"
+      ],
+      "owner": "Firstmate driver"
+    },
+    {
+      "id": "E1.09",
+      "epic": "E1",
+      "epic_title": "Mandatory Lavish artifact execution",
+      "phase": "Foundation",
+      "title": "Add explicit artifact decisions",
+      "detail": "Embed Approve, Revise, and Stop controls using Lavish structured input. An empty close is not approval.",
+      "output": "Keyed human decision contract.",
+      "acceptance": "Implementation begins only on an explicit approval bound to the current artifact hash.",
+      "dependencies": [
+        "E1.05",
+        "E1.07"
+      ],
+      "owner": "Lavish + Python"
+    },
+    {
+      "id": "E1.10",
+      "epic": "E1",
+      "epic_title": "Mandatory Lavish artifact execution",
+      "phase": "Foundation",
+      "title": "Write artifact review receipts",
+      "detail": "Record artifact hash, Lavish version, playbooks, layout checks, feedback rounds, final decision, and decision actor.",
+      "output": "phynd.artifact-review.v1 receipt.",
+      "acceptance": "Any byte change invalidates approval until re-reviewed.",
+      "dependencies": [
+        "E1.09"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E1.11",
+      "epic": "E1",
+      "epic_title": "Mandatory Lavish artifact execution",
+      "phase": "Foundation",
+      "title": "Integrate layout issue handling",
+      "detail": "Surface Lavish layout findings, let the human queue selected repairs, and require a newer clean render for resolution.",
+      "output": "Layout evidence in review receipt.",
+      "acceptance": "A prior check at one viewport cannot clear a failure at another viewport.",
+      "dependencies": [
+        "E1.06",
+        "E1.10"
+      ],
+      "owner": "Lavish"
+    },
+    {
+      "id": "E1.12",
+      "epic": "E1",
+      "epic_title": "Mandatory Lavish artifact execution",
+      "phase": "Foundation",
+      "title": "Test the full Lavish loop",
+      "detail": "Cover missing CLI, unsupported version, open failure, feedback, Send & End, empty close, interrupted poll, restart recovery, stale artifact, and owner replacement.",
+      "output": "Portable tests plus live opt-in test.",
+      "acceptance": "Every bypass attempt either blocks or is accurately labeled degraded.",
+      "dependencies": [
+        "E1.07",
+        "E1.08",
+        "E1.09",
+        "E1.10",
+        "E1.11"
+      ],
+      "owner": "Python + shell"
+    },
+    {
+      "id": "E2.01",
+      "epic": "E2",
+      "epic_title": "Python factory kernel and full routing",
+      "phase": "Core",
+      "title": "Create the Python package boundary",
+      "detail": "Add firstmate_factory with modules for schemas, intake, routing, advisors, task graph, design gate, events, artifacts, setup, and API contracts.",
+      "output": "Importable stdlib-first package and CLI.",
+      "acceptance": "Shell scripts become adapters; policy logic has one Python owner.",
+      "dependencies": [
+        "E0.12"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E2.02",
+      "epic": "E2",
+      "epic_title": "Python factory kernel and full routing",
+      "phase": "Core",
+      "title": "Define canonical task schemas",
+      "detail": "Specify task_type, complexity, risk, uncertainty, artifact, capabilities, delivery mode, authority, output contract, and provenance.",
+      "output": "phynd.task-request.v1 and validators.",
+      "acceptance": "Unknown enums, missing mandatory fields, and conflicting provenance fail deterministically.",
+      "dependencies": [
+        "E2.01"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E2.03",
+      "epic": "E2",
+      "epic_title": "Python factory kernel and full routing",
+      "phase": "Core",
+      "title": "Define profile and role catalog",
+      "detail": "Record driver, route scout, design author, adversaries, implementers, PR reviewers, validators, and incident roles with exact harness/model/effort requirements.",
+      "output": "phynd.profile-catalog.v1.",
+      "acceptance": "The main driver profile is immutable: Pi + Luna + xhigh.",
+      "dependencies": [
+        "E2.02"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E2.04",
+      "epic": "E2",
+      "epic_title": "Python factory kernel and full routing",
+      "phase": "Core",
+      "title": "Encode the task-type \u00d7 complexity matrix",
+      "detail": "Implement the complete matrix in this design, with risk overlays and same-or-stronger fallback rules.",
+      "output": "Versioned routing policy.",
+      "acceptance": "Golden fixtures cover every matrix cell and risk overlay.",
+      "dependencies": [
+        "E2.03"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E2.05",
+      "epic": "E2",
+      "epic_title": "Python factory kernel and full routing",
+      "phase": "Core",
+      "title": "Normalize captain intent",
+      "detail": "Have Luna propose a structured request with evidence; validate and canonicalize it in Python before policy evaluation.",
+      "output": "Normalized request plus field provenance.",
+      "acceptance": "Raw prose never enters the deterministic rule evaluator.",
+      "dependencies": [
+        "E2.02"
+      ],
+      "owner": "Luna xhigh + Python"
+    },
+    {
+      "id": "E2.06",
+      "epic": "E2",
+      "epic_title": "Python factory kernel and full routing",
+      "phase": "Core",
+      "title": "Implement deterministic routing",
+      "detail": "Apply complexity floors, risk floors, capability eligibility, required gates, and exact role selection.",
+      "output": "phynd.route-decision.v1.",
+      "acceptance": "Same inputs and policy produce byte-stable decisions except IDs and timestamps.",
+      "dependencies": [
+        "E2.04",
+        "E2.05"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E2.07",
+      "epic": "E2",
+      "epic_title": "Python factory kernel and full routing",
+      "phase": "Core",
+      "title": "Integrate live harness catalogs",
+      "detail": "Verify harness, model, effort, tool access, and authentication through current adapter discovery rather than name inference.",
+      "output": "Candidate eligibility evidence.",
+      "acceptance": "Unsupported profiles are removed only with concrete catalog evidence.",
+      "dependencies": [
+        "E2.03",
+        "E2.06"
+      ],
+      "owner": "Python + harness adapters"
+    },
+    {
+      "id": "E2.08",
+      "epic": "E2",
+      "epic_title": "Python factory kernel and full routing",
+      "phase": "Core",
+      "title": "Integrate quota only inside the safe set",
+      "detail": "Reuse current quota evidence after class, risk, capability, effort, and review floors are fixed.",
+      "output": "Candidate accounting and selection trace.",
+      "acceptance": "Quota can select among safe peers but cannot lower any floor.",
+      "dependencies": [
+        "E2.07"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E2.09",
+      "epic": "E2",
+      "epic_title": "Python factory kernel and full routing",
+      "phase": "Core",
+      "title": "Add structured route-assist interface",
+      "detail": "Define a typed advisor contract that may return evidence, uncertainty, and raise recommendations but cannot directly select a lower route.",
+      "output": "phynd.route-advice.v1.",
+      "acceptance": "The final deterministic decision records whether advice was used or ignored.",
+      "dependencies": [
+        "E2.06"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E2.10",
+      "epic": "E2",
+      "epic_title": "Python factory kernel and full routing",
+      "phase": "Core",
+      "title": "Implement Python statistics baseline",
+      "detail": "Use historical structured outcomes for completion-horizon, failure-rate, and route-risk estimates without free-text ML.",
+      "output": "Deterministic advisory statistics.",
+      "acceptance": "Unavailable or sparse data becomes unknown, never a downgrade.",
+      "dependencies": [
+        "E2.09"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E2.11",
+      "epic": "E2",
+      "epic_title": "Python factory kernel and full routing",
+      "phase": "Core",
+      "title": "Add optional ML shadow advisor",
+      "detail": "Provide a plugin point for calibrated structured prediction only after sufficient labeled outcomes; allow only raise-level or require-review suggestions.",
+      "output": "Disabled-by-default ML shadow plugin.",
+      "acceptance": "No model output can lower risk, effort, capability, review, or authority.",
+      "dependencies": [
+        "E2.10"
+      ],
+      "owner": "Python + conventional ML"
+    },
+    {
+      "id": "E2.12",
+      "epic": "E2",
+      "epic_title": "Python factory kernel and full routing",
+      "phase": "Core",
+      "title": "Add Claude semantic route scout",
+      "detail": "For unresolved semantic or architectural ambiguity, spawn a read-only Claude Code/Fable scout with a strict JSON return schema and evidence references.",
+      "output": "Route-scout workflow.",
+      "acceptance": "The scout does not edit, spawn children, or authorize work.",
+      "dependencies": [
+        "E2.09"
+      ],
+      "owner": "Claude/Fable high"
+    },
+    {
+      "id": "E2.13",
+      "epic": "E2",
+      "epic_title": "Python factory kernel and full routing",
+      "phase": "Core",
+      "title": "Adjudicate conflicting route advice",
+      "detail": "When Luna classification, Python evidence, or Claude scout conflict, choose the monotonic safer route or abstain for the captain.",
+      "output": "Conflict decision trace.",
+      "acceptance": "No array order, cost, or model preference resolves a safety conflict.",
+      "dependencies": [
+        "E2.10",
+        "E2.12"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E2.14",
+      "epic": "E2",
+      "epic_title": "Python factory kernel and full routing",
+      "phase": "Core",
+      "title": "Bind route decision to briefs",
+      "detail": "Compile objective, role, exact profile, artifact contract, design hash, gates, acceptance, and return schema into the worker brief.",
+      "output": "Hash-bound executable brief.",
+      "acceptance": "A worker can execute without reconstructing routing intent.",
+      "dependencies": [
+        "E2.06",
+        "E1.03"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E2.15",
+      "epic": "E2",
+      "epic_title": "Python factory kernel and full routing",
+      "phase": "Core",
+      "title": "Bind route decision to spawn",
+      "detail": "Require fm-spawn to receive and verify the exact route decision; refuse harness/model/effort mismatch before external launch.",
+      "output": "Fail-closed spawn seam.",
+      "acceptance": "Changing any selected axis after decision causes refusal.",
+      "dependencies": [
+        "E2.14"
+      ],
+      "owner": "Python + shell"
+    },
+    {
+      "id": "E2.16",
+      "epic": "E2",
+      "epic_title": "Python factory kernel and full routing",
+      "phase": "Core",
+      "title": "Fix every Firstmate and secondmate driver to Luna xhigh",
+      "detail": "Ensure primary and persistent secondmate drivers launch as Pi/Luna xhigh; only their project workers vary by policy.",
+      "output": "Driver-profile enforcement.",
+      "acceptance": "No routing policy can move the captain-facing driver to another model.",
+      "dependencies": [
+        "E2.03",
+        "E2.15"
+      ],
+      "owner": "Python + Herdr"
+    },
+    {
+      "id": "E2.17",
+      "epic": "E2",
+      "epic_title": "Python factory kernel and full routing",
+      "phase": "Core",
+      "title": "Build routing shadow and evaluation",
+      "detail": "Compare current prose routing to candidate Python decisions, classify differences, and collect outcomes.",
+      "output": "Shadow report and golden corpus.",
+      "acceptance": "No live enforcement until unsafe downgrade count is zero and human review passes.",
+      "dependencies": [
+        "E2.06",
+        "E2.13",
+        "E2.15"
+      ],
+      "owner": "Python + Lavish"
+    },
+    {
+      "id": "E3.01",
+      "epic": "E3",
+      "epic_title": "Human-first design gate",
+      "phase": "Core",
+      "title": "Classify when design is required",
+      "detail": "Require a design for cross-app changes, new services, data contracts, migrations, production/security work, novel architecture, C3/C4 complexity, or explicit captain request.",
+      "output": "Design-required decision in route output.",
+      "acceptance": "A worker cannot begin implementation while required design evidence is absent.",
+      "dependencies": [
+        "E2.04"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E3.02",
+      "epic": "E3",
+      "epic_title": "Human-first design gate",
+      "phase": "Core",
+      "title": "Create design artifact contracts",
+      "detail": "Define mandatory sections: goal, current evidence, desired behavior, boundaries, architecture, interfaces, state, failure modes, security, rollout, rollback, tests, and task graph.",
+      "output": "phynd.design-artifact.v1 rubric.",
+      "acceptance": "Every required section has deterministic presence and evidence checks.",
+      "dependencies": [
+        "E1.05",
+        "E3.01"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E3.03",
+      "epic": "E3",
+      "epic_title": "Human-first design gate",
+      "phase": "Core",
+      "title": "Select the design author",
+      "detail": "Use Fable high for standard architecture, Fable xhigh for hard/critical architecture, or Luna xhigh for bounded designs when Fable is unavailable and degraded independence is acceptable.",
+      "output": "Author route.",
+      "acceptance": "Profile choice and degradation are explicit in the design receipt.",
+      "dependencies": [
+        "E2.04"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E3.04",
+      "epic": "E3",
+      "epic_title": "Human-first design gate",
+      "phase": "Core",
+      "title": "Freeze the candidate design",
+      "detail": "Hash the exact HTML and supporting evidence before adversarial review.",
+      "output": "Immutable candidate record.",
+      "acceptance": "Reviewers evaluate the same bytes.",
+      "dependencies": [
+        "E3.02",
+        "E3.03"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E3.05",
+      "epic": "E3",
+      "epic_title": "Human-first design gate",
+      "phase": "Core",
+      "title": "Run technical/failure adversary",
+      "detail": "Use Sol high to attack architecture, concurrency, state, security, authority, migration, rollback, performance, and cost.",
+      "output": "Evidence-backed finding set.",
+      "acceptance": "Every P0/P1 names a concrete failure mechanism.",
+      "dependencies": [
+        "E3.04"
+      ],
+      "owner": "Pi/Sol high"
+    },
+    {
+      "id": "E3.06",
+      "epic": "E3",
+      "epic_title": "Human-first design gate",
+      "phase": "Core",
+      "title": "Run implementation-completeness adversary",
+      "detail": "Use Luna xhigh to test file/module ownership, interfaces, sequencing, acceptance tests, operational clarity, and whether a coding agent can build without guessing.",
+      "output": "Completeness findings.",
+      "acceptance": "Missing executable detail blocks implementation readiness.",
+      "dependencies": [
+        "E3.04"
+      ],
+      "owner": "Pi/Luna xhigh"
+    },
+    {
+      "id": "E3.07",
+      "epic": "E3",
+      "epic_title": "Human-first design gate",
+      "phase": "Core",
+      "title": "Add a distinct-model gate for critical designs",
+      "detail": "Require at least one different model/context for R3/R4 or C4 designs; scope-only same-model review is insufficient unless the captain accepts degradation.",
+      "output": "Independence evidence.",
+      "acceptance": "The receipt never overstates reviewer independence.",
+      "dependencies": [
+        "E3.05",
+        "E3.06"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E3.08",
+      "epic": "E3",
+      "epic_title": "Human-first design gate",
+      "phase": "Core",
+      "title": "Implement finding ledger and closure authority",
+      "detail": "Track finding severity, mechanism, evidence, required change, disposition, and closer. Authors may fix but cannot clear P0/P1.",
+      "output": "phynd.design-review.v1 ledger.",
+      "acceptance": "Serious findings require reviewer or captain closure.",
+      "dependencies": [
+        "E3.05",
+        "E3.06"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E3.09",
+      "epic": "E3",
+      "epic_title": "Human-first design gate",
+      "phase": "Core",
+      "title": "Present design in Lavish for human decision",
+      "detail": "Show the resolved design, surviving findings, accepted risks, and exact execution scope with structured Approve, Revise, and Stop controls.",
+      "output": "Human review session.",
+      "acceptance": "No implementation transition occurs on close, silence, or implied approval.",
+      "dependencies": [
+        "E1.09",
+        "E3.08"
+      ],
+      "owner": "Lavish + human"
+    },
+    {
+      "id": "E3.10",
+      "epic": "E3",
+      "epic_title": "Human-first design gate",
+      "phase": "Core",
+      "title": "Write the design approval receipt",
+      "detail": "Bind human approval, design hash, review hashes, accepted risks, task-graph version, and authority scope.",
+      "output": "phynd.design-approval.v1.",
+      "acceptance": "Any material design edit invalidates approval.",
+      "dependencies": [
+        "E3.09"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E3.11",
+      "epic": "E3",
+      "epic_title": "Human-first design gate",
+      "phase": "Core",
+      "title": "Compile approved design into a task graph",
+      "detail": "Generate bounded tasks, dependencies, exact routes, acceptance checks, PR boundaries, and expected artifacts from the approved design.",
+      "output": "phynd.task-graph.v1.",
+      "acceptance": "Every task traces to an approved design section and acceptance criterion.",
+      "dependencies": [
+        "E3.10"
+      ],
+      "owner": "Luna xhigh + Python"
+    },
+    {
+      "id": "E3.12",
+      "epic": "E3",
+      "epic_title": "Human-first design gate",
+      "phase": "Core",
+      "title": "Detect implementation drift",
+      "detail": "Classify deviations in architecture, scope, authority, security, migration, and acceptance; material drift returns to Lavish, bounded fixes remain autonomous.",
+      "output": "Drift gate.",
+      "acceptance": "The factory cannot silently implement a different design.",
+      "dependencies": [
+        "E3.10",
+        "E3.11"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E3.13",
+      "epic": "E3",
+      "epic_title": "Human-first design gate",
+      "phase": "Core",
+      "title": "Test design-gate bypasses",
+      "detail": "Cover stale design, missing adversary, same-model overclaim, author self-clear, silent close, accepted risk without captain, and drift after approval.",
+      "output": "Design-gate test suite.",
+      "acceptance": "All unsafe paths block before implementation.",
+      "dependencies": [
+        "E3.07",
+        "E3.08",
+        "E3.10",
+        "E3.12"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E4.01",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Define task-graph runtime states",
+      "detail": "Model ready, running, waiting, blocked, review, fixing, PR-ready, landed, failed, and superseded states without replacing existing Firstmate authority.",
+      "output": "Task-graph runtime schema.",
+      "acceptance": "State transitions are legal, idempotent, and recoverable.",
+      "dependencies": [
+        "E3.11"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E4.02",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Implement dependency scheduler",
+      "detail": "Release tasks when dependencies and design gates are satisfied; serialize only semantic conflicts and shared mutable external state.",
+      "output": "Deterministic scheduler.",
+      "acceptance": "Same-file overlap alone does not block independent work.",
+      "dependencies": [
+        "E4.01"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E4.03",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Compile worker briefs from graph nodes",
+      "detail": "Include exact design references, route decision, constraints, acceptance tests, validation commands, and return record.",
+      "output": "Self-contained task brief.",
+      "acceptance": "Workers never have to infer global plan intent.",
+      "dependencies": [
+        "E2.14",
+        "E3.11"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E4.04",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Spawn exact worker profiles",
+      "detail": "Use existing Firstmate isolation and Herdr backends with route-bound harness/model/effort.",
+      "output": "Spawn integration.",
+      "acceptance": "Every worker is isolated and matches its decision.",
+      "dependencies": [
+        "E2.15",
+        "E4.03"
+      ],
+      "owner": "Firstmate + Herdr"
+    },
+    {
+      "id": "E4.05",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Normalize worker milestones",
+      "detail": "Translate existing status, backend state, no-mistakes state, and artifact events into typed factory events.",
+      "output": "Append-only factory event stream.",
+      "acceptance": "Chat prose is never the sole state authority.",
+      "dependencies": [
+        "E4.01",
+        "E4.04"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E4.06",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Implement sparse captain communication",
+      "detail": "Dark mode hides routine progress and surfaces only design decisions, credentials, destructive authority, failed validation, unrecoverable blockers, and final outcomes.",
+      "output": "Factory presentation policy.",
+      "acceptance": "Hands-off execution produces no periodic no-change chatter.",
+      "dependencies": [
+        "E0.06",
+        "E4.05"
+      ],
+      "owner": "Luna xhigh"
+    },
+    {
+      "id": "E4.07",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Add bounded automatic recovery",
+      "detail": "Recover dead agents, retry transient tool failures, reconcile stale state, and preserve unlanded work within explicit attempt limits.",
+      "output": "Recovery policy.",
+      "acceptance": "Repeated failure escalates with evidence instead of looping.",
+      "dependencies": [
+        "E4.05"
+      ],
+      "owner": "Python + existing recovery"
+    },
+    {
+      "id": "E4.08",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Implement task replanning within approved bounds",
+      "detail": "Allow Luna xhigh to split or reorder tasks when the design and acceptance remain unchanged; record the graph diff.",
+      "output": "Bounded replan record.",
+      "acceptance": "Material drift invokes E3.12 rather than self-authorizing.",
+      "dependencies": [
+        "E3.12",
+        "E4.02"
+      ],
+      "owner": "Luna xhigh + Python"
+    },
+    {
+      "id": "E4.09",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Resolve repository PR self-review capability",
+      "detail": "Search trusted base-revision project skills/commands for pr-self-review and select the repository-owned contract.",
+      "output": "Review-capability receipt.",
+      "acceptance": "Candidate branch cannot replace the gate that judges it.",
+      "dependencies": [
+        "E0.12"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E4.10",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Run PR self-review on final head",
+      "detail": "For Phynd Cloud, execute the exact committed pr-self-review procedure, including Keanu lenses, adversarial verification, fixes, and proof.",
+      "output": "Head-bound self-review attestation.",
+      "acceptance": "Any new commit makes the attestation stale.",
+      "dependencies": [
+        "E4.09"
+      ],
+      "owner": "Luna xhigh or Sol high by diff class"
+    },
+    {
+      "id": "E4.11",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Route self-review by diff complexity",
+      "detail": "Use Luna xhigh for C1/C2 diffs; use Sol high plus an independent skeptic for C3/C4, security, migration, or production changes.",
+      "output": "Review route decision.",
+      "acceptance": "The implementer cannot be the only verifier of a serious finding.",
+      "dependencies": [
+        "E2.04",
+        "E4.10"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E4.12",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Integrate no-mistakes without duplicating it",
+      "detail": "Keep no-mistakes authoritative for its review/fix/test/document/push/PR/CI pipeline; use self-review as readiness, not a competing verdict.",
+      "output": "Delivery integration.",
+      "acceptance": "No serial manual clean-verdict gate is added beside no-mistakes.",
+      "dependencies": [
+        "E4.10"
+      ],
+      "owner": "Existing pipeline"
+    },
+    {
+      "id": "E4.13",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Track PR and CI outcomes",
+      "detail": "Bind task graph node, design hash, route, self-review, no-mistakes run, PR head, and CI state.",
+      "output": "PR outcome record.",
+      "acceptance": "A PR cannot be reported ready against a different head.",
+      "dependencies": [
+        "E4.12"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E4.14",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Verify design compliance before PR-ready",
+      "detail": "Check implemented interfaces, files, behavior, tests, and accepted constraints against the approved design.",
+      "output": "Design-compliance attestation.",
+      "acceptance": "Unapproved drift blocks PR-ready.",
+      "dependencies": [
+        "E3.12",
+        "E4.13"
+      ],
+      "owner": "Luna xhigh + deterministic checks"
+    },
+    {
+      "id": "E4.15",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Preserve captain merge authority",
+      "detail": "Stop at green PR-ready unless the project's explicit yolo posture authorizes merge; never broaden destructive or security authority.",
+      "output": "Merge gate integration.",
+      "acceptance": "No factory task infers merge authority.",
+      "dependencies": [
+        "E4.13"
+      ],
+      "owner": "Firstmate"
+    },
+    {
+      "id": "E4.16",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Complete and clean tasks safely",
+      "detail": "Confirm landing, close obligations, retain artifacts/evidence, and use existing guarded teardown.",
+      "output": "Terminal task record.",
+      "acceptance": "No unlanded work is discarded.",
+      "dependencies": [
+        "E4.15"
+      ],
+      "owner": "Python + existing teardown"
+    },
+    {
+      "id": "E4.17",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Build the factory control-room artifact",
+      "detail": "Use Lavish to show approved design, task graph, active workers, decisions, PRs, failures, and final outcomes without becoming authority.",
+      "output": "Local factory board.",
+      "acceptance": "The board can disappear without changing execution.",
+      "dependencies": [
+        "E1.12",
+        "E4.05",
+        "E4.13"
+      ],
+      "owner": "Lavish"
+    },
+    {
+      "id": "E4.18",
+      "epic": "E4",
+      "epic_title": "Hands-off dark local software factory",
+      "phase": "Factory",
+      "title": "Run end-to-end dark-factory scenarios",
+      "detail": "Execute a routine feature, hard migration, design revision, failed worker recovery, stale self-review, and multiple parallel tasks.",
+      "output": "E2E evidence report.",
+      "acceptance": "Only expected human decisions interrupt the run.",
+      "dependencies": [
+        "E4.07",
+        "E4.08",
+        "E4.14",
+        "E4.17"
+      ],
+      "owner": "Full fleet"
+    },
+    {
+      "id": "E5.01",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Define the setup product contract",
+      "detail": "Default command means ensure tested toolchain, ensure repos/config, doctor, ensure Herdr/Firstmate, and attach. Define --no-launch, doctor, repair, update, and --json.",
+      "output": "Setup CLI contract.",
+      "acceptance": "Rerunning the default command is safe and convergent.",
+      "dependencies": [],
+      "owner": "Luna xhigh + Python"
+    },
+    {
+      "id": "E5.02",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Create a tested toolchain lock",
+      "detail": "Pin compatible versions, URLs, checksums, feature probes, and update policy for Python, Node, Git/GH, Herdr, Pi, Lavish, AXIs, no-mistakes, and treehouse.",
+      "output": "config/toolchain.lock.json.",
+      "acceptance": "Setup never blindly installs untested latest versions.",
+      "dependencies": [
+        "E5.01"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.03",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Replace the large setup shell with a two-stage bootstrap",
+      "detail": "Keep a tiny POSIX entry script that locates or bootstraps a managed Python runtime, then execs the Python setup application.",
+      "output": "bin/fm-setup and firstmate_factory.setup.",
+      "acceptance": "All stateful setup logic is testable Python.",
+      "dependencies": [
+        "E5.01"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.04",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Add setup lock and resumable journal",
+      "detail": "Prevent concurrent installers and record completed/started phases with immutable inputs.",
+      "output": "Mode-0600 journal under managed state.",
+      "acceptance": "Kill at any phase and rerun without corruption or duplicate work.",
+      "dependencies": [
+        "E5.03"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.05",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Implement platform and architecture adapters",
+      "detail": "Support macOS arm64/x64 and Linux arm64/x64 with explicit unsupported-platform failure.",
+      "output": "Platform module.",
+      "acceptance": "No command is selected by fuzzy OS guessing.",
+      "dependencies": [
+        "E5.03"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.06",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Create a managed install root",
+      "detail": "Install tools under ~/.local/share/phynd-firstmate with stable shims in ~/.local/bin and a managed shell-profile block.",
+      "output": "Managed toolchain layout.",
+      "acceptance": "No duplicate PATH lines and no mutation outside owned blocks.",
+      "dependencies": [
+        "E5.05"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.07",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Bootstrap Python without prior Python",
+      "detail": "Download and verify a tested standalone runtime or uv-managed Python when a compatible interpreter is absent.",
+      "output": "Self-hosting Python bootstrap.",
+      "acceptance": "A fresh supported machine can reach the Python setup phase without manual Python installation.",
+      "dependencies": [
+        "E5.02",
+        "E5.05"
+      ],
+      "owner": "Shell + Python"
+    },
+    {
+      "id": "E5.08",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Install and update managed Node/npm",
+      "detail": "Download verified Node artifacts into the managed toolchain instead of requiring Homebrew or a preexisting npm.",
+      "output": "Managed Node installation.",
+      "acceptance": "Pi and AXIs can install on a machine with no prior Node.",
+      "dependencies": [
+        "E5.02",
+        "E5.06"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.09",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Ensure Git and GitHub CLI",
+      "detail": "Use verified managed binaries where supported or a platform package adapter with explicit elevation/device-flow handling.",
+      "output": "Git/GH readiness step.",
+      "acceptance": "Missing Git/GH no longer produces an instruction to install them manually.",
+      "dependencies": [
+        "E5.05",
+        "E5.06"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.10",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Install or update Herdr safely",
+      "detail": "Install the tested stable version; use herdr update --handoff or live handoff when a server is active; validate required workspace/agent APIs.",
+      "output": "Herdr ensure step.",
+      "acceptance": "Running panes survive a compatible update; incompatible state fails with recovery instructions.",
+      "dependencies": [
+        "E5.02",
+        "E5.06"
+      ],
+      "owner": "Python + Herdr"
+    },
+    {
+      "id": "E5.11",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Install or update Pi",
+      "detail": "Install the tested Pi version with supply-chain-safe flags and verify model/thinking CLI support.",
+      "output": "Pi ensure step.",
+      "acceptance": "The driver can be launched with Luna and xhigh on every supported platform.",
+      "dependencies": [
+        "E5.08",
+        "E5.02"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.12",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Install or update Lavish and AXIs",
+      "detail": "Install tested Lavish, gh-axi, chrome-devtools-axi, tasks-axi, and quota-axi; run idempotent hook/setup commands where supported.",
+      "output": "AXI ensure step.",
+      "acceptance": "Lavish CLI and the Firstmate Lavish adapter pass smoke checks; Pi does not depend on unsupported Lavish session hooks.",
+      "dependencies": [
+        "E5.08",
+        "E1.01"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.13",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Install or update no-mistakes and treehouse",
+      "detail": "Use tested installers/versions and feature probes.",
+      "output": "Validation/worktree readiness.",
+      "acceptance": "No project work starts if required features are absent.",
+      "dependencies": [
+        "E5.02",
+        "E5.06"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.14",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Ensure the Firstmate fork safely",
+      "detail": "Fast-forward a clean clone or install a new versioned code root and atomically switch the managed current link; never overwrite dirty/diverged work.",
+      "output": "Firstmate code ensure step.",
+      "acceptance": "Updates cannot destroy local changes.",
+      "dependencies": [
+        "E5.09"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.15",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Ensure Phynd Cloud safely",
+      "detail": "Clone/register if absent; guarded fetch/fast-forward only when safe; preserve local work and submodules.",
+      "output": "Project readiness step.",
+      "acceptance": "A dirty or divergent clone is preserved and surfaced, not reset.",
+      "dependencies": [
+        "E5.09",
+        "E5.14"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.16",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Initialize and verify no-mistakes",
+      "detail": "Run init/doctor idempotently for required projects and verify canonical lint/test commands.",
+      "output": "Project validation readiness.",
+      "acceptance": "Setup blocks launch only on actionable validation prerequisites.",
+      "dependencies": [
+        "E5.13",
+        "E5.15"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.17",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Reconcile configuration by ownership",
+      "detail": "Merge only Firstmate-owned keys for Pi, Herdr, dispatch, prompt, and presentation settings; back up before changing user files.",
+      "output": "Config reconciler.",
+      "acceptance": "Repeated runs produce no diff and never clobber unrelated user settings.",
+      "dependencies": [
+        "E0.08",
+        "E5.14"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.18",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Install driver prompt and role prompts",
+      "detail": "Materialize project-local Pi APPEND_SYSTEM and managed child role prompts with hashes and provenance.",
+      "output": "Prompt installation step.",
+      "acceptance": "The active driver prompt is guaranteed before launch.",
+      "dependencies": [
+        "E0.12",
+        "E5.17"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.19",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Handle authentication as a resumable gate",
+      "detail": "Detect GH and model-provider auth; automatically start supported device/browser login and resume setup after confirmation.",
+      "output": "Authentication phase.",
+      "acceptance": "The user is never told to research a separate install command; unavoidable identity interaction is explicit and resumable.",
+      "dependencies": [
+        "E5.09",
+        "E5.11"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.20",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Ensure a named Herdr session",
+      "detail": "Start or attach to a dedicated phynd-firstmate session using the headless server path when needed.",
+      "output": "Stable Herdr session.",
+      "acceptance": "Reruns do not create duplicate servers.",
+      "dependencies": [
+        "E5.10"
+      ],
+      "owner": "Python + Herdr"
+    },
+    {
+      "id": "E5.21",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Find or create the Firstmate workspace",
+      "detail": "Match canonical code root and label; reuse a healthy workspace or create one and capture its root pane.",
+      "output": "Stable workspace identity.",
+      "acceptance": "Reruns do not create duplicate workspaces.",
+      "dependencies": [
+        "E5.20",
+        "E5.14"
+      ],
+      "owner": "Python + Herdr"
+    },
+    {
+      "id": "E5.22",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Find, recover, or start the driver agent",
+      "detail": "Reuse a live firstmate agent; recover a dead one without discarding state; otherwise start Pi/Luna/xhigh with exact FM_HOME and managed PATH.",
+      "output": "Stable Firstmate agent.",
+      "acceptance": "Exactly one live driver exists in the named session.",
+      "dependencies": [
+        "E2.16",
+        "E5.18",
+        "E5.21"
+      ],
+      "owner": "Python + Herdr"
+    },
+    {
+      "id": "E5.23",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Focus and attach automatically",
+      "detail": "Focus the Firstmate workspace and exec herdr --session phynd-firstmate. When already inside Herdr, focus the target instead of nesting a client.",
+      "output": "Zero-extra-command launch.",
+      "acceptance": "Successful setup ends with the user looking at the Firstmate window.",
+      "dependencies": [
+        "E5.22"
+      ],
+      "owner": "Python + Herdr"
+    },
+    {
+      "id": "E5.24",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Add doctor, repair, and machine-readable output",
+      "detail": "Report owned paths, versions, feature probes, auth, prompt hash, session/workspace/agent state, and safe remediation.",
+      "output": "Doctor/repair commands and JSON schema.",
+      "acceptance": "Every failure names the exact phase and safe next action.",
+      "dependencies": [
+        "E5.04",
+        "E5.23"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.25",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Build setup fault-injection tests",
+      "detail": "Cover clean machine, partial install, old/new versions, no network, bad checksum, concurrent setup, dirty repo, running Herdr, stale workspace, auth interruption, kill/restart, and shell-profile idempotency.",
+      "output": "Portable setup test suite.",
+      "acceptance": "All supported failure points converge or fail without damage.",
+      "dependencies": [
+        "E5.07",
+        "E5.12",
+        "E5.14",
+        "E5.17",
+        "E5.22",
+        "E5.24"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E5.26",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Run real platform smoke matrix",
+      "detail": "Opt-in tests on macOS arm64/x64 and Linux arm64/x64 using clean user homes and real Herdr/Pi/Lavish.",
+      "output": "Dated verification record.",
+      "acceptance": "Each platform reaches an attached Firstmate pane from one command.",
+      "dependencies": [
+        "E5.25"
+      ],
+      "owner": "Real hosts"
+    },
+    {
+      "id": "E5.27",
+      "epic": "E5",
+      "epic_title": "Idempotent zero-touch setup and Herdr launch",
+      "phase": "Factory",
+      "title": "Add guarded rollback",
+      "detail": "Retain prior tested toolchain/code root and allow atomic rollback when an update fails doctor or launch.",
+      "output": "Rollback command.",
+      "acceptance": "Rollback never rewrites project work or task state.",
+      "dependencies": [
+        "E5.14",
+        "E5.24"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E6.01",
+      "epic": "E6",
+      "epic_title": "Local-agent interface seam for the future cloud",
+      "phase": "Future seam",
+      "title": "Stabilize service-neutral schemas",
+      "detail": "Keep intake, route, task graph, events, decisions, artifact feedback, and outcomes independent of terminal UI and file path details.",
+      "output": "Versioned JSON schemas.",
+      "acceptance": "The same schemas can be used by CLI, Unix socket, or cloud API.",
+      "dependencies": [
+        "E2.02",
+        "E4.05"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E6.02",
+      "epic": "E6",
+      "epic_title": "Local-agent interface seam for the future cloud",
+      "phase": "Future seam",
+      "title": "Expose a local Python CLI facade",
+      "detail": "Provide submit, status, events, answer, artifact-feedback, and cancel commands against the same factory core.",
+      "output": "firstmate-factory CLI.",
+      "acceptance": "No CLI path bypasses policy or authority.",
+      "dependencies": [
+        "E6.01"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E6.03",
+      "epic": "E6",
+      "epic_title": "Local-agent interface seam for the future cloud",
+      "phase": "Future seam",
+      "title": "Add cursor-based local event reads",
+      "detail": "Support deterministic event consumption with after/cursor semantics.",
+      "output": "Event cursor contract.",
+      "acceptance": "Restarting a client cannot silently skip events.",
+      "dependencies": [
+        "E6.01"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E6.04",
+      "epic": "E6",
+      "epic_title": "Local-agent interface seam for the future cloud",
+      "phase": "Future seam",
+      "title": "Design the loopback/Unix-socket adapter",
+      "detail": "Specify a local-only HTTP or JSON-RPC adapter, per-user token, peer identity, rate limit, and audit records.",
+      "output": "Post-M1 API design artifact.",
+      "acceptance": "No external network listener is enabled in milestone one.",
+      "dependencies": [
+        "E6.01",
+        "E6.02"
+      ],
+      "owner": "Fable high + Lavish"
+    },
+    {
+      "id": "E6.05",
+      "epic": "E6",
+      "epic_title": "Local-agent interface seam for the future cloud",
+      "phase": "Future seam",
+      "title": "Map external requests to a paired human",
+      "detail": "Require every local-agent request to resolve an engineer/captain authority and decision channel.",
+      "output": "Paired-human identity contract.",
+      "acceptance": "No agent-to-factory call creates anonymous authority.",
+      "dependencies": [
+        "E6.04"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E6.06",
+      "epic": "E6",
+      "epic_title": "Local-agent interface seam for the future cloud",
+      "phase": "Future seam",
+      "title": "Map artifact feedback into the Lavish contract",
+      "detail": "Represent queued feedback and decisions in the same schema the local API will later expose.",
+      "output": "Artifact feedback API contract.",
+      "acceptance": "Remote/local clients cannot forge approval without the paired human identity.",
+      "dependencies": [
+        "E1.10",
+        "E6.04"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E6.07",
+      "epic": "E6",
+      "epic_title": "Local-agent interface seam for the future cloud",
+      "phase": "Future seam",
+      "title": "Document cloud evolution boundaries",
+      "detail": "Separate per-engineer local factory, remote worker execution, multi-tenant control plane, secrets, tenancy, audit, and policy distribution.",
+      "output": "Cloud-lens architecture appendix.",
+      "acceptance": "Milestone one does not acquire distributed-system scope.",
+      "dependencies": [
+        "E6.04"
+      ],
+      "owner": "Fable high"
+    },
+    {
+      "id": "E6.08",
+      "epic": "E6",
+      "epic_title": "Local-agent interface seam for the future cloud",
+      "phase": "Future seam",
+      "title": "Contract-test CLI and future adapter",
+      "detail": "Run the same conformance suite against in-process core and CLI; reserve adapter tests for the later implementation.",
+      "output": "API conformance suite.",
+      "acceptance": "Behavior is transport-independent.",
+      "dependencies": [
+        "E6.02",
+        "E6.03"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E7.01",
+      "epic": "E7",
+      "epic_title": "Evaluation, rollout, and trust promotion",
+      "phase": "Rollout",
+      "title": "Build the complete routing fixture matrix",
+      "detail": "Cover every task type \u00d7 complexity cell, risk overlay, capability, profile availability, quota state, and advisor conflict.",
+      "output": "Golden route fixtures.",
+      "acceptance": "Unsafe downgrade count is zero.",
+      "dependencies": [
+        "E2.17"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E7.02",
+      "epic": "E7",
+      "epic_title": "Evaluation, rollout, and trust promotion",
+      "phase": "Rollout",
+      "title": "Measure prompt policy continuously",
+      "detail": "Run the E0 corpus on each prompt, communication-skill, or driver-model change.",
+      "output": "Prompt quality report.",
+      "acceptance": "Chat brevity and artifact completeness remain within approved bounds.",
+      "dependencies": [
+        "E0.11"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E7.03",
+      "epic": "E7",
+      "epic_title": "Evaluation, rollout, and trust promotion",
+      "phase": "Rollout",
+      "title": "Measure Lavish artifact quality",
+      "detail": "Check required sections, annotation targets, layout, mobile, print, decision controls, source evidence, and task export.",
+      "output": "Artifact conformance report.",
+      "acceptance": "No required artifact is accepted as a static unreviewed page.",
+      "dependencies": [
+        "E1.12"
+      ],
+      "owner": "Python + Lavish"
+    },
+    {
+      "id": "E7.04",
+      "epic": "E7",
+      "epic_title": "Evaluation, rollout, and trust promotion",
+      "phase": "Rollout",
+      "title": "Measure design-adversary effectiveness",
+      "detail": "Use known flawed designs to test serious-finding recall, false-positive rejection, and author self-clear prevention.",
+      "output": "Design review benchmark.",
+      "acceptance": "All curated critical defects are found or the route abstains.",
+      "dependencies": [
+        "E3.13"
+      ],
+      "owner": "Sol/Fable/Luna"
+    },
+    {
+      "id": "E7.05",
+      "epic": "E7",
+      "epic_title": "Evaluation, rollout, and trust promotion",
+      "phase": "Rollout",
+      "title": "Measure factory autonomy",
+      "detail": "Track human interruptions, unnecessary asks, worker retries, design drift, PR rework, first-pass validation, and time to PR-ready.",
+      "output": "Factory scorecard.",
+      "acceptance": "Routine approved plans run without human interruption except defined authority gates.",
+      "dependencies": [
+        "E4.18"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E7.06",
+      "epic": "E7",
+      "epic_title": "Evaluation, rollout, and trust promotion",
+      "phase": "Rollout",
+      "title": "Measure setup convergence",
+      "detail": "Track install/update/repair success, launch latency, duplicate prevention, and rollback on the platform matrix.",
+      "output": "Setup scorecard.",
+      "acceptance": "One command reaches a healthy attached driver on every supported clean image.",
+      "dependencies": [
+        "E5.26"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E7.07",
+      "epic": "E7",
+      "epic_title": "Evaluation, rollout, and trust promotion",
+      "phase": "Rollout",
+      "title": "Run shadow mode",
+      "detail": "Use the new prompt, artifact contract, and router in observation mode while current routing remains live.",
+      "output": "Shadow difference report in Lavish.",
+      "acceptance": "No unexplained lower route or skipped Lavish requirement.",
+      "dependencies": [
+        "E2.17",
+        "E7.02",
+        "E7.03"
+      ],
+      "owner": "Full fleet"
+    },
+    {
+      "id": "E7.08",
+      "epic": "E7",
+      "epic_title": "Evaluation, rollout, and trust promotion",
+      "phase": "Rollout",
+      "title": "Human-review enforcement change",
+      "detail": "Present shadow outcomes, failures, degraded paths, and exact policy diffs in Lavish.",
+      "output": "Enforcement approval receipt.",
+      "acceptance": "Live routing/gates are not enabled without explicit approval.",
+      "dependencies": [
+        "E7.07"
+      ],
+      "owner": "Lavish + human"
+    },
+    {
+      "id": "E7.09",
+      "epic": "E7",
+      "epic_title": "Evaluation, rollout, and trust promotion",
+      "phase": "Rollout",
+      "title": "Enable prompt and Lavish gates first",
+      "detail": "Promote the revised driver prompt and artifact requirements before enabling factory routing.",
+      "output": "Stage-one enforcement.",
+      "acceptance": "Subsequent implementation benefits from the corrected quality contract.",
+      "dependencies": [
+        "E0.12",
+        "E1.12",
+        "E7.08"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E7.10",
+      "epic": "E7",
+      "epic_title": "Evaluation, rollout, and trust promotion",
+      "phase": "Rollout",
+      "title": "Enable deterministic routing and design gate",
+      "detail": "Bind route decisions and approved designs to new tasks.",
+      "output": "Stage-two enforcement.",
+      "acceptance": "No new required-design task reaches implementation without approval.",
+      "dependencies": [
+        "E2.17",
+        "E3.13",
+        "E7.08"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E7.11",
+      "epic": "E7",
+      "epic_title": "Evaluation, rollout, and trust promotion",
+      "phase": "Rollout",
+      "title": "Enable dark factory execution",
+      "detail": "Allow approved task graphs to execute autonomously under existing authority and quality gates.",
+      "output": "Stage-three enforcement.",
+      "acceptance": "Only defined human decisions interrupt execution.",
+      "dependencies": [
+        "E4.18",
+        "E7.10"
+      ],
+      "owner": "Full fleet"
+    },
+    {
+      "id": "E7.12",
+      "epic": "E7",
+      "epic_title": "Evaluation, rollout, and trust promotion",
+      "phase": "Rollout",
+      "title": "Run rollback drills",
+      "detail": "Disable each enforcement layer independently and prove current Firstmate behavior and unlanded work remain intact.",
+      "output": "Rollback evidence.",
+      "acceptance": "Rollback never discards work or weakens authority silently.",
+      "dependencies": [
+        "E5.27",
+        "E7.11"
+      ],
+      "owner": "Python"
+    },
+    {
+      "id": "E7.13",
+      "epic": "E7",
+      "epic_title": "Evaluation, rollout, and trust promotion",
+      "phase": "Rollout",
+      "title": "Publish operator and maintainer documentation",
+      "detail": "Document one-command startup, prompt modes, Lavish loop, routing, design approval, factory behavior, failures, recovery, and future API seam.",
+      "output": "Current-behavior docs and maintainer architecture.",
+      "acceptance": "A new engineer can launch and understand the factory without oral history.",
+      "dependencies": [
+        "E7.11"
+      ],
+      "owner": "Luna xhigh + Lavish"
+    },
+    {
+      "id": "E7.14",
+      "epic": "E7",
+      "epic_title": "Evaluation, rollout, and trust promotion",
+      "phase": "Rollout",
+      "title": "Record milestone-one acceptance",
+      "detail": "Human reviews final evidence and chooses Accept, Extend, or Roll Back.",
+      "output": "Milestone acceptance receipt.",
+      "acceptance": "The milestone closes only on an explicit decision.",
+      "dependencies": [
+        "E7.12",
+        "E7.13"
+      ],
+      "owner": "Lavish + human"
+    }
+  ]
+}
