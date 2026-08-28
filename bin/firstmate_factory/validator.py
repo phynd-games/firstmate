@@ -89,9 +89,15 @@ class Errors:
 
 def canonical_json_bytes(value: Any) -> bytes:
     """Encode one JSON value in the canonical form owned by this package."""
-    return (json.dumps(
+    serialized = json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ) + "\n").encode("utf-8")
+    ) + "\n"
+    try:
+        return serialized.encode("utf-8")
+    except UnicodeEncodeError:
+        return (json.dumps(
+            value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        ) + "\n").encode("utf-8")
 
 
 def load_schema(name: str) -> dict[str, Any]:
@@ -113,6 +119,21 @@ def _object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, An
     return result
 
 
+def _contains_lone_surrogate(value: Any) -> bool:
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, str):
+            if any(0xD800 <= ord(character) <= 0xDFFF for character in current):
+                return True
+        elif isinstance(current, dict):
+            pending.extend(current.keys())
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+    return False
+
+
 def _parse_json(data: bytes, errors: Errors) -> Any | None:
     try:
         text = data.decode("utf-8")
@@ -120,7 +141,7 @@ def _parse_json(data: bytes, errors: Errors) -> Any | None:
         errors.add("json.utf8", "$", f"input is not UTF-8: byte {exc.start}")
         return None
     try:
-        return json.loads(text, object_pairs_hook=_object_without_duplicate_keys)
+        parsed = json.loads(text, object_pairs_hook=_object_without_duplicate_keys)
     except DuplicateKeyError as exc:
         errors.add("json.duplicate-key", "$", str(exc))
     except json.JSONDecodeError as exc:
@@ -132,6 +153,11 @@ def _parse_json(data: bytes, errors: Errors) -> Any | None:
         errors.add("json.parse-limit", "$", "JSON value exceeds supported limits")
     except RecursionError:
         errors.add("json.depth", "$", "JSON nesting exceeds supported depth")
+    else:
+        if _contains_lone_surrogate(parsed):
+            errors.add("json.unicode", "$", "input contains a lone surrogate code point")
+            return None
+        return parsed
     return None
 
 
@@ -293,41 +319,54 @@ def _id_group(task_id: str) -> str:
 
 
 def _strongly_connected_cycles(dependencies: dict[str, list[str]]) -> list[list[str]]:
-    index = 0
-    indices: dict[str, int] = {}
-    lowlinks: dict[str, int] = {}
-    stack: list[str] = []
-    on_stack: set[str] = set()
+    nodes = sorted(dependencies)
+    adjacency = {
+        node: sorted(set(dependency for dependency in dependencies[node] if dependency in dependencies))
+        for node in nodes
+    }
+    reverse: dict[str, list[str]] = {node: [] for node in nodes}
+    for node in nodes:
+        for dependency in adjacency[node]:
+            reverse[dependency].append(node)
+    for node in nodes:
+        reverse[node].sort()
+
+    visited: set[str] = set()
+    finish_order: list[str] = []
+    for root in nodes:
+        if root in visited:
+            continue
+        visited.add(root)
+        pending: list[tuple[str, int]] = [(root, 0)]
+        while pending:
+            node, next_index = pending[-1]
+            if next_index < len(adjacency[node]):
+                dependency = adjacency[node][next_index]
+                pending[-1] = (node, next_index + 1)
+                if dependency not in visited:
+                    visited.add(dependency)
+                    pending.append((dependency, 0))
+            else:
+                finish_order.append(node)
+                pending.pop()
+
+    visited.clear()
     components: list[list[str]] = []
+    for root in reversed(finish_order):
+        if root in visited:
+            continue
+        component: list[str] = []
+        pending = [root]
+        visited.add(root)
+        while pending:
+            node = pending.pop()
+            component.append(node)
+            for dependent in reverse[node]:
+                if dependent not in visited:
+                    visited.add(dependent)
+                    pending.append(dependent)
+        components.append(sorted(component))
 
-    def visit(node: str) -> None:
-        nonlocal index
-        indices[node] = index
-        lowlinks[node] = index
-        index += 1
-        stack.append(node)
-        on_stack.add(node)
-        for dependency in sorted(set(dependencies.get(node, []))):
-            if dependency not in dependencies:
-                continue
-            if dependency not in indices:
-                visit(dependency)
-                lowlinks[node] = min(lowlinks[node], lowlinks[dependency])
-            elif dependency in on_stack:
-                lowlinks[node] = min(lowlinks[node], indices[dependency])
-        if lowlinks[node] == indices[node]:
-            component: list[str] = []
-            while True:
-                member = stack.pop()
-                on_stack.remove(member)
-                component.append(member)
-                if member == node:
-                    break
-            components.append(sorted(component))
-
-    for node in sorted(dependencies):
-        if node not in indices:
-            visit(node)
     cycles = [component for component in components if len(component) > 1]
     for node in sorted(dependencies):
         if node in dependencies[node]:

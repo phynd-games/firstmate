@@ -267,6 +267,77 @@ PY
   pass "oversized integers and deep JSON produce deterministic validation reports"
 }
 
+write_long_chain_manifest() {
+  local output=$1
+  python3 - "$output" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+source_sha = "9046dee80162c391a320df074a1b888c1e0c88fa69f8a6e04788f0d32d1a0b63"
+def task(index):
+    task_id = f"M{index:04d}-001"
+    dependency = f"M{index + 1:04d}-001" if index < 1000 else None
+    return {
+        "schema": "firstmate.execution-task.v1",
+        "id": task_id,
+        "title": "Long chain task",
+        "kind": "ship",
+        "dependencies": [dependency] if dependency else [],
+        "route_request": {"schema": "firstmate.route-request.v1", "level_floor": "L3", "role": "implementer"},
+        "delivery": {"mode": "no-mistakes", "yolo": False},
+        "artifacts": [],
+        "acceptance": ["The long chain validates."],
+        "rollback": ["Remove the long chain manifest."],
+        "source_refs": ["E0.01"],
+    }
+tasks = [task(index) for index in range(1001)]
+doc = {
+    "schema": "firstmate.m1-execution-manifest.v1",
+    "manifest_id": "m1-long-chain",
+    "validator": {"name": "firstmate_factory", "version": "1.0.0"},
+    "source": [{"path": "assets/local-software-factory-m1/phynd-firstmate-local-software-factory-m1-tasks.json", "sha256": source_sha, "schema": "phynd-firstmate-m1-task-graph.v1"}],
+    "plan": {"artifact_sha256": "1" * 64, "repo_commit": "2" * 40},
+    "authority": {"state": "draft", "approval_id": None, "scope": ["M0000-001"]},
+    "tasks": tasks,
+    "acceptance_tasks": ["M0000-001"],
+    "gates": [],
+    "not_in_m1": [],
+}
+canonical = (json.dumps(doc, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
+doc["manifest_hash"] = hashlib.sha256(canonical).hexdigest()
+pathlib.Path(sys.argv[1]).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
+test_long_chain_and_surrogate_inputs() {
+  local long_manifest="$TMP_ROOT/long-chain-manifest.json" long_report="$TMP_ROOT/long-chain-report.json"
+  local surrogate_manifest="$TMP_ROOT/surrogate-manifest.json" surrogate_report="$TMP_ROOT/surrogate-report.json" rc
+  write_long_chain_manifest "$long_manifest"
+  "$CLI" validate-manifest --manifest "$long_manifest" --source "$SOURCE" >"$long_report" || fail "long dependency chain should validate without recursion failure"
+  json_assert "$long_report" "r['valid'] is True and r['graph']['task_count'] == 1001 and r['graph']['cycle_count'] == 0 and r['graph']['wave_count'] == 1001" "long dependency chain report differs"
+
+  write_manifest valid "$surrogate_manifest"
+  python3 - "$surrogate_manifest" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+doc = json.loads(path.read_text(encoding="utf-8"))
+doc["tasks"][0]["title"] = "\ud800"
+path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+PY
+  set +e
+  "$CLI" validate-manifest --manifest "$surrogate_manifest" --source "$SOURCE" >"$surrogate_report"
+  rc=$?
+  set -e
+  [ "$rc" -eq 1 ] || fail "lone surrogate input should exit 1, got $rc"
+  json_assert "$surrogate_report" "r['valid'] is False and set(e['code'] for e in r['errors']) == {'json.unicode'}" "lone surrogate should produce a deterministic validation report"
+  pass "long dependency chains and lone surrogates are handled safely"
+}
+
 test_read_only_execution() {
   local sandbox="$TMP_ROOT/read-only" before after
   mkdir -p "$sandbox"
@@ -288,4 +359,5 @@ test_malformed_source_fixtures
 test_normalized_manifest
 test_malformed_manifest_fixtures
 test_malformed_json_limits
+test_long_chain_and_surrogate_inputs
 test_read_only_execution
