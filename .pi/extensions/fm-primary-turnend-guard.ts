@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -8,6 +8,7 @@ import {
   classifyFirstmateCurrentOperationalText,
   encodeFirstmateOperationalInput,
 } from "./lib/fm-operational-input.ts";
+import { processInstanceIdentity } from "./lib/fm-process-identity.ts";
 
 let guardFollowupActive = false;
 
@@ -55,28 +56,46 @@ function lockOwnership(): LockOwnership {
 
 let markerRetryTimer: ReturnType<typeof setTimeout> | undefined;
 
+function clearMarkerRetry(): void {
+  if (!markerRetryTimer) return;
+  clearTimeout(markerRetryTimer);
+  markerRetryTimer = undefined;
+}
+
 function retryMarkLoaded(): void {
   if (markerRetryTimer) return;
-  markerRetryTimer = setTimeout(() => {
+  const timer = setTimeout(() => {
     markerRetryTimer = undefined;
     markLoaded();
   }, 250);
+  (timer as unknown as { unref?: () => void }).unref?.();
+  markerRetryTimer = timer;
 }
 
 function markLoaded(): void {
-  if (!existsSync(state) || lockOwnership() === "other") return;
-  let lockIdentity = "";
+  const ownership = lockOwnership();
+  if (ownership === "other") {
+    clearMarkerRetry();
+    return;
+  }
+  if (ownership === "missing") {
+    retryMarkLoaded();
+    return;
+  }
+  let lockPid = "";
   try {
-    lockIdentity = readFileSync(`${state}/.lock-pid-identity`, "utf8").trim();
+    lockPid = readFileSync(`${state}/.lock`, "utf8").trim();
   } catch {
     retryMarkLoaded();
     return;
   }
+  const lockIdentity = processInstanceIdentity(lockPid);
   if (!lockIdentity) {
     retryMarkLoaded();
     return;
   }
   writeFileSync(marker, `${extensionVersion}\n${process.pid}\n${lockIdentity}\n`);
+  clearMarkerRetry();
 }
 
 // Pi's session_start reasons are startup | reload | new | resume | fork, and a
@@ -218,6 +237,10 @@ function runCdCheck(command: string): Promise<{ code: number; stderr: string }> 
 }
 
 export default function (pi: ExtensionAPI) {
+  pi.on?.("session_shutdown", () => {
+    clearMarkerRetry();
+  });
+
   pi.on?.("session_start", async (event, ctx) => {
     const reason = String((event as { reason?: unknown }).reason ?? "");
     const source = reason === "startup"
