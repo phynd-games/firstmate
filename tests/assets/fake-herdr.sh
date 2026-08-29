@@ -17,6 +17,7 @@ set -u
 
 STATE=${FAKE_HERDR_STATE:?fake-herdr needs FAKE_HERDR_STATE}
 mkdir -p "$STATE/panes"
+SESSION=default
 
 # FAKE_HERDR_DOWN models an unreachable Herdr server: every call fails, which
 # is what makes a pane's state genuinely UNKNOWN rather than merely absent.
@@ -36,7 +37,11 @@ WORKSPACE=
 args=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --session|--workspace|--cwd|--label)
+    --session)
+      SESSION=${2:-default}
+      shift 2 || shift
+      ;;
+    --workspace|--cwd|--label)
       [ "$1" = --workspace ] && WORKSPACE=${2:-}
       shift 2 || shift
       ;;
@@ -78,8 +83,16 @@ case "${1:-}:${2:-}" in
     ;;
   pane:get)
     pane=${3:-}
+    if [ "${FAKE_HERDR_PANE_GONE_SESSION:-}" = "$SESSION" ]; then
+      echo "fake-herdr: pane unavailable in this session" >&2
+      exit 1
+    fi
     if [ "$(cat "$STATE/panes/$pane.state" 2>/dev/null)" = open ]; then
-      printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "$pane"
+      returned=${FAKE_HERDR_RETURN_PANE_ID:-$pane}
+      workspace_id=${returned%p*}
+      number=${returned##*p}
+      printf '{"result":{"pane":{"pane_id":"%s","workspace_id":"%s","tab_id":"%s:t%s"}}}\n' \
+        "$returned" "$workspace_id" "$workspace_id" "$number"
     else
       echo "fake-herdr: no such pane: $pane" >&2
       exit 1
@@ -100,6 +113,10 @@ case "${1:-}:${2:-}" in
     ;;
   pane:close)
     pane=${3:-}
+    if [ -n "${FAKE_HERDR_CLOSE_FAIL:-}" ]; then
+      echo "fake-herdr: forced pane close failure" >&2
+      exit 1
+    fi
     pid=$(cat "$STATE/panes/$pane.pid" 2>/dev/null || true)
     if [ -n "$pid" ]; then
       kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true

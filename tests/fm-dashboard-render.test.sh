@@ -37,8 +37,9 @@ payload() {
       snapshot: {
         schema: "fm-fleet-snapshot.v1",
         generated: "2026-08-01T00:10:00Z",
+        fm_home: "/homes/sample",
         roots: {state: "/homes/sample/state", data: "/homes/sample/data",
-                projects: "/homes/sample/projects"},
+                config: "/homes/sample/config", projects: "/homes/sample/projects"},
         backlog: {path: "/homes/sample/data/backlog.md", present: true, records: []},
         tasks: [],
         scout_reports: [],
@@ -76,7 +77,7 @@ task_json() {  # <id> <state> [extra-json]
   jq -cn --arg id "$1" --arg state "$2" --argjson extra "$extra" '
     {id: $id, kind: "ship", harness: "claude", model: "opus", effort: "xhigh",
      mode: "no-mistakes", yolo: "off", project: "/homes/sample/projects/sample",
-     backend: "tmux", remote: null,
+     spawn_gen: null, backend: "tmux", remote: null,
      paths: {meta: {path: "/homes/sample/state/\($id).meta", present: true},
              status_log: {path: "/homes/sample/state/\($id).status", present: true,
                           kind: "event_history", last_event: {state: "", note: "", raw: ""}},
@@ -422,6 +423,17 @@ test_render_refuses_a_payload_that_is_not_a_dashboard_document() {
   pass "render refuses a payload that is not a readable dashboard document"
 }
 
+test_render_refuses_a_dashboard_document_with_a_null_task() {
+  local home file out status=0
+  home=$(new_case)
+  file=$(payload "$home" '{"snapshot":{"tasks":[null]}}')
+  out=$(FM_HOME="$home" "$DASH" render "$file" --out "$home/page.html" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "render accepted a null task element"
+  assert_contains "$out" "complete readable" "the refusal did not identify the malformed task"
+  [ ! -e "$home/page.html" ] || fail "render published a page for a null task"
+  pass "render refuses a dashboard document with a null task"
+}
+
 test_a_healthy_fleet_renders_its_counts_and_sections
 test_reconciled_state_is_labelled_apart_from_event_history
 test_a_worker_whose_event_log_was_refused_says_why
@@ -438,3 +450,4 @@ test_escape_closes_the_report_reader
 test_every_source_path_is_listed_for_checking
 test_a_page_whose_data_is_corrupt_fails_closed
 test_render_refuses_a_payload_that_is_not_a_dashboard_document
+test_render_refuses_a_dashboard_document_with_a_null_task

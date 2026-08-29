@@ -111,6 +111,7 @@ FM_SNAPSHOT_SECONDMATE_DECISIONS=${FM_SNAPSHOT_SECONDMATE_DECISIONS:-20}
 FM_SNAPSHOT_TERMINAL_LINES=${FM_SNAPSHOT_TERMINAL_LINES:-8}
 FM_SNAPSHOT_TERMINAL_BYTES=${FM_SNAPSHOT_TERMINAL_BYTES:-4096}
 FM_SNAPSHOT_TERMINAL_TIMEOUT=${FM_SNAPSHOT_TERMINAL_TIMEOUT:-2}
+FM_SNAPSHOT_HERDR_TIMEOUT=${FM_SNAPSHOT_HERDR_TIMEOUT:-2}
 FM_SNAPSHOT_PARENT_ACTIVITY_LINES=${FM_SNAPSHOT_PARENT_ACTIVITY_LINES:-256}
 FM_SNAPSHOT_PARENT_ACTIVITY_BYTES=${FM_SNAPSHOT_PARENT_ACTIVITY_BYTES:-65536}
 FM_SNAPSHOT_PARENT_ACTIVITIES=${FM_SNAPSHOT_PARENT_ACTIVITIES:-20}
@@ -141,6 +142,7 @@ validate_positive_bound FM_SNAPSHOT_SECONDMATE_DECISIONS "$FM_SNAPSHOT_SECONDMAT
 validate_positive_bound FM_SNAPSHOT_TERMINAL_LINES "$FM_SNAPSHOT_TERMINAL_LINES"
 validate_positive_bound FM_SNAPSHOT_TERMINAL_BYTES "$FM_SNAPSHOT_TERMINAL_BYTES"
 validate_positive_bound FM_SNAPSHOT_TERMINAL_TIMEOUT "$FM_SNAPSHOT_TERMINAL_TIMEOUT"
+validate_positive_bound FM_SNAPSHOT_HERDR_TIMEOUT "$FM_SNAPSHOT_HERDR_TIMEOUT"
 validate_positive_bound FM_SNAPSHOT_PARENT_ACTIVITY_LINES "$FM_SNAPSHOT_PARENT_ACTIVITY_LINES"
 validate_positive_bound FM_SNAPSHOT_PARENT_ACTIVITY_BYTES "$FM_SNAPSHOT_PARENT_ACTIVITY_BYTES"
 validate_positive_bound FM_SNAPSHOT_PARENT_ACTIVITIES "$FM_SNAPSHOT_PARENT_ACTIVITIES"
@@ -191,6 +193,7 @@ FM_SNAPSHOT_PARENT_ACTIVITY_TIMEOUT, with truncation disclosed in the result.
 The registered secondmate table uses FM_SNAPSHOT_REGISTRY_LINES,
 FM_SNAPSHOT_REGISTRY_BYTES, FM_SNAPSHOT_REGISTRY_RECORDS, and
 FM_SNAPSHOT_REGISTRY_TIMEOUT, with unavailability and truncation disclosed.
+Herdr-backed local endpoint reads use FM_SNAPSHOT_HERDR_TIMEOUT.
 EOF
 }
 
@@ -200,7 +203,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --json) ;;
     --local-only) LOCAL_ONLY=1 ;;
-    --secondmate-home-summary) OUTPUT_MODE=secondmate-home-summary ;;
+    --secondmate-home-summary) OUTPUT_MODE=secondmate-home-summary; LOCAL_ONLY=1 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
@@ -264,7 +267,8 @@ last_nonempty_line() {  # <file>
 crew_state_json() {  # <id>
   local id=$1 raw rest state source detail sep
   raw=$(
-    FM_ROOT_OVERRIDE="$FM_ROOT" \
+    fm_run_timed "$FM_SNAPSHOT_HERDR_TIMEOUT" env \
+      FM_ROOT_OVERRIDE="$FM_ROOT" \
       FM_HOME="$FM_HOME" \
       FM_STATE_OVERRIDE="$STATE" \
       FM_DATA_OVERRIDE="$DATA" \
@@ -290,6 +294,26 @@ crew_state_json() {  # <id>
   esac
   jq -n --arg raw "$raw" --arg state "$state" --arg source "$source" --arg detail "$detail" \
     '{state:$state,source:$source,detail:$detail,raw:$raw}'
+}
+
+snapshot_herdr_target_exists() {  # <target> <expected-label>
+  fm_run_timed "$FM_SNAPSHOT_HERDR_TIMEOUT" env \
+    FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" \
+    bash -c '
+      . "$1"
+      fm_backend_source herdr || exit 1
+      fm_backend_target_exists herdr "$2" "$3"
+    ' snapshot-herdr-target "$SCRIPT_DIR/fm-backend.sh" "$1" "$2"
+}
+
+snapshot_herdr_agent_alive() {  # <target>
+  fm_run_timed "$FM_SNAPSHOT_HERDR_TIMEOUT" env \
+    FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" \
+    bash -c '
+      . "$1"
+      fm_backend_source herdr || exit 1
+      fm_backend_agent_alive herdr "$2"
+    ' snapshot-herdr-agent "$SCRIPT_DIR/fm-backend.sh" "$1"
 }
 
 status_event_json() {  # <status-log>
@@ -611,14 +635,24 @@ task_json_lines() {
       fi
     else
       if [ -n "$target" ]; then
-        if fm_backend_target_exists "$backend" "$target" "fm-$id" >/dev/null 2>&1; then
+        if [ "$backend" = herdr ]; then
+          snapshot_herdr_target_exists "$target" "fm-$id" >/dev/null 2>&1
+        else
+          fm_backend_target_exists "$backend" "$target" "fm-$id" >/dev/null 2>&1
+        fi
+        endpoint_rc=$?
+        if [ "$endpoint_rc" -eq 0 ]; then
           endpoint_exists=true
         else
           endpoint_exists=false
         fi
       fi
       if [ "$kind" = secondmate ] && [ -n "$target" ]; then
-        agent_alive=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null || printf unknown)
+        if [ "$backend" = herdr ]; then
+          agent_alive=$(snapshot_herdr_agent_alive "$target" 2>/dev/null || printf unknown)
+        else
+          agent_alive=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null || printf unknown)
+        fi
       fi
     fi
 
@@ -1349,7 +1383,7 @@ secondmate_current_json() {  # <parent-tasks-json>
           FM_SNAPSHOT_SECONDMATE_QUEUED="$FM_SNAPSHOT_SECONDMATE_QUEUED" \
           FM_SNAPSHOT_SECONDMATE_DECISIONS="$FM_SNAPSHOT_SECONDMATE_DECISIONS" \
           FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME="$FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME" \
-          "$SCRIPT_DIR/fm-fleet-snapshot.sh" --secondmate-home-summary 2>/dev/null)
+          "$SCRIPT_DIR/fm-fleet-snapshot.sh" --local-only --secondmate-home-summary 2>/dev/null)
         summary_rc=$?
       fi
       if [ "$summary_rc" -ne 0 ]; then

@@ -438,6 +438,54 @@ test_a_symlinked_output_parent_is_refused() {
   pass "a symlinked output parent is refused before publication"
 }
 
+test_a_symlinked_evidence_root_is_refused_before_reading_it() {
+  local home outside out status=0
+  home=$(make_home symlink-root)
+  outside="$TMP_ROOT/outside-root"
+  mkdir -p "$outside"
+  printf 'outside status\n' > "$outside/worker-one.status"
+  rm -rf "$home/state"
+  ln -s "$outside" "$home/state"
+  out=$(run_dash "$home" json 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "a symlinked state root was accepted"
+  assert_contains "$out" "unsafe evidence root" "the symlinked root refusal was unclear"
+  [ ! -e "$outside/.wake-queue" ] || fail "the dashboard wrote through a symlinked state root"
+  pass "a symlinked evidence root is refused before any outside read or write"
+}
+
+test_a_symlinked_watcher_heartbeat_is_not_reported_as_healthy() {
+  local home outside payload
+  home=$(make_home symlink-heartbeat)
+  outside="$TMP_ROOT/outside-heartbeat"
+  printf 'fresh\n' > "$outside"
+  ln -s "$outside" "$home/state/.last-watcher-beat"
+  payload=$(run_dash "$home" json) || fail "the dashboard could not compose around a symlinked heartbeat"
+  printf '%s' "$payload" | jq -e '
+    .supervision.healthy == false
+    and (.degraded | map(select(.source == "watcher heartbeat")) | length) == 1' >/dev/null \
+    || fail "a symlinked heartbeat was treated as healthy or hidden"
+  pass "a symlinked watcher heartbeat is disclosed and never counted as healthy"
+}
+
+test_a_herdr_backed_snapshot_times_out_its_local_probe() {
+  local home payload elapsed
+  home=$(make_home bounded-herdr)
+  printf '#!/usr/bin/env bash\nsleep 10\n' > "$home/fakebin/herdr"
+  chmod +x "$home/fakebin/herdr"
+  fm_write_meta "$home/state/herdr-one.meta" \
+    "kind=ship" "backend=herdr" "window=default:w1:p1" "harness=claude"
+  SECONDS=0
+  payload=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" \
+    FM_SNAPSHOT_NOW=2026-08-01T00:00:00Z FM_SNAPSHOT_HERDR_TIMEOUT=1 \
+    "$DASH" json) || fail "the dashboard failed instead of returning bounded Herdr evidence"
+  elapsed=$SECONDS
+  [ "$elapsed" -lt 6 ] || fail "the local Herdr snapshot probe exceeded its bound: ${elapsed}s"
+  printf '%s' "$payload" | jq -e '
+    .snapshot.tasks | map(select(.id == "herdr-one" and .current_state.state == "unknown")) | length == 1' >/dev/null \
+    || fail "the timed-out Herdr task was not disclosed as unknown"
+  pass "Herdr-backed snapshot probes are bounded and preserve unknown evidence"
+}
+
 test_path_is_stable_and_inside_the_home
 test_the_payload_embeds_the_canonical_snapshot_unchanged
 test_a_worker_carries_its_recorded_model_and_effort
@@ -461,3 +509,6 @@ test_the_dashboard_refuses_an_invalid_bound_or_port
 test_render_refuses_an_incomplete_dashboard_document
 test_a_bare_output_filename_is_published_in_the_current_directory
 test_a_symlinked_output_parent_is_refused
+test_a_symlinked_evidence_root_is_refused_before_reading_it
+test_a_symlinked_watcher_heartbeat_is_not_reported_as_healthy
+test_a_herdr_backed_snapshot_times_out_its_local_probe

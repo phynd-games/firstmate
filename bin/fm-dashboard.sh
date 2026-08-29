@@ -80,6 +80,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
 TEMPLATE="${FM_DASHBOARD_TEMPLATE:-$SCRIPT_DIR/../assets/dashboard-template.html}"
 PLACEHOLDER='__FM_DASHBOARD_DATA__'
@@ -115,33 +116,165 @@ validate_bound FM_DASHBOARD_WAKES "$FM_DASHBOARD_WAKES"
 validate_bound FM_DASHBOARD_REPORTS "$FM_DASHBOARD_REPORTS"
 validate_bound FM_DASHBOARD_REPORT_BYTES "$FM_DASHBOARD_REPORT_BYTES"
 
+DASH_ROOT_REASON=
+HOME_REAL=$(cd "$FM_HOME" 2>/dev/null && pwd -P || printf '%s' "$FM_HOME")
+evidence_root_safe() {  # <label> <root>
+  local label=$1 root=$2 parent base real
+  DASH_ROOT_REASON=
+  if [ -L "$root" ]; then
+    DASH_ROOT_REASON="$label is a symlink"
+    return 1
+  fi
+  if [ -e "$root" ]; then
+    [ -d "$root" ] || { DASH_ROOT_REASON="$label is not a directory"; return 1; }
+    real=$(cd "$root" 2>/dev/null && pwd -P) || {
+      DASH_ROOT_REASON="$label could not be resolved"
+      return 1
+    }
+  else
+    parent=${root%/*}
+    [ "$parent" = "$root" ] && parent=.
+    base=${root##*/}
+    real=$(cd "$parent" 2>/dev/null && pwd -P) || {
+      DASH_ROOT_REASON="$label parent could not be resolved"
+      return 1
+    }
+    real="$real/$base"
+  fi
+  case "$real" in
+    "$HOME_REAL"|"$HOME_REAL"/*) return 0 ;;
+    *) DASH_ROOT_REASON="$label resolves outside this home"; return 1 ;;
+  esac
+}
+
+evidence_root_safe state "$STATE" || fail "unsafe evidence root: $DASH_ROOT_REASON"
+evidence_root_safe data "$DATA" || fail "unsafe evidence root: $DASH_ROOT_REASON"
+evidence_root_safe config "$CONFIG" || fail "unsafe evidence root: $DASH_ROOT_REASON"
+
 payload_is_valid() {  # <payload-file>
   jq -e '
+    def has_type($o; $k; $t): ($o | has($k)) and ($o[$k] | type == $t);
+    def has_nullable($o; $k; $t): ($o | has($k)) and (($o[$k] == null) or ($o[$k] | type == $t));
+    def path_ref($v):
+      ($v | type == "object" and has_nullable(.; "path"; "string")
+       and has_type(.; "present"; "boolean"));
+    def decision:
+      type == "object" and has_type(.; "key"; "string") and has_type(.; "verb"; "string")
+      and has_type(.; "summary"; "string");
+    def backlog_record:
+      type == "object" and has_type(.; "state"; "string") and has_type(.; "structured"; "boolean")
+      and has_nullable(.; "id"; "string") and has_nullable(.; "title"; "string")
+      and has_nullable(.; "raw"; "string") and has_nullable(.; "repo"; "string")
+      and has_nullable(.; "kind"; "string") and has_nullable(.; "priority"; "string")
+      and has_nullable(.; "hold_reason"; "string") and has_nullable(.; "hold_kind"; "string")
+      and has_nullable(.; "hold_until"; "string") and has_nullable(.; "blocked_reason"; "string")
+      and has_nullable(.; "since"; "string") and has_nullable(.; "merged"; "string")
+      and has_nullable(.; "reported"; "string") and has_nullable(.; "done"; "string")
+      and has_nullable(.; "local_note"; "string") and has_nullable(.; "pr_url"; "string")
+      and has_nullable(.; "report_path"; "string") and has_nullable(.; "body_excerpt"; "string")
+      and has_type(.; "blocked_by_ids"; "array") and all(.blocked_by_ids[]; type == "string")
+      and has_type(.; "unresolved_blocker_ids"; "array") and all(.unresolved_blocker_ids[]; type == "string")
+      and has_type(.; "completion"; "object")
+      and has_nullable(.completion; "verb"; "string") and has_nullable(.completion; "date"; "string")
+      and has_type(.; "links"; "array") and all(.links[]; type == "string")
+      and (if .structured then has_type(.; "captain_actionable"; "boolean")
+           and has_type(.; "deferred_marker"; "boolean")
+           and has_type(.; "current_role"; "string")
+           and has_type(.; "requires_child_metadata"; "boolean")
+           else true end);
+    def task:
+      type == "object" and has_type(.; "id"; "string") and (.id | length) > 0
+      and has_type(.; "kind"; "string") and has_type(.; "harness"; "string")
+      and has_nullable(.; "model"; "string") and has_nullable(.; "effort"; "string")
+      and has_type(.; "mode"; "string") and has_type(.; "yolo"; "string")
+      and has_type(.; "project"; "string") and has_nullable(.; "spawn_gen"; "string")
+      and has_type(.; "backend"; "string") and has_nullable(.; "remote"; "object")
+      and (if .remote == null then true
+           else has_type(.remote; "host"; "string") and has_type(.remote; "root"; "string")
+             and has_nullable(.remote; "evidence"; "string") and has_nullable(.remote; "reason"; "string") end)
+      and has_type(.; "paths"; "object")
+      and path_ref(.paths.meta) and path_ref(.paths.status_log) and path_ref(.paths.worktree)
+      and path_ref(.paths.home) and path_ref(.paths.report)
+      and has_type(.; "current_state"; "object")
+      and has_type(.current_state; "state"; "string") and has_type(.current_state; "source"; "string")
+      and has_type(.current_state; "detail"; "string") and has_type(.current_state; "raw"; "string")
+      and has_type(.current_state; "observed_at"; "string") and has_type(.current_state; "freshness"; "string")
+      and has_type(.; "endpoint"; "object") and has_nullable(.endpoint; "target"; "string")
+      and has_nullable(.endpoint; "exists"; "boolean") and has_type(.endpoint; "agent_alive"; "string")
+      and has_type(.endpoint; "status"; "string") and has_type(.endpoint; "observed_at"; "string")
+      and has_type(.endpoint; "freshness"; "string")
+      and has_type(.; "pr"; "object") and has_nullable(.pr; "url"; "string")
+      and has_type(.pr; "source"; "string") and has_type(.; "hints"; "object")
+      and has_type(.hints; "pending_decision"; "boolean") and has_type(.hints; "blocked_event"; "boolean")
+      and has_type(.hints; "open_decisions"; "array") and all(.hints.open_decisions[]; decision)
+      and has_type(.hints; "scout_report_present"; "boolean") and has_type(.hints; "last_event_text"; "string")
+      and has_type(.; "actions"; "object") and has_type(.actions; "watch"; "string")
+      and (has_type(.actions; "steer"; "string") or has_type(.actions; "send"; "string"))
+      and has_nullable(.actions; "return_channel_note"; "string")
+      and ((.backlog == null) or (.backlog | backlog_record));
+    def event:
+      type == "object" and has_type(.; "task_id"; "string") and has_type(.; "path"; "string")
+      and has_type(.; "readable"; "boolean") and has_nullable(.; "reason"; "string")
+      and has_type(.; "total"; "number") and has_type(.; "shown"; "number")
+      and has_type(.; "truncated"; "number") and has_type(.; "lines"; "array")
+      and all(.lines[]; type == "object" and has_type(.; "verb"; "string")
+        and has_type(.; "note"; "string") and has_type(.; "raw"; "string"));
+    def report:
+      type == "object" and has_type(.; "id"; "string") and has_type(.; "path"; "string")
+      and has_type(.; "readable"; "boolean") and has_nullable(.; "reason"; "string")
+      and has_type(.; "bytes"; "number") and has_type(.; "truncated"; "boolean")
+      and has_nullable(.; "modified"; "string") and has_type(.; "body"; "string");
+    def wake:
+      type == "object" and has_nullable(.; "epoch"; "number") and has_nullable(.; "seq"; "string")
+      and has_nullable(.; "kind"; "string") and has_nullable(.; "key"; "string")
+      and has_type(.; "payload"; "string") and has_type(.; "malformed"; "boolean");
+    def snapshot:
+      type == "object" and .schema == "fm-fleet-snapshot.v1"
+      and has_type(.; "generated"; "string") and has_type(.; "fm_home"; "string")
+      and has_type(.; "roots"; "object") and has_type(.roots; "state"; "string")
+      and has_type(.roots; "data"; "string") and has_type(.roots; "config"; "string")
+      and has_type(.roots; "projects"; "string") and has_type(.; "backlog"; "object")
+      and has_type(.backlog; "path"; "string") and has_type(.backlog; "present"; "boolean")
+      and has_type(.backlog; "records"; "array") and all(.backlog.records[]; backlog_record)
+      and has_type(.; "tasks"; "array") and all(.tasks[]; task)
+      and has_type(.; "scout_reports"; "array")
+      and all(.scout_reports[]; type == "object" and has_type(.; "id"; "string")
+        and has_type(.; "path"; "string") and has_type(.; "kind"; "string"))
+      and has_type(.; "main_inventory"; "object") and has_type(.main_inventory; "valid"; "boolean")
+      and has_nullable(.main_inventory; "reason"; "string")
+      and has_type(.main_inventory; "orphan_in_flight"; "array")
+      and all(.main_inventory.orphan_in_flight[]; type == "string");
     (.schema == "fm-dashboard.v1")
     and ((.generated | type) == "string")
     and ((.fm_home | type) == "string")
-    and ((.snapshot | type) == "object")
-    and (.snapshot.schema == "fm-fleet-snapshot.v1")
-    and ((.snapshot.generated | type) == "string")
-    and ((.snapshot.roots | type) == "object")
-    and ((.snapshot.backlog | type) == "object")
-    and ((.snapshot.backlog.path | type) == "string")
-    and ((.snapshot.backlog.present | type) == "boolean")
-    and ((.snapshot.backlog.records | type) == "array")
-    and ((.snapshot.tasks | type) == "array")
-    and ((.snapshot.scout_reports | type) == "array")
-    and ((.snapshot.main_inventory | type) == "object")
+    and (.snapshot | snapshot)
     and ((.supervision | type) == "object")
-    and ((.supervision.healthy | type) == "boolean")
-    and ((.supervision.wakes | type) == "object")
-    and ((.supervision.wakes.records | type) == "array")
-    and ((.events | type) == "array")
-    and ((.reports | type) == "object")
-    and ((.reports.records | type) == "array")
-    and ((.usage | type) == "object")
-    and ((.usage.budget | type) == "object")
-    and ((.usage.agents | type) == "array")
-    and ((.degraded | type) == "array")
+    and has_type(.supervision; "model"; "string") and has_type(.supervision; "healthy"; "boolean")
+    and has_type(.supervision; "reason"; "string") and has_type(.supervision; "beacon_present"; "boolean")
+    and has_nullable(.supervision; "beacon_age_seconds"; "number")
+    and has_type(.supervision; "away_mode"; "boolean") and has_type(.supervision; "recovery_marker"; "boolean")
+    and has_type(.supervision; "wakes"; "object") and has_type(.supervision.wakes; "records"; "array")
+    and all(.supervision.wakes.records[]; wake)
+    and has_type(.; "events"; "array") and all(.events[]; event)
+    and has_type(.; "reports"; "object") and has_type(.reports; "records"; "array")
+    and all(.reports.records[]; report)
+    and has_type(.; "usage"; "object") and has_type(.usage; "budget"; "object")
+    and has_type(.usage.budget; "available"; "boolean") and has_nullable(.usage.budget; "reason"; "string")
+    and has_nullable(.usage.budget; "effective_budget_tokens"; "number")
+    and has_nullable(.usage.budget; "total_estimated_tokens"; "number")
+    and has_nullable(.usage.budget; "status"; "string") and has_type(.usage.budget; "files"; "array")
+    and all(.usage.budget.files[]; type == "object" and has_type(.; "file"; "string")
+      and has_nullable(.; "bytes"; "number") and has_nullable(.; "estimated_tokens"; "number")
+      and has_type(.; "status"; "string"))
+    and has_type(.usage; "agents"; "array")
+    and all(.usage.agents[]; type == "object" and has_type(.; "task_id"; "string")
+      and has_type(.; "kind"; "string") and has_type(.; "harness"; "string")
+      and has_nullable(.; "model"; "string") and has_nullable(.; "effort"; "string")
+      and has_type(.; "backend"; "string") and has_type(.; "mode"; "string")
+      and has_type(.; "yolo"; "string"))
+    and has_type(.; "degraded"; "array")
+    and all(.degraded[]; type == "object" and has_type(.; "source"; "string")
+      and has_type(.; "path"; "string") and has_type(.; "reason"; "string"))
   ' "$1" >/dev/null 2>&1
 }
 
@@ -151,10 +284,19 @@ snapshot_is_valid() {  # <snapshot-file>
     and ((.generated | type) == "string")
     and ((.fm_home | type) == "string")
     and ((.roots | type) == "object")
+    and ((.roots.state | type) == "string")
+    and ((.roots.data | type) == "string")
+    and ((.roots.config | type) == "string")
+    and ((.roots.projects | type) == "string")
     and ((.backlog | type) == "object")
+    and ((.backlog.path | type) == "string")
+    and ((.backlog.present | type) == "boolean")
     and ((.backlog.records | type) == "array")
+    and all(.tasks[]; type == "object" and (.id | type) == "string")
     and ((.tasks | type) == "array")
     and ((.scout_reports | type) == "array")
+    and all(.scout_reports[]; type == "object" and (.id | type) == "string"
+      and (.path | type) == "string" and (.kind | type) == "string")
     and ((.main_inventory | type) == "object")
   ' "$1" >/dev/null 2>&1
 }
@@ -186,6 +328,12 @@ dashboard_path() { printf '%s/.dashboard/control-plane.html\n' "$FM_HOME"; }
 
 DASH_REASON=
 DASH_REAL=
+STATE_REAL=$(cd "$STATE" 2>/dev/null && pwd -P || printf '%s' "$STATE")
+DATA_REAL=$(cd "$DATA" 2>/dev/null && pwd -P || printf '%s' "$DATA")
+
+evidence_root_safe state "$STATE" || fail "unsafe evidence root: $DASH_ROOT_REASON"
+evidence_root_safe data "$DATA" || fail "unsafe evidence root: $DASH_ROOT_REASON"
+evidence_root_safe config "$CONFIG" || fail "unsafe evidence root: $DASH_ROOT_REASON"
 STATE_REAL=$(cd "$STATE" 2>/dev/null && pwd -P || printf '%s' "$STATE")
 DATA_REAL=$(cd "$DATA" 2>/dev/null && pwd -P || printf '%s' "$DATA")
 
@@ -221,6 +369,23 @@ safe_file() {  # <path> -> 0 with DASH_REAL set, else 1 with DASH_REASON set
   return 0
 }
 
+state_entry_safe() {  # <path> -> 0 when absent or contained and non-symlink
+  local p=$1 dir base real
+  DASH_REASON=
+  if [ -L "$p" ]; then DASH_REASON='refused: the path is a symlink'; return 1; fi
+  [ -e "$p" ] || return 0
+  dir=${p%/*}
+  [ "$dir" = "$p" ] && dir=.
+  base=${p##*/}
+  real=$(cd "$dir" 2>/dev/null && pwd -P) || {
+    DASH_REASON='refused: the directory could not be resolved'; return 1; }
+  real="$real/$base"
+  case "$real" in
+    "$STATE_REAL"/*) return 0 ;;
+    *) DASH_REASON='refused: resolves outside this state root'; return 1 ;;
+  esac
+}
+
 DASH_BYTES=0
 DASH_TRUNCATED=false
 read_bounded() {  # <resolved-path> <max-bytes> <out-file>
@@ -244,25 +409,53 @@ note_degraded() {  # <source> <path> <reason>
 # --- collectors -----------------------------------------------------------
 
 collect_supervision() {  # -> JSON object on stdout
-  local verdict_ok reason model age away recovery beat present
+  local verdict_ok reason model age away recovery beat present lock marker
   model=$(fm_supervision_model)
-  fm_watcher_supervision_verdict "$STATE" "$STATE/.watch.lock" >/dev/null 2>&1
-  verdict_ok=${FM_WATCHER_VERDICT_OK:-false}
-  reason=${FM_WATCHER_VERDICT_REASON:-unknown}
-  [ "$verdict_ok" = true ] && reason=ok
+  lock="$STATE/.watch.lock"
+  if state_entry_safe "$lock" \
+    && state_entry_safe "$lock/pid" \
+    && state_entry_safe "$lock/fm-home" \
+    && state_entry_safe "$lock/watcher-path" \
+    && state_entry_safe "$lock/pid-identity" \
+    && state_entry_safe "$STATE/.last-watcher-beat"; then
+    fm_watcher_supervision_verdict "$STATE" "$lock" >/dev/null 2>&1
+    verdict_ok=${FM_WATCHER_VERDICT_OK:-false}
+    reason=${FM_WATCHER_VERDICT_REASON:-unknown}
+    [ "$verdict_ok" = true ] && reason=ok
+  else
+    verdict_ok=false
+    reason="unsafe supervision source: $DASH_REASON"
+    note_degraded supervision "$lock" "$reason"
+  fi
   beat="$STATE/.last-watcher-beat"
   # fm_path_age answers 999999 for a file it cannot stat, so an absent beacon is
   # reported as absent rather than as an implausible age.
-  if [ -e "$beat" ]; then
+  if [ -e "$beat" ] && safe_file "$beat"; then
     present=true
-    age=$(fm_path_age "$beat" 2>/dev/null)
+    age=$(fm_path_age "$DASH_REAL" 2>/dev/null)
     case "$age" in ''|*[!0-9]*) age=null ;; esac
+  elif [ -e "$beat" ] || [ -L "$beat" ]; then
+    present=false
+    age=null
+    note_degraded 'watcher heartbeat' "$beat" "$DASH_REASON"
   else
     present=false
     age=null
   fi
-  away=false; [ -e "$STATE/.afk" ] && away=true
-  recovery=false; [ -e "$STATE/.watcher-down" ] && recovery=true
+  away=false
+  marker="$STATE/.afk"
+  if state_entry_safe "$marker"; then
+    [ -e "$marker" ] && away=true
+  else
+    note_degraded 'away marker' "$marker" "$DASH_REASON"
+  fi
+  recovery=false
+  marker="$STATE/.watcher-down"
+  if state_entry_safe "$marker"; then
+    [ -e "$marker" ] && recovery=true
+  else
+    note_degraded 'recovery marker' "$marker" "$DASH_REASON"
+  fi
   jq -n \
     --arg model "$model" --arg reason "$reason" \
     --argjson healthy "$verdict_ok" --argjson age "$age" \
@@ -401,7 +594,9 @@ file_mtime_iso() {  # <path>
 
 collect_usage() {  # <snapshot-file> -> JSON object on stdout
   local report status=0 budget
-  report=$("$SCRIPT_DIR/fm-startup-memory-budget.sh" report 2>/dev/null) || status=$?
+  report=$(FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" \
+    FM_CONFIG_OVERRIDE="$CONFIG" FM_DATA_OVERRIDE="$DATA" \
+    "$SCRIPT_DIR/fm-startup-memory-budget.sh" report 2>/dev/null) || status=$?
   if [ "$status" -ne 0 ]; then
     note_degraded 'startup memory budget' "$FM_HOME/config/startup-memory-budget" \
       'the local token budget could not be read'
@@ -654,7 +849,7 @@ import json
 import os
 import subprocess
 import sys
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 SELF = os.environ["FM_DASHBOARD_SELF"]
 PORT = int(os.environ["FM_DASHBOARD_BIND_PORT"])
@@ -716,7 +911,7 @@ class Handler(BaseHTTPRequestHandler):
 
 # Loopback only. Binding 127.0.0.1 rather than 0.0.0.0 is the whole
 # local-only guarantee, so it is not configurable.
-with ThreadingHTTPServer(("127.0.0.1", PORT), Handler) as httpd:
+with HTTPServer(("127.0.0.1", PORT), Handler) as httpd:
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

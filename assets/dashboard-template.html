@@ -444,24 +444,121 @@ __FM_DASHBOARD_DATA__
     var wakes = sup && sup.wakes;
     var reports = d.reports;
     var usage = d.usage;
-    return typeof d.generated === "string"
-      && typeof d.fm_home === "string"
-      && s && typeof s === "object" && !Array.isArray(s)
-      && s.schema === "fm-fleet-snapshot.v1"
-      && typeof s.generated === "string"
-      && s.roots && typeof s.roots === "object" && !Array.isArray(s.roots)
-      && b && typeof b === "object" && !Array.isArray(b)
-      && typeof b.path === "string" && typeof b.present === "boolean"
-      && Array.isArray(b.records) && Array.isArray(s.tasks)
-      && Array.isArray(s.scout_reports)
-      && s.main_inventory && typeof s.main_inventory === "object"
-      && sup && typeof sup === "object" && typeof sup.healthy === "boolean"
-      && wakes && typeof wakes === "object" && Array.isArray(wakes.records)
-      && Array.isArray(d.events)
-      && reports && typeof reports === "object" && Array.isArray(reports.records)
-      && usage && typeof usage === "object" && usage.budget
-      && typeof usage.budget === "object" && Array.isArray(usage.agents)
-      && Array.isArray(d.degraded);
+    function obj(v) { return v && typeof v === "object" && !Array.isArray(v); }
+    function field(o, k, t) {
+      return obj(o) && Object.prototype.hasOwnProperty.call(o, k) && typeof o[k] === t;
+    }
+    function nullable(o, k, t) {
+      return obj(o) && Object.prototype.hasOwnProperty.call(o, k)
+        && (o[k] === null || typeof o[k] === t);
+    }
+    function pathRef(v) {
+      return obj(v) && nullable(v, "path", "string") && field(v, "present", "boolean");
+    }
+    function decision(v) {
+      return field(v, "key", "string") && field(v, "verb", "string")
+        && field(v, "summary", "string");
+    }
+    function backlogRecord(v) {
+      return field(v, "state", "string") && field(v, "structured", "boolean")
+        && nullable(v, "id", "string") && nullable(v, "title", "string")
+        && nullable(v, "raw", "string") && nullable(v, "repo", "string")
+        && nullable(v, "kind", "string") && nullable(v, "priority", "string")
+        && nullable(v, "hold_reason", "string") && nullable(v, "hold_kind", "string")
+        && nullable(v, "hold_until", "string") && nullable(v, "blocked_reason", "string")
+        && nullable(v, "since", "string") && nullable(v, "merged", "string")
+        && nullable(v, "reported", "string") && nullable(v, "done", "string")
+        && nullable(v, "local_note", "string") && nullable(v, "pr_url", "string")
+        && nullable(v, "report_path", "string") && nullable(v, "body_excerpt", "string")
+        && Array.isArray(v.blocked_by_ids) && v.blocked_by_ids.every(function (x) { return typeof x === "string"; })
+        && Array.isArray(v.unresolved_blocker_ids)
+        && v.unresolved_blocker_ids.every(function (x) { return typeof x === "string"; })
+        && obj(v.completion) && nullable(v.completion, "verb", "string")
+        && nullable(v.completion, "date", "string") && Array.isArray(v.links)
+        && v.links.every(function (x) { return typeof x === "string"; })
+        && (!v.structured || (field(v, "captain_actionable", "boolean")
+          && field(v, "deferred_marker", "boolean") && field(v, "current_role", "string")
+          && field(v, "requires_child_metadata", "boolean")));
+    }
+    function task(v) {
+      return field(v, "id", "string") && v.id.length > 0 && field(v, "kind", "string")
+        && field(v, "harness", "string") && nullable(v, "model", "string")
+        && nullable(v, "effort", "string") && field(v, "mode", "string")
+        && field(v, "yolo", "string") && field(v, "project", "string")
+        && nullable(v, "spawn_gen", "string") && field(v, "backend", "string")
+        && (v.remote === null || (obj(v.remote) && field(v.remote, "host", "string")
+          && field(v.remote, "root", "string") && nullable(v.remote, "evidence", "string")
+          && nullable(v.remote, "reason", "string")))
+        && obj(v.paths) && pathRef(v.paths.meta) && pathRef(v.paths.status_log)
+        && pathRef(v.paths.worktree) && pathRef(v.paths.home) && pathRef(v.paths.report)
+        && obj(v.current_state) && field(v.current_state, "state", "string")
+        && field(v.current_state, "source", "string") && field(v.current_state, "detail", "string")
+        && field(v.current_state, "raw", "string") && field(v.current_state, "observed_at", "string")
+        && field(v.current_state, "freshness", "string") && obj(v.endpoint)
+        && nullable(v.endpoint, "target", "string") && nullable(v.endpoint, "exists", "boolean")
+        && field(v.endpoint, "agent_alive", "string") && field(v.endpoint, "status", "string")
+        && field(v.endpoint, "observed_at", "string") && field(v.endpoint, "freshness", "string")
+        && obj(v.pr) && nullable(v.pr, "url", "string") && field(v.pr, "source", "string")
+        && obj(v.hints) && field(v.hints, "pending_decision", "boolean")
+        && field(v.hints, "blocked_event", "boolean") && Array.isArray(v.hints.open_decisions)
+        && v.hints.open_decisions.every(decision) && field(v.hints, "scout_report_present", "boolean")
+        && field(v.hints, "last_event_text", "string") && obj(v.actions)
+        && field(v.actions, "watch", "string") && (typeof v.actions.steer === "string"
+          || typeof v.actions.send === "string") && nullable(v.actions, "return_channel_note", "string")
+        && (v.backlog === null || backlogRecord(v.backlog));
+    }
+    function event(v) {
+      return field(v, "task_id", "string") && field(v, "path", "string")
+        && field(v, "readable", "boolean") && nullable(v, "reason", "string")
+        && typeof v.total === "number" && typeof v.shown === "number"
+        && typeof v.truncated === "number" && Array.isArray(v.lines)
+        && v.lines.every(function (x) { return field(x, "verb", "string")
+          && field(x, "note", "string") && field(x, "raw", "string"); });
+    }
+    function report(v) {
+      return field(v, "id", "string") && field(v, "path", "string")
+        && field(v, "readable", "boolean") && nullable(v, "reason", "string")
+        && typeof v.bytes === "number" && field(v, "truncated", "boolean")
+        && nullable(v, "modified", "string") && field(v, "body", "string");
+    }
+    function wake(v) {
+      return nullable(v, "epoch", "number") && nullable(v, "seq", "string")
+        && nullable(v, "kind", "string") && nullable(v, "key", "string")
+        && field(v, "payload", "string") && field(v, "malformed", "boolean");
+    }
+    return field(d, "generated", "string") && field(d, "fm_home", "string")
+      && obj(s) && s.schema === "fm-fleet-snapshot.v1" && field(s, "generated", "string")
+      && obj(s.roots) && field(s.roots, "state", "string") && field(s.roots, "data", "string")
+      && field(s.roots, "config", "string") && field(s.roots, "projects", "string")
+      && obj(b) && field(b, "path", "string") && field(b, "present", "boolean")
+      && Array.isArray(b.records) && b.records.every(backlogRecord) && Array.isArray(s.tasks)
+      && s.tasks.every(task) && Array.isArray(s.scout_reports)
+      && s.scout_reports.every(function (x) { return field(x, "id", "string")
+        && field(x, "path", "string") && field(x, "kind", "string"); })
+      && field(s, "main_inventory", "object") && field(s.main_inventory, "valid", "boolean")
+      && nullable(s.main_inventory, "reason", "string") && Array.isArray(s.main_inventory.orphan_in_flight)
+      && s.main_inventory.orphan_in_flight.every(function (x) { return typeof x === "string"; })
+      && obj(sup) && field(sup, "model", "string") && field(sup, "healthy", "boolean")
+      && field(sup, "reason", "string") && field(sup, "beacon_present", "boolean")
+      && nullable(sup, "beacon_age_seconds", "number") && field(sup, "away_mode", "boolean")
+      && field(sup, "recovery_marker", "boolean") && obj(wakes) && Array.isArray(wakes.records)
+      && wakes.records.every(wake) && Array.isArray(d.events) && d.events.every(event)
+      && obj(reports) && Array.isArray(reports.records) && reports.records.every(report)
+      && obj(usage) && obj(usage.budget) && field(usage.budget, "available", "boolean")
+      && nullable(usage.budget, "reason", "string")
+      && nullable(usage.budget, "effective_budget_tokens", "number")
+      && nullable(usage.budget, "total_estimated_tokens", "number")
+      && nullable(usage.budget, "status", "string") && Array.isArray(usage.budget.files)
+      && usage.budget.files.every(function (x) { return field(x, "file", "string")
+        && nullable(x, "bytes", "number") && nullable(x, "estimated_tokens", "number")
+        && field(x, "status", "string"); }) && Array.isArray(usage.agents)
+      && usage.agents.every(function (x) { return field(x, "task_id", "string")
+        && field(x, "kind", "string") && field(x, "harness", "string")
+        && nullable(x, "model", "string") && nullable(x, "effort", "string")
+        && field(x, "backend", "string") && field(x, "mode", "string")
+        && field(x, "yolo", "string"); }) && Array.isArray(d.degraded)
+      && d.degraded.every(function (x) { return field(x, "source", "string")
+        && field(x, "path", "string") && field(x, "reason", "string"); });
   }
   if (!usableDashboardData(data)) {
     renderError("Its embedded data is incomplete or unusable.");

@@ -30,12 +30,12 @@
 # IDEMPOTENT AND RESTART-SAFE. Repeated starts, including rapid concurrent
 # ones, converge on one pane: a per-home lock serializes them, and a start that
 # cannot take the lock waits, re-reads the winner's record, and reports that URL
-# rather than starting a second server. A record whose pane is gone, whose
-# health does not answer, or whose identity does not match is treated as stale:
-# its pane is closed if it still exists, the record is dropped, and startup
-# begins again. A port held by something that is not ours is a collision, and
-# startup moves to the next candidate port rather than reporting a URL that
-# belongs to another process.
+# rather than starting a second server. A record whose exact pane is gone or
+# whose health does not answer is stale: its pane is closed if it still exists,
+# the record is dropped, and startup begins again. An unknown or mismatched
+# pane identity is preserved and blocks replacement. A port held by something
+# that is not ours is a collision, and startup moves to the next candidate port
+# rather than reporting a URL that belongs to another process.
 #
 # BOUNDED. Lock wait, readiness polling, port candidates, and every Herdr call
 # are bounded, so a dead Herdr server or a wedged listener ends in a durable
@@ -75,6 +75,7 @@ HEALTH_SCHEMA=fm-dashboard-health.v1
 RECORD="$STATE/.dashboard-owner"
 LOG="$STATE/.dashboard-start.log"
 LOCK="$STATE/.dashboard-start.lock"
+QUARANTINE="$STATE/.dashboard-quarantine"
 LOG_MAX_LINES=200
 
 FM_DASHBOARD_PORT=${FM_DASHBOARD_PORT:-8787}
@@ -84,6 +85,58 @@ FM_DASHBOARD_READY_DELAY_MS=${FM_DASHBOARD_READY_DELAY_MS:-200}
 FM_DASHBOARD_LOCK_WAIT=${FM_DASHBOARD_LOCK_WAIT:-15}
 FM_DASHBOARD_HERDR_TIMEOUT=${FM_DASHBOARD_HERDR_TIMEOUT:-2}
 FM_DASHBOARD_HERDR_CLI=${FM_DASHBOARD_HERDR_CLI:-}
+
+STARTUP_PATH_REASON=
+STARTUP_HOME_REAL=$(cd "$FM_HOME" 2>/dev/null && pwd -P || printf '%s' "$FM_HOME")
+startup_path_safe() {  # <path>
+  local path=$1 anchor parent resolved
+  STARTUP_PATH_REASON=
+  [ -L "$path" ] && { STARTUP_PATH_REASON='the path is a symlink'; return 1; }
+  anchor=$path
+  while [ ! -e "$anchor" ] && [ ! -L "$anchor" ]; do
+    case "$anchor" in ''|/) STARTUP_PATH_REASON='the path could not be resolved'; return 1 ;; esac
+    parent=${anchor%/*}
+    [ -n "$parent" ] || parent=/
+    anchor=$parent
+  done
+  [ ! -L "$anchor" ] || { STARTUP_PATH_REASON='an ancestor is a symlink'; return 1; }
+  if [ -e "$anchor" ] && [ ! -d "$anchor" ]; then
+    parent=${anchor%/*}
+    [ -n "$parent" ] || parent=/
+    anchor=$parent
+  fi
+  [ -d "$anchor" ] || { STARTUP_PATH_REASON='the containing path is not a directory'; return 1; }
+  resolved=$(cd "$anchor" 2>/dev/null && pwd -P) || {
+    STARTUP_PATH_REASON='the containing path could not be resolved'; return 1; }
+  case "$resolved" in
+    "$STARTUP_HOME_REAL"|"$STARTUP_HOME_REAL"/*) return 0 ;;
+    *) STARTUP_PATH_REASON='resolves outside this home'; return 1 ;;
+  esac
+}
+
+startup_state_boundary_safe() {
+  startup_path_safe "$STATE" || return 1
+  startup_path_safe "$RECORD" || return 1
+  startup_path_safe "$LOG" || return 1
+  if [ -L "$LOCK" ]; then
+    local lock_target
+    lock_target=$(readlink "$LOCK" 2>/dev/null) || return 1
+    case "$lock_target" in
+      /*) ;;
+      *) lock_target="${LOCK%/*}/$lock_target" ;;
+    esac
+    startup_path_safe "$lock_target" || return 1
+  else
+    startup_path_safe "$LOCK" || return 1
+  fi
+  startup_path_safe "$QUARANTINE" || return 1
+  return 0
+}
+
+if ! startup_state_boundary_safe; then
+  printf 'DASHBOARD_BLOCKED: unsafe dashboard state boundary: %s\n' "$STARTUP_PATH_REASON"
+  exit 1
+fi
 
 validate_bound() {  # <name> <value>
   case "$2" in
@@ -119,6 +172,7 @@ now_epoch() { date +%s; }
 
 log_line() {  # <outcome> <detail>
   local tmp
+  startup_state_boundary_safe || return 0
   mkdir -p "$STATE" 2>/dev/null || return 0
   printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >> "$LOG" 2>/dev/null || return 0
   # Bounded: the diagnostics survive restarts without growing without limit.
@@ -141,7 +195,7 @@ blocked() {  # <reason>
 # --- herdr -----------------------------------------------------------------
 
 herdr_session() {
-  printf '%s' "${HERDR_SESSION:-default}"
+  printf '%s' "${HERDR_SESSION_OVERRIDE:-${HERDR_SESSION:-default}}"
 }
 
 herdr_cli() {  # <herdr-args...>
@@ -181,15 +235,25 @@ herdr_ready() {
 # evidence the pane is gone ONLY when Herdr itself is still answering.
 # Otherwise it is evidence of nothing, and treating it as "gone" would drop a
 # record whose server is still live and still holding its port.
-pane_state() {  # <pane-id>
-  local out
-  if [ -z "$1" ]; then printf 'unknown'; return 0; fi
-  if out=$(herdr_cli pane get "$1" 2>/dev/null) \
-    && printf '%s' "$out" | jq -e '.result.pane.pane_id // empty' >/dev/null 2>&1; then
-    printf 'open'
+pane_state() {  # <pane-id> <session> <workspace> <tab>
+  local pane=$1 session=${2:-$(herdr_session)} workspace=${3:-} tab=${4:-} out
+  if [ -z "$pane" ] || [ -z "$session" ] || [ -z "$workspace" ] || [ -z "$tab" ]; then
+    printf 'unknown'
     return 0
   fi
-  if herdr_cli workspace list >/dev/null 2>&1; then
+  if out=$(HERDR_SESSION_OVERRIDE="$session" herdr_cli pane get "$pane" 2>/dev/null); then
+    if printf '%s' "$out" | jq -e --arg pane "$pane" --arg workspace "$workspace" --arg tab "$tab" '
+      .result.pane.pane_id == $pane
+      and .result.pane.workspace_id == $workspace
+      and .result.pane.tab_id == $tab
+    ' >/dev/null 2>&1; then
+      printf 'open'
+    else
+      printf 'unknown'
+    fi
+    return 0
+  fi
+  if HERDR_SESSION_OVERRIDE="$session" herdr_cli workspace list >/dev/null 2>&1; then
     printf 'gone'
   else
     printf 'unknown'
@@ -197,13 +261,16 @@ pane_state() {  # <pane-id>
   return 0
 }
 
-pane_exists() {  # <pane-id>
-  [ "$(pane_state "$1")" = open ]
+pane_exists() {  # <session> <workspace> <tab> <pane-id>
+  [ "$(pane_state "$4" "$1" "$2" "$3")" = open ]
 }
 
-pane_close() {  # <pane-id>
-  [ -n "$1" ] || return 0
-  herdr_cli pane close "$1" >/dev/null 2>&1 || return 1
+pane_close() {  # <session> <workspace> <tab> <pane-id>
+  local session=$1 workspace=$2 tab=$3 pane=$4
+  [ -n "$pane" ] || return 1
+  [ "$(pane_state "$pane" "$session" "$workspace" "$tab")" = open ] || return 1
+  HERDR_SESSION_OVERRIDE="$session" herdr_cli pane close "$pane" >/dev/null 2>&1 || return 1
+  [ "$(pane_state "$pane" "$session" "$workspace" "$tab")" = gone ] || return 1
   return 0
 }
 
@@ -281,6 +348,7 @@ record_get() {  # <key>
 
 record_write() {  # <session> <workspace> <tab> <pane> <port> <token> <digest>
   local tmp
+  startup_state_boundary_safe || return 1
   mkdir -p "$STATE" || return 1
   tmp=$(umask 077; mktemp "$STATE/.dashboard-owner.XXXXXX") || return 1
   {
@@ -303,18 +371,70 @@ record_write() {  # <session> <workspace> <tab> <pane> <port> <token> <digest>
 
 record_drop() { rm -f -- "$RECORD"; }
 
+quarantine_write() {  # <reason> <session> <workspace> <tab> <pane> <port> <digest>
+  local tmp
+  startup_state_boundary_safe || return 1
+  tmp=$(umask 077; mktemp "$STATE/.dashboard-quarantine.XXXXXX") || return 1
+  {
+    printf 'schema=fm-dashboard-quarantine.v1\n'
+    printf 'reason=%s\n' "$1"
+    printf 'session=%s\n' "$2"
+    printf 'workspace=%s\n' "$3"
+    printf 'tab=%s\n' "$4"
+    printf 'pane=%s\n' "$5"
+    printf 'port=%s\n' "$6"
+    printf 'digest=%s\n' "$7"
+    printf 'created=%s\n' "$(now_epoch)"
+  } > "$tmp" || { rm -f -- "$tmp"; return 1; }
+  chmod 0600 "$tmp" 2>/dev/null || { rm -f -- "$tmp"; return 1; }
+  mv -f -- "$tmp" "$QUARANTINE" || { rm -f -- "$tmp"; return 1; }
+}
+
+cleanup_started() {  # <reason> <port> <digest>
+  local reason=$1 port=$2 digest=$3 state
+  START_CLEANUP_STATUS=clean
+  if [ -z "${STARTED_PANE:-}" ]; then
+    if quarantine_write "$reason" "${STARTED_SESSION:-}" "${STARTED_WORKSPACE:-}" \
+      "${STARTED_TAB:-}" "" "$port" "$digest"; then
+      START_CLEANUP_STATUS=quarantined
+    else
+      START_CLEANUP_STATUS=quarantine-failed
+    fi
+    return 1
+  fi
+  state=$(pane_state "$STARTED_PANE" "${STARTED_SESSION:-}" \
+    "${STARTED_WORKSPACE:-}" "${STARTED_TAB:-}")
+  case "$state" in
+    gone) return 0 ;;
+    open)
+      pane_close "${STARTED_SESSION:-}" "${STARTED_WORKSPACE:-}" \
+        "${STARTED_TAB:-}" "$STARTED_PANE" && return 0
+      ;;
+  esac
+  if quarantine_write "$reason" "${STARTED_SESSION:-}" "${STARTED_WORKSPACE:-}" \
+    "${STARTED_TAB:-}" "$STARTED_PANE" "$port" "$digest"; then
+    START_CLEANUP_STATUS=quarantined
+  else
+    START_CLEANUP_STATUS=quarantine-failed
+  fi
+  return 1
+}
+
 # Adopt the recorded owner when, and only when, every one of its claims still
-# holds. Any single failure makes the record stale rather than usable.
+# holds. An unknown identity is retained rather than treated as stale.
 record_is_live() {  # -> 0 and sets ADOPTED_PORT
-  local home port pane digest health
+  local home session workspace tab port pane digest health
   ADOPTED_PORT=
   [ -f "$RECORD" ] && [ ! -L "$RECORD" ] || return 1
   [ "$(record_get schema)" = "$RECORD_SCHEMA" ] || return 1
   home=$(record_get home); [ "$home" = "$FM_HOME" ] || return 1
+  session=$(record_get session); [ -n "$session" ] || return 1
+  workspace=$(record_get workspace); [ -n "$workspace" ] || return 1
+  tab=$(record_get tab); [ -n "$tab" ] || return 1
   port=$(record_get port); case "$port" in ''|*[!0-9]*) return 1 ;; esac
   digest=$(record_get digest); [ -n "$digest" ] || return 1
   pane=$(record_get pane); [ -n "$pane" ] || return 1
-  pane_exists "$pane" || return 1
+  pane_exists "$session" "$workspace" "$tab" "$pane" || return 1
   health=$(probe_health "$port") || return 1
   health_is_ours "$health" "$digest" || return 1
   ADOPTED_PORT=$port
@@ -352,6 +472,7 @@ pick_port() {  # <digest> -> prints the chosen port
 
 start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
   local port=$1 digest=$2 out ws
+  STARTED_SESSION=$(herdr_session)
   STARTED_WORKSPACE=; STARTED_TAB=; STARTED_PANE=
   # Reuse the session's first workspace when it has one, so a normal firstmate
   # session gains a tab rather than a whole new workspace; create one only when
@@ -378,15 +499,16 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
   return 0
 }
 
-await_ready() {  # <port> <digest> <pane>
-  local port=$1 digest=$2 pane=$3 tries=$FM_DASHBOARD_READY_TRIES health pane_status
+await_ready() {  # <port> <digest> <session> <workspace> <tab> <pane>
+  local port=$1 digest=$2 session=$3 workspace=$4 tab=$5 pane=$6
+  local tries=$FM_DASHBOARD_READY_TRIES health pane_status
   while [ "$tries" -gt 0 ]; do
     if health=$(probe_health "$port") && health_is_ours "$health" "$digest"; then
       return 0
     fi
     # A pane that has already gone means the server exited; stop polling a
     # process that can never answer instead of burning the whole budget.
-    pane_status=$(pane_state "$pane")
+    pane_status=$(pane_state "$pane" "$session" "$workspace" "$tab")
     case "$pane_status" in
       open) ;;
       gone) return 1 ;;
@@ -410,9 +532,14 @@ report_url() {  # <started|reused> <port>
 }
 
 command_ensure() {
-  local digest token port pane
+  local digest token port pane session workspace tab
   [ "$#" -eq 0 ] || { usage >&2; exit 2; }
-  mkdir -p "$STATE" 2>/dev/null || true
+  startup_state_boundary_safe \
+    || { blocked "unsafe dashboard state boundary: $STARTUP_PATH_REASON"; return 1; }
+  mkdir -p "$STATE" 2>/dev/null \
+    || { blocked "the dashboard state directory could not be created"; return 1; }
+  startup_state_boundary_safe \
+    || { blocked "unsafe dashboard state boundary: $STARTUP_PATH_REASON"; return 1; }
 
   command -v python3 >/dev/null 2>&1 \
     || { blocked "python3 is required to serve the dashboard"; return 1; }
@@ -440,6 +567,12 @@ command_ensure() {
   fi
   # From here the lock is held; every exit path must release it.
 
+  if [ -e "$QUARANTINE" ]; then
+    fm_lock_release "$LOCK" >/dev/null 2>&1
+    blocked "dashboard startup is quarantined; inspect $QUARANTINE before retrying"
+    return 1
+  fi
+
   if record_is_live; then
     fm_lock_release "$LOCK" >/dev/null 2>&1
     log_line reused "already serving on port $ADOPTED_PORT"
@@ -454,9 +587,12 @@ command_ensure() {
   # make.
   if [ -f "$RECORD" ]; then
     pane=$(record_get pane)
-    case "$(pane_state "$pane")" in
+    session=$(record_get session)
+    workspace=$(record_get workspace)
+    tab=$(record_get tab)
+    case "$(pane_state "$pane" "$session" "$workspace" "$tab")" in
       open)
-        if ! pane_close "$pane"; then
+        if ! pane_close "$session" "$workspace" "$tab" "$pane"; then
           fm_lock_release "$LOCK" >/dev/null 2>&1
           blocked "the stale dashboard pane $pane could not be closed"
           return 1
@@ -498,26 +634,41 @@ command_ensure() {
   fi
 
   if ! start_pane "$port" "$digest"; then
-    [ -n "${STARTED_PANE:-}" ] && pane_close "$STARTED_PANE"
+    cleanup_started "herdr could not start the dashboard pane" "$port" "$digest" || true
     fm_lock_release "$LOCK" >/dev/null 2>&1
-    blocked "herdr could not start the dashboard pane"
+    if [ "$START_CLEANUP_STATUS" = quarantined ]; then
+      blocked "herdr could not start the dashboard pane; cleanup was quarantined at $QUARANTINE"
+    elif [ "$START_CLEANUP_STATUS" = quarantine-failed ]; then
+      blocked "herdr could not start the dashboard pane; cleanup could not be durably quarantined"
+    else
+      blocked "herdr could not start the dashboard pane"
+    fi
     return 1
   fi
 
-  if ! record_write "$(herdr_session)" "$STARTED_WORKSPACE" "$STARTED_TAB" \
+  if ! record_write "$STARTED_SESSION" "$STARTED_WORKSPACE" "$STARTED_TAB" \
     "$STARTED_PANE" "$port" "$token" "$digest"; then
-    pane_close "$STARTED_PANE"
+    cleanup_started "the dashboard owner record could not be written" "$port" "$digest" || true
     fm_lock_release "$LOCK" >/dev/null 2>&1
-    blocked "the dashboard owner record could not be written"
+    if [ "$START_CLEANUP_STATUS" = quarantined ]; then
+      blocked "the dashboard owner record could not be written; cleanup was quarantined at $QUARANTINE"
+    elif [ "$START_CLEANUP_STATUS" = quarantine-failed ]; then
+      blocked "the dashboard owner record could not be written; cleanup could not be durably quarantined"
+    else
+      blocked "the dashboard owner record could not be written"
+    fi
     return 1
   fi
 
-  await_ready "$port" "$digest" "$STARTED_PANE"
+  await_ready "$port" "$digest" "$STARTED_SESSION" "$STARTED_WORKSPACE" \
+    "$STARTED_TAB" "$STARTED_PANE"
   local ready_rc=$?
   if [ "$ready_rc" -ne 0 ]; then
-    case "$(pane_state "$STARTED_PANE")" in
+    case "$(pane_state "$STARTED_PANE" "$STARTED_SESSION" \
+      "$STARTED_WORKSPACE" "$STARTED_TAB")" in
       open)
-        if ! pane_close "$STARTED_PANE"; then
+        if ! pane_close "$STARTED_SESSION" "$STARTED_WORKSPACE" \
+          "$STARTED_TAB" "$STARTED_PANE"; then
           fm_lock_release "$LOCK" >/dev/null 2>&1
           blocked "the dashboard was not ready and its pane could not be closed; the owner record was kept"
           return 1
@@ -568,16 +719,24 @@ command_status() {
 }
 
 command_stop() {
-  local pane
+  local pane session workspace tab
   [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  if [ -L "$RECORD" ]; then
+    blocked "the dashboard owner record is a symlink and was not read"
+    return 1
+  fi
   if [ ! -f "$RECORD" ]; then
     printf 'dashboard: nothing to stop\n'
     return 0
   fi
+  session=$(record_get session)
+  workspace=$(record_get workspace)
+  tab=$(record_get tab)
   pane=$(record_get pane)
-  case "$(pane_state "$pane")" in
+  case "$(pane_state "$pane" "$session" "$workspace" "$tab")" in
     open)
-      pane_close "$pane" || { blocked "herdr could not close the dashboard pane $pane"; return 1; }
+      pane_close "$session" "$workspace" "$tab" "$pane" \
+        || { blocked "herdr could not close the dashboard pane $pane"; return 1; }
       log_line stopped "closed pane $pane"
       printf 'dashboard: stopped\n'
       ;;

@@ -184,6 +184,36 @@ test_an_unprovable_owner_is_never_silently_replaced() {
   pass "an owner that cannot be proven dead is never silently replaced"
 }
 
+test_owner_lifecycle_uses_the_recorded_herdr_session() {
+  local home port first second
+  home=$(make_home recorded-session)
+  port=$(free_port)
+  first=$(start "$home" "$port" ensure) || fail "the first ensure failed: $first"
+  second=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FAKE_HERDR_STATE="$home/herdr" \
+    FAKE_HERDR_PANE_GONE_SESSION=other HERDR_SESSION=other \
+    FM_DASHBOARD_PORT="$port" "$START" ensure 2>&1) \
+    || fail "the second ensure failed instead of adopting the recorded session: $second"
+  assert_contains "$second" "already running" "the owner was not checked in its recorded session"
+  [ "$(pane_count "$home")" = "1" ] || fail "a second pane was created after an ambient session change"
+  pass "owner lifecycle checks remain bound to the recorded Herdr session"
+}
+
+test_a_mismatched_pane_identity_is_unknown_and_preserved() {
+  local home port first second pane
+  home=$(make_home wrong-pane)
+  port=$(free_port)
+  first=$(start "$home" "$port" ensure) || fail "the first ensure failed: $first"
+  pane=$(sed -n 's/^pane=//p' "$home/state/.dashboard-owner")
+  second=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FAKE_HERDR_STATE="$home/herdr" \
+    FAKE_HERDR_RETURN_PANE_ID=w1p99 FM_DASHBOARD_PORT="$port" "$START" ensure 2>&1) && \
+    fail "a mismatched pane response was accepted: $second"
+  assert_contains "$second" "DASHBOARD_BLOCKED" "a mismatched pane response was not treated as unknown"
+  [ "$(sed -n 's/^pane=//p' "$home/state/.dashboard-owner")" = "$pane" ] \
+    || fail "the owner record was replaced after an identity mismatch"
+  [ "$(pane_count "$home")" = "1" ] || fail "a second pane was created after an identity mismatch"
+  pass "a mismatched Herdr pane identity is unknown and the owner is preserved"
+}
+
 test_a_foreign_listener_is_a_collision_not_an_adoption() {
   local home port foreign out url
   home=$(make_home collision)
@@ -262,6 +292,36 @@ test_a_hung_herdr_call_is_bounded_and_blocks() {
   pass "a hung Herdr call is bounded and produces a durable startup blocker"
 }
 
+test_a_symlinked_state_boundary_is_refused_without_outside_writes() {
+  local home outside out
+  home=$(make_home symlink-state)
+  outside="$TMP_ROOT/outside-state"
+  mkdir -p "$outside"
+  rm -rf "$home/state"
+  ln -s "$outside" "$home/state"
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FAKE_HERDR_STATE="$home/herdr" \
+    FM_DASHBOARD_PORT="$(free_port)" "$START" ensure 2>&1) && \
+    fail "a symlinked state directory was accepted: $out"
+  assert_contains "$out" "DASHBOARD_BLOCKED" "the symlinked state refusal was unclear"
+  [ ! -e "$outside/.dashboard-owner" ] || fail "the owner record escaped through a state symlink"
+  [ ! -e "$outside/.dashboard-start.log" ] || fail "the diagnostics escaped through a state symlink"
+  pass "a symlinked startup state boundary is refused before outside writes"
+}
+
+test_failed_cleanup_is_quarantined_before_retry() {
+  local home port out
+  home=$(make_home cleanup-quarantine)
+  port=$(free_port)
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FAKE_HERDR_STATE="$home/herdr" \
+    FAKE_HERDR_FAIL="pane run" FAKE_HERDR_CLOSE_FAIL=1 FM_DASHBOARD_PORT="$port" \
+    "$START" ensure 2>&1) && fail "an orphaned launch was reported as successful: $out"
+  assert_contains "$out" "DASHBOARD_BLOCKED" "failed cleanup did not block startup"
+  [ -f "$home/state/.dashboard-quarantine" ] || fail "failed cleanup was not durably quarantined"
+  printf '%s' "$out" | grep -q '^FIRSTMATE_DASHBOARD_URL=' \
+    && fail "a URL was printed after cleanup became uncertain"
+  pass "uncertain launch cleanup is durably quarantined before another start"
+}
+
 test_no_free_port_blocks_without_a_url() {
   local home port out
   home=$(make_home no-port)
@@ -313,11 +373,15 @@ test_a_repeat_start_adopts_the_running_dashboard
 test_concurrent_starts_converge_on_one_dashboard
 test_a_dead_owner_is_replaced_rather_than_reported
 test_an_unprovable_owner_is_never_silently_replaced
+test_owner_lifecycle_uses_the_recorded_herdr_session
+test_a_mismatched_pane_identity_is_unknown_and_preserved
 test_a_foreign_listener_is_a_collision_not_an_adoption
 test_a_dashboard_for_another_home_is_not_adopted
 test_no_url_is_printed_when_readiness_cannot_be_proven
 test_a_missing_runtime_blocks_instead_of_guessing
 test_a_hung_herdr_call_is_bounded_and_blocks
+test_a_symlinked_state_boundary_is_refused_without_outside_writes
+test_failed_cleanup_is_quarantined_before_retry
 test_no_free_port_blocks_without_a_url
 test_status_reports_without_changing_anything
 test_stop_closes_the_pane_and_releases_the_port

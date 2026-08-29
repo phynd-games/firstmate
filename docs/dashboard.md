@@ -57,8 +57,9 @@ A health answer counts as this home's dashboard only when its schema, home, and 
 That is what separates our dashboard from an unrelated local process that happens to hold the port, which a bare port check cannot tell apart.
 
 **Repeat starts converge.** A per-home lock serializes concurrent starts, and a start that cannot take the lock waits, re-reads the winner's record, and reports that URL rather than starting a second server.
-A record whose pane is gone, whose health does not answer, or whose identity does not match is stale: its pane is closed, the record is dropped, and startup begins again.
+A record whose exact pane is gone or whose health does not answer is stale: its pane is closed, the record is dropped, and startup begins again.
 A pane whose state Herdr cannot confirm is neither reclaimed nor discarded - starting a second server beside one that may still be live is exactly the false claim the command refuses to make.
+An unknown or mismatched pane identity is preserved and blocks replacement for the same reason.
 
 **Ports.** A port already held by something that is not ours is a collision, and startup moves to the next candidate rather than reporting a URL that belongs to another process.
 
@@ -71,6 +72,7 @@ bin/fm-dashboard-start.sh ensure   # start or adopt, then print the proven URL
 ```
 
 Attempt history lands in `state/.dashboard-start.log`, bounded, one line per outcome.
+An uncertain launch also lands in `state/.dashboard-quarantine` and blocks replacement until the ownership evidence is resolved.
 
 | Variable | Default | Effect |
 | -------- | ------- | ------ |
@@ -79,6 +81,7 @@ Attempt history lands in `state/.dashboard-start.log`, bounded, one line per out
 | `FM_DASHBOARD_READY_TRIES` | 30 | readiness polls before giving up |
 | `FM_DASHBOARD_READY_DELAY_MS` | 200 | delay between readiness polls |
 | `FM_DASHBOARD_LOCK_WAIT` | 15 | seconds to wait for the startup lock |
+| `FM_DASHBOARD_HERDR_TIMEOUT` | 2 | seconds allowed for each Herdr call |
 
 ## What the page shows
 
