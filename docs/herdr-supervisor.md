@@ -45,7 +45,7 @@ It is not a second lifecycle authority.
   Only the watcher touches that beacon, so no helper can make a wedged watcher look alive.
 - It never acknowledges a wake, merges, tears down, promotes, steers a task, or invokes no-mistakes.
   Its only durable queue write is the `check: herdr-supervisor` escalation below.
-- It stands down whenever another owner is provable, so a home never runs two continuity owners.
+- It becomes a Herdr-tracked standby whenever another owner is provable, preserving the exact binding so it can resume if that owner disappears; only one owner actively arms a watcher.
 
 ## When it runs
 
@@ -93,7 +93,7 @@ Recovery is bounded, idempotent, and generation-safe.
 | Situation | What happens |
 | --- | --- |
 | Watcher exits on a wake | The loop re-arms immediately; the wake is already durable on the queue |
-| Arm crashes, is killed, or fails | Bounded exponential retry in rounds of five attempts by default, then a durable alarm and escalation while the tracked continuity owner remains alive for the next round |
+| Arm crashes, is killed, or fails | Every attempt leaves a durable alarm, ledger entry, and queue escalation; bounded exponential retry runs in rounds of five attempts by default while the tracked continuity owner remains alive |
 | Stale or dead watcher lock | The arm layer's own self-eviction and steal path settles it; the supervisor never evicts a watcher itself |
 | Stale or missing watcher beacon | The arm layer refuses to report a watcher it cannot verify, so the loop keeps trying within its bound |
 | Supervisor process killed | Unhealthy at the next `ensure`, which establishes a fresh generation |
@@ -105,7 +105,8 @@ Recovery is bounded, idempotent, and generation-safe.
 | Herdr server not running | Refused with a durable diagnostic naming the missing server; no server is ever started from here |
 | Herdr CLI hangs | Bounded and treated as a failed read, so no caller can be wedged |
 
-Every failed or ambiguous establish and every exhausted retry writes `state/.herdr-supervisor-alarm` and appends one `check: herdr-supervisor` record to the durable wake queue.
+Every failed or ambiguous establish and every failed arm attempt writes `state/.herdr-supervisor-alarm` and appends one `check: herdr-supervisor` record to the durable wake queue.
+When another owner is provable, the Herdr loop remains alive as a standby and rechecks ownership until it can resume arming.
 That reuses the channels that already exist rather than inventing one, so the lapse reaches the captain through the normal drain.
 
 ## Guarantees, and what is not guaranteed
@@ -113,7 +114,7 @@ That reuses the channels that already exist rather than inventing one, so the la
 Guaranteed while the Herdr server that hosts the supervisor stays up:
 
 - After one successful `ensure`, a watcher cycle follows every watcher cycle until the home stops needing supervision, another owner takes over, or an external Herdr failure prevents the tracked owner from continuing.
-- Exactly one continuity owner per home.
+- At most one active watcher-arm authority per home; a Herdr standby may preserve the handoff binding while another owner is active.
 - No wake is lost, because the watcher appends every reason to the durable queue before it exits.
 - No healthy claim from a stale beacon, a recycled pid, or an unknown Herdr pane.
 
@@ -143,7 +144,7 @@ Tuning environment variables, all optional, are named in the script header: hear
 
 All under `state/`, all private to the home.
 
-- `.herdr-supervisor` - the binding: generation, home, Herdr session and socket, workspace, tab, pane.
+- `.herdr-supervisor` - the binding: generation, home, Herdr session and socket, workspace, tab, pane, and active or quarantine mode.
   Written only by `ensure` and `retire`.
 - `.herdr-supervisor-live` - the loop's own generation, pid, and process identity.
   Written only by the loop.
@@ -158,7 +159,7 @@ All under `state/`, all private to the home.
 ## Regression coverage
 
 `tests/fm-herdr-supervisor.test.sh` drives the real script against a stateful fake Herdr CLI and a scripted arm.
-It proves the central claim by counting arm invocations - one establish must produce many cycles, which is exactly what the incident lacked - and covers deference to away mode and to a loaded Pi extension, idempotent repeat establishes, recycled pids, superseded generations, stale heartbeats on a live but stopped supervisor, foreign pane processes, replaced Herdr servers, broken pane bindings, bounded retry with durable escalation, incomplete and partial Herdr responses, retire, beacon separation, and both config gates.
+It proves the central claim by counting arm invocations - one establish must produce many cycles, which is exactly what the incident lacked - and covers deference to away mode and to a loaded Pi extension, standby handoff, idempotent repeat establishes, recycled pids, post-query identity changes, superseded generations, stale heartbeats on a live but stopped supervisor, foreign pane processes, replaced Herdr servers, broken pane bindings, bounded retry with durable escalation, incomplete and partial Herdr responses, quarantine cleanup, retire, beacon separation, and both config gates.
 
 Every gate in that list is mutation-tested: reverting the guard in the script makes its case fail.
 

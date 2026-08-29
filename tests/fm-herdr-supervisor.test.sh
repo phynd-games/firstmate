@@ -96,6 +96,7 @@ case "${1:-}" in
         exit 0
         ;;
       close)
+        [ ! -f "$S/close-fails" ] || exit 1
         printf '%s\n' "${3:-}" >> "$S/closed-workspaces"
         exit 0
         ;;
@@ -121,6 +122,12 @@ case "${1:-}" in
         pid=$(cat "$S/loop-pid" 2>/dev/null || echo 0)
         [ ! -s "$S/process-pid-override" ] || pid=$(cat "$S/process-pid-override")
         printf '{"result":{"process_info":{"pane_id":"%s","shell_pid":%s}}}\n' "$pane" "$pid"
+        race_stat=$(cat "$S/health-race-stat" 2>/dev/null || true)
+        if [ -n "$race_stat" ] && [ ! -f "$S/health-raced" ]; then
+          touch "$S/health-raced"
+          sed 's/ [0-9][0-9]*$/ 999/' "$race_stat" > "$race_stat.new" \
+            && mv "$race_stat.new" "$race_stat"
+        fi
         exit 0
         ;;
       run)
@@ -182,6 +189,7 @@ run_supervisor() {  # <home> <fakebin> <args...>
   FM_STATE_OVERRIDE="$home/state" \
   FM_CONFIG_OVERRIDE="$home/config" \
   FM_FAKE_HERDR_STATE="$home/fakestate" \
+  FM_PROC_ROOT_OVERRIDE="${FM_PROC_ROOT_OVERRIDE:-}" \
   FM_TEST_ARM_COUNT="$home/arm.count" \
   FM_WATCH_ARM_SCRIPT="$home/arm.sh" \
   FM_SUPERVISION_MODEL="${FM_TEST_SUPERVISION_MODEL:-extension}" \
@@ -397,6 +405,7 @@ fm_write_meta "$HOME8B/state/replace-task.meta" "window=firstmate:fm-replace-tas
 run_supervisor "$HOME8B" "$FAKEBIN" ensure >/dev/null 2>&1 \
   || fail "establish failed for replacement case"
 GEN8B=$(record_field "$HOME8B" generation)
+stop_loop "$HOME8B"
 touch -t 200001010000 "$HOME8B/state/.herdr-supervisor-heartbeat"
 out=$(run_supervisor "$HOME8B" "$FAKEBIN" ensure 2>&1)
 assert_contains "$out" "herdr-supervisor: started" "an unhealthy owner is replaced"
@@ -497,6 +506,37 @@ pass "a Herdr pane tracking a different process is never read as healthy"
 stop_loop "$HOME10D"
 
 # =============================================================================
+# 10e. A supervisor identity change after the final pane query is unhealthy.
+# =============================================================================
+HOME10E=$(new_home identity-race)
+make_arm_stub "$HOME10E/arm.sh" ok
+fm_write_meta "$HOME10E/state/race-task.meta" "window=firstmate:fm-race-task"
+run_supervisor "$HOME10E" "$FAKEBIN" ensure >/dev/null 2>&1 \
+  || fail "establish failed for the identity-race case"
+RACE_PID=$(cat "$HOME10E/fakestate/loop-pid")
+mkdir -p "$HOME10E/fakeproc/$RACE_PID"
+stat_tail=
+for _ in $(seq 1 19); do stat_tail="$stat_tail 0"; done
+stat_tail="$stat_tail 123"
+printf '(bash)%s\n' "$stat_tail" > "$HOME10E/fakeproc/$RACE_PID/stat"
+printf 'bash' > "$HOME10E/fakeproc/$RACE_PID/cmdline"
+case "$(uname -s)" in
+  Linux) race_identity_prefix=linux-starttime ;;
+  *) race_identity_prefix=proc-starttime ;;
+esac
+sed "s/^loop_identity=.*/loop_identity=$race_identity_prefix=123 cmdline-hex=62617368/" \
+  "$HOME10E/state/.herdr-supervisor-live" > "$HOME10E/state/.herdr-supervisor-live.new"
+mv "$HOME10E/state/.herdr-supervisor-live.new" "$HOME10E/state/.herdr-supervisor-live"
+printf '%s\n' "$HOME10E/fakeproc/$RACE_PID/stat" > "$HOME10E/fakestate/health-race-stat"
+out=$(FM_PROC_ROOT_OVERRIDE="$HOME10E/fakeproc" run_supervisor "$HOME10E" "$FAKEBIN" status 2>&1)
+assert_contains "$out" "supervisor: unhealthy" \
+  "an identity change during health checking is unhealthy"
+assert_contains "$out" "identity changed" \
+  "the unhealthy reason names the post-query identity change"
+pass "health revalidates supervisor identity after the pane query"
+stop_loop "$HOME10E"
+
+# =============================================================================
 # 11. A repeatedly failing arm reaches an exact retry bound, alarms durably,
 #     escalates through the existing wake queue, and leaves the continuity owner
 #     alive for another recovery round.
@@ -505,8 +545,9 @@ HOME11=$(new_home failing-arm)
 make_arm_stub "$HOME11/arm.sh" fail
 fm_write_meta "$HOME11/state/failing-task.meta" "window=firstmate:fm-failing-task"
 out=$(FM_TEST_READY_TIMEOUT=15 FM_TEST_RETRY_MAX=1 run_supervisor "$HOME11" "$FAKEBIN" ensure 2>&1) || true
-wait_for 25 test -f "$HOME11/state/.herdr-supervisor-alarm" \
-  || fail "a repeatedly failing arm left no durable alarm"
+alarm_has_retry_bound() { grep -q "retry bound was reached" "$1/state/.herdr-supervisor-alarm" 2>/dev/null; }
+wait_for 25 alarm_has_retry_bound "$HOME11" \
+  || fail "a repeatedly failing arm left no durable retry-bound alarm"
 assert_grep "retry bound was reached" "$HOME11/state/.herdr-supervisor-alarm" \
   "the alarm names the exact retry-bound exhaustion"
 assert_grep "continuity owner remains active" "$HOME11/state/.herdr-supervisor-alarm" \
@@ -724,5 +765,95 @@ wait_for 10 record_gone "$HOME17B" \
 assert_grep 'wZ' "$HOME17B/fakestate/closed-workspaces" \
   "config off retired the exact supervisor workspace"
 pass "config/herdr-supervisor=off retires a running owner on the next loop pass"
+
+# =============================================================================
+# 18. A foreign owner is a handoff, not a teardown: the Herdr owner remains as
+#     a standby and resumes when the foreign owner disappears.
+# =============================================================================
+HOME18=$(new_home handoff-standby)
+make_arm_stub "$HOME18/arm.sh" ok
+fm_write_meta "$HOME18/state/handoff-task.meta" "window=firstmate:fm-handoff-task"
+run_supervisor "$HOME18" "$FAKEBIN" ensure >/dev/null 2>&1 \
+  || fail "establish failed for the handoff case"
+wait_for 10 arm_count_at_least "$HOME18" 2 \
+  || fail "the handoff supervisor did not reach a steady arm cycle"
+before=$(cat "$HOME18/arm.count" 2>/dev/null || echo 0)
+: > "$HOME18/state/.afk"
+sleep 300 &
+HANDOFF_PID=$!
+mkdir -p "$HOME18/state/.supervise-daemon.lock"
+printf '%s\n' "$HANDOFF_PID" > "$HOME18/state/.supervise-daemon.lock/pid"
+fm_test_pid_identity "$HANDOFF_PID" > "$HOME18/state/.supervise-daemon.lock/pid-identity" \
+  || fail "could not record the handoff daemon identity"
+sleep 2
+after=$(cat "$HOME18/arm.count" 2>/dev/null || echo 0)
+[ "$after" = "$before" ] || fail "the standby supervisor armed while a foreign owner was live"
+assert_present "$HOME18/state/.herdr-supervisor" \
+  "the handoff retains the exact supervisor binding"
+kill "$HANDOFF_PID" 2>/dev/null || true
+wait "$HANDOFF_PID" 2>/dev/null || true
+rm -rf "$HOME18/state/.supervise-daemon.lock" "$HOME18/state/.afk"
+wait_for 10 arm_count_at_least "$HOME18" $((before + 1)) \
+  || fail "the standby supervisor did not resume after the foreign owner disappeared"
+pass "handoff retains a standby owner and resumes after foreign ownership ends"
+stop_loop "$HOME18"
+
+# =============================================================================
+# 19. A failed cleanup keeps the exact binding quarantined until a later retry
+#     closes it, and only then permits a replacement.
+# =============================================================================
+HOME19=$(new_home cleanup-quarantine)
+make_arm_stub "$HOME19/arm.sh" ok
+fm_write_meta "$HOME19/state/quarantine-task.meta" "window=firstmate:fm-quarantine-task"
+run_supervisor "$HOME19" "$FAKEBIN" ensure >/dev/null 2>&1 \
+  || fail "establish failed for the cleanup case"
+old_generation=$(record_field "$HOME19" generation)
+: > "$HOME19/fakestate/close-fails"
+out=$(run_supervisor "$HOME19" "$FAKEBIN" retire --reason "cleanup test" 2>&1) \
+  && fail "retire reported success when Herdr close failed"
+assert_present "$HOME19/state/.herdr-supervisor" \
+  "cleanup failure preserves the supervisor binding"
+[ "$(record_field "$HOME19" mode)" = quarantine ] \
+  || fail "cleanup failure did not quarantine the binding"
+assert_absent "$HOME19/fakestate/closed-workspaces" \
+  "cleanup failure does not claim a workspace was closed"
+rm -f "$HOME19/fakestate/close-fails"
+out=$(run_supervisor "$HOME19" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "started" "a later ensure retries quarantined cleanup"
+[ "$(record_field "$HOME19" generation)" != "$old_generation" ] \
+  || fail "cleanup retry reused the quarantined generation"
+assert_grep 'wZ' "$HOME19/fakestate/closed-workspaces" \
+  "cleanup retry closes the exact quarantined workspace"
+pass "cleanup failures quarantine exact ownership before replacement"
+stop_loop "$HOME19"
+
+# =============================================================================
+# 20. A failed arm leaves durable evidence even when the next attempt succeeds.
+# =============================================================================
+HOME20=$(new_home arm-evidence)
+fm_write_meta "$HOME20/state/evidence-task.meta" "window=firstmate:fm-evidence-task"
+cat > "$HOME20/arm.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+C="${FM_TEST_ARM_COUNT:?}"
+n=$(( $(cat "$C" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$C"
+if [ "$n" -eq 1 ]; then
+  echo "watcher: FAILED - injected first arm failure"
+  exit 1
+fi
+echo "signal: /fake/state/task.status"
+SH
+chmod +x "$HOME20/arm.sh"
+run_supervisor "$HOME20" "$FAKEBIN" ensure >/dev/null 2>&1 \
+  || fail "establish failed for the arm-evidence case"
+wait_for 10 arm_count_at_least "$HOME20" 2 \
+  || fail "the arm did not recover after its first failure"
+assert_grep 'cycle-failed' "$HOME20/state/.herdr-supervisor.log" \
+  "the failed arm remains in the durable ledger"
+assert_grep 'check' "$HOME20/state/.wake-queue" \
+  "the failed arm remains in the durable wake queue after recovery"
+pass "each failed arm leaves durable evidence after a later success"
+stop_loop "$HOME20"
 
 echo "all fm-herdr-supervisor tests passed"
