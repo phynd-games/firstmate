@@ -53,15 +53,32 @@ function lockOwnership(): LockOwnership {
   return pidAlive(lockPid) ? "other" : "missing";
 }
 
+let markerRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let markerRetryAttempts = 0;
+
+function retryMarkLoaded(): void {
+  if (markerRetryTimer || markerRetryAttempts >= 50) return;
+  markerRetryAttempts += 1;
+  markerRetryTimer = setTimeout(() => {
+    markerRetryTimer = undefined;
+    markLoaded();
+  }, 100);
+}
+
 function markLoaded(): void {
   if (!existsSync(state) || lockOwnership() === "other") return;
   let lockIdentity = "";
   try {
     lockIdentity = readFileSync(`${state}/.lock-pid-identity`, "utf8").trim();
   } catch {
+    retryMarkLoaded();
     return;
   }
-  if (!lockIdentity) return;
+  if (!lockIdentity) {
+    retryMarkLoaded();
+    return;
+  }
+  markerRetryAttempts = 0;
   writeFileSync(marker, `${extensionVersion}\n${process.pid}\n${lockIdentity}\n`);
 }
 
