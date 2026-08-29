@@ -218,14 +218,20 @@ bool_json() {
 
 SNAPSHOT_HOME_REAL=$(cd "$FM_HOME" 2>/dev/null && pwd -P || printf '%s' "$FM_HOME")
 SNAPSHOT_FILE_REASON=
-snapshot_local_file_safe() {  # <path>
+SNAPSHOT_REAL=
+snapshot_local_path_safe() {  # <path>
   local path=$1 dir base real
   SNAPSHOT_FILE_REASON=
+  SNAPSHOT_REAL=
+  [ -n "$path" ] || {
+    SNAPSHOT_FILE_REASON='not present'
+    return 1
+  }
   if [ -L "$path" ]; then
     SNAPSHOT_FILE_REASON='refused: the path is a symlink'
     return 1
   fi
-  if [ ! -f "$path" ]; then
+  if [ ! -e "$path" ]; then
     SNAPSHOT_FILE_REASON='not present'
     return 1
   fi
@@ -238,10 +244,19 @@ snapshot_local_file_safe() {  # <path>
   }
   real="$real/$base"
   case "$real" in
-    "$SNAPSHOT_HOME_REAL"/*) ;;
+    "$SNAPSHOT_HOME_REAL"/*) SNAPSHOT_REAL=$real ;;
     *) SNAPSHOT_FILE_REASON='refused: resolves outside this home'; return 1 ;;
   esac
-  [ -r "$real" ] || {
+  return 0
+}
+
+snapshot_local_file_safe() {  # <path>
+  snapshot_local_path_safe "$1" || return 1
+  [ -f "$SNAPSHOT_REAL" ] || {
+    SNAPSHOT_FILE_REASON='refused: not a regular file'
+    return 1
+  }
+  [ -r "$SNAPSHOT_REAL" ] || {
     SNAPSHOT_FILE_REASON='not readable'
     return 1
   }
@@ -250,7 +265,11 @@ snapshot_local_file_safe() {  # <path>
 
 path_present_json() {  # <path>
   local present=0
-  [ -e "$1" ] && present=1
+  if [ "$LOCAL_ONLY" -eq 1 ]; then
+    snapshot_local_path_safe "$1" && present=1
+  else
+    [ -e "$1" ] && present=1
+  fi
   jq -n --arg path "$1" --argjson present "$(bool_json "$present")" \
     '{path:$path,present:$present}'
 }
@@ -456,7 +475,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
              body_excerpt:null}
         end;
     reduce inputs as $line
-      ({path:$path,present:true,records:[],section:null,order:0};
+      ({path:$path,present:true,available:true,reason:null,records:[],section:null,order:0};
        if ($line | test("^##[[:space:]]+")) then
          .section = (($line | sub("^##[[:space:]]+";"") | trim) | section_state)
        elif .section == null or ($line | trim) == "" then

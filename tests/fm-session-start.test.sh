@@ -1828,7 +1828,7 @@ EOF
   assert_contains "$out" "RUNTIME BOUND" "the truncation banner did not name the bound it hit"
   assert_contains "$out" 'stopped during the "bootstrap" stage' "the truncation banner did not name the incomplete stage"
   assert_contains "$out" "RECONCILE these stages" "the truncation banner did not tell the agent what to reconcile"
-  assert_contains "$out" "wake-queue supervision-instructions read-once fleet-state network-checks context next-step" \
+  assert_contains "$out" "wake-queue supervision-instructions read-once fleet-state network-checks dashboard context next-step" \
     "the truncation banner did not list every stage that never ran"
   assert_not_contains "$out" "NEXT STEP" "a truncated digest claimed to have reached its closing reminder"
   assert_absent "$home/state/.session-start-complete" \

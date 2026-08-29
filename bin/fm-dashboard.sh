@@ -235,6 +235,7 @@ payload_is_valid() {  # <payload-file>
       and has_type(.roots; "data"; "string") and has_type(.roots; "config"; "string")
       and has_type(.roots; "projects"; "string") and has_type(.; "backlog"; "object")
       and has_type(.backlog; "path"; "string") and has_type(.backlog; "present"; "boolean")
+      and has_type(.backlog; "available"; "boolean") and has_nullable(.backlog; "reason"; "string")
       and has_type(.backlog; "records"; "array") and all(.backlog.records[]; backlog_record)
       and has_type(.; "tasks"; "array") and all(.tasks[]; task)
       and has_type(.; "scout_reports"; "array")
@@ -253,10 +254,18 @@ payload_is_valid() {  # <payload-file>
     and has_type(.supervision; "reason"; "string") and has_type(.supervision; "beacon_present"; "boolean")
     and has_nullable(.supervision; "beacon_age_seconds"; "number")
     and has_type(.supervision; "away_mode"; "boolean") and has_type(.supervision; "recovery_marker"; "boolean")
-    and has_type(.supervision; "wakes"; "object") and has_type(.supervision.wakes; "records"; "array")
+    and has_type(.supervision; "wakes"; "object")
+    and has_type(.supervision.wakes; "total"; "number")
+    and has_type(.supervision.wakes; "shown"; "number")
+    and has_type(.supervision.wakes; "truncated"; "number")
+    and has_type(.supervision.wakes; "available"; "boolean")
+    and has_nullable(.supervision.wakes; "reason"; "string")
+    and has_type(.supervision.wakes; "records"; "array")
     and all(.supervision.wakes.records[]; wake)
     and has_type(.; "events"; "array") and all(.events[]; event)
-    and has_type(.; "reports"; "object") and has_type(.reports; "records"; "array")
+    and has_type(.; "reports"; "object")
+    and has_type(.reports; "total"; "number") and has_type(.reports; "shown"; "number")
+    and has_type(.reports; "truncated"; "number") and has_type(.reports; "records"; "array")
     and all(.reports.records[]; report)
     and has_type(.; "usage"; "object") and has_type(.usage; "budget"; "object")
     and has_type(.usage.budget; "available"; "boolean") and has_nullable(.usage.budget; "reason"; "string")
@@ -291,6 +300,8 @@ snapshot_is_valid() {  # <snapshot-file>
     and ((.backlog | type) == "object")
     and ((.backlog.path | type) == "string")
     and ((.backlog.present | type) == "boolean")
+    and ((.backlog.available | type) == "boolean")
+    and ((.backlog.reason == null) or ((.backlog.reason | type) == "string"))
     and ((.backlog.records | type) == "array")
     and all(.tasks[]; type == "object" and (.id | type) == "string")
     and ((.tasks | type) == "array")
@@ -853,6 +864,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 SELF = os.environ["FM_DASHBOARD_SELF"]
 PORT = int(os.environ["FM_DASHBOARD_BIND_PORT"])
+HTTP_IO_TIMEOUT = 5
 # Only the DIGEST of the owner token reaches this process, and only the digest
 # is ever published. A caller proves it started this exact server for this
 # exact home by hashing the token it holds privately and comparing; the token
@@ -871,6 +883,10 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "fm-dashboard"
     sys_version = ""
 
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(HTTP_IO_TIMEOUT)
+
     def _send(self, code, body, ctype):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -878,7 +894,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except OSError:
+            self.close_connection = True
 
     def do_GET(self):
         # One page and one liveness probe. Every other path is refused: this

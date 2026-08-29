@@ -17,6 +17,7 @@ set -u
 
 STATE=${FAKE_HERDR_STATE:?fake-herdr needs FAKE_HERDR_STATE}
 mkdir -p "$STATE/panes"
+mkdir -p "$STATE/tabs"
 SESSION=default
 
 # FAKE_HERDR_DOWN models an unreachable Herdr server: every call fails, which
@@ -34,6 +35,7 @@ fail_if_requested() {  # <subcommand-pair>
 
 # Drop the flags the caller passes; capture only the values this double needs.
 WORKSPACE=
+LABEL=
 args=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -41,8 +43,12 @@ while [ "$#" -gt 0 ]; do
       SESSION=${2:-default}
       shift 2 || shift
       ;;
-    --workspace|--cwd|--label)
+    --workspace|--cwd)
       [ "$1" = --workspace ] && WORKSPACE=${2:-}
+      shift 2 || shift
+      ;;
+    --label)
+      LABEL=${2:-}
       shift 2 || shift
       ;;
     --focus|--no-focus) shift ;;
@@ -63,7 +69,10 @@ case "${1:-}:${2:-}" in
   workspace:list)
     fail_if_requested "workspace list"
     if [ -f "$STATE/workspace" ]; then
-      printf '{"result":{"workspaces":[{"workspace_id":"%s"}]}}\n' "$(cat "$STATE/workspace")"
+      workspace_id=$(cat "$STATE/workspace")
+      workspace_label=$(cat "$STATE/workspace.label" 2>/dev/null || true)
+      printf '{"result":{"workspaces":[{"workspace_id":"%s","label":"%s"}]}}\n' \
+        "$workspace_id" "$workspace_label"
     else
       printf '{"result":{"workspaces":[]}}\n'
     fi
@@ -71,15 +80,49 @@ case "${1:-}:${2:-}" in
   workspace:create)
     fail_if_requested "workspace create"
     printf 'w1\n' > "$STATE/workspace"
+    printf '%s\n' "$LABEL" > "$STATE/workspace.label"
+    [ "${FAKE_HERDR_LOST_RESPONSE:-}" = "workspace create" ] && exit 1
     printf '{"result":{"workspace":{"workspace_id":"w1"}}}\n'
+    ;;
+  tab:list)
+    fail_if_requested "tab list"
+    printf '{"result":{"tabs":['
+    first=1
+    for tab_label in "$STATE"/tabs/*.label; do
+      [ -e "$tab_label" ] || continue
+      tab_id=${tab_label##*/}; tab_id=${tab_id%.label}
+      [ "${first}" -eq 1 ] || printf ','
+      printf '{"tab_id":"%s","workspace_id":"%s","label":"%s"}' \
+        "$tab_id" "${tab_id%%:*}" "$(cat "$tab_label")"
+      first=0
+    done
+    printf ']}}\n'
     ;;
   tab:create)
     fail_if_requested "tab create"
     n=$(next_id tab)
     [ -n "$WORKSPACE" ] || WORKSPACE=w1
+    printf '%s\n' "$LABEL" > "$STATE/tabs/${WORKSPACE}:t${n}.label"
     printf 'open\n' > "$STATE/panes/${WORKSPACE}p${n}.state"
+    [ "${FAKE_HERDR_LOST_RESPONSE:-}" = "tab create" ] && exit 1
     printf '{"result":{"tab":{"tab_id":"%s:t%s"},"root_pane":{"pane_id":"%sp%s"}}}\n' \
       "$WORKSPACE" "$n" "$WORKSPACE" "$n"
+    ;;
+  pane:list)
+    fail_if_requested "pane list"
+    printf '{"result":{"panes":['
+    first=1
+    for pane_state in "$STATE"/panes/*.state; do
+      [ -e "$pane_state" ] || continue
+      pane_id=${pane_state##*/}; pane_id=${pane_id%.state}
+      [ "$(cat "$pane_state")" = open ] || continue
+      tab_id="${pane_id%p*}:t${pane_id##*p}"
+      [ "${first}" -eq 1 ] || printf ','
+      printf '{"pane_id":"%s","tab_id":"%s","workspace_id":"%s"}' \
+        "$pane_id" "$tab_id" "${pane_id%p*}"
+      first=0
+    done
+    printf ']}}\n'
     ;;
   pane:get)
     pane=${3:-}

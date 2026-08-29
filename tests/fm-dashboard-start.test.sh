@@ -184,6 +184,54 @@ test_an_unprovable_owner_is_never_silently_replaced() {
   pass "an owner that cannot be proven dead is never silently replaced"
 }
 
+test_a_health_mismatch_preserves_an_open_owner() {
+  local home port first second original
+  home=$(make_home health-mismatch)
+  port=$(free_port)
+  first=$(start "$home" "$port" ensure) || fail "the first ensure failed: $first"
+  original=$(sed -n 's/^digest=//p' "$home/state/.dashboard-owner")
+  sed -i '' 's/^digest=.*/digest=0000000000000000000000000000000000000000000000000000000000000000/' \
+    "$home/state/.dashboard-owner"
+  second=$(start "$home" "$port" ensure 2>&1) && fail "a health mismatch was reported as reusable: $second"
+  assert_contains "$second" "DASHBOARD_BLOCKED" "a health mismatch did not block startup"
+  printf '%s' "$second" | grep -q '^FIRSTMATE_DASHBOARD_URL=' \
+    && fail "a health mismatch produced a false URL"
+  [ "$(cat "$home/herdr/panes/w1p1.state")" = open ] \
+    || fail "a health mismatch closed the still-open owner pane"
+  [ "$(sed -n 's/^digest=//p' "$home/state/.dashboard-owner")" != "$original" ] \
+    || fail "the health mismatch test did not alter the owner proof"
+  [ "$(pane_count "$home")" = "1" ] || fail "a health mismatch created a replacement pane"
+  pass "a health mismatch preserves the open owner instead of reclaiming it"
+}
+
+test_a_lost_tab_creation_response_is_recovered_before_reporting() {
+  local home port out
+  home=$(make_home lost-tab-response)
+  port=$(free_port)
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FAKE_HERDR_STATE="$home/herdr" \
+    FAKE_HERDR_LOST_RESPONSE="tab create" FM_DASHBOARD_PORT="$port" \
+    "$START" ensure 2>&1) || fail "a lost tab response was not recovered: $out"
+  assert_contains "$out" "FIRSTMATE_DASHBOARD_URL=http://127.0.0.1:$port/" \
+    "a recovered tab did not produce a verified URL"
+  [ "$(pane_count "$home")" = "1" ] || fail "lost tab response recovery created duplicate panes"
+  [ ! -e "$home/state/.dashboard-quarantine" ] || fail "a recoverable tab response was quarantined"
+  pass "a lost tab creation response is recovered before the URL is reported"
+}
+
+test_a_lost_workspace_creation_response_is_recovered_before_reporting() {
+  local home port out
+  home=$(make_home lost-workspace-response)
+  port=$(free_port)
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FAKE_HERDR_STATE="$home/herdr" \
+    FAKE_HERDR_LOST_RESPONSE="workspace create" FM_DASHBOARD_PORT="$port" \
+    "$START" ensure 2>&1) || fail "a lost workspace response was not recovered: $out"
+  assert_contains "$out" "FIRSTMATE_DASHBOARD_URL=http://127.0.0.1:$port/" \
+    "a recovered workspace did not produce a verified URL"
+  [ "$(pane_count "$home")" = "1" ] || fail "lost workspace response recovery created duplicate panes"
+  [ ! -e "$home/state/.dashboard-quarantine" ] || fail "a recoverable workspace response was quarantined"
+  pass "a lost workspace creation response is recovered before the URL is reported"
+}
+
 test_owner_lifecycle_uses_the_recorded_herdr_session() {
   local home port first second
   home=$(make_home recorded-session)
@@ -373,6 +421,9 @@ test_a_repeat_start_adopts_the_running_dashboard
 test_concurrent_starts_converge_on_one_dashboard
 test_a_dead_owner_is_replaced_rather_than_reported
 test_an_unprovable_owner_is_never_silently_replaced
+test_a_health_mismatch_preserves_an_open_owner
+test_a_lost_tab_creation_response_is_recovered_before_reporting
+test_a_lost_workspace_creation_response_is_recovered_before_reporting
 test_owner_lifecycle_uses_the_recorded_herdr_session
 test_a_mismatched_pane_identity_is_unknown_and_preserved
 test_a_foreign_listener_is_a_collision_not_an_adoption

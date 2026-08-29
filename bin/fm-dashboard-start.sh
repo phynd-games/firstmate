@@ -85,6 +85,11 @@ FM_DASHBOARD_READY_DELAY_MS=${FM_DASHBOARD_READY_DELAY_MS:-200}
 FM_DASHBOARD_LOCK_WAIT=${FM_DASHBOARD_LOCK_WAIT:-15}
 FM_DASHBOARD_HERDR_TIMEOUT=${FM_DASHBOARD_HERDR_TIMEOUT:-2}
 FM_DASHBOARD_HERDR_CLI=${FM_DASHBOARD_HERDR_CLI:-}
+STARTUP_TRANSACTION_ACTIVE=0
+STARTUP_TRANSACTION_REASON=
+STARTUP_TRANSACTION_PORT=
+STARTUP_TRANSACTION_DIGEST=
+START_CLEANUP_STATUS=clean
 
 STARTUP_PATH_REASON=
 STARTUP_HOME_REAL=$(cd "$FM_HOME" 2>/dev/null && pwd -P || printf '%s' "$FM_HOME")
@@ -420,11 +425,56 @@ cleanup_started() {  # <reason> <port> <digest>
   return 1
 }
 
+startup_transaction_arm() {
+  STARTUP_TRANSACTION_ACTIVE=1
+  STARTUP_TRANSACTION_REASON=$1
+  STARTUP_TRANSACTION_PORT=$2
+  STARTUP_TRANSACTION_DIGEST=$3
+}
+
+startup_transaction_disarm() {
+  STARTUP_TRANSACTION_ACTIVE=0
+}
+
+startup_transaction_exit() {
+  local status
+  [ "$STARTUP_TRANSACTION_ACTIVE" -eq 1 ] || return 0
+  STARTUP_TRANSACTION_ACTIVE=0
+  cleanup_started "$STARTUP_TRANSACTION_REASON" "$STARTUP_TRANSACTION_PORT" \
+    "$STARTUP_TRANSACTION_DIGEST" || true
+  status=$START_CLEANUP_STATUS
+  if [ "$status" = quarantined ]; then
+    log_line blocked "startup interrupted; cleanup quarantined at $QUARANTINE"
+  elif [ "$status" = quarantine-failed ]; then
+    log_line blocked "startup interrupted; cleanup could not be durably quarantined"
+  else
+    log_line blocked "startup interrupted before ownership was published"
+  fi
+  fm_lock_release "$LOCK" >/dev/null 2>&1 || true
+}
+
+startup_transaction_signal() {
+  trap - INT TERM
+  startup_transaction_exit
+  if [ "$START_CLEANUP_STATUS" = quarantined ]; then
+    printf 'DASHBOARD_BLOCKED: startup was interrupted; cleanup was quarantined at %s\n' "$QUARANTINE"
+  elif [ "$START_CLEANUP_STATUS" = quarantine-failed ]; then
+    printf 'DASHBOARD_BLOCKED: startup was interrupted; cleanup could not be durably quarantined\n'
+  else
+    printf 'DASHBOARD_BLOCKED: startup was interrupted before ownership was published\n'
+  fi
+  exit 1
+}
+
+trap startup_transaction_exit EXIT
+trap startup_transaction_signal INT TERM
+
 # Adopt the recorded owner when, and only when, every one of its claims still
 # holds. An unknown identity is retained rather than treated as stale.
 record_is_live() {  # -> 0 and sets ADOPTED_PORT
   local home session workspace tab port pane digest health
   ADOPTED_PORT=
+  RECORD_PROBE_STATE=invalid
   [ -f "$RECORD" ] && [ ! -L "$RECORD" ] || return 1
   [ "$(record_get schema)" = "$RECORD_SCHEMA" ] || return 1
   home=$(record_get home); [ "$home" = "$FM_HOME" ] || return 1
@@ -434,9 +484,15 @@ record_is_live() {  # -> 0 and sets ADOPTED_PORT
   port=$(record_get port); case "$port" in ''|*[!0-9]*) return 1 ;; esac
   digest=$(record_get digest); [ -n "$digest" ] || return 1
   pane=$(record_get pane); [ -n "$pane" ] || return 1
-  pane_exists "$session" "$workspace" "$tab" "$pane" || return 1
-  health=$(probe_health "$port") || return 1
-  health_is_ours "$health" "$digest" || return 1
+  RECORD_PROBE_STATE=$(pane_state "$pane" "$session" "$workspace" "$tab")
+  case "$RECORD_PROBE_STATE" in
+    gone) return 1 ;;
+    open) ;;
+    *) return 1 ;;
+  esac
+  health=$(probe_health "$port") || { RECORD_PROBE_STATE=unknown; return 1; }
+  health_is_ours "$health" "$digest" || { RECORD_PROBE_STATE=unknown; return 1; }
+  RECORD_PROBE_STATE=live
   ADOPTED_PORT=$port
   return 0
 }
@@ -470,8 +526,33 @@ pick_port() {  # <digest> -> prints the chosen port
   return 1
 }
 
+recover_workspace() {  # <label>
+  local label=$1 out
+  out=$(herdr_cli workspace list 2>/dev/null) || return 1
+  printf '%s' "$out" | jq -er --arg label "$label" '
+    [.result.workspaces[]? | select(.label == $label) | .workspace_id]
+    | select(length == 1) | .[0]'
+}
+
+recover_tab() {  # <workspace> <label>
+  local workspace=$1 label=$2 out
+  out=$(herdr_cli tab list --workspace "$workspace" 2>/dev/null) || return 1
+  printf '%s' "$out" | jq -er --arg label "$label" '
+    [.result.tabs[]? | select(.label == $label) | .tab_id]
+    | select(length == 1) | .[0]'
+}
+
+recover_pane() {  # <workspace> <tab>
+  local workspace=$1 tab=$2 out
+  out=$(herdr_cli pane list --workspace "$workspace" 2>/dev/null) || return 1
+  printf '%s' "$out" | jq -er --arg tab "$tab" '
+    [.result.panes[]? | select(.tab_id == $tab) | .pane_id]
+    | select(length == 1) | .[0]'
+}
+
 start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
-  local port=$1 digest=$2 out ws
+  local port=$1 digest=$2 out ws label
+  label="firstmate-dashboard-$digest"
   STARTED_SESSION=$(herdr_session)
   STARTED_WORKSPACE=; STARTED_TAB=; STARTED_PANE=
   # Reuse the session's first workspace when it has one, so a normal firstmate
@@ -480,17 +561,17 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
   out=$(herdr_cli workspace list 2>/dev/null) || return 1
   ws=$(printf '%s' "$out" | jq -r '.result.workspaces[0].workspace_id // empty' 2>/dev/null)
   if [ -z "$ws" ]; then
-    out=$(herdr_cli workspace create --cwd "$FM_HOME" --label firstmate-dashboard --no-focus 2>/dev/null) \
-      || return 1
+    out=$(herdr_cli workspace create --cwd "$FM_HOME" --label "$label" --no-focus 2>/dev/null) || :
     ws=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
-    [ -n "$ws" ] || return 1
+    [ -n "$ws" ] || ws=$(recover_workspace "$label") || return 1
   fi
+  STARTED_WORKSPACE=$ws
   out=$(herdr_cli tab create --workspace "$ws" --cwd "$FM_HOME" \
-    --label firstmate-dashboard --no-focus 2>/dev/null) || return 1
+    --label "$label" --no-focus 2>/dev/null) || :
   STARTED_TAB=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   STARTED_PANE=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
-  [ -n "$STARTED_TAB" ] && [ -n "$STARTED_PANE" ] || return 1
-  STARTED_WORKSPACE=$ws
+  [ -n "$STARTED_TAB" ] || STARTED_TAB=$(recover_tab "$ws" "$label") || return 1
+  [ -n "$STARTED_PANE" ] || STARTED_PANE=$(recover_pane "$ws" "$STARTED_TAB") || return 1
   # `env` carries this home explicitly: the pane inherits the Herdr server's
   # environment, not this shell's, so an inherited FM_HOME cannot be assumed.
   herdr_cli pane run "$STARTED_PANE" \
@@ -580,35 +661,19 @@ command_ensure() {
     return 0
   fi
 
-  # The record, if any, is stale: reclaim its pane before replacing it so a
-  # dead-but-present pane cannot accumulate across restarts. An UNKNOWN pane is
-  # not reclaimed and not discarded - starting a second server beside a pane
-  # that may still be live is exactly the false claim this command must not
-  # make.
   if [ -f "$RECORD" ]; then
-    pane=$(record_get pane)
-    session=$(record_get session)
-    workspace=$(record_get workspace)
-    tab=$(record_get tab)
-    case "$(pane_state "$pane" "$session" "$workspace" "$tab")" in
-      open)
-        if ! pane_close "$session" "$workspace" "$tab" "$pane"; then
-          fm_lock_release "$LOCK" >/dev/null 2>&1
-          blocked "the stale dashboard pane $pane could not be closed"
-          return 1
-        fi
-        log_line reclaimed "closed the stale pane $pane"
-        ;;
+    case "$RECORD_PROBE_STATE" in
       gone)
-        log_line stale "the recorded owner was gone"
+        pane=$(record_get pane)
+        log_line stale "the recorded pane $pane was gone"
+        record_drop
         ;;
       *)
         fm_lock_release "$LOCK" >/dev/null 2>&1
-        blocked "herdr could not confirm whether the recorded dashboard pane $pane is still running"
+        blocked "the recorded dashboard owner could not be re-proven; its ownership record was kept"
         return 1
         ;;
     esac
-    record_drop
   fi
 
   token=$(mint_token)
@@ -633,8 +698,10 @@ command_ensure() {
     return 0
   fi
 
+  startup_transaction_arm "dashboard launch was not fully published" "$port" "$digest"
   if ! start_pane "$port" "$digest"; then
     cleanup_started "herdr could not start the dashboard pane" "$port" "$digest" || true
+    startup_transaction_disarm
     fm_lock_release "$LOCK" >/dev/null 2>&1
     if [ "$START_CLEANUP_STATUS" = quarantined ]; then
       blocked "herdr could not start the dashboard pane; cleanup was quarantined at $QUARANTINE"
@@ -649,6 +716,7 @@ command_ensure() {
   if ! record_write "$STARTED_SESSION" "$STARTED_WORKSPACE" "$STARTED_TAB" \
     "$STARTED_PANE" "$port" "$token" "$digest"; then
     cleanup_started "the dashboard owner record could not be written" "$port" "$digest" || true
+    startup_transaction_disarm
     fm_lock_release "$LOCK" >/dev/null 2>&1
     if [ "$START_CLEANUP_STATUS" = quarantined ]; then
       blocked "the dashboard owner record could not be written; cleanup was quarantined at $QUARANTINE"
@@ -660,6 +728,8 @@ command_ensure() {
     return 1
   fi
 
+  startup_transaction_disarm
+
   await_ready "$port" "$digest" "$STARTED_SESSION" "$STARTED_WORKSPACE" \
     "$STARTED_TAB" "$STARTED_PANE"
   local ready_rc=$?
@@ -667,13 +737,9 @@ command_ensure() {
     case "$(pane_state "$STARTED_PANE" "$STARTED_SESSION" \
       "$STARTED_WORKSPACE" "$STARTED_TAB")" in
       open)
-        if ! pane_close "$STARTED_SESSION" "$STARTED_WORKSPACE" \
-          "$STARTED_TAB" "$STARTED_PANE"; then
-          fm_lock_release "$LOCK" >/dev/null 2>&1
-          blocked "the dashboard was not ready and its pane could not be closed; the owner record was kept"
-          return 1
-        fi
-        record_drop
+        fm_lock_release "$LOCK" >/dev/null 2>&1
+        blocked "the dashboard was not ready and its pane is still open; the owner record was kept"
+        return 1
         ;;
       gone)
         record_drop

@@ -40,7 +40,8 @@ payload() {
         fm_home: "/homes/sample",
         roots: {state: "/homes/sample/state", data: "/homes/sample/data",
                 config: "/homes/sample/config", projects: "/homes/sample/projects"},
-        backlog: {path: "/homes/sample/data/backlog.md", present: true, records: []},
+        backlog: {path: "/homes/sample/data/backlog.md", present: true,
+                  available: true, reason: null, records: []},
         tasks: [],
         scout_reports: [],
         main_inventory: {valid: true, reason: null, orphan_in_flight: []}

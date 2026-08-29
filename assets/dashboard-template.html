@@ -531,6 +531,7 @@ __FM_DASHBOARD_DATA__
       && obj(s.roots) && field(s.roots, "state", "string") && field(s.roots, "data", "string")
       && field(s.roots, "config", "string") && field(s.roots, "projects", "string")
       && obj(b) && field(b, "path", "string") && field(b, "present", "boolean")
+      && field(b, "available", "boolean") && nullable(b, "reason", "string")
       && Array.isArray(b.records) && b.records.every(backlogRecord) && Array.isArray(s.tasks)
       && s.tasks.every(task) && Array.isArray(s.scout_reports)
       && s.scout_reports.every(function (x) { return field(x, "id", "string")
@@ -541,9 +542,14 @@ __FM_DASHBOARD_DATA__
       && obj(sup) && field(sup, "model", "string") && field(sup, "healthy", "boolean")
       && field(sup, "reason", "string") && field(sup, "beacon_present", "boolean")
       && nullable(sup, "beacon_age_seconds", "number") && field(sup, "away_mode", "boolean")
-      && field(sup, "recovery_marker", "boolean") && obj(wakes) && Array.isArray(wakes.records)
+      && field(sup, "recovery_marker", "boolean") && obj(wakes)
+      && typeof wakes.total === "number" && typeof wakes.shown === "number"
+      && typeof wakes.truncated === "number" && typeof wakes.available === "boolean"
+      && nullable(wakes, "reason", "string") && Array.isArray(wakes.records)
       && wakes.records.every(wake) && Array.isArray(d.events) && d.events.every(event)
-      && obj(reports) && Array.isArray(reports.records) && reports.records.every(report)
+      && obj(reports) && typeof reports.total === "number" && typeof reports.shown === "number"
+      && typeof reports.truncated === "number" && Array.isArray(reports.records)
+      && reports.records.every(report)
       && obj(usage) && obj(usage.budget) && field(usage.budget, "available", "boolean")
       && nullable(usage.budget, "reason", "string")
       && nullable(usage.budget, "effective_budget_tokens", "number")
