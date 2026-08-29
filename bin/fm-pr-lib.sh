@@ -279,13 +279,27 @@ fm_pr_self_review_report_path() {
   printf '%s/%s/pr-self-review.md\n' "$data" "$id"
 }
 
+fm_pr_sha256_stream() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
 fm_pr_self_review_report_valid() {
-  local data=$1 id=$2 expected_head=${3-} report data_device
+  local data=$1 id=$2 expected_head=${3-} worktree=${4-} substrate_root=${5-}
+  local report data_device parsed target_repository base_ref base_sha head_sha merge_base_sha changed_files tree_status
+  local substrate_base_sha substrate_head_sha substrate_changed_files
+  [ -n "$worktree" ] && [ -d "$worktree" ] && [ ! -L "$worktree" ] || return 1
+  [ -n "$substrate_root" ] && [ -d "$substrate_root" ] && [ ! -L "$substrate_root" ] || return 1
   report=$(fm_pr_self_review_report_path "$data" "$id") || return 1
   data_device=$(fm_pr_file_device "$data") || return 1
   fm_pr_private_file_valid "$report" 600 "$data_device" || return 1
   [ "$(wc -c < "$report" | tr -d '[:space:]')" -le 1048576 ] || return 1
-  awk -v task="$id" -v expected_head="$expected_head" '
+  parsed=$(awk -v task="$id" -v expected_head="$expected_head" '
     BEGIN {
       headings[1] = "# Findings"
       headings[2] = "# Target-project diff evidence"
@@ -301,6 +315,9 @@ fm_pr_self_review_report_valid() {
     }
     function full_sha(value) {
       return (length(value) == 40 || length(value) == 64) && value !~ /[^0-9a-f]/
+    }
+    function full_digest(value) {
+      return length(value) == 64 && value !~ /[^0-9a-f]/
     }
     NR == 1 {
       valid = valid && ($0 == "Self-review report: firstmate-pr-self-review.v1")
@@ -331,21 +348,48 @@ fm_pr_self_review_report_valid() {
       }
       if ($0 !~ /^[[:space:]]*$/) content = 1
       if (expected == 3) {
-        if (index($0, "Target repository: ") == 1 && length(field("Target repository: ")) > 0) target_repository = 1
-        if (index($0, "Base ref: ") == 1 && length(field("Base ref: ")) > 0) base_ref = 1
-        if (index($0, "Base SHA: ") == 1 && full_sha(field("Base SHA: "))) base_sha = 1
+        if (index($0, "Target repository: ") == 1 && length(field("Target repository: ")) > 0) {
+          target_repository = 1
+          target_repository_value = field("Target repository: ")
+        }
+        if (index($0, "Base ref: ") == 1 && length(field("Base ref: ")) > 0) {
+          base_ref = 1
+          base_ref_value = field("Base ref: ")
+        }
+        if (index($0, "Base SHA: ") == 1 && full_sha(field("Base SHA: "))) {
+          base_sha = 1
+          base_sha_value = field("Base SHA: ")
+        }
         if (index($0, "Head SHA: ") == 1 && full_sha(field("Head SHA: "))) {
           head_sha = field("Head SHA: ")
           target_head = 1
         }
-        if (index($0, "Merge-base SHA: ") == 1 && full_sha(field("Merge-base SHA: "))) merge_base_sha = 1
-        if (index($0, "Changed files: ") == 1 && length(field("Changed files: ")) > 0) changed_files = 1
-        if (index($0, "Tree status: ") == 1 && length(field("Tree status: ")) > 0) tree_status = 1
+        if (index($0, "Merge-base SHA: ") == 1 && full_sha(field("Merge-base SHA: "))) {
+          merge_base_sha = 1
+          merge_base_sha_value = field("Merge-base SHA: ")
+        }
+        if (index($0, "Changed files: ") == 1 && full_digest(field("Changed files: "))) {
+          changed_files = 1
+          changed_files_value = field("Changed files: ")
+        }
+        if ($0 == "Tree status: clean") {
+          tree_status = 1
+          tree_status_value = "clean"
+        }
       }
       if (expected == 4) {
-        if (index($0, "Substrate base SHA: ") == 1 && full_sha(field("Substrate base SHA: "))) substrate_base_sha = 1
-        if (index($0, "Substrate head SHA: ") == 1 && full_sha(field("Substrate head SHA: "))) substrate_head_sha = 1
-        if (index($0, "Substrate changed files: ") == 1 && length(field("Substrate changed files: ")) > 0) substrate_changed_files = 1
+        if (index($0, "Substrate base SHA: ") == 1 && full_sha(field("Substrate base SHA: "))) {
+          substrate_base_sha = 1
+          substrate_base_sha_value = field("Substrate base SHA: ")
+        }
+        if (index($0, "Substrate head SHA: ") == 1 && full_sha(field("Substrate head SHA: "))) {
+          substrate_head_sha = 1
+          substrate_head_sha_value = field("Substrate head SHA: ")
+        }
+        if (index($0, "Substrate changed files: ") == 1 && full_digest(field("Substrate changed files: "))) {
+          substrate_changed_files = 1
+          substrate_changed_files_value = field("Substrate changed files: ")
+        }
         if ($0 == "Substrate diff: no substrate diff") substrate_no_diff = 1
       }
       if (expected == 5) {
@@ -365,13 +409,42 @@ fm_pr_self_review_report_valid() {
     END {
       if (!content) bad = 1
       if (!target_repository || !base_ref || !base_sha || !target_head || !merge_base_sha || !changed_files || !tree_status) bad = 1
-      if (!substrate_base_sha || !substrate_head_sha || (!substrate_changed_files && !substrate_no_diff)) bad = 1
+      if (!substrate_base_sha || !substrate_head_sha || !substrate_changed_files) bad = 1
       if (!authority || !security || !path || !failure || !tests || !documentation || !delivery) bad = 1
       if (!command || !result) bad = 1
       if (expected_head != "" && head_sha != expected_head) bad = 1
-      exit !(valid && !bad && expected == 7 && NR >= 8)
+      if (valid && !bad && expected == 7 && NR >= 8) {
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", target_repository_value, base_ref_value, base_sha_value, head_sha, merge_base_sha_value, changed_files_value, tree_status_value, substrate_base_sha_value, substrate_head_sha_value, substrate_changed_files_value, substrate_no_diff
+        exit 0
+      }
+      exit 1
     }
-  ' "$report"
+  ' "$report") || return 1
+  IFS="$(printf '\t')" read -r target_repository base_ref base_sha head_sha merge_base_sha changed_files tree_status \
+    substrate_base_sha substrate_head_sha substrate_changed_files substrate_no_diff <<EOF
+$parsed
+EOF
+  case "$base_ref" in
+    ''|[-.]*|*..*|*@\{*|*[!A-Za-z0-9._/-]*) return 1 ;;
+  esac
+  local actual_repository actual_head resolved_base actual_merge_base actual_changed_files
+  actual_repository=$(cd "$worktree" && pwd -P) || return 1
+  actual_head=$(git -C "$worktree" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1
+  [ "$target_repository" = "$actual_repository" ] || return 1
+  [ "$head_sha" = "$actual_head" ] || return 1
+  resolved_base=$(git -C "$worktree" rev-parse --verify "$base_ref^{commit}" 2>/dev/null) || return 1
+  [ "$base_sha" = "$resolved_base" ] || return 1
+  actual_merge_base=$(git -C "$worktree" merge-base "$base_sha" "$head_sha" 2>/dev/null) || return 1
+  [ "$merge_base_sha" = "$actual_merge_base" ] || return 1
+  actual_changed_files=$(git -C "$worktree" diff --name-status "$base_sha" "$head_sha" | fm_pr_sha256_stream) || return 1
+  [ "$changed_files" = "$actual_changed_files" ] || return 1
+  [ -z "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] || return 1
+  local actual_substrate_head actual_substrate_changed
+  actual_substrate_head=$(git -C "$substrate_root" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1
+  [ "$substrate_head_sha" = "$actual_substrate_head" ] || return 1
+  git -C "$substrate_root" cat-file -e "$substrate_base_sha^{commit}" 2>/dev/null || return 1
+  actual_substrate_changed=$(git -C "$substrate_root" diff --name-status "$substrate_base_sha" "$substrate_head_sha" | fm_pr_sha256_stream) || return 1
+  [ "$substrate_changed_files" = "$actual_substrate_changed" ] || return 1
 }
 
 fm_pr_regular_destination_or_absent() {

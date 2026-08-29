@@ -13,6 +13,7 @@ set -u
 . "$ROOT/bin/fm-check-lib.sh"
 
 PR_CHECK="$ROOT/bin/fm-pr-check.sh"
+SELF_REVIEW_CHECK="$ROOT/bin/fm-pr-self-review-check.sh"
 PR_MERGE="$ROOT/bin/fm-pr-merge.sh"
 MIGRATE="$ROOT/bin/fm-pr-check-migrate.sh"
 POLL="$ROOT/bin/fm-pr-poll.sh"
@@ -72,6 +73,12 @@ make_case() {
   fakebin="$dir/fakebin"
   fake_root="$dir/root"
   mkdir -p "$dir/home/state" "$dir/home/data" "$dir/home/config" "$dir/wt" "$fakebin" "$fake_root/bin"
+  git init -q "$dir/wt"
+  git -C "$dir/wt" config user.name fmtest
+  git -C "$dir/wt" config user.email fmtest@example.invalid
+  printf 'fixture\n' > "$dir/wt/fixture.txt"
+  git -C "$dir/wt" add fixture.txt
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
   cat > "$fake_root/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'guard\n' >> "$FM_TEST_GUARD_LOG"
@@ -140,8 +147,14 @@ write_task_meta() {
 }
 
 write_self_review_report() {
-  local home=$1 id=$2 report
+  local home=$1 id=$2 report case_dir target_repository target_head substrate_root substrate_head empty_digest
   report="$home/data/$id/pr-self-review.md"
+  case_dir=$(cd "$home/.." && pwd)
+  target_repository=$(cd "$case_dir/wt" && pwd -P)
+  target_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  substrate_root=${FM_TEST_REPORT_SUBSTRATE_ROOT:-$ROOT}
+  substrate_head=$(git -C "$substrate_root" rev-parse HEAD)
+  empty_digest=$(printf '' | fm_pr_sha256_stream)
   mkdir -p "$home/data/$id"
   printf '%s\n' \
     'Self-review report: firstmate-pr-self-review.v1' \
@@ -149,17 +162,17 @@ write_self_review_report() {
     '# Findings' \
     'None.' \
     '# Target-project diff evidence' \
-    'Target repository: fixture/project' \
-    'Base ref: captain-approved-base' \
-    'Base SHA: 0000000000000000000000000000000000000000' \
-    'Head SHA: 0123456789abcdef0123456789abcdef01234567' \
-    'Merge-base SHA: 0000000000000000000000000000000000000000' \
-    'Changed files: fixture-change' \
+    "Target repository: $target_repository" \
+    'Base ref: HEAD' \
+    "Base SHA: $target_head" \
+    "Head SHA: $target_head" \
+    "Merge-base SHA: $target_head" \
+    "Changed files: $empty_digest" \
     'Tree status: clean' \
     '# Firstmate substrate diff evidence' \
-    'Substrate base SHA: 0000000000000000000000000000000000000000' \
-    'Substrate head SHA: 0123456789abcdef0123456789abcdef01234567' \
-    'Substrate changed files: fixture-substrate-change' \
+    "Substrate base SHA: $substrate_head" \
+    "Substrate head SHA: $substrate_head" \
+    "Substrate changed files: $empty_digest" \
     '# Surface review' \
     'Authority: no-mistakes remains delivery authority.' \
     'Security: private evidence is validated.' \
@@ -306,6 +319,7 @@ run_check_entry() {
   local dir=$1
   shift
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
+    FM_SUBSTRATE_ROOT_OVERRIDE="$ROOT" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
     PATH="$dir/fakebin:$BASE_PATH" \
@@ -316,6 +330,7 @@ run_merge_entry() {
   local dir=$1
   shift
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
+    FM_SUBSTRATE_ROOT_OVERRIDE="$ROOT" \
     FM_DATA_OVERRIDE="$dir/home/data" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
@@ -365,9 +380,28 @@ test_pr_ready_requires_durable_self_review() {
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "shallow self-review report left a runnable poll"
 
   write_self_review_report "$dir/home" task-a
+  python3 - "$report" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+path.write_text(text.replace("Changed files: " + "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "Changed files: " + "1" * 64), encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/102 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a stale changed-file digest"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "stale self-review evidence left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
   chmod 0600 "$report"
   run_check_entry "$dir" task-a https://github.com/o/r/pull/103 >/dev/null \
     || fail "PR-ready path rejected a valid durable self-review report"
+  FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir/home" "$SELF_REVIEW_CHECK" task-a no-mistakes >/dev/null \
+    || fail "shared self-review check rejected a valid durable self-review report"
   fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
     || fail "valid self-review report did not permit a valid PR poll"
   pass "PR-ready path requires a private durable findings-first self-review"
@@ -706,7 +740,7 @@ test_valid_recording_and_merge_derivation() {
   write_task_meta "$dir" Task_A.1
   run_merge_entry "$dir" Task_A.1 https://github.com/o/r/pull/3 \
     > "$dir/stdout" 2> "$dir/stderr" \
-    || fail "safe lifecycle-compatible task ID could not use the PR merge flow"
+    || fail "safe lifecycle-compatible task ID could not use the PR merge flow: $(cat "$dir/stderr")"
   fm_pr_poll_artifacts_valid "$dir/home/state" Task_A.1 "$POLL" \
     || fail "safe lifecycle-compatible task ID did not publish an authenticated poll"
   rm -rf "$dir/wt"
@@ -716,7 +750,7 @@ exit 0
 SH
   chmod 0700 "$dir/fakebin/tmux"
   touch "$dir/home/state/.last-watcher-beat"
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_SUBSTRATE_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
     "$TEARDOWN" Task_A.1 --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
     || fail "safe lifecycle-compatible task ID could not be torn down"
   [ ! -e "$dir/home/state/Task_A.1.meta" ] \
@@ -727,7 +761,7 @@ SH
     fm_write_meta "$dir/home/state/$id.meta" \
       "window=firstmate:fm-$id" \
       "endpoint_task_id=$id" \
-      "worktree=$dir/missing-worktree" \
+      "worktree=$dir/wt" \
       "project=$dir/project" \
       'kind=ship' \
       'mode=local-only'
@@ -764,6 +798,7 @@ SH
       || fail "path-safe legacy task ID could not use the PR merge flow"
     fm_pr_poll_artifacts_valid "$dir/home/state" "$id" "$POLL" \
       || fail "path-safe legacy task ID did not publish an authenticated poll"
+    rm -rf "$dir/wt"
     FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
       "$TEARDOWN" "$id" --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
       || fail "legacy path-safe task ID could not be torn down"
@@ -1571,6 +1606,8 @@ test_ambiguous_failure_accepts_validated_replacement() {
   dir=$(make_case ambiguous-validated-replacement)
   state="$dir/home/state"
   write_ambiguous_poll "$dir"
+  printf '%s\n' "worktree=$dir/wt" 'kind=ship' 'mode=no-mistakes' >> "$state/task-a.meta"
+  FM_TEST_REPORT_SUBSTRATE_ROOT="$ROOT" write_self_review_report "$dir/home" task-a
   mkdir "$state/task-a.pr-poll"
 
   set +e
@@ -2370,7 +2407,7 @@ test_direct_registration_refreshes_v1_x_shim() {
     dir=$(make_case "direct-registration-x-transition-$marker_kind")
     state="$dir/home/state"
     shim="$state/x-watch.check.sh"
-    fm_write_meta "$state/task-a.meta" 'window=fm-task-a'
+    write_task_meta "$dir"
     write_v1_x_shim "$shim" "$dir/home" "$dir/root"
     chmod 0755 "$shim"
     case "$marker_kind" in
@@ -2384,7 +2421,7 @@ test_direct_registration_refreshes_v1_x_shim() {
         ;;
     esac
 
-    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" FM_TEST_GUARD_LOG="$dir/guard.log" \
+    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$ROOT" FM_TEST_GUARD_LOG="$dir/guard.log" \
       PATH="$dir/fakebin:$BASE_PATH" "$PR_CHECK" task-a "https://github.com/o/r/pull/$number" \
       > "$dir/register.out" 2> "$dir/register.err" \
       || fail "$marker_kind direct registration did not preserve the v1 X shim: $(cat "$dir/register.err")"
@@ -2409,12 +2446,12 @@ test_direct_registration_refreshes_v1_x_shim() {
   dir=$(make_case direct-registration-x-lookalike)
   state="$dir/home/state"
   shim="$state/x-watch.check.sh"
-  fm_write_meta "$state/task-a.meta" 'window=fm-task-a'
+  write_task_meta "$dir"
   write_v1_x_shim "$shim" "$dir/home" "$dir/root"
   printf '# unrecognized version\n' >> "$shim"
   chmod 0755 "$shim"
 
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" FM_TEST_GUARD_LOG="$dir/guard.log" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$ROOT" FM_TEST_GUARD_LOG="$dir/guard.log" \
     PATH="$dir/fakebin:$BASE_PATH" "$PR_CHECK" task-a https://github.com/o/r/pull/22 \
     >/dev/null 2> "$dir/register.err" \
     || fail "direct registration failed after quarantining an X shim lookalike: $(cat "$dir/register.err")"
@@ -2995,7 +3032,7 @@ EOF
   # Arming is where a missing CLI can still be reported, so it refuses there.
   write_task_meta "$dir" task-b
   set +e
-  out=$(FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
+  out=$(FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir/home" \
     FM_TEST_GUARD_LOG="$dir/guard.log" PATH="$noglab" \
     "$PR_CHECK" task-b "$url" 2>&1)
   rc=$?
@@ -3718,7 +3755,8 @@ test_retirement_queue_failure_and_receipt_tampering() {
 
   dir=$(make_case retirement-receipt-tamper)
   state="$dir/home/state"
-  write_poll_meta "$state" task-a https://github.com/o/r/pull/9
+  write_task_meta "$dir"
+  printf '%s\n' 'pr=https://github.com/o/r/pull/9' >> "$state/task-a.meta"
   seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/9
   fm_pr_poll_snapshot_capture "$state" task-a "$POLL" || fail "could not snapshot receipt tamper fixture"
   fm_pr_poll_retirement_publish "$state" task-a "$POLL" merged || fail "could not publish receipt tamper fixture"

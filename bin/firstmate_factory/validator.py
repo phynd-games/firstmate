@@ -405,7 +405,7 @@ def _acceptance_analysis(
             ancestors.add(task_id)
             deps = records[task_id].get("dependencies")
             if isinstance(deps, list):
-                stack.extend(dep for dep in deps if dep in ids)
+                stack.extend(dep for dep in deps if isinstance(dep, str) and dep in ids)
         covered.update(ancestors)
         per_target[target] = len(ancestors)
     return {

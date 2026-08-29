@@ -13,6 +13,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+SUBSTRATE_ROOT="${FM_SUBSTRATE_ROOT_OVERRIDE:-$FM_ROOT}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
@@ -41,14 +42,37 @@ if [ ! -f "$META" ] || [ -L "$META" ] || [ "$(fm_pr_file_link_count "$META")" !=
   echo "error: task metadata is unavailable" >&2
   exit 1
 fi
-WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
-REVIEW_HEAD=
-if [ -n "$WT" ] && [ -d "$WT" ] && command -v git >/dev/null 2>&1; then
-  REVIEW_HEAD=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null || true)
-  fm_pr_head_valid "$REVIEW_HEAD" || REVIEW_HEAD=
-fi
-if [ "$(grep '^kind=' "$META" | tail -1 | cut -d= -f2- || true)" = ship ] \
-  && ! fm_pr_self_review_report_valid "$DATA" "$ID" "$REVIEW_HEAD"; then
+KIND_COUNT=$(grep -c '^kind=' "$META" || true)
+MODE_COUNT=$(grep -c '^mode=' "$META" || true)
+KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
+MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
+[ "$KIND_COUNT" = 1 ] && [ "$KIND" = ship ] || {
+  echo "error: PR-ready task metadata must contain exactly one kind=ship" >&2
+  exit 1
+}
+[ "$MODE_COUNT" = 1 ] || {
+  echo "error: PR-ready task metadata must contain exactly one delivery mode" >&2
+  exit 1
+}
+case "$MODE" in
+  no-mistakes|direct-PR|local-only) ;;
+  *) echo "error: PR-ready task metadata has an invalid delivery mode" >&2; exit 1 ;;
+esac
+[ "$(grep -c '^worktree=' "$META" || true)" = 1 ] || {
+  echo "error: PR-ready task metadata must contain exactly one worktree" >&2
+  exit 1
+}
+WT=$(grep '^worktree=' "$META" | cut -d= -f2- || true)
+[ -n "$WT" ] && [ -d "$WT" ] && [ ! -L "$WT" ] && command -v git >/dev/null 2>&1 || {
+  echo "error: PR-ready task worktree is unavailable" >&2
+  exit 1
+}
+REVIEW_HEAD=$(git -C "$WT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
+fm_pr_head_valid "$REVIEW_HEAD" || {
+  echo "error: PR-ready task worktree has no valid HEAD" >&2
+  exit 1
+}
+if ! fm_pr_self_review_report_valid "$DATA" "$ID" "$REVIEW_HEAD" "$WT" "$SUBSTRATE_ROOT"; then
   echo "error: durable findings-first self-review report is unavailable or invalid" >&2
   exit 1
 fi

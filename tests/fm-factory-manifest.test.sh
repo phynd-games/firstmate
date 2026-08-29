@@ -231,6 +231,8 @@ elif mode == "active-empty-scope":
     doc["authority"] = {"state": "active", "approval_id": "approval-1", "scope": []}
 elif mode == "multiple-source-bindings":
     doc["source"].append(dict(doc["source"][0]))
+elif mode == "unhashable-dependency":
+    doc["tasks"][0]["dependencies"] = [[]]
 elif mode not in ("valid", "bad-hash"):
     raise SystemExit(f"unknown mode: {mode}")
 canonical = (json.dumps(doc, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
@@ -278,6 +280,7 @@ test_malformed_manifest_fixtures() {
   run_invalid_manifest active-empty-scope authority.scope-required
   run_invalid_manifest multiple-source-bindings manifest.source-binding
   run_invalid_manifest bad-hash manifest.hash-mismatch
+  run_invalid_manifest unhashable-dependency schema.type
   write_manifest valid "$manifest"
   mutate_source count-mismatch "$source"
   set +e

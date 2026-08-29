@@ -30,6 +30,7 @@ META="$STATE/$ID.meta"
 PROJ=$(grep '^project=' "$META" | cut -d= -f2-)
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ "$MODE" = local-only ] || { echo "error: task $ID is mode=$MODE, not local-only; merge PR tasks with bin/fm-pr-merge.sh <id> <PR url> after approval" >&2; exit 1; }
+"$FM_ROOT/bin/fm-pr-self-review-check.sh" "$ID" local-only
 
 default_branch() {
   local ref branch

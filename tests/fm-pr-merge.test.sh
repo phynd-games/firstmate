@@ -73,6 +73,8 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 fm_git_identity fmtest fmtest@example.invalid
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-pr-lib.sh"
 
 PR_MERGE="$ROOT/bin/fm-pr-merge.sh"
 TMP_ROOT=$(fm_test_tmproot fm-pr-merge-tests)
@@ -93,27 +95,37 @@ REAL_MV=$(command -v mv) || fail "these tests need mv to simulate a failed poll 
 # Build a fresh sandbox for one test case: a state dir with a task meta and a
 # fakebin with a gh-axi mock that records how it was invoked. Echoes the case dir.
 make_case() {
-  local name=$1 case_dir fakebin
+  local name=$1 case_dir fakebin target_head target_repository substrate_head empty_digest
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
-  mkdir -p "$case_dir/state" "$case_dir/home/data/task-x1" "$fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/home/data/task-x1" "$case_dir/wt" "$fakebin"
+  git init -q "$case_dir/wt"
+  git -C "$case_dir/wt" config user.name fmtest
+  git -C "$case_dir/wt" config user.email fmtest@example.invalid
+  printf 'fixture\n' > "$case_dir/wt/fixture.txt"
+  git -C "$case_dir/wt" add fixture.txt
+  git -C "$case_dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
+  target_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  target_repository=$(cd "$case_dir/wt" && pwd -P)
+  substrate_head=$(git -C "$ROOT" rev-parse HEAD)
+  empty_digest=$(printf '' | fm_pr_sha256_stream)
   printf '%s\n' \
     'Self-review report: firstmate-pr-self-review.v1' \
     'Task id: task-x1' \
     '# Findings' \
     'None.' \
     '# Target-project diff evidence' \
-    'Target repository: fixture/project' \
-    'Base ref: captain-approved-base' \
-    'Base SHA: 0000000000000000000000000000000000000000' \
-    'Head SHA: 0123456789abcdef0123456789abcdef01234567' \
-    'Merge-base SHA: 0000000000000000000000000000000000000000' \
-    'Changed files: fixture-change' \
+    "Target repository: $target_repository" \
+    'Base ref: HEAD' \
+    "Base SHA: $target_head" \
+    "Head SHA: $target_head" \
+    "Merge-base SHA: $target_head" \
+    "Changed files: $empty_digest" \
     'Tree status: clean' \
     '# Firstmate substrate diff evidence' \
-    'Substrate base SHA: 0000000000000000000000000000000000000000' \
-    'Substrate head SHA: 0123456789abcdef0123456789abcdef01234567' \
-    'Substrate changed files: fixture-substrate-change' \
+    "Substrate base SHA: $substrate_head" \
+    "Substrate head SHA: $substrate_head" \
+    "Substrate changed files: $empty_digest" \
     '# Surface review' \
     'Authority: no-mistakes remains delivery authority.' \
     'Security: private evidence is validated.' \
@@ -141,9 +153,6 @@ make_case() {
     'base=main' > "$case_dir/github-outcome"
   : > "$case_dir/github-rules"
   : > "$case_dir/gh.log"
-  # No worktree/project on disk; fm-pr-check.sh tolerates a worktree it cannot
-  # stat and simply skips the pr_head lookup via `gh` in that case, so give it
-  # one that resolves for cases that want pr_head recorded.
   printf '%s\n' "$case_dir"
 }
 
