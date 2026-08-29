@@ -150,8 +150,15 @@ function lockOwnership(): LockOwnership {
 
 function markLoaded(): void {
   if (lockOwnership() === "other") return;
+  let lockIdentity = "";
+  try {
+    lockIdentity = readFileSync(`${state}/.lock-pid-identity`, "utf8").trim();
+  } catch {
+    return;
+  }
+  if (!lockIdentity) return;
   mkdirSync(state, { recursive: true });
-  writeFileSync(marker, `${extensionVersion}\n${process.pid}\n`);
+  writeFileSync(marker, `${extensionVersion}\n${process.pid}\n${lockIdentity}\n`);
 }
 
 function actionableLine(output: string): string {

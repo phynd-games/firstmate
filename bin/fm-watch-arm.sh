@@ -385,6 +385,8 @@ handling_successor_generation() {
 mode=arm
 handling_generation=
 handling_watcher_pid=
+restart_expected_pid=${FM_WATCH_RESTART_EXPECTED_PID:-}
+restart_expected_identity=${FM_WATCH_RESTART_EXPECTED_IDENTITY:-}
 case "${1:-}" in
   ''|arm|--arm) mode=arm ;;
   --restart) mode=restart ;;
@@ -410,6 +412,16 @@ fi
 if [ "$mode" = restart ]; then
   # Home-scoped stop: only the watcher pid recorded in THIS home's lock.
   lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
+  if [ -n "$restart_expected_pid" ]; then
+    lock_identity=$(cat "$WATCH_LOCK/pid-identity" 2>/dev/null || true)
+    current_identity=$(fm_pid_identity "$lock_pid" 2>/dev/null || true)
+    if [ "$lock_pid" != "$restart_expected_pid" ] \
+      || [ "$lock_identity" != "$restart_expected_identity" ] \
+      || [ "$current_identity" != "$restart_expected_identity" ]; then
+      echo "watcher: FAILED - the stale watcher changed before its identity-verified restart" >&2
+      exit 1
+    fi
+  fi
   if fm_pid_alive "$lock_pid"; then
     if fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$lock_pid" "$FM_HOME"; then
       kill -TERM "$lock_pid" 2>/dev/null || true

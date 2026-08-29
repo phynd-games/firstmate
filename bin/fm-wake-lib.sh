@@ -194,16 +194,21 @@ fm_pi_extension_version() {
 }
 
 # fm_pi_extension_loaded <marker> <expected-version> <session-lock>
-# True when <marker> records <expected-version> and names the session process in
-# <session-lock>, i.e. the session holding this home loaded exactly this build.
+# True when <marker> records <expected-version> and names the session process and
+# its process-instance identity in <session-lock>, i.e. the session holding this
+# home loaded exactly this build.
 fm_pi_extension_loaded() {
-  local marker=$1 expected_version=$2 lock=$3 marker_version marker_pid lock_pid
+  local marker=$1 expected_version=$2 lock=$3 marker_version marker_pid marker_identity lock_pid lock_identity current_identity
   [ -f "$marker" ] && [ -f "$lock" ] && [ -n "$expected_version" ] || return 1
   marker_version=$(sed -n '1p' "$marker")
   marker_pid=$(sed -n '2p' "$marker")
+  marker_identity=$(sed -n '3p' "$marker")
   lock_pid=$(sed -n '1p' "$lock")
-  [ -n "$marker_pid" ] || return 1
-  [ "$marker_version" = "$expected_version" ] && [ "$marker_pid" = "$lock_pid" ]
+  lock_identity=$(sed -n '1p' "$(dirname "$lock")/.lock-pid-identity" 2>/dev/null || true)
+  [ -n "$marker_pid" ] && [ -n "$marker_identity" ] && [ -n "$lock_identity" ] || return 1
+  [ "$marker_version" = "$expected_version" ] && [ "$marker_pid" = "$lock_pid" ] || return 1
+  current_identity=$(fm_pid_identity "$lock_pid" 2>/dev/null) || return 1
+  [ "$marker_identity" = "$lock_identity" ] && [ "$current_identity" = "$lock_identity" ]
 }
 
 # fm_pi_extension_owns_supervision <state> <root>
@@ -335,11 +340,16 @@ fm_lock_owner_dir() {
 }
 
 fm_lock_prepare_owner() {
-  local ownerdir=$1 mypid back
+  local ownerdir=$1 mypid back identity recorded_identity
   mypid=${BASHPID:-$$}
   printf '%s\n' "$mypid" > "$ownerdir/pid" 2>/dev/null || return 1
   back=$(cat "$ownerdir/pid" 2>/dev/null || true)
-  [ "$back" = "$mypid" ]
+  [ "$back" = "$mypid" ] || return 1
+  identity=$(fm_pid_identity "$mypid" 2>/dev/null) || return 1
+  [ -n "$identity" ] || return 1
+  printf '%s\n' "$identity" > "$ownerdir/pid-identity" 2>/dev/null || return 1
+  recorded_identity=$(cat "$ownerdir/pid-identity" 2>/dev/null || true)
+  [ "$recorded_identity" = "$identity" ]
 }
 
 fm_lock_link_owner() {
