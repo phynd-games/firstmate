@@ -160,6 +160,10 @@ LOG_VERB=$(status_line_verb "$LOG_LINE")
 # down or dead mate; only the remote host's own dead/missing verdict may say
 # the endpoint is actually gone.
 if [ -n "$REMOTE_HOST" ]; then
+  REMOTE_BACKEND=$(fm_backend_meta_exact_value "$META" remote_backend 2>/dev/null || true)
+  if ! fm_backend_validate_remote_meta "$META" "$ID" >/dev/null 2>&1; then
+    emit unknown legacy-backend "legacy-record: remote backend=${REMOTE_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
+  fi
   if ! REMOTE_STATE=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-on.sh" "$ID" \
     fm-remote-secondmate-control.sh state "$ID" < /dev/null 2>/dev/null); then
     REMOTE_STATE=

@@ -14,6 +14,7 @@ if [ "${FM_GROK_LIVE_E2E:-0}" != 1 ]; then
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export FM_BACKEND_TEST_HARNESS=1 FM_BACKEND_TEST_ROOT="$ROOT"
 
 fail() {
   printf 'not ok - %s\n' "$1" >&2

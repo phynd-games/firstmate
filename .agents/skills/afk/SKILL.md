@@ -90,7 +90,7 @@ The operational prefix travels with the message text; it does not rely on harnes
 
 The daemon never injects into an in-use pane. Two checks run before every
 injection, dispatched through `bin/fm-backend.sh` for the supervisor's own
-backend (tmux or herdr; see "Auto-discovered supervisor pane" below):
+Herdr backend (see "Herdr supervisor pane" below):
 
 - **Primary-pane busy guard** - `pane_is_busy` trusts Herdr native `busy` when available, otherwise matches rendered output against only the detected primary harness's signature.
   This narrow delivery guard never classifies a recorded worker task and never uses a global union of vendor patterns.
@@ -201,19 +201,12 @@ the operational prefix lets firstmate distinguish it from a real captain message
   (`fm-wake-lib.sh`) instead of `flock`, which is absent on macOS.
 - **Dedupe across signal/stale/scan** - `classify_signal` and terminal `classify_stale` paths check the seen-status marker before escalating, so a captain-relevant status escalated by one path is not re-escalated by another in the same digest.
   The marker does not clear or suppress possible-wedge aging for a nonterminal progress line.
-- **Auto-discovered supervisor pane** - the daemon resolves its own BACKEND
-  (tmux vs herdr) and TARGET independently, mirroring
-  `bin/fm-backend.sh`'s own runtime auto-detection. Backend: `FM_SUPERVISOR_BACKEND`
-  override, then `$TMUX_PANE` set (tmux), then `$HERDR_ENV=1` with
-  `$HERDR_PANE_ID` present (herdr), then a tmux fallback. Target:
-  `FM_SUPERVISOR_TARGET` override (a tmux target or a herdr
-  `"<session>:<pane-id>"` target), then `$TMUX_PANE`, then
-  `"${HERDR_SESSION:-default}:${HERDR_PANE_ID}"` under herdr, then a
-  `firstmate:0` fallback with a warning. Both resolution sources are logged at
-  startup so a wrong-but-resolving fallback is detectable. Other runtime
-  backends, including zellij, orca, and cmux, are not yet supported as
-  supervisor backends; the daemon refuses loudly at startup instead of
-  misapplying tmux primitives to a pane that isn't one
+- **Herdr supervisor pane** - the daemon requires an explicit
+  `FM_SUPERVISOR_TARGET=<herdr-session>:<pane-id>` or Herdr's native
+  `HERDR_ENV=1` plus `HERDR_PANE_ID` identity, and validates the installed
+  Herdr client against its protocol floor before supervision. Missing,
+  ambiguous, unauthenticated, unhealthy, or below-floor Herdr refuses startup;
+  runtime markers never select tmux or any other backend
   (docs/herdr-backend.md "Away-mode supervisor support").
 
 ## Stale-artifact lifecycle

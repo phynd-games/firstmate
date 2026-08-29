@@ -431,7 +431,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
 
 task_json_lines() {
   local meta id kind harness mode yolo project worktree home projects spawn_gen backend target status_log report_path
-  local remote_host remote_root remote_state remote_rc remote_home_present
+  local remote_host remote_root remote_state remote_rc remote_home_present remote_identity_valid
   local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
   local open_decisions_tsv open_decisions_json
@@ -452,9 +452,13 @@ task_json_lines() {
     remote_host=$(meta_value "$meta" remote_host)
     remote_root=$(meta_value "$meta" remote_root)
     remote_home_present=null
+    remote_identity_valid=1
     if [ -n "$remote_host" ]; then
       backend=$(meta_value "$meta" remote_backend)
-      [ -n "$backend" ] || backend=unknown
+      if ! fm_backend_validate_remote_meta "$meta" "$id" >/dev/null 2>&1; then
+        remote_identity_valid=0
+        backend="legacy:${backend:-unrecorded}"
+      fi
       target=$(meta_value "$meta" remote_target)
     else
       # A legacy (absent or non-herdr) backend identity is displayed as recorded
@@ -476,7 +480,11 @@ task_json_lines() {
       pr_source=absent
     fi
 
-    current_json=$(crew_state_json "$id")
+    if [ "$remote_identity_valid" -eq 0 ]; then
+      current_json=$(jq -n --arg detail "legacy-record: remote backend=$(meta_value "$meta" remote_backend) is not herdr; record is read-only" '{state:"unknown",source:"legacy-backend",detail:$detail,raw:""}')
+    else
+      current_json=$(crew_state_json "$id")
+    fi
     event_json=$(status_event_json "$status_log")
     last_event_raw=$(printf '%s' "$event_json" | jq -r '.last_event.raw // ""')
     current_state=$(printf '%s' "$current_json" | jq -r '.state // ""')
@@ -515,7 +523,7 @@ task_json_lines() {
 
     endpoint_exists=null
     agent_alive=not_checked
-    if [ -n "$remote_host" ]; then
+    if [ -n "$remote_host" ] && [ "$remote_identity_valid" -eq 1 ]; then
       if remote_state=$(fm_run_timed "$FM_SNAPSHOT_SECONDMATE_TIMEOUT" \
         "$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null 2>/dev/null); then
         remote_rc=0
@@ -535,6 +543,9 @@ task_json_lines() {
         endpoint_exists=null
         agent_alive=unknown
       fi
+    elif [ -n "$remote_host" ]; then
+      endpoint_exists=null
+      agent_alive=unknown
     else
       if [ -n "$target" ]; then
         if fm_backend_target_exists "$backend" "$target" "fm-$id" >/dev/null 2>&1; then

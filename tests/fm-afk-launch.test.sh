@@ -25,6 +25,7 @@ set -u
 export FM_BACKEND_LEGACY_TEST_LANE=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export FM_BACKEND_TEST_HARNESS=1 FM_BACKEND_TEST_ROOT="$ROOT"
 LAUNCH="$ROOT/bin/fm-afk-launch.sh"
 START="$ROOT/bin/fm-afk-start.sh"
 

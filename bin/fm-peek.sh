@@ -28,6 +28,7 @@ if [ -n "$REMOTE_META" ] && [ -n "$(fm_meta_get "$REMOTE_META" remote_host)" ]; 
   REMOTE_ID=${REMOTE_META##*/}
   REMOTE_ID=${REMOTE_ID%.meta}
   REMOTE_HOST=$(fm_meta_get "$REMOTE_META" remote_host)
+  fm_backend_validate_remote_meta "$REMOTE_META" "$REMOTE_ID" || exit 1
   case "$N" in ''|*[!0-9]*|0) N=40 ;; esac
   [ "$N" -le 100 ] || N=100
   if ! FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-on.sh" "$REMOTE_ID" \

@@ -1362,6 +1362,7 @@ fm_pending_reply_tick() {  # <state-dir>
       sm_home=$(fm_meta_get "$meta" home)
       harness=$(fm_meta_get "$meta" harness)
       if [ -n "$remote_host" ]; then
+        fm_backend_validate_remote_meta "$meta" "$task_id" >/dev/null 2>&1 || continue
         target="remote:$task_id"
         sm_home=
       fi

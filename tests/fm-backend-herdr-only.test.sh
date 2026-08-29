@@ -23,8 +23,8 @@
 #     read-only by the metadata helpers and by fm-crew-state, fm-peek, fm-send,
 #     fm-control, and fm-teardown, with the record left byte-identical;
 #   - a Herdr record and a Herdr endpoint pass every boundary;
-#   - every refusal prints nothing on stdout, exactly one REFUSED line (or one
-#     error line for an unknown name) on stderr naming Herdr and a remediation,
+#   - every refusal prints nothing on stdout, exactly one REFUSED line on stderr
+#     naming Herdr and a remediation,
 #     and exits non-zero.
 #
 # The real-Herdr counterpart (config-declared herdr actually spawns; HERDR_ENV=1
@@ -39,7 +39,8 @@ fm_git_identity fmtest fmtest@example.invalid
 TMP_ROOT=$(fm_test_tmproot fm-backend-herdr-only)
 
 # Every marker the environment could contribute, stripped for every case.
-STRIP=(-u FM_BACKEND_LEGACY_TEST_LANE -u FM_BACKEND -u TMUX -u TMUX_PANE
+STRIP=(-u FM_BACKEND_LEGACY_TEST_LANE -u FM_BACKEND -u FM_BACKEND_TEST_HARNESS
+  -u FM_BACKEND_TEST_ROOT -u TMUX -u TMUX_PANE
   -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID
   -u HERDR_SOCKET_PATH -u HERDR_SESSION -u CMUX_WORKSPACE_ID -u CMUX_SURFACE_ID
   -u __CFBundleIdentifier -u FM_SUPERVISOR_BACKEND -u FM_SUPERVISOR_TARGET)
@@ -94,12 +95,21 @@ LEGACY_NAMES="tmux zellij orca cmux"
 # --- selection --------------------------------------------------------------
 
 test_known_sets_are_herdr_only() {
-  local out
+  local out root
   out=$(lib_probe -- 'printf "%s|%s" "$FM_BACKEND_KNOWN" "$FM_BACKEND_SPAWN"')
   [ "$out" = "herdr|herdr" ] || fail "active runtime known/spawn sets must be exactly herdr, got $out"
-  out=$(lib_probe FM_BACKEND_LEGACY_TEST_LANE=1 -- 'printf "%s" "$FM_BACKEND_KNOWN"')
+  root=$ROOT
+  out=$(env -u FM_BACKEND_LEGACY_TEST_LANE -u FM_BACKEND_TEST_HARNESS -u FM_BACKEND_TEST_ROOT \
+    FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_HARNESS=1 FM_BACKEND_TEST_ROOT="$root" \
+    bash -c '. "$1/bin/fm-backend.sh"; printf "%s" "$FM_BACKEND_KNOWN"' _ "$root")
   [ "$out" = "tmux herdr zellij orca cmux" ] || fail "regression lane must re-admit the retained adapters, got $out"
   pass "known and spawn-capable backend sets are exactly herdr outside the regression lane"
+}
+
+test_legacy_lane_requires_harness_identity() {
+  run_capture untrusted-lane lib_probe FM_BACKEND_LEGACY_TEST_LANE=1 -- 'printf "%s" "$FM_BACKEND_KNOWN"'
+  [ "$RC" -eq 0 ] && [ "$OUT" = herdr ] || fail "an untrusted legacy-lane marker must not re-enable retained adapters: rc=$RC out=$OUT err=$ERR"
+  pass "the retained-adapter lane requires the hermetic test harness identity"
 }
 
 test_name_refuses_absent_or_empty_config() {
@@ -214,12 +224,11 @@ test_dispatchers_refuse_retained_adapters_without_running_them() {
     run_capture "kill-$v" lib_probe "PATH=$fb:$PATH" -- "fm_backend_kill $v 'firstmate:0'"
     assert_refusal "fm_backend_kill $v" "resolves '$v'"
     run_capture "agent-$v" lib_probe "PATH=$fb:$PATH" -- "fm_backend_agent_state $v 'firstmate:0'"
-    [ "$OUT" = unverified ] || fail "fm_backend_agent_state $v must report unverified, got $OUT"
+    assert_refusal "fm_backend_agent_state $v" "resolves '$v'"
   done
   run_capture validate-bogus lib_probe -- 'fm_backend_validate bogus'
   [ "$RC" -ne 0 ] && [ -z "$OUT" ] || fail "unknown backend must refuse with empty stdout"
-  assert_contains "$ERR" "unknown backend 'bogus' (known: herdr)" "unknown backend diagnostic must list herdr as the only known backend"
-  assert_contains "$ERR" "Herdr is the sole supported Firstmate runtime backend" "unknown backend diagnostic must name Herdr"
+  assert_refusal "unknown backend" "selected runtime backend resolves 'bogus'" "Declare Herdr explicitly"
   [ ! -s "$log" ] || fail "no retained adapter CLI may run through a dispatcher; recorded:"$'\n'"$(cat "$log")"
   pass "every dispatcher refuses tmux/zellij/orca/cmux by name and never executes their CLIs"
 }
@@ -274,12 +283,16 @@ test_spawn_refuses_non_herdr_selection_before_side_effects() {
     spawn_case "spawn-flag-$v" "$config" "$state" "$fb" "$log" -- "$id" "$proj" "sh -c true" --mode no-mistakes --yolo off --backend "$v"
     [ "$RC" -ne 0 ] && [ -z "$OUT" ] || fail "--backend $v must refuse with empty stdout: rc=$RC out=$OUT"
     if [ "$v" = bogus ]; then
-      assert_contains "$ERR" "unknown backend 'bogus' (known: herdr)" "--backend bogus diagnostic"
+      assert_refusal "--backend bogus" "--backend resolves 'bogus'" "Declare Herdr explicitly"
     else
       assert_refusal "--backend $v" "--backend resolves '$v'" "Select herdr instead"
     fi
     assert_spawn_left_nothing "--backend $v" "$state" "$log"
   done
+  : > "$log"
+  spawn_case spawn-secondmate-flag-tmux "$config" "$state" "$fb" "$log" -- "$id" --secondmate --backend tmux
+  assert_refusal "remote secondmate --backend=tmux" "--backend resolves 'tmux'" "Select herdr instead"
+  assert_spawn_left_nothing "remote secondmate --backend=tmux" "$state" "$log"
   for v in $LEGACY_NAMES; do
     : > "$log"
     spawn_case "spawn-env-$v" "$config" "$state" "$fb" "$log" "FM_BACKEND=$v" -- "$id" "$proj" "sh -c true" --mode no-mistakes --yolo off
@@ -304,6 +317,9 @@ make_herdr_stub() {  # <fakebin> <protocol> - a herdr CLI that only answers `sta
 #!/usr/bin/env bash
 if [ "\${1:-}" = status ]; then
   printf '{"client":{"version":"0.0.0-test","protocol":$2},"server":{"running":false}}\\n'
+  exit 0
+fi
+if [ "\${1:-}" = pane ] && [ "\${2:-}" = get ]; then
   exit 0
 fi
 { printf 'herdr'; for a in "\$@"; do printf '\\x1f%s' "\$a"; done; printf '\\n'; } >> "\${FM_HERDR_STUB_LOG:?}"
@@ -342,7 +358,50 @@ test_spawn_refuses_missing_or_incapable_herdr_without_fallback() {
   assert_contains "$ERR" "older than the verified minimum" "floor refusal must name the floor"
   assert_spawn_left_nothing "below-floor herdr" "$state" "$log"
   [ ! -s "$stublog" ] || fail "a below-floor herdr must be refused after the status read, before any lifecycle call; recorded:"$'\n'"$(cat "$stublog")"
+  run_capture target-floor lib_probe "PATH=$fb:$PATH" -- "fm_backend_target_exists herdr 'default:p1'"
+  assert_refusal "target existence with below-floor Herdr" "target existence check resolves 'herdr'" "herdr protocol 13" "Upgrade or repair Herdr"
   pass "fm-spawn refuses a missing or below-floor Herdr as a terminal blocker and never touches tmux"
+}
+
+test_invalid_backend_state_fails_closed() {
+  run_capture busy-invalid lib_probe -- 'fm_backend_busy_state bogus target'
+  assert_refusal "invalid busy-state backend" "resolves 'bogus'" "Declare Herdr explicitly"
+  run_capture composer-invalid lib_probe -- 'fm_backend_composer_state bogus target'
+  assert_refusal "invalid composer-state backend" "resolves 'bogus'" "Declare Herdr explicitly"
+  run_capture agent-invalid lib_probe -- 'fm_backend_agent_state bogus target'
+  assert_refusal "invalid agent-state backend" "resolves 'bogus'" "Declare Herdr explicitly"
+  pass "invalid backend state helpers refuse instead of returning neutral values"
+}
+
+test_refusal_diagnostic_sanitizes_control_characters() {
+  local hostile=$'bad\nINJECTED\r\tVALUE'
+  run_capture hostile lib_probe "FM_BACKEND=$hostile" -- 'fm_backend_name'
+  assert_refusal "control-character backend identity" "FM_BACKEND resolves 'bad INJECTED  VALUE'"
+  case "$ERR" in
+    *$'\n'*$'\n'*) fail "control-character backend identity injected an extra diagnostic line: $ERR" ;;
+  esac
+  pass "refusal diagnostics remain single-line when backend inputs contain controls"
+}
+
+test_remote_identity_preflight_happens_before_remote_operations() {
+  local state="$TMP_ROOT/remote-state" wt="$TMP_ROOT/remote-wt" id=remotelegacy1 meta
+  mkdir -p "$state" "$wt" "$TMP_ROOT/remote-home" "$TMP_ROOT/remote-data" "$TMP_ROOT/remote-config"
+  fm_write_meta "$state/$id.meta" "window=remote:$id" "endpoint_task_id=$id" "worktree=$wt" "project=$wt" \
+    "harness=claude" "kind=secondmate" "home=$TMP_ROOT/remote-home" "remote_host=unreachable.invalid" "remote_backend=tmux"
+  meta="$state/$id.meta"
+  run_capture remote-helper lib_probe -- "fm_backend_validate_remote_meta '$meta' '$id'"
+  assert_refusal "remote identity helper" "remote_backend=tmux" "Legacy task records"
+  run_capture remote-peek policy_env "FM_ROOT_OVERRIDE=$ROOT" "FM_HOME=$TMP_ROOT/remote-home" "FM_STATE_OVERRIDE=$state" -- \
+    "$ROOT/bin/fm-peek.sh" "$id" 5
+  assert_refusal "fm-peek remote legacy record" "remote_backend=tmux" "Legacy task records"
+  run_capture remote-send policy_env "FM_ROOT_OVERRIDE=$ROOT" "FM_HOME=$TMP_ROOT/remote-home" "FM_STATE_OVERRIDE=$state" \
+    FM_SEND_SETTLE=0 -- "$ROOT/bin/fm-send.sh" "$id" hello
+  assert_refusal "fm-send remote legacy record" "remote_backend=tmux" "Legacy task records"
+  run_capture remote-state policy_env "FM_ROOT_OVERRIDE=$ROOT" "FM_HOME=$TMP_ROOT/remote-home" "FM_STATE_OVERRIDE=$state" -- \
+    "$ROOT/bin/fm-crew-state.sh" "$id"
+  [ "$RC" -eq 0 ] || fail "fm-crew-state remote legacy record should remain a read-only view: rc=$RC err=$ERR"
+  assert_contains "$OUT" "source: legacy-backend" "fm-crew-state remote legacy record"
+  pass "remote task identity is validated before capture, send, or state operations"
 }
 
 # --- secondmate inheritance -------------------------------------------------
@@ -401,8 +460,7 @@ test_daemon_startup_refuses_non_herdr_supervisor() {
   run_capture daemon-tmux policy_env "FM_STATE_OVERRIDE=$state" "FM_ROOT_OVERRIDE=$ROOT" FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET=firstmate:0 -- \
     "$ROOT/bin/fm-supervise-daemon.sh"
   [ "$RC" -ne 0 ] || fail "the away-mode daemon must refuse a tmux supervisor backend at startup"
-  assert_contains "$ERR" "cannot supervise backend 'none' (supported: herdr)" "daemon refusal must show herdr as the only supported supervisor backend"
-  assert_contains "$ERR" "Herdr is the sole supported Firstmate runtime backend" "daemon refusal must name Herdr"
+  assert_refusal "daemon FM_SUPERVISOR_BACKEND=tmux" "FM_SUPERVISOR_BACKEND resolves 'tmux'" "FM_SUPERVISOR_TARGET=<herdr-session>:<pane-id>"
   pass "the away-mode daemon refuses a non-Herdr supervisor backend at startup"
 }
 
@@ -427,6 +485,8 @@ test_legacy_metadata_is_refused_read_only() {
   before=$(cat "$state/$id.meta")
   run_capture of-meta-absent lib_probe -- "fm_backend_of_meta '$state/$id.meta'"
   assert_refusal "fm_backend_of_meta (no backend=)" "(no backend= line) declares no backend identity" "read-only here" 'docs/configuration.md "Legacy task records"'
+  run_capture resolve-absent lib_probe -- "fm_backend_resolve_selector '$id' '$state'"
+  assert_refusal "fm_backend_resolve_selector (no backend=)" "(no backend= line) declares no backend identity" 'docs/configuration.md "Legacy task records"'
   run_capture endpoint-absent lib_probe -- "fm_backend_validate_task_endpoint '$state/$id.meta' '$id'"
   assert_refusal "fm_backend_validate_task_endpoint (no backend=)" "Task state is preserved"
   # 2. A retained backend recorded explicitly.
@@ -439,6 +499,8 @@ test_legacy_metadata_is_refused_read_only() {
     run_capture "endpoint-$v" lib_probe -- "fm_backend_validate_task_endpoint '$state/legacy$v.meta' 'legacy$v'"
     assert_refusal "fm_backend_validate_task_endpoint backend=$v" "resolves '$v'" "Task state is preserved"
   done
+  run_capture resolve-tmux lib_probe -- "fm_backend_resolve_selector 'legacytmux' '$state'"
+  assert_refusal "fm_backend_resolve_selector backend=tmux" "backend=tmux" 'docs/configuration.md "Legacy task records"'
   # 3. The operating scripts refuse the legacy record and leave it untouched.
   : > "$log"
   run_capture crew-state policy_env "PATH=$fb:$PATH" "FM_ROOT_OVERRIDE=$ROOT" "FM_STATE_OVERRIDE=$state" "FM_HOME=$TMP_ROOT/legacy-home" -- \
@@ -501,6 +563,7 @@ test_bootstrap_reports_the_policy_diagnostic() {
 }
 
 test_known_sets_are_herdr_only
+test_legacy_lane_requires_harness_identity
 test_name_refuses_absent_or_empty_config
 test_name_refuses_every_non_herdr_config_value
 test_name_refuses_every_non_herdr_fm_backend_value
@@ -510,6 +573,9 @@ test_dispatchers_refuse_retained_adapters_without_running_them
 test_selector_resolution_has_no_tmux_fallback
 test_spawn_refuses_non_herdr_selection_before_side_effects
 test_spawn_refuses_missing_or_incapable_herdr_without_fallback
+test_invalid_backend_state_fails_closed
+test_refusal_diagnostic_sanitizes_control_characters
+test_remote_identity_preflight_happens_before_remote_operations
 test_inherited_secondmate_backend_is_judged_by_the_same_rule
 test_supervisor_discovery_has_no_tmux_default
 test_daemon_startup_refuses_non_herdr_supervisor

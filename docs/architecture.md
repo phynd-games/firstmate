@@ -159,7 +159,7 @@ Herdr is the sole supported runtime backend (`AGENTS.md` hard rule 6), and `bin/
 Unknown backend names fail loudly naming Herdr.
 
 `bin/backends/tmux.sh`, `bin/backends/zellij.sh`, `bin/backends/orca.sh`, and `bin/backends/cmux.sh` are retained legacy adapters: on disk, linted, and unreachable for the active runtime.
-They survive only inside the regression lane `tests/lib.sh` exports (`FM_BACKEND_LEGACY_TEST_LANE=1`), where the pre-invariant contract still holds - tmux default, innermost-first detection, absent `backend=` meaning tmux - so the roughly one hundred fake-tmux suites keep exercising fm-spawn, fm-send, fm-watch, fm-teardown, and the daemon until those fixtures are ported, while `tests/fm-backend-herdr-only.test.sh` strips the lane to prove the real refusals.
+They survive only inside the repository-owned regression lane, whose harness identity and root are exported by `tests/lib.sh`, where the pre-invariant contract still holds - tmux default, innermost-first detection, absent `backend=` meaning tmux - so the roughly one hundred fake-tmux suites keep exercising fm-spawn, fm-send, fm-watch, fm-teardown, and the daemon until those fixtures are ported, while `tests/fm-backend-herdr-only.test.sh` strips the lane to prove the real refusals.
 Removal plan, in order: port the fake-tmux fixture suites to fake-Herdr fixtures (the `make_herdr_statefake` pattern in `tests/fm-backend-herdr.test.sh`) one family at a time, starting with `backend-dispatch`; then delete the four adapter files, `bin/fm-tmux-lib.sh`'s tmux-only primitives, the daemon's tmux injection arms, the lane predicate and its `tests/lib.sh` export, and the retained-adapter pages, each deletion accompanied by the audit that no historical record, test, or supported caller still depends on it; `fm-watch.sh`'s own `window_backend` tmux default is coordinated with the watcher recovery work rather than changed here.
 Nothing in this plan is authorized by this description; each step is its own captain-approved task.
 `fm-watch.sh` decides each window's busy state through the semantic contract above rather than by polling the backend for rendered text.
@@ -365,7 +365,7 @@ The mechanics are owned by the `/updatefirstmate` skill and firstmate's operatin
 
 ## Restart-proof
 
-Fleet state lives in each task's session-provider backend (tmux by hard default, herdr or cmux when selected or auto-detected, zellij/orca when explicitly selected), no-mistakes run records, status event logs, local markdown under `data/` including `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`, and persistent secondmate homes.
+Fleet state lives in each task's Herdr session-provider endpoint, no-mistakes run records, status event logs, local markdown under `data/` including `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`, and persistent secondmate homes.
 For herdr, respawning after a server-restored layout closes and replaces confirmed no-agent or dead task-tab husks instead of requiring manual tab cleanup.
 At session start, confirmed-dead secondmate agent endpoints are closed and relaunched through the same secondmate spawn path, while ambiguous liveness reads are left untouched to avoid duplicate supervisors.
 Use `/stow` before an intentional reset when the conversation may hold durable knowledge that has not yet been written to disk; after that, the next firstmate session can reconcile and carry on.

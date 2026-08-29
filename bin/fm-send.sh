@@ -323,6 +323,7 @@ fm_send_resolve_target() {  # <raw-target>
   if [ -n "$meta" ]; then
     if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
       id=$(fm_send_id_from_meta "$meta")
+      fm_backend_validate_remote_meta "$meta" "$id" || return 1
       RESOLVED_TARGET="remote:$id"
       TARGET_BACKEND=remote
       TARGET_META=$meta

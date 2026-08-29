@@ -27,16 +27,10 @@
 #   fm_backend_policy_config_remediation, fm_backend_policy_legacy_record_remediation,
 #   fm_backend_policy_marker_note   remediation and marker text used by every boundary
 #
-# Legacy test lane. FM_BACKEND_LEGACY_TEST_LANE=1 re-admits the retained
-# adapters together with their pre-invariant selection contract (tmux default,
-# innermost-first runtime detection, absent `backend=` meaning tmux) so the
-# retained adapter code stays under regression in tests/*.test.sh until it is
-# removed. tests/lib.sh exports it for every suite that sources it, the
-# lib-less retained-adapter suites export it themselves, and the invariant's own
-# suite (tests/fm-backend-herdr-only.test.sh) strips it to prove the real
-# refusals. It has the same shape as FM_GATE_REFUSE_BYPASS
-# (bin/fm-gate-refuse-lib.sh): a test-suite self-exemption, never an operator
-# knob, and it is removed together with the retained adapters.
+# Legacy test lane. The retained adapters are admitted only when the repository's
+# test harness exports the lane marker together with its own root identity.
+# Ordinary Firstmate processes cannot enable this lane by setting one backend
+# variable; the lane is removed together with the retained adapters.
 #
 # Sourced by bin/fm-backend.sh and bin/fm-supervisor-target-lib.sh. It sets no
 # FM_ROOT/FM_HOME globals and runs no commands at source time.
@@ -50,7 +44,9 @@ FM_BACKEND_ACTIVE="herdr"
 FM_BACKEND_RETAINED_LEGACY="tmux zellij orca cmux"
 
 fm_backend_policy_legacy_lane() {
-  [ "${FM_BACKEND_LEGACY_TEST_LANE:-}" = 1 ]
+  [ "${FM_BACKEND_LEGACY_TEST_LANE:-}" = 1 ] || return 1
+  [ "${FM_BACKEND_TEST_HARNESS:-}" = 1 ] || return 1
+  [ "${FM_BACKEND_TEST_ROOT:-}" = "$(cd "${BASH_SOURCE[0]%/*}/.." 2>/dev/null && pwd -P)" ]
 }
 
 fm_backend_policy_is_retained() {  # <name>
@@ -104,13 +100,16 @@ fm_backend_policy_legacy_record_remediation() {
 # exact next action. Never prints to stdout, so a caller capturing a backend
 # name can never receive a usable non-Herdr value.
 fm_backend_policy_refuse() {  # <origin> <value> <remediation>
-  local origin=$1 value=$2 remediation=$3 verdict
-  if [ -n "$value" ]; then
-    verdict="resolves '$value'"
+  local origin=$1 value=$2 remediation=$3 verdict safe_origin safe_value safe_remediation
+  safe_origin=$(printf '%s' "$origin" | LC_ALL=C tr '\001-\037\177' ' ')
+  safe_value=$(printf '%s' "$value" | LC_ALL=C tr '\001-\037\177' ' ')
+  safe_remediation=$(printf '%s' "$remediation" | LC_ALL=C tr '\001-\037\177' ' ')
+  if [ -n "$safe_value" ]; then
+    verdict="resolves '$safe_value'"
   else
     verdict="declares no backend identity"
   fi
   printf 'REFUSED: %s %s, but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. %s\n' \
-    "$origin" "$verdict" "$remediation" >&2
+    "$safe_origin" "$verdict" "$safe_remediation" >&2
   return 1
 }

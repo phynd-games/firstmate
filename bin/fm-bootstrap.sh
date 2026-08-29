@@ -551,6 +551,10 @@ secondmate_sync() {
   secondmate_sync_remote_one() {  # <id> <home> <remote-host>
     local id=$1 _home=$2 remote_host=$3
     local sync_out inherit_out nudge_needed remote_marker remote_pending converged out remote_lock remote_generation
+    fm_backend_validate_remote_meta "$STATE/$id.meta" "$id" >/dev/null 2>&1 || {
+      echo "SECONDMATE_SYNC: secondmate $id: skipped: legacy remote backend record; Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
+      return 0
+    }
     remote_lock=$(fm_remote_inherit_transaction_lock_path "$STATE" "$id" 2>/dev/null || true)
     if [ -z "$remote_lock" ] || ! fm_lock_acquire_wait "$remote_lock"; then
       echo "NUDGE_SECONDMATES: secondmate $id: send failed: cannot lock remote inheritance transaction"
@@ -698,6 +702,11 @@ secondmate_liveness_one() {  # <meta> <id>
   harness=$(fm_meta_get "$meta" harness)
   remote_host=$(fm_meta_get "$meta" remote_host)
   if [ -n "$remote_host" ]; then
+    if ! fm_backend_validate_remote_meta "$meta" "$id" >/dev/null 2>&1; then
+      remote_backend=$(fm_backend_meta_exact_value "$meta" remote_backend 2>/dev/null || true)
+      echo "SECONDMATE_LIVENESS: secondmate $id: skipped: legacy remote backend record (backend=${remote_backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
+      return 0
+    fi
     remote_rc=0
     fm_remote_readiness_ensure "$SCRIPT_DIR" "$id" || remote_rc=$?
     if [ "$remote_rc" -eq 255 ]; then

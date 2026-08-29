@@ -35,6 +35,7 @@ if [ "${FM_SESSIONSTART_INSTRUCTION_REFRESH_LIVE_E2E:-0}" != 1 ]; then
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export FM_BACKEND_TEST_HARNESS=1 FM_BACKEND_TEST_ROOT="$ROOT"
 TMUX_SOCKET="fm-sessionstart-instruction-refresh-$$"
 TMUX_SESSION="instruction-refresh"
 LAB=${TMPDIR:-/tmp}

@@ -108,6 +108,8 @@ run_cascade() { # <primary-home> [env assignments...]
     FM_HOME="$home" \
     FM_SSH_BIN="$FAKEBIN/fake-ssh" \
     FM_BACKEND_LEGACY_TEST_LANE=1 \
+    FM_BACKEND_TEST_HARNESS=1 \
+    FM_BACKEND_TEST_ROOT="$ROOT" \
     "$@" \
     "$CASCADE"
 }

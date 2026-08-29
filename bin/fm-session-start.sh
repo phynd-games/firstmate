@@ -814,7 +814,13 @@ for meta in "$STATE"/*.meta; do
   if [ -n "$window" ]; then
     # A record whose backend identity is absent or not herdr is a legacy
     # record (hard rule 6): present it as such, never probe or dispatch on it.
-    if backend=$(fm_backend_of_meta "$meta" 2>/dev/null); then
+    if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
+      if fm_backend_validate_remote_meta "$meta" "$id" >/dev/null 2>&1; then
+        printf 'endpoint: remote record, read-only (backend=%s host=%s)\n' "$(fm_meta_get "$meta" remote_backend)" "$(fm_meta_get "$meta" remote_host)"
+      else
+        printf 'endpoint: legacy record, read-only (backend=%s window=%s); Herdr is the sole supported runtime backend - see docs/configuration.md "Legacy task records"\n' "$(fm_meta_get "$meta" remote_backend)" "$window"
+      fi
+    elif backend=$(fm_backend_of_meta "$meta" 2>/dev/null); then
       if fm_backend_target_exists "$backend" "${target:-$window}" "fm-$id"; then
         printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"
       else

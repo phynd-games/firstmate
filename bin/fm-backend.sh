@@ -342,7 +342,9 @@ fm_backend_validate() {  # <name> [origin]
   if fm_backend_policy_legacy_lane; then
     echo "error: unknown backend '$name' (known: $FM_BACKEND_KNOWN)" >&2
   else
-    echo "error: unknown backend '$name' (known: $FM_BACKEND_KNOWN); Herdr is the sole supported Firstmate runtime backend - select herdr" >&2
+    fm_backend_policy_refuse "$origin" "$name" \
+      "Declare Herdr explicitly in config/backend or with FM_BACKEND=herdr, then prove the runtime with 'herdr status --json'."
+    return 1
   fi
   return 1
 }
@@ -466,6 +468,32 @@ fm_backend_meta_exact_value() {  # <meta-file> <key>
   printf '%s' "$value"
 }
 
+fm_backend_validate_remote_meta() {  # <meta-file> <task-id>
+  local meta=$1 id=$2 backend
+  backend=$(fm_backend_meta_exact_value "$meta" remote_backend 2>/dev/null || true)
+  [ "$backend" = "$FM_BACKEND_ACTIVE" ] && return 0
+  if [ -n "$backend" ]; then
+    fm_backend_policy_refuse "task $id remote endpoint record $meta (remote_backend=$backend)" "$backend" \
+      "Retire or explicitly migrate this remote task record through docs/configuration.md \"Legacy task records\"."
+  else
+    fm_backend_policy_refuse "task $id remote endpoint record $meta (missing or ambiguous remote_backend)" "" \
+      "Retire or explicitly migrate this remote task record through docs/configuration.md \"Legacy task records\"."
+  fi
+  return 1
+}
+
+fm_backend_herdr_capability_preflight() {  # <origin>
+  local origin=$1 detail
+  fm_backend_source herdr || return 1
+  if detail=$(fm_backend_herdr_version_check 2>&1); then
+    return 0
+  fi
+  detail=$(printf '%s\n' "$detail" | sed -n '1p')
+  fm_backend_policy_refuse "$origin" herdr \
+    "The native Herdr capability check failed${detail:+: $detail} Upgrade or repair Herdr, then verify with 'herdr status --json'."
+  return 1
+}
+
 fm_backend_endpoint_atom_valid() {  # <value>
   case "$1" in
     ''|*[!A-Za-z0-9._@%+-]*) return 1 ;;
@@ -519,7 +547,8 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
     *) backend= ;;
   esac
   if [ -z "$backend" ]; then
-    echo "REFUSED: task $id has a missing or ambiguous backend identity; preserving task state." >&2
+    fm_backend_policy_refuse "task $id endpoint record $meta (missing or ambiguous backend identity)" "" \
+      "Retire or explicitly migrate this pre-invariant task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
     return 1
   fi
   if ! fm_backend_policy_permits "$backend"; then
@@ -528,7 +557,8 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
     return 1
   fi
   if ! fm_backend_is_known "$backend"; then
-    echo "REFUSED: task $id has an unknown backend identity '$backend'; preserving task state." >&2
+    fm_backend_policy_refuse "task $id endpoint record $meta (unknown backend=$backend)" "$backend" \
+      "Retire or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
     return 1
   fi
   binding_count=$(grep -c '^endpoint_task_id=' "$meta" 2>/dev/null || true)
@@ -773,7 +803,7 @@ fm_backend_source() {  # <name>
 #                      metadata, then treated as an ad hoc bare window name and
 #                      resolved by searching the legacy tmux live inventory.
 fm_backend_resolve_selector() {  # <raw-target> <state-dir>
-  local raw=$1 state=$2 meta window
+  local raw=$1 state=$2 meta window id
   case "$raw" in
     *:*)
       printf '%s' "$raw"
@@ -782,6 +812,13 @@ fm_backend_resolve_selector() {  # <raw-target> <state-dir>
   esac
   meta=$(fm_backend_meta_for_selector "$raw" "$state" 2>/dev/null || true)
   if [ -n "$meta" ]; then
+    id=${meta##*/}
+    id=${id%.meta}
+    if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
+      fm_backend_validate_remote_meta "$meta" "$id" || return 1
+    else
+      fm_backend_of_meta "$meta" >/dev/null || return 1
+    fi
     window=$(fm_backend_target_of_meta "$meta")
     [ -n "$window" ] || { echo "error: no backend target recorded in $meta" >&2; return 1; }
     printf '%s' "$window"
@@ -915,7 +952,10 @@ fm_backend_worktree_path() {  # <backend> <worktree-id>
 fm_backend_busy_state() {  # <backend> <target>
   local backend=$1
   shift
-  fm_backend_source "$backend" || { printf 'unknown'; return 0; }
+  if ! fm_backend_source "$backend"; then
+    fm_backend_policy_legacy_lane && { printf 'unknown'; return 0; }
+    return 1
+  fi
   case "$backend" in
     herdr) fm_backend_herdr_busy_state "$@" ;;
     *) printf 'unknown' ;;
@@ -937,7 +977,10 @@ fm_backend_busy_state() {  # <backend> <target>
 fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pending|pending-unproven|unknown
   local backend=$1
   shift
-  fm_backend_source "$backend" || { printf 'unknown'; return 0; }
+  if ! fm_backend_source "$backend"; then
+    fm_backend_policy_legacy_lane && { printf 'unknown'; return 0; }
+    return 1
+  fi
   case "$backend" in
     tmux) fm_tmux_composer_state "$@" ;;
     herdr) fm_backend_herdr_composer_state "$@" ;;
@@ -971,7 +1014,7 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
       tmux display-message -p -t "$target" '#{pane_id}' >/dev/null 2>&1
       ;;
     herdr)
-      fm_backend_source herdr || return 1
+      fm_backend_herdr_capability_preflight "target existence check" || return 1
       session=${target%%:*}
       pane=${target#*:}
       [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
@@ -1020,7 +1063,10 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
 # do not support secondmate spawns.
 fm_backend_agent_state() {  # <backend> <target>
   local backend=$1 target=$2
-  fm_backend_source "$backend" || { printf 'unverified'; return 0; }
+  if ! fm_backend_source "$backend"; then
+    fm_backend_policy_legacy_lane && { printf 'unverified'; return 0; }
+    return 1
+  fi
   case "$backend" in
     tmux) fm_backend_tmux_agent_state "$target" ;;
     herdr) fm_backend_herdr_agent_state "$target" ;;
@@ -1032,7 +1078,9 @@ fm_backend_agent_state() {  # <backend> <target>
 # authoritatively missing endpoint is confidently not a live agent, while every
 # ambiguous, unreadable, or unverified result stays unknown.
 fm_backend_agent_alive() {  # <backend> <target>
-  case "$(fm_backend_agent_state "$1" "$2")" in
+  local state
+  state=$(fm_backend_agent_state "$1" "$2") || return 1
+  case "$state" in
     alive) printf 'alive' ;;
     dead|missing) printf 'dead' ;;
     *) printf 'unknown' ;;

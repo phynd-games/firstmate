@@ -121,6 +121,10 @@ while IFS='|' read -r id home _window meta; do
   fi
   remote_host=$(fm_meta_get "$meta" remote_host)
   if [ -n "$remote_host" ]; then
+    if ! fm_backend_validate_remote_meta "$meta" "$id" >/dev/null 2>&1; then
+      printf 'secondmate %s (%s:%s): skipped - legacy remote backend record; see docs/configuration.md "Legacy task records"\n' "$id" "$remote_host" "$home"
+      continue
+    fi
     printf 'secondmate %s (%s:%s):\n' "$id" "$remote_host" "$home"
     remote_lock=$(fm_remote_inherit_transaction_lock_path "$STATE" "$id" 2>/dev/null || true)
     if [ -z "$remote_lock" ] || ! fm_lock_acquire_wait "$remote_lock"; then

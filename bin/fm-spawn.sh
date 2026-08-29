@@ -337,7 +337,11 @@ done
 [ "$HARNESS_SET" -eq 0 ] || [ -n "$HARNESS_ARG" ] || { echo "error: --harness requires a non-empty value" >&2; exit 1; }
 [ "$MODEL_SET" -eq 0 ] || [ -n "$MODEL" ] || { echo "error: --model requires a non-empty value" >&2; exit 1; }
 [ "$EFFORT_SET" -eq 0 ] || [ -n "$EFFORT" ] || { echo "error: --effort requires a non-empty value" >&2; exit 1; }
-[ "$BACKEND_SET" -eq 0 ] || [ -n "$BACKEND_ARG" ] || { echo "error: --backend requires a non-empty value" >&2; exit 1; }
+if [ "$BACKEND_SET" -eq 1 ] && [ -z "$BACKEND_ARG" ]; then
+  fm_backend_policy_refuse "--backend" "" \
+    "Declare Herdr explicitly with --backend herdr, then prove the runtime with 'herdr status --json'."
+  exit 1
+fi
 [ "$MODE_SET" -eq 0 ] || [ -n "$MODE" ] || { echo "error: --mode requires a non-empty value" >&2; exit 1; }
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
@@ -358,6 +362,10 @@ case "$EFFORT" in
   ''|low|medium|high|xhigh|max) ;;
   *) echo "error: --effort must be one of low, medium, high, xhigh, max" >&2; exit 1 ;;
 esac
+
+if [ "$RELAUNCH" -eq 0 ] && [ "$BACKEND_SET" -eq 1 ]; then
+  fm_backend_validate_spawn "$BACKEND_ARG" "--backend" || exit 1
+fi
 
 # --relaunch reuses an existing task's endpoint, worktree, project, and kind,
 # so every axis this block resolves for a fresh spawn instead comes from that
@@ -896,6 +904,9 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
 fi
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
+if [ "$RELAUNCH" -eq 1 ] && [ -f "$STATE/$ID.meta" ] && [ -n "$(fm_meta_get "$STATE/$ID.meta" remote_host)" ]; then
+  fm_backend_validate_remote_meta "$STATE/$ID.meta" "$ID" || exit 1
+fi
 # Role partition: spawning NEW work is MAIN-owned. A relaunch of an existing
 # task is legitimate branch recovery (fm-control drives it through this same
 # entrypoint), so only a fresh spawn refuses the branch actor (contract:
@@ -973,7 +984,6 @@ fi
 if [ "$RELAUNCH" -eq 0 ]; then
   if [ "$BACKEND_SET" -eq 1 ]; then
     BACKEND=$BACKEND_ARG
-    fm_backend_validate_spawn "$BACKEND" "--backend" || exit 1
   else
     BACKEND=$(fm_backend_name) || exit 1
     fm_backend_validate_spawn "$BACKEND" || exit 1
