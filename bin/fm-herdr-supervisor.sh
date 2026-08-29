@@ -722,8 +722,12 @@ supervisor_eligible() {
 # resolves a workspace by label and never touches a parent, sibling, task, or
 # captain pane.
 rollback_workspace() {  # <session> <workspace>
-  local session=$1 workspace=$2
+  local session=$1 workspace=$2 expected_socket=${3:-} expected_socket_identity=${4:-}
   [ -n "$workspace" ] || return 0
+  [ -n "$expected_socket" ] && [ -n "$expected_socket_identity" ] || return 1
+  herdr_identity >/dev/null 2>&1 || return 1
+  [ "$HS_SESSION" = "$session" ] && [ "$HS_SOCKET" = "$expected_socket" ] \
+    && [ "$HS_SOCKET_IDENTITY" = "$expected_socket_identity" ] || return 1
   if hs_herdr "$session" workspace close "$workspace" >/dev/null 2>&1; then
     ledger_append rollback "closed workspace $workspace after a failed establish"
     return 0
@@ -733,10 +737,12 @@ rollback_workspace() {  # <session> <workspace>
 }
 
 cleanup_establish_failure() {  # <session> <workspace> <detail>
-  local session=$1 workspace=$2 detail=$3 pending_workspace
+  local session=$1 workspace=$2 detail=$3 pending_workspace pending_socket pending_socket_identity
   pending_workspace=$(pending_get workspace || printf '')
+  pending_socket=$(pending_get herdr_socket || printf '')
+  pending_socket_identity=$(pending_get herdr_socket_identity || printf '')
   [ -n "$workspace" ] || workspace=$pending_workspace
-  if ! rollback_workspace "$session" "$workspace"; then
+  if ! rollback_workspace "$session" "$workspace" "$pending_socket" "$pending_socket_identity"; then
     pending_restore_record quarantine || true
     escalate "$detail; exact workspace $workspace could not be closed and the supervisor binding was retained"
     return 1
@@ -876,7 +882,7 @@ establish() {  # <reason>
 
   pending_put "$generation" "$HS_SESSION" "$HS_SOCKET" "$workspace" "$tab" "$pane" || {
     detail="the exact Herdr workspace binding could not be persisted for cleanup"
-    if rollback_workspace "$HS_SESSION" "$workspace"; then
+    if rollback_workspace "$HS_SESSION" "$workspace" "$HS_SOCKET" "$HS_SOCKET_IDENTITY"; then
       record_set_cleanup_state closed || true
       record_clear || record_set_mode quarantine || true
     else
@@ -1151,7 +1157,7 @@ reconcile_pending_locked() {
   herdr_identity || return 1
   [ "$HS_SESSION" = "$session" ] && [ "$HS_SOCKET" = "$socket" ] \
     && [ "$HS_SOCKET_IDENTITY" = "$socket_identity" ] || return 1
-  if ! rollback_workspace "$session" "$workspace"; then
+  if ! rollback_workspace "$session" "$workspace" "$socket" "$socket_identity"; then
     pending_restore_record quarantine || true
     return 1
   fi
@@ -1380,6 +1386,26 @@ loop_capture_arm_identity() {
   return 1
 }
 
+loop_stop_unverified_arm() {
+  local pid=${LOOP_ARM_PID:-} parent i=0
+  [ -n "$pid" ] || return 0
+  parent=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+  [ "$parent" = "$LOOP_OWNER_PID" ] || return 1
+  if fm_pid_alive "$pid"; then
+    kill -TERM "$pid" 2>/dev/null || true
+    while [ "$i" -lt 20 ] && fm_pid_alive "$pid"; do
+      sleep 0.05
+      i=$((i + 1))
+    done
+    if fm_pid_alive "$pid"; then
+      parent=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+      [ "$parent" = "$LOOP_OWNER_PID" ] && kill -KILL "$pid" 2>/dev/null || true
+    fi
+  fi
+  wait "$pid" 2>/dev/null || true
+  return 0
+}
+
 loop_stop_arm() {
   local pid=${LOOP_ARM_PID:-} current i=0
   [ -n "$pid" ] || return 0
@@ -1401,6 +1427,8 @@ loop_stop_arm() {
     wait "$pid" 2>/dev/null || true
   elif ! fm_pid_alive "$pid"; then
     wait "$pid" 2>/dev/null || true
+  else
+    loop_stop_unverified_arm || true
   fi
   LOOP_ARM_PID=
   LOOP_ARM_IDENTITY=
@@ -1439,6 +1467,9 @@ watcher_stale_lock_verified() {
   if [ "$current_identity" != "$lock_identity" ]; then
     [ -n "$current_identity" ] || return 1
     STALE_WATCHER_RECLAIM=1
+    STALE_WATCHER_PID=$pid
+    STALE_WATCHER_IDENTITY=$lock_identity
+    return 0
   else
     fm_watcher_lock_matches_pid "$STATE" "$SCRIPT_DIR/fm-watch.sh" "$pid" "$FM_HOME" || return 1
   fi
@@ -1458,20 +1489,22 @@ watcher_stale_lock_verified() {
 }
 
 loop_launch_verified() {  # <pid>
-  local self=$1 session socket workspace tab pane tracked
+  local self=$1 session socket socket_identity workspace tab pane tracked
   [ -f "$RECORD" ] || return 1
   [ "$(record_get generation || printf '')" = "$LOOP_GENERATION" ] || return 1
   [ "$(record_get mode || printf '')" = active ] || return 1
   [ "$(record_get fm_home || printf '')" = "$FM_HOME" ] || return 1
   session=$(record_get herdr_session || printf '')
   socket=$(record_get herdr_socket || printf '')
+  socket_identity=$(record_get herdr_socket_identity || printf '')
   workspace=$(record_get workspace || printf '')
   tab=$(record_get tab || printf '')
   pane=$(record_get pane || printf '')
-  [ -n "$session" ] && [ -n "$socket" ] && [ -n "$workspace" ] \
+  [ -n "$session" ] && [ -n "$socket" ] && [ -n "$socket_identity" ] && [ -n "$workspace" ] \
     && [ -n "$tab" ] && [ -n "$pane" ] || return 1
   herdr_identity || return 1
-  [ "$HS_SESSION" = "$session" ] && [ "$HS_SOCKET" = "$socket" ] || return 1
+  [ "$HS_SESSION" = "$session" ] && [ "$HS_SOCKET" = "$socket" ] \
+    && [ "$HS_SOCKET_IDENTITY" = "$socket_identity" ] || return 1
   pane_binding_intact "$session" "$workspace" "$tab" "$pane" || return 1
   tracked=$(pane_tracked_pid "$session" "$pane" 2>/dev/null || printf '')
   [ "$tracked" = "$self" ]
@@ -1587,13 +1620,27 @@ cmd_run() {
           sleep "$IDLE_INTERVAL"
           continue 2
         fi
+        if harness_owner_provable; then
+          loop_stop_arm
+          rm -f "$out" 2>/dev/null || true
+          LOOP_ARM_OUT=
+          if cmd_retire "another continuity owner became provable while arming"; then
+            loop_release_live
+            exit 0
+          fi
+          sleep "$IDLE_INTERVAL"
+          continue 2
+        fi
+        : > "$HEARTBEAT" 2>/dev/null || true
         sleep 0.5
       done
       arm_match=$?
     else
       arm_match=2
+      loop_stop_unverified_arm || true
     fi
     if [ "$arm_match" -eq 2 ]; then
+      loop_stop_arm
       rc=125
       escalate "the foreground watcher arm process identity became unknown or changed; refusing to wait on or signal a recycled pid"
     else

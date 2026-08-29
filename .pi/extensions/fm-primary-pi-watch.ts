@@ -149,15 +149,13 @@ function lockOwnership(): LockOwnership {
 }
 
 let markerRetryTimer: ReturnType<typeof setTimeout> | undefined;
-let markerRetryAttempts = 0;
 
 function retryMarkLoaded(): void {
-  if (markerRetryTimer || markerRetryAttempts >= 50) return;
-  markerRetryAttempts += 1;
+  if (markerRetryTimer) return;
   markerRetryTimer = setTimeout(() => {
     markerRetryTimer = undefined;
     markLoaded();
-  }, 100);
+  }, 250);
 }
 
 function markLoaded(): void {
@@ -173,7 +171,6 @@ function markLoaded(): void {
     retryMarkLoaded();
     return;
   }
-  markerRetryAttempts = 0;
   mkdirSync(state, { recursive: true });
   writeFileSync(marker, `${extensionVersion}\n${process.pid}\n${lockIdentity}\n`);
 }
