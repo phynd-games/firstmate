@@ -201,13 +201,18 @@ EOF
 # Promotion is where a scout's ship contract is finally decided, so it requires the
 # same explicit values and writes them into the task's durable record.
 test_promote_requires_and_records_the_delivery_contract() {
-  local home meta out status
+  local home meta out status proj wt base_sha
   home="$TMP_ROOT/promote/home"
-  mkdir -p "$home/state"
+  proj="$TMP_ROOT/promote/proj"
+  wt="$TMP_ROOT/promote/wt"
+  mkdir -p "$home/state" "$home/data/promote-d1"
+  fm_git_worktree "$proj" "$wt" "task-promote-d1"
+  base_sha=$(git -C "$wt" rev-parse HEAD)
+  printf 'Scout brief.\n' > "$home/data/promote-d1/brief.md"
   meta="$home/state/promote-d1.meta"
 
   write_scout_meta() {
-    printf 'window=fm-promote-d1\nkind=scout\nworktree=/tmp/wt\n' > "$meta"
+    printf 'window=fm-promote-d1\nkind=scout\nworktree=%s\n' "$wt" > "$meta"
   }
 
   write_scout_meta
@@ -231,6 +236,8 @@ test_promote_requires_and_records_the_delivery_contract() {
   status=$?
   expect_code 0 "$status" "a promotion carrying both flags should succeed"
   assert_grep 'kind=ship' "$meta" "promotion did not restore ship teardown protection"
+  assert_grep 'review_base_ref=main' "$meta" "promotion did not freeze the approved target base ref"
+  assert_grep "review_base_sha=$base_sha" "$meta" "promotion did not freeze the approved target base SHA"
   assert_grep 'mode=direct-PR' "$meta" "promotion did not record the decided delivery mode"
   assert_grep 'yolo=on' "$meta" "promotion did not record the decided merge posture"
   assert_contains "$out" "ship instructions for mode=direct-PR" "promotion hint did not carry the decided mode"

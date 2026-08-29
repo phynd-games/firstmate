@@ -149,6 +149,8 @@ add_ship_task() {
     echo "project=$proj"
     echo "harness=$harness"
     echo "kind=ship"
+    echo "review_base_ref=main"
+    echo "review_base_sha=$(git -C "$wt" rev-parse HEAD)"
     echo "mode=no-mistakes"
     echo "yolo=off"
     echo "tasktmp=/tmp/fm-$id"

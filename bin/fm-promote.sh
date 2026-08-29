@@ -19,6 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
@@ -114,10 +115,61 @@ META_LOCK_HELD=1
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
 
+PROMOTE_WT=$(fmx_meta_get "$META" worktree || true)
+[ -n "$PROMOTE_WT" ] && [ -d "$PROMOTE_WT" ] && [ ! -L "$PROMOTE_WT" ] || {
+  echo "error: scout $ID has no valid worktree for its approved target base" >&2
+  exit 1
+}
+PROMOTE_BASE_REF_COUNT=$(grep -c '^review_base_ref=' "$META" || true)
+PROMOTE_BASE_SHA_COUNT=$(grep -c '^review_base_sha=' "$META" || true)
+if [ "$PROMOTE_BASE_REF_COUNT" -ne 0 ] || [ "$PROMOTE_BASE_SHA_COUNT" -ne 0 ]; then
+  PROMOTE_BASE=$(fm_pr_review_base_from_meta "$META") || {
+    echo "error: scout $ID has an invalid approved target base" >&2
+    exit 1
+  }
+elif [ -f "$DATA/$ID/brief.md" ] && [ ! -L "$DATA/$ID/brief.md" ]; then
+  if PROMOTE_BASE=$(fm_pr_review_base_from_brief "$DATA/$ID/brief.md"); then
+    :
+  else
+    PROMOTE_BASE_STATUS=$?
+    [ "$PROMOTE_BASE_STATUS" -eq 2 ] || {
+      echo "error: scout $ID has an invalid or ambiguous approved target base in its brief" >&2
+      exit 1
+    }
+    PROMOTE_BASE=
+  fi
+else
+  PROMOTE_BASE=
+fi
+if [ -z "$PROMOTE_BASE" ]; then
+  PROMOTE_BASE_REF=$(fm_pr_default_branch "$PROMOTE_WT") || {
+    echo "error: could not resolve scout $ID's approved target base" >&2
+    exit 1
+  }
+  PROMOTE_BASE_SHA=$(git -C "$PROMOTE_WT" rev-parse --verify "$PROMOTE_BASE_REF^{commit}" 2>/dev/null) || {
+    echo "error: could not resolve scout $ID's approved target base commit" >&2
+    exit 1
+  }
+  PROMOTE_BASE=$(printf '%s\t%s\n' "$PROMOTE_BASE_REF" "$PROMOTE_BASE_SHA")
+fi
+IFS="$(printf '\t')" read -r PROMOTE_BASE_REF PROMOTE_BASE_SHA <<EOF
+$PROMOTE_BASE
+EOF
+PROMOTE_RESOLVED_BASE=$(git -C "$PROMOTE_WT" rev-parse --verify "$PROMOTE_BASE_REF^{commit}" 2>/dev/null) || {
+  echo "error: scout $ID's approved target base is unavailable" >&2
+  exit 1
+}
+[ "$PROMOTE_BASE_SHA" = "$PROMOTE_RESOLVED_BASE" ] || {
+  echo "error: scout $ID's approved target base ref and SHA disagree" >&2
+  exit 1
+}
+
 TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
-grep -v -e '^kind=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"
+grep -v -e '^kind=' -e '^review_base_ref=' -e '^review_base_sha=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"
 {
   echo "kind=ship"
+  echo "review_base_ref=$PROMOTE_BASE_REF"
+  echo "review_base_sha=$PROMOTE_BASE_SHA"
   echo "mode=$MODE"
   echo "yolo=$YOLO"
 } >> "$TMP"

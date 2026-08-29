@@ -43,12 +43,20 @@ make_case() {
 }
 
 write_task_meta() {
-  local case_dir=$1
+  local case_dir=$1 base_ref base_sha
   shift
+  if git -C "$case_dir/wt" rev-parse --verify 'origin/main^{commit}' >/dev/null 2>&1; then
+    base_ref=origin/main
+  else
+    base_ref=main
+  fi
+  base_sha=$(git -C "$case_dir/wt" rev-parse --verify "$base_ref^{commit}")
   fm_write_meta "$case_dir/state/task-x1.meta" \
     "window=fm-task-x1" \
     "worktree=$case_dir/wt" \
     "project=$case_dir/project" \
+    "review_base_ref=$base_ref" \
+    "review_base_sha=$base_sha" \
     "$@"
 }
 

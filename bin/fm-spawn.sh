@@ -2335,13 +2335,21 @@ fi
 
 REVIEW_BASE_REF=
 REVIEW_BASE_SHA=
-if [ "$KIND" = ship ] && [ "$RELAUNCH" -eq 0 ]; then
-  REVIEW_BASE=$(fm_pr_review_base_from_brief "$BRIEF" || true)
-  if [ -n "$REVIEW_BASE" ]; then
-    IFS="$(printf '\t')" read -r REVIEW_BASE_REF REVIEW_BASE_SHA <<EOF
-$REVIEW_BASE
-EOF
+if [ "$KIND" = ship ]; then
+  if [ "$RELAUNCH" -eq 1 ]; then
+    REVIEW_BASE=$(fm_pr_review_base_from_meta "$RELAUNCH_META") || {
+      echo "error: task $ID has no valid approved target base to preserve across relaunch" >&2
+      exit 1
+    }
+  elif REVIEW_BASE=$(fm_pr_review_base_from_brief "$BRIEF"); then
+    :
   else
+    REVIEW_BASE_STATUS=$?
+    [ "$REVIEW_BASE_STATUS" -eq 2 ] || {
+      echo "error: brief $BRIEF has an invalid or ambiguous approved target base" >&2
+      exit 1
+    }
+    REVIEW_BASE=
     REVIEW_BASE_REF=$(fm_pr_default_branch "$WT") || {
       echo "error: could not resolve the task's approved target base" >&2
       exit 1
@@ -2350,6 +2358,11 @@ EOF
       echo "error: could not resolve the task's approved target base commit" >&2
       exit 1
     }
+  fi
+  if [ -n "$REVIEW_BASE" ]; then
+    IFS="$(printf '\t')" read -r REVIEW_BASE_REF REVIEW_BASE_SHA <<EOF
+$REVIEW_BASE
+EOF
   fi
   RESOLVED_REVIEW_BASE=$(git -C "$WT" rev-parse --verify "$REVIEW_BASE_REF^{commit}" 2>/dev/null) || {
     echo "error: task's approved target base is unavailable" >&2
@@ -2729,7 +2742,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind review_base_ref review_base_sha mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)

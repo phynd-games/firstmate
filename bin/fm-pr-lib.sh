@@ -314,8 +314,13 @@ fm_pr_review_base_from_meta() {
 fm_pr_review_base_from_brief() {
   local brief=$1 line count ref sha
   [ -f "$brief" ] && [ ! -L "$brief" ] || return 1
-  count=$(grep -c '^Target-project approved base: ref=[A-Za-z0-9._/-][A-Za-z0-9._/-]*; sha=[0-9a-f][0-9a-f]*$' "$brief" || true)
-  [ "$count" = 1 ] || return 1
+  count=$(grep -c '^Target-project approved base:' "$brief" || true)
+  [ "$count" = 1 ] || {
+    [ "$count" = 0 ] && return 2
+    return 1
+  }
+  line=$(grep '^Target-project approved base:' "$brief")
+  printf '%s\n' "$line" | grep -Eq '^Target-project approved base: ref=[A-Za-z0-9._/-][A-Za-z0-9._/-]*; sha=[0-9a-f][0-9a-f]*$' || return 1
   line=$(sed -n 's/^Target-project approved base: ref=\([^;]*\); sha=\([0-9a-f][0-9a-f]*\)$/\1\t\2/p' "$brief")
   IFS="$(printf '\t')" read -r ref sha <<EOF
 $line
