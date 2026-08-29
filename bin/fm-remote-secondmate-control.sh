@@ -18,7 +18,7 @@
 # selection rather than reading this home's config/backend. The interactive
 # default session remains for the user's work.
 # fm-spawn/fm-send/fm-teardown keep owning the local endpoint mechanics.
-# The home's own workers keep their ordinary backend selection.
+# The secondmate home and every worker it supervises run only on Herdr.
 # bin/fm-remote-doctor.sh owns that host's readiness for Herdr.
 # docs/remote-secondmates.md owns why.
 # A private parent-route state directory stores only the remote secondmate
@@ -107,7 +107,28 @@ remote_endpoint_load() {
 }
 
 remote_endpoint_require() {
-  remote_endpoint_load "$1" || die "$REMOTE_ENDPOINT_ERROR"
+  remote_endpoint_load "$1" || {
+    remote_endpoint_refuse "$1" || true
+    return 1
+  }
+}
+
+remote_endpoint_refuse() {
+  local id=$1 recorded
+  case "$REMOTE_ENDPOINT_FAILURE" in
+    capability-failure)
+      printf '%s\n' "$REMOTE_ENDPOINT_ERROR" >&2
+      ;;
+    legacy-record)
+      recorded=$(fm_backend_meta_recorded_backend "$REMOTE_ENDPOINT_META" 2>/dev/null || true)
+      fm_backend_policy_refuse "remote secondmate $id endpoint record" "$recorded" \
+        "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
+      ;;
+    *)
+      fm_backend_policy_refuse "remote secondmate $id endpoint record" herdr \
+        "Repair the endpoint metadata and verify the native runtime with 'herdr status --json'."
+      ;;
+  esac
 }
 
 state_value() { # <id>; prints recovery-grade state
@@ -115,7 +136,7 @@ state_value() { # <id>; prints recovery-grade state
   meta=$(meta_path "$id")
   [ -f "$meta" ] && [ ! -L "$meta" ] || { printf 'missing\n'; return 0; }
   if ! remote_endpoint_load "$id"; then
-    printf 'error: %s\n' "$REMOTE_ENDPOINT_ERROR" >&2
+    remote_endpoint_refuse "$id" || true
     printf '%s\n' "$REMOTE_ENDPOINT_FAILURE"
     return 0
   fi
@@ -136,13 +157,9 @@ print_route() { # <id>
 }
 
 cmd_route() {
-  local id=$1 meta
+  local id=$1
   validate_id "$id"
   validate_home "$id"
-  meta=$(meta_path "$id")
-  if [ ! -f "$meta" ] || [ -L "$meta" ]; then
-    die "remote secondmate has no endpoint metadata"
-  fi
   print_route "$id"
 }
 
@@ -203,12 +220,14 @@ cmd_send() {
   [ -z "$delivery_mode" ] || [ "$delivery_mode" = fire-and-forget ] || die "invalid send delivery mode"
   validate_home "$id"
   meta=$(meta_path "$id")
+  remote_endpoint_require "$id" || return 1
   meta_lock=$(fm_meta_lock_path "$meta") || die "remote secondmate metadata lock path is invalid"
   fm_task_inbox_lock_acquire "$meta_lock" \
     || die "remote secondmate endpoint metadata could not be locked for final delivery validation"
   if ! remote_endpoint_load "$id"; then
     fm_lock_release "$meta_lock"
-    die "$REMOTE_ENDPOINT_ERROR"
+    remote_endpoint_refuse "$id" || true
+    return 1
   fi
   # A remote steer is delivered by durable record, never by typing its payload
   # into the pane: write it into this secondmate's host-local steering inbox,

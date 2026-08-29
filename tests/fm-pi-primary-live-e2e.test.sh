@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+printf '%s\n' 'skip: retired legacy live smoke; use the Herdr lab contract'
+exit 0
 # Opt-in credentialed Pi continuity regression on a private tmux socket and
 # isolated project/home state. It uses the existing shared Pi auth store without
 # copying credentials and pins the captain-approved openai-codex model.

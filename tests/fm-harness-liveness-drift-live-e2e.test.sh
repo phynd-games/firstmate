@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+printf '%s\n' 'skip: retired legacy live smoke; use the Herdr lab contract'
+exit 0
 # tests/fm-harness-liveness-drift-live-e2e.test.sh - opt-in drift guard proving
 # every INSTALLED harness is still classified `alive` by the tmux liveness
 # probe (bin/backends/tmux.sh).

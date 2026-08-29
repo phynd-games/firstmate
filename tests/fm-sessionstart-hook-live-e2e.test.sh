@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+printf '%s\n' 'skip: retired legacy live smoke; use the Herdr lab contract'
+exit 0
 # Opt-in live guard for the Claude, Codex exec, and Pi RUN-tier session-open adapters.
 # Cursor's source-free RUN-tier transport is covered with its stop-hook park by
 # tests/fm-cursor-primary-live-e2e.test.sh.

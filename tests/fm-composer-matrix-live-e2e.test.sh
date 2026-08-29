@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+printf '%s\n' 'skip: retired legacy live smoke; use the Herdr lab contract'
+exit 0
 # tests/fm-composer-matrix-live-e2e.test.sh - the live composer-matrix guard
 # (live-harness-optin family; task fm-composer-thin-adapter-refactor-r1).
 #

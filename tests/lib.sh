@@ -91,6 +91,8 @@ FM_TEST_OWNER_IDENTITY=$(fm_test_pid_identity "$$") || {
 }
 export FM_BACKEND_TEST_OWNER_PID=$$
 export FM_BACKEND_TEST_OWNER_IDENTITY="$FM_TEST_OWNER_IDENTITY"
+FM_BACKEND_TEST_OWNER_SCRIPT=$(cd "$(dirname "${BASH_SOURCE[1]}")" && pwd -P)/$(basename "${BASH_SOURCE[1]}")
+export FM_BACKEND_TEST_OWNER_SCRIPT
 FM_BACKEND_TEST_CAPABILITY_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-harness-capability.XXXXXX") || return 1
 printf '%s\n' "${FM_TEST_OWNER_IDENTITY}" > "$FM_BACKEND_TEST_CAPABILITY_FILE" || return 1
 exec 9< "$FM_BACKEND_TEST_CAPABILITY_FILE"

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+printf '%s\n' 'skip: retired legacy live smoke; use the Herdr lab contract'
+exit 0
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

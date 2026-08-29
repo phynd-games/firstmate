@@ -89,6 +89,15 @@ set +e
 
 fm_afk_launch_log() { printf 'fm-afk-launch: %s\n' "$*" >&2; }
 
+fm_afk_launch_preflight() {
+  fm_backend_policy_legacy_lane && return 0
+  local backend target
+  backend=$(discover_supervisor_backend) || return 1
+  fm_backend_validate "$backend" || return 1
+  target=$(discover_supervisor_target) || return 1
+  fm_backend_target_exists "$backend" "$target" || return $?
+}
+
 fm_afk_launch_lock_owned() {
   local pid expected actual
   [ -d "$FM_AFK_LAUNCH_LOCK" ] || return 1
@@ -636,7 +645,7 @@ fm_afk_launch_stop() {
 }
 
 fm_afk_launch_main() {
-  local result
+  local result preflight_rc
   # Traps first, lock second. Acquiring before the handlers exist leaves a
   # window where a signal terminates this process by default action and leaks
   # the lock directory, which then blocks the next away-mode launch until the
@@ -645,6 +654,16 @@ fm_afk_launch_main() {
   trap fm_afk_launch_lock_release EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  case "${1:-start}" in
+    start|start-native)
+      if fm_afk_launch_preflight; then
+        :
+      else
+        preflight_rc=$?
+        return "$preflight_rc"
+      fi
+      ;;
+  esac
   fm_afk_launch_lock_acquire || return 1
   case "${1:-start}" in
     start) fm_afk_launch_start ;;

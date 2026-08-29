@@ -104,10 +104,20 @@ fm_backend_policy_test_capability() {
 }
 
 fm_backend_policy_test_process() {
-  local owner_pid=${FM_BACKEND_TEST_OWNER_PID:-} owner_identity=${FM_BACKEND_TEST_OWNER_IDENTITY:-} current_identity source resolved root
+  local owner_pid=${FM_BACKEND_TEST_OWNER_PID:-} owner_identity=${FM_BACKEND_TEST_OWNER_IDENTITY:-}
+  local owner_script=${FM_BACKEND_TEST_OWNER_SCRIPT:-} current_identity owner_command source resolved root
   [ -n "$owner_pid" ] && [ -n "$owner_identity" ] || return 1
   fm_backend_policy_test_capability || return 1
   root=$(cd "${BASH_SOURCE[0]%/*}/.." 2>/dev/null && pwd -P) || return 1
+  case "$owner_script" in
+    "$root"/tests/*.test.sh) ;;
+    *) return 1 ;;
+  esac
+  owner_command=$(ps -p "$owner_pid" -o command= 2>/dev/null) || return 1
+  case "$owner_command" in
+    *"$(basename "$owner_script")"*) ;;
+    *) return 1 ;;
+  esac
   if [ "$owner_pid" = "${BASHPID:-$$}" ]; then
     for source in "${BASH_SOURCE[@]}"; do
       case "$source" in

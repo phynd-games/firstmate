@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+printf '%s\n' 'skip: retired legacy live smoke; use the Herdr lab contract'
+exit 0
 # Opt-in real-process Grok Stop compatibility matrix.
 #
 # Requires exact official binary paths for one native-capable build and one

@@ -728,8 +728,19 @@ fm_pending_reply_fallback_idle_eligible() {  # <record-path>
 # another read busy, and a weak rendered idle degrades to `fallback-idle`,
 # which the caller accepts as idle only after its grace window.
 fm_pending_reply_backend_observation() {  # <backend> <target> [expected-label] [harness]
-  local backend=$1 target=$2 expected_label=${3-} harness=${4-} native tail40
-  native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || printf 'unknown')
+  local backend=$1 target=$2 expected_label=${3-} harness=${4-} native tail40 native_rc
+  if [ "$backend" = herdr ]; then
+    fm_backend_herdr_capability_preflight "pending-reply observation" || return 2
+  fi
+  if native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null); then
+    native_rc=0
+  else
+    native_rc=$?
+  fi
+  if [ "$native_rc" -ne 0 ] && [ "$backend" = herdr ]; then
+    return "$native_rc"
+  fi
+  [ "$native_rc" -eq 0 ] || native=unknown
   case "$native" in
     busy|idle) printf '%s' "$native"; return 0 ;;
   esac
@@ -1358,6 +1369,7 @@ fm_pending_reply_tick() {  # <state-dir>
       # (absent or non-herdr) record is simply unobservable here, and its
       # diagnostic belongs to the direct operations that refuse it by name.
       backend=$(fm_backend_of_meta "$meta" 2>/dev/null) || backend=
+      [ -n "$backend" ] || continue
       target=$(fm_backend_target_of_meta "$meta")
       sm_home=$(fm_meta_get "$meta" home)
       harness=$(fm_meta_get "$meta" harness)
@@ -1379,11 +1391,16 @@ fm_pending_reply_tick() {  # <state-dir>
         done
         if [ "$found" = 0 ]; then
           if [ -n "$remote_host" ]; then
-            observation=$("$_FM_PENDING_REPLY_LIB_DIR/fm-on.sh" "$task_id" \
-              fm-remote-secondmate-control.sh observe "$task_id" < /dev/null 2>/dev/null || printf 'unknown')
+            if ! observation=$("$_FM_PENDING_REPLY_LIB_DIR/fm-on.sh" "$task_id" \
+              fm-remote-secondmate-control.sh observe "$task_id" < /dev/null 2>&1); then
+              printf '%s\n' "$observation" | sed -n '1p' >&2
+              return 2
+            fi
             case "$observation" in busy|idle|fallback-idle|unknown) ;; *) observation=unknown ;; esac
           else
-            observation=$(fm_pending_reply_backend_observation "$backend" "$target" "$label" "$harness")
+            if ! observation=$(fm_pending_reply_backend_observation "$backend" "$target" "$label" "$harness"); then
+              return 2
+            fi
           fi
           observation_tasks+=("$task_id")
           observation_values+=("$observation")

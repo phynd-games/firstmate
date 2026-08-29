@@ -905,6 +905,12 @@ fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; 
 if [ "$RELAUNCH" -eq 1 ] && [ -f "$STATE/$ID.meta" ] && [ -n "$(fm_meta_get "$STATE/$ID.meta" remote_host)" ]; then
   fm_backend_validate_remote_meta "$STATE/$ID.meta" "$ID" || exit 1
 fi
+if [ "$RELAUNCH" -eq 1 ] && [ -f "$STATE/$ID.meta" ] && [ -z "$(fm_meta_get "$STATE/$ID.meta" remote_host)" ]; then
+  fm_backend_validate_task_endpoint "$STATE/$ID.meta" "$ID" || exit 1
+  if [ "$FM_BACKEND_VALIDATED_BACKEND" = herdr ]; then
+    fm_backend_herdr_capability_preflight "relaunch task $ID" || exit 1
+  fi
+fi
 # Role partition: spawning NEW work is MAIN-owned. A relaunch of an existing
 # task is legitimate branch recovery (fm-control drives it through this same
 # entrypoint), so only a fresh spawn refuses the branch actor (contract:

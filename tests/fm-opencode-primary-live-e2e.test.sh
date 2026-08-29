@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+printf '%s\n' 'skip: retired legacy live smoke; use the Herdr lab contract'
+exit 0
 # Opt-in credentialed OpenCode continuity regression on an isolated project and
 # FM_HOME. Existing OpenCode credentials stay in their managed store.
 set -u

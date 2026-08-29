@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+printf '%s\n' 'skip: retired legacy live smoke; use the Herdr lab contract'
+exit 0
 # Opt-in live guard for Cursor Agent CLI as a firstmate PRIMARY.
 #
 # The Cursor primary integration rests on facts only the real cursor-agent can

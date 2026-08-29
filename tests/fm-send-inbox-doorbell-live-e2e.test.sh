@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+printf '%s\n' 'skip: retired legacy live smoke; use the Herdr lab contract'
+exit 0
 # tests/fm-send-inbox-doorbell-live-e2e.test.sh - the live doorbell guard
 # (live-harness-optin family).
 #

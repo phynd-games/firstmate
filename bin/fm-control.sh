@@ -264,9 +264,6 @@ ID=$RAW_ID
 fm_lease_guard "$ID" "lifecycle control (fm-control)"
 CONTROL_LOCK="$STATE/.control-$ID.lock"
 trap control_cleanup EXIT
-fm_lock_try_acquire "$CONTROL_LOCK" \
-  || die "another lifecycle action is already running for task $ID"
-CONTROL_LOCK_HELD=1
 META="$STATE/$ID.meta"
 if [ ! -f "$META" ]; then
   case "$RAW_ID" in
@@ -308,6 +305,13 @@ fm_control_harness_supported "$HARNESS" \
   || die "task $ID records harness '${RECORDED_HARNESS:-none}', which has no verified control mechanics; fm-control refuses to guess an interrupt key or exit command"
 
 fm_backend_validate "$BACKEND" || exit 1
+
+fm_lock_try_acquire "$CONTROL_LOCK" \
+  || die "another lifecycle action is already running for task $ID"
+CONTROL_LOCK_HELD=1
+fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
+BACKEND=$FM_BACKEND_VALIDATED_BACKEND
+T=$FM_BACKEND_VALIDATED_TARGET
 
 # --- shared helpers ---------------------------------------------------------
 

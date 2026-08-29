@@ -420,6 +420,12 @@ fm_send_resolve_target() {  # <raw-target>
 RAW_TARGET=$1
 fm_send_resolve_target "$RAW_TARGET" || exit 1
 T=$RESOLVED_TARGET
+if [ "$TARGET_BACKEND" != remote ]; then
+  fm_backend_validate "$TARGET_BACKEND" || exit 1
+  if [ "$TARGET_BACKEND" = herdr ]; then
+    fm_backend_herdr_capability_preflight "send target $T" || exit 1
+  fi
+fi
 shift
 
 # Supervision lease guard: a steer is overlap territory between the two Pi
@@ -482,10 +488,6 @@ while :; do
     *) break ;;
   esac
 done
-
-if [ "$TARGET_BACKEND" != remote ]; then
-  fm_backend_validate "$TARGET_BACKEND" || exit 1
-fi
 
 # Classify a from-firstmate -> secondmate request. Only a task selector resolved
 # through this home's meta whose authoritative kind is secondmate is marked: the
