@@ -94,6 +94,9 @@ case "${1:-}" in
         fi
         if [ -f "$S/create-fails" ]; then exit 1; fi
         printf 'wZ\n' > "$S/workspace"
+        for i in $(seq 1 $#); do
+          if [ "${!i}" = --label ]; then j=$((i + 1)); printf '%s\n' "${!j}" > "$S/workspace-label"; fi
+        done
         printf '{"result":{"workspace":{"workspace_id":"wZ"},"tab":{"tab_id":"wZ:t1"},"root_pane":{"pane_id":"wZ:p1"}}}\n'
         exit 0
         ;;
@@ -135,6 +138,7 @@ case "${1:-}" in
       run)
         if [ -f "$S/run-fails" ]; then exit 1; fi
         cmd=${4:-}
+        [ "${#cmd}" -lt 400 ] || exit 1
         # Run it for real, detached from this CLI call, and record the pid the
         # pane would track. `exec` in the command keeps that pid stable.
         bash -c "$cmd" >>"$S/loop.out" 2>&1 &
@@ -148,6 +152,26 @@ esac
 exit 1
 SH
   chmod +x "$fb/herdr"
+  cat > "$fb/herdr-workspace-control" <<'SH'
+#!/usr/bin/env bash
+set -u
+operation=$3
+workspace=${4:-}
+S="${FM_FAKE_HERDR_STATE:?}"
+case "$operation" in
+  list)
+    label=$(cat "$S/workspace-label" 2>/dev/null || true)
+    printf '{"id":"fm-workspace-control","result":{"workspaces":[{"workspace_id":"%s","label":"%s"}]}}\n' \
+      "$(cat "$S/workspace" 2>/dev/null || true)" "$label"
+    ;;
+  close)
+    [ ! -f "$S/close-fails" ] || exit 1
+    printf '%s\n' "$workspace" >> "$S/closed-workspaces"
+    ;;
+  *) exit 2 ;;
+esac
+SH
+  chmod +x "$fb/herdr-workspace-control"
   printf '%s\n' "$fb"
 }
 
@@ -162,6 +186,14 @@ set -u
 C="\${FM_TEST_ARM_COUNT:?}"
 n=\$(( \$(cat "\$C" 2>/dev/null || echo 0) + 1 ))
 echo "\$n" > "\$C"
+if [ -n "\${FM_TEST_ARM_VALIDATE_FILE:-}" ]; then
+  {
+    printf 'FM_GUARD_GRACE=%s\n' "\${FM_GUARD_GRACE:-}"
+    printf 'FM_WATCHER_STALE_GRACE=%s\n' "\${FM_WATCHER_STALE_GRACE:-}"
+    printf 'FM_ARM_CONFIRM_TIMEOUT=%s\n' "\${FM_ARM_CONFIRM_TIMEOUT:-}"
+    printf 'FM_HERDR_SUPERVISOR_READY_TIMEOUT=%s\n' "\${FM_HERDR_SUPERVISOR_READY_TIMEOUT:-}"
+  } > "\$FM_TEST_ARM_VALIDATE_FILE"
+fi
 if [ "$mode" = fail ]; then
   echo "watcher: FAILED - no live watcher with a fresh beacon"
   exit 1
@@ -194,6 +226,7 @@ run_supervisor() {  # <home> <fakebin> <args...>
   FM_PROC_ROOT_OVERRIDE="${FM_PROC_ROOT_OVERRIDE:-}" \
   FM_TEST_ARM_COUNT="$home/arm.count" \
   FM_WATCH_ARM_SCRIPT="$home/arm.sh" \
+  FM_HERDR_WORKSPACE_CONTROL_HELPER="$fakebin/herdr-workspace-control" \
   FM_SUPERVISION_MODEL="${FM_TEST_SUPERVISION_MODEL:-extension}" \
   FM_HERDR_SUPERVISOR_READY_TIMEOUT="${FM_TEST_READY_TIMEOUT:-15}" \
   FM_HERDR_SUPERVISOR_RETRY_BASE=0 \
@@ -736,34 +769,18 @@ HOME13E=$(new_home "launcher-$(printf 'x%.0s' $(seq 1 60))")
 make_arm_stub "$HOME13E/arm.sh" ok
 fm_write_meta "$HOME13E/state/launch-task.meta" "window=firstmate:fm-launch-task"
 out=$(FM_GUARD_GRACE=17 FM_WATCHER_STALE_GRACE=19 FM_ARM_CONFIRM_TIMEOUT=23 \
+  FM_TEST_ARM_VALIDATE_FILE="$HOME13E/arm-env" \
   run_supervisor "$HOME13E" "$FAKEBIN" ensure 2>&1)
 assert_contains "$out" "herdr-supervisor: started" "a long home path still establishes"
-PANE_CMD=$(tr '\037' ' ' < "$HOME13E/fakestate/calls.log" | grep 'pane run' | head -1)
-[ -n "$PANE_CMD" ] || fail "no pane run call was recorded"
-# The invariant is that the command carries ONE path and nothing else. The
-# inlined form repeated the home path four times and added every tuning value,
-# which is what pushed it past the limit; this must stay flat as tuning grows.
-[ "${#PANE_CMD}" -lt 400 ] \
-  || fail "the pane command is ${#PANE_CMD} chars; it must stay short enough to survive a terminal line limit"
-case "$PANE_CMD" in
-  *FM_HERDR_SUPERVISOR_RETRY_LIMIT*|*FM_CONFIG_OVERRIDE*|*FM_WATCH_ARM_SCRIPT*)
-    fail "the pane command inlines the loop environment; that is what got truncated in a real pane" ;;
-  *.herdr-supervisor-launch.sh*) ;;
-  *) fail "the pane command does not reference the launcher script" ;;
-esac
-assert_present "$HOME13E/state/.herdr-supervisor-launch.sh" "a launcher script carries the loop's environment"
-assert_grep "FM_STATE_OVERRIDE" "$HOME13E/state/.herdr-supervisor-launch.sh" \
-  "the launcher exports the state directory the pane shell cannot inherit"
-assert_grep "FM_WATCH_ARM_SCRIPT" "$HOME13E/state/.herdr-supervisor-launch.sh" \
-  "the launcher exports the arm script the pane shell cannot inherit"
-assert_grep "FM_GUARD_GRACE='17'" "$HOME13E/state/.herdr-supervisor-launch.sh" \
-  "the launcher exports the caller's guard grace"
-assert_grep "FM_WATCHER_STALE_GRACE='19'" "$HOME13E/state/.herdr-supervisor-launch.sh" \
-  "the launcher exports the caller's watcher stale grace"
-assert_grep "FM_ARM_CONFIRM_TIMEOUT='23'" "$HOME13E/state/.herdr-supervisor-launch.sh" \
-  "the launcher exports the caller's arm confirmation timeout"
-[ -x "$HOME13E/state/.herdr-supervisor-launch.sh" ] || fail "the launcher script is not executable"
-pass "the pane command stays short and the loop's environment travels in a launcher script"
+assert_grep "FM_GUARD_GRACE=17" "$HOME13E/arm-env" \
+  "the consumed launcher delivers the caller's guard grace"
+assert_grep "FM_WATCHER_STALE_GRACE=19" "$HOME13E/arm-env" \
+  "the consumed launcher delivers the caller's watcher stale grace"
+assert_grep "FM_ARM_CONFIRM_TIMEOUT=23" "$HOME13E/arm-env" \
+  "the consumed launcher delivers the caller's arm confirmation timeout"
+assert_grep "FM_HERDR_SUPERVISOR_READY_TIMEOUT=15" "$HOME13E/arm-env" \
+  "the consumed launcher delivers the caller's readiness timeout"
+pass "the Herdr pane consumer executes a short launcher with caller tuning"
 stop_loop "$HOME13E"
 
 # =============================================================================

@@ -115,6 +115,7 @@ RETRY_LIMIT=${FM_HERDR_SUPERVISOR_RETRY_LIMIT:-5}
 RETRY_BASE=${FM_HERDR_SUPERVISOR_RETRY_BASE:-2}
 RETRY_MAX=${FM_HERDR_SUPERVISOR_RETRY_MAX:-60}
 IDLE_INTERVAL=${FM_HERDR_SUPERVISOR_IDLE_INTERVAL:-30}
+UNKNOWN_ARM_TIMEOUT=${FM_HERDR_SUPERVISOR_UNKNOWN_ARM_TIMEOUT:-20}
 # A cycle that closes faster than this is "rapid"; a long consecutive run of
 # them is thrash, not progress. The response is a floor delay plus one durable
 # diagnostic, never stopping supervision - a genuinely busy fleet does produce
@@ -144,7 +145,7 @@ esac
 
 for _fm_hs_int in HEARTBEAT_GRACE READY_TIMEOUT RETRY_LIMIT RETRY_BASE RETRY_MAX \
   IDLE_INTERVAL RAPID_CYCLE_SECONDS RAPID_CYCLE_LIMIT RAPID_CYCLE_FLOOR \
-  SUPERVISOR_LOCK_TRIES LEDGER_MAX_BYTES LEDGER_KEEP_LINES; do
+  UNKNOWN_ARM_TIMEOUT SUPERVISOR_LOCK_TRIES LEDGER_MAX_BYTES LEDGER_KEEP_LINES; do
   case "${!_fm_hs_int}" in
     ''|*[!0-9]*) fail_msg="error: $_fm_hs_int must be a non-negative integer" ;;
     *) continue ;;
@@ -320,6 +321,27 @@ pending_put() {  # <generation> <session> <socket> <workspace> <tab> <pane> [soc
   fi
 }
 
+pending_begin_create() {  # <generation> <session> <socket> <socket-identity> <label> <cwd>
+  local generation=$1 session=$2 socket=$3 socket_identity=$4 label=$5 cwd=$6 tmp
+  tmp="$PENDING.tmp.${BASHPID:-$$}"
+  if ! {
+    printf 'generation=%s\n' "$generation"
+    printf 'fm_home=%s\n' "$FM_HOME"
+    printf 'fm_root=%s\n' "$FM_ROOT"
+    printf 'herdr_session=%s\n' "$session"
+    printf 'herdr_socket=%s\n' "$socket"
+    printf 'herdr_socket_identity=%s\n' "$socket_identity"
+    printf 'create_label=%s\n' "$label"
+    printf 'create_cwd=%s\n' "$cwd"
+    printf 'create_state=creating\n'
+    printf 'cleanup_state=open\n'
+  } > "$tmp" 2>/dev/null || ! chmod 600 "$tmp" 2>/dev/null \
+    || ! mv -f "$tmp" "$PENDING" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+}
+
 pending_set_cleanup_state() {  # <state>
   local cleanup_state=$1 tmp
   [ -f "$PENDING" ] || return 1
@@ -368,6 +390,27 @@ pending_restore_record() {
     printf 'established_at=%s\n' "$(date +%s)"
     printf 'establish_reason=pending-cleanup\n'
   } | record_put
+}
+
+pending_resolve_creation() {
+  local generation session socket socket_identity label list matches workspace count
+  generation=$(pending_get generation || printf '')
+  session=$(pending_get herdr_session || printf '')
+  socket=$(pending_get herdr_socket || printf '')
+  socket_identity=$(pending_get herdr_socket_identity || printf '')
+  label=$(pending_get create_label || printf '')
+  [ -n "$generation" ] && [ -n "$session" ] && [ -n "$socket" ] \
+    && [ -n "$socket_identity" ] && [ -n "$label" ] || return 1
+  herdr_identity || return 1
+  [ "$HS_SESSION" = "$session" ] && [ "$HS_SOCKET" = "$socket" ] \
+    && [ "$HS_SOCKET_IDENTITY" = "$socket_identity" ] || return 1
+  list=$(herdr_workspace_control "$socket" "$socket_identity" list 2>/dev/null) || return 1
+  matches=$(printf '%s' "$list" | jq -r --arg label "$label" \
+    '.result.workspaces[]? | select(.label == $label) | .workspace_id' 2>/dev/null)
+  count=$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d '[:space:]')
+  [ "$count" = 1 ] || return 1
+  workspace=$(printf '%s\n' "$matches" | sed -n '1p')
+  pending_put "$generation" "$session" "$socket" "$workspace" unknown unknown "$socket_identity"
 }
 
 mint_generation() {
@@ -452,6 +495,14 @@ hs_herdr() {  # <session> <herdr-args...>
   shift
   fm_run_timed "$HERDR_CALL_TIMEOUT" \
     env "HERDR_SESSION=$session" herdr "$@" --session "$session"
+}
+
+herdr_workspace_control() {  # <socket> <socket-identity> <list|close> [workspace]
+  local socket=$1 socket_identity=$2 operation=$3 helper
+  shift 3
+  helper=${FM_HERDR_WORKSPACE_CONTROL_HELPER:-$FM_ROOT/bin/backends/herdr-workspace-control.py}
+  [ -x "$helper" ] || return 1
+  "$helper" "$socket" "$socket_identity" "$operation" "$@"
 }
 
 # herdr_identity: resolve the named session and its canonical socket, and prove
@@ -734,7 +785,7 @@ rollback_workspace() {  # <session> <workspace>
   herdr_identity >/dev/null 2>&1 || return 1
   [ "$HS_SESSION" = "$session" ] && [ "$HS_SOCKET" = "$expected_socket" ] \
     && [ "$HS_SOCKET_IDENTITY" = "$expected_socket_identity" ] || return 1
-  if hs_herdr "$session" workspace close "$workspace" >/dev/null 2>&1; then
+  if herdr_workspace_control "$expected_socket" "$expected_socket_identity" close "$workspace" >/dev/null 2>&1; then
     ledger_append rollback "closed workspace $workspace after a failed establish"
     return 0
   fi
@@ -772,7 +823,7 @@ cleanup_establish_failure() {  # <session> <workspace> <detail>
 }
 
 quarantine_recorded_binding_locked() {
-  local reason=$1 generation target tmp loop_pid loop_identity current
+  local reason=$1 generation target tmp loop_pid loop_identity current i=0
   generation=$(record_get generation || printf unknown)
   case "$generation" in
     ''|*[!A-Za-z0-9._-]*) generation=unknown-${BASHPID:-$$} ;;
@@ -790,9 +841,38 @@ quarantine_recorded_binding_locked() {
   fi
   loop_pid=$(live_get loop_pid || printf '')
   loop_identity=$(live_get loop_identity || printf '')
-  if [ -n "$loop_pid" ] && [ -n "$loop_identity" ] && fm_pid_alive "$loop_pid"; then
+  if [ -n "$loop_pid" ] && fm_pid_alive "$loop_pid"; then
+    [ -n "$loop_identity" ] || {
+      record_set_mode quarantine || true
+      ledger_append quarantine "could not terminate the old supervisor because its process identity is unknown"
+      return 1
+    }
     current=$(fm_pid_identity "$loop_pid" 2>/dev/null || printf '')
-    [ "$current" = "$loop_identity" ] && kill -TERM "$loop_pid" 2>/dev/null || true
+    [ "$current" = "$loop_identity" ] || {
+      record_set_mode quarantine || true
+      ledger_append quarantine "could not terminate the old supervisor because its process identity changed"
+      return 1
+    }
+    kill -TERM "$loop_pid" 2>/dev/null || {
+      record_set_mode quarantine || true
+      ledger_append quarantine "could not signal the old supervisor for quarantine"
+      return 1
+    }
+    while [ "$i" -lt 20 ] && fm_pid_alive "$loop_pid"; do
+      current=$(fm_pid_identity "$loop_pid" 2>/dev/null || printf '')
+      [ "$current" = "$loop_identity" ] || {
+        record_set_mode quarantine || true
+        ledger_append quarantine "old supervisor identity changed during quarantine"
+        return 1
+      }
+      sleep 0.05
+      i=$((i + 1))
+    done
+    if fm_pid_alive "$loop_pid"; then
+      record_set_mode quarantine || true
+      ledger_append quarantine "old supervisor did not terminate during quarantine"
+      return 1
+    fi
   fi
   record_clear || return 1
   launcher_clear
@@ -833,7 +913,7 @@ shell_quote() {
 }
 
 establish() {  # <reason>
-  local reason=$1 generation out workspace tab pane cmd deadline pid detail
+  local reason=$1 generation out workspace tab pane cmd deadline pid detail label
 
   herdr_identity || {
     detail="Herdr identity could not be established: $(herdr_identity 2>&1 >/dev/null | head -1)"
@@ -865,22 +945,23 @@ establish() {  # <reason>
   }
   ledger_append establish-begin "$reason"
 
+  label="$(supervisor_label)-$generation"
+  pending_begin_create "$generation" "$HS_SESSION" "$HS_SOCKET" "$HS_SOCKET_IDENTITY" "$label" "$FM_ROOT" || {
+    record_clear || true
+    escalate "the supervisor's exact create intent could not be persisted before workspace creation"
+    echo "herdr-supervisor: FAILED - the supervisor create intent could not be persisted" >&2
+    return 1
+  }
+
   out=$(hs_herdr "$HS_SESSION" workspace create \
-    --cwd "$FM_ROOT" --label "$(supervisor_label)" --no-focus 2>/dev/null) || out=
+    --cwd "$FM_ROOT" --label "$label" --no-focus 2>/dev/null) || out=
   workspace=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
   tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
   if [ -z "$workspace" ] || [ -z "$tab" ] || [ -z "$pane" ]; then
-    # An incomplete response grants no cleanup authority, matching the
-    # presentation path's rule that an ambiguous response authorizes no
-    # mutation. A partially identified workspace is therefore left alone rather
-    # than closed on a guess - but the alarm names it, so an orphan is a thing
-    # someone can go and look at instead of a silent leak.
-    record_clear
     detail="Herdr returned an incomplete workspace-create response (workspace='${workspace:-none}' tab='${tab:-none}' pane='${pane:-none}'), so no supervisor pane could be created"
-    if [ -n "$workspace" ]; then
-      detail="$detail; workspace $workspace may exist and was deliberately NOT closed because the response was too ambiguous to prove it is ours - inspect and remove it by hand if it is an orphan"
-    fi
+    detail="$detail; the pending create intent remains for exact-label reconciliation"
+    record_clear || true
     escalate "$detail"
     echo "herdr-supervisor: FAILED - Herdr returned an incomplete workspace-create response" >&2
     return 1
@@ -974,6 +1055,8 @@ establish() {  # <reason>
     [ -z "${FM_CHECK_INTERVAL:-}" ] || printf 'export FM_CHECK_INTERVAL=%s\n' "$(shell_quote "$FM_CHECK_INTERVAL")"
     [ -z "${FM_HEARTBEAT:-}" ] || printf 'export FM_HEARTBEAT=%s\n' "$(shell_quote "$FM_HEARTBEAT")"
     printf 'export FM_HERDR_SUPERVISOR_HEARTBEAT_GRACE=%s\n' "$HEARTBEAT_GRACE"
+    printf 'export FM_HERDR_SUPERVISOR_READY_TIMEOUT=%s\n' "$READY_TIMEOUT"
+    printf 'export FM_HERDR_SUPERVISOR_UNKNOWN_ARM_TIMEOUT=%s\n' "$UNKNOWN_ARM_TIMEOUT"
     printf 'export FM_HERDR_SUPERVISOR_RETRY_LIMIT=%s\n' "$RETRY_LIMIT"
     printf 'export FM_HERDR_SUPERVISOR_RETRY_BASE=%s\n' "$RETRY_BASE"
     printf 'export FM_HERDR_SUPERVISOR_RETRY_MAX=%s\n' "$RETRY_MAX"
@@ -1035,7 +1118,7 @@ establish() {  # <reason>
 
 retire_binding_locked() {  # <reason> [signal-owner]
   local reason=$1 signal_owner=${2:-1}
-  local session workspace tab pane loop_pid loop_identity current cleanup_state
+  local session workspace tab pane loop_pid loop_identity current cleanup_state i=0
   session=$(record_get herdr_session || printf '')
   workspace=$(record_get workspace || printf '')
   tab=$(record_get tab || printf '')
@@ -1055,11 +1138,39 @@ retire_binding_locked() {  # <reason> [signal-owner]
   fi
   record_set_mode retiring || return 1
 
-  if [ "$signal_owner" -eq 1 ] && [ -n "$loop_pid" ] && [ -n "$loop_identity" ] \
+  if [ "$signal_owner" -eq 1 ] && [ -n "$loop_pid" ] \
     && [ "$loop_pid" != "${BASHPID:-$$}" ] && fm_pid_alive "$loop_pid"; then
+    if [ -z "$loop_identity" ]; then
+      record_set_mode quarantine || true
+      ledger_append quarantine "could not terminate the old supervisor because its process identity is unknown"
+      return 1
+    fi
     current=$(fm_pid_identity "$loop_pid" 2>/dev/null || printf '')
     if [ "$current" = "$loop_identity" ]; then
-      kill -TERM "$loop_pid" 2>/dev/null || true
+      kill -TERM "$loop_pid" 2>/dev/null || {
+        record_set_mode quarantine || true
+        ledger_append quarantine "could not signal the old supervisor for $reason"
+        return 1
+      }
+      while [ "$i" -lt 20 ] && fm_pid_alive "$loop_pid"; do
+        current=$(fm_pid_identity "$loop_pid" 2>/dev/null || printf '')
+        [ "$current" = "$loop_identity" ] || {
+          record_set_mode quarantine || true
+          ledger_append quarantine "old supervisor identity changed during $reason"
+          return 1
+        }
+        sleep 0.05
+        i=$((i + 1))
+      done
+      if fm_pid_alive "$loop_pid"; then
+        record_set_mode quarantine || true
+        ledger_append quarantine "old supervisor did not terminate during $reason"
+        return 1
+      fi
+    else
+      record_set_mode quarantine || true
+      ledger_append quarantine "could not terminate the old supervisor because its process identity changed"
+      return 1
     fi
   fi
 
@@ -1079,7 +1190,8 @@ retire_binding_locked() {  # <reason> [signal-owner]
     return 1
   fi
   if [ -n "$workspace" ] && [ "$cleanup_state" != closed ] && [ -n "$session" ] \
-    && hs_herdr "$session" workspace close "$workspace" >/dev/null 2>&1; then
+    && herdr_workspace_control "$(record_get herdr_socket || printf '')" \
+      "$(record_get herdr_socket_identity || printf '')" close "$workspace" >/dev/null 2>&1; then
     :
   elif [ -n "$workspace" ]; then
     record_set_mode quarantine || true
@@ -1135,7 +1247,7 @@ reconcile_previous_locked() {
 }
 
 reconcile_pending_locked() {
-  local state generation workspace session socket socket_identity record_mode record_generation record_workspace record_cleanup_state
+  local state generation workspace session socket socket_identity record_mode record_generation record_workspace record_cleanup_state create_state
   [ -f "$PENDING" ] || return 0
   state=$(pending_get cleanup_state || printf open)
   generation=$(pending_get generation || printf '')
@@ -1143,10 +1255,15 @@ reconcile_pending_locked() {
   session=$(pending_get herdr_session || printf '')
   socket=$(pending_get herdr_socket || printf '')
   socket_identity=$(pending_get herdr_socket_identity || printf '')
+  create_state=$(pending_get create_state || printf '')
   record_mode=$(record_get mode || printf '')
   record_generation=$(record_get generation || printf '')
   record_workspace=$(record_get workspace || printf '')
   record_cleanup_state=$(record_get cleanup_state || printf open)
+  if [ "$create_state" = creating ] && [ -z "$workspace" ]; then
+    pending_resolve_creation || return 1
+    workspace=$(pending_get workspace || printf '')
+  fi
   if [ "$record_mode" = active ] \
     && [ "$(record_get generation || printf '')" = "$generation" ] \
     && [ "$(record_get workspace || printf '')" = "$workspace" ]; then
@@ -1399,12 +1516,14 @@ loop_capture_arm_identity() {
 }
 
 loop_wait_unknown_arm() {
-  local pid=${LOOP_ARM_PID:-} process_state
+  local pid=${LOOP_ARM_PID:-} process_state deadline
   [ -n "$pid" ] || return 0
+  deadline=$(( $(date +%s) + UNKNOWN_ARM_TIMEOUT + 1 ))
   while :; do
     process_state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
     [ -n "$process_state" ] || break
     case "$process_state" in Z*) break ;; esac
+    [ "$(date +%s)" -lt "$deadline" ] || return 1
     : > "$HEARTBEAT" 2>/dev/null || true
     sleep 0.5
   done
@@ -1525,8 +1644,9 @@ loop_launch_wait() {  # <pid>
 }
 
 cmd_run() {
-  local self out rc reason failures=0 rapid=0 started ended elapsed delay
+  local self out rc reason failures=0 rapid=0 started ended elapsed delay process_state
   local LOOP_ARM_OUT
+  local LOOP_ARM_UNRESOLVED=0
 
   self=${BASHPID:-$$}
   LOOP_OWNER_PID=$self
@@ -1558,6 +1678,21 @@ cmd_run() {
       loop_release_live
       exit 0
     fi
+    if [ "$LOOP_ARM_UNRESOLVED" -eq 1 ]; then
+      process_state=$(ps -o stat= -p "${LOOP_ARM_PID:-}" 2>/dev/null | tr -d '[:space:]')
+      if [ -z "$process_state" ] || [[ "$process_state" == Z* ]]; then
+        wait "${LOOP_ARM_PID:-}" 2>/dev/null || true
+        LOOP_ARM_PID=
+        LOOP_ARM_IDENTITY=
+        LOOP_ARM_UNRESOLVED=0
+        [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT" 2>/dev/null || true
+        LOOP_ARM_OUT=
+      else
+        : > "$HEARTBEAT" 2>/dev/null || true
+        sleep 0.5
+      fi
+      continue
+    fi
     if [ "$(hs_config_preference)" = off ]; then
       if cmd_retire "config/herdr-supervisor changed to off"; then
         loop_release_live
@@ -1572,7 +1707,7 @@ cmd_run() {
       continue
     fi
 
-    if [ "$(record_get mode || printf active)" != active ]; then
+    if [ "$(record_get mode || printf '')" != active ]; then
       : > "$HEARTBEAT" 2>/dev/null || true
       sleep "$IDLE_INTERVAL"
       continue
@@ -1629,10 +1764,7 @@ cmd_run() {
           loop_stop_arm
           rm -f "$out" 2>/dev/null || true
           LOOP_ARM_OUT=
-          if cmd_retire "another continuity owner became provable while arming"; then
-            loop_release_live
-            exit 0
-          fi
+          ledger_append handoff "another continuity owner became provable while arming; retaining standby supervisor binding"
           sleep "$IDLE_INTERVAL"
           continue 2
         fi
@@ -1645,7 +1777,10 @@ cmd_run() {
       escalate "the foreground watcher arm process identity became unknown or changed; retaining the child without signaling a recycled pid"
     fi
     if [ "$arm_match" -eq 2 ]; then
-      loop_wait_unknown_arm
+      if ! loop_wait_unknown_arm; then
+        LOOP_ARM_UNRESOLVED=1
+        continue
+      fi
       rc=125
     else
       wait "$LOOP_ARM_PID" 2>/dev/null
