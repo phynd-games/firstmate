@@ -96,7 +96,23 @@ make_case() {
   local name=$1 case_dir fakebin
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
-  mkdir -p "$case_dir/state" "$fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/home/data/task-x1" "$fakebin"
+  printf '%s\n' \
+    'Self-review report: firstmate-pr-self-review.v1' \
+    'Task id: task-x1' \
+    '# Findings' \
+    'None.' \
+    '# Target-project diff evidence' \
+    'Reviewed exact target-project base, head, and merge-base evidence.' \
+    '# Firstmate substrate diff evidence' \
+    'Reviewed the complete Firstmate substrate diff.' \
+    '# Surface review' \
+    'Reviewed all required review surfaces.' \
+    '# Verification' \
+    'Focused behavioral verification passed.' \
+    '# Residual risks' \
+    'None.' > "$case_dir/home/data/task-x1/pr-self-review.md"
+  chmod 0600 "$case_dir/home/data/task-x1/pr-self-review.md"
   fm_write_meta "$case_dir/state/task-x1.meta" \
     "window=fm-task-x1" \
     "worktree=$case_dir/wt" \
@@ -354,7 +370,8 @@ glab_merge_line() {
 run_pr_merge() {
   local case_dir=$1 rc; shift
   FM_ROOT_OVERRIDE="$ROOT" \
-  FM_HOME="${FM_TEST_HOME:-$ROOT}" \
+  FM_HOME="${FM_TEST_HOME:-$case_dir/home}" \
+  FM_DATA_OVERRIDE="${FM_TEST_DATA:-$case_dir/home/data}" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
   FM_TEST_GH_LOG="$case_dir/gh.log" \

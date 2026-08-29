@@ -54,12 +54,17 @@ Write report to exact path in generated brief.
 Create parent directory if needed, but write no other file outside task worktree.
 Use this section order:
 
+The report is a private mode-0600 Markdown artifact whose first two lines are exactly `Self-review report: firstmate-pr-self-review.v1` and `Task id: <task-id>`.
+The required headings below must appear exactly once and in the listed order, with non-empty content in every section.
+
 1. `Findings` with severity, `path:line`, evidence, consequence, and required fix for each issue.
 2. `Target-project diff evidence` with exact base/head refs, base/head/merge-base SHAs, changed-file inventory, and clean-tree status.
 3. `Firstmate substrate diff evidence` with exact base/head SHAs, changed-file inventory, or explicit no-diff evidence.
 4. `Surface review` covering every required review surface and naming inspected files and consumers.
 5. `Verification` with exact commands and results.
 6. `Residual risks` with unresolved uncertainty or `None`.
+
+This report is evidence of the worker's self-review only; it never authorizes delivery, approval, merge, or routing.
 
 Put `None` under `Findings` only after completing both diff reviews and every required surface.
 Fix every in-scope unambiguous finding before readiness, retain finding and resolution in report, then repeat review against original accepted base and new head.

@@ -271,6 +271,67 @@ fm_pr_private_file_valid() {
   [ "$(fm_pr_file_link_count "$path")" = 1 ]
 }
 
+fm_pr_self_review_report_path() {
+  local data=$1 id=$2
+  fm_pr_task_id_valid "$id" || return 1
+  [ -d "$data" ] && [ ! -L "$data" ] || return 1
+  [ -d "$data/$id" ] && [ ! -L "$data/$id" ] || return 1
+  printf '%s/%s/pr-self-review.md\n' "$data" "$id"
+}
+
+fm_pr_self_review_report_valid() {
+  local data=$1 id=$2 report data_device
+  report=$(fm_pr_self_review_report_path "$data" "$id") || return 1
+  data_device=$(fm_pr_file_device "$data") || return 1
+  fm_pr_private_file_valid "$report" 600 "$data_device" || return 1
+  [ "$(wc -c < "$report" | tr -d '[:space:]')" -le 1048576 ] || return 1
+  awk -v task="$id" '
+    BEGIN {
+      headings[1] = "# Findings"
+      headings[2] = "# Target-project diff evidence"
+      headings[3] = "# Firstmate substrate diff evidence"
+      headings[4] = "# Surface review"
+      headings[5] = "# Verification"
+      headings[6] = "# Residual risks"
+      expected = 1
+      valid = 1
+    }
+    NR == 1 {
+      valid = valid && ($0 == "Self-review report: firstmate-pr-self-review.v1")
+      next
+    }
+    NR == 2 {
+      valid = valid && ($0 == "Task id: " task)
+      next
+    }
+    NR == 3 {
+      valid = valid && ($0 == headings[1])
+      if (!valid) bad = 1
+      expected = 2
+      next
+    }
+    {
+      if ($0 == headings[expected]) {
+        if (expected > 1 && !content) bad = 1
+        content = 0
+        expected++
+        next
+      }
+      for (i = 1; i <= 6; i++) {
+        if ($0 == headings[i]) {
+          bad = 1
+          next
+        }
+      }
+      if ($0 !~ /^[[:space:]]*$/) content = 1
+    }
+    END {
+      if (!content) bad = 1
+      exit !(valid && !bad && expected == 7 && NR >= 8)
+    }
+  ' "$report"
+}
+
 fm_pr_regular_destination_or_absent() {
   local path=$1
   [ ! -L "$path" ] || return 1

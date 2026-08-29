@@ -136,6 +136,29 @@ write_task_meta() {
     "project=$dir/project" \
     "kind=ship" \
     "mode=no-mistakes"
+  write_self_review_report "$dir/home" "$id"
+}
+
+write_self_review_report() {
+  local home=$1 id=$2 report
+  report="$home/data/$id/pr-self-review.md"
+  mkdir -p "$home/data/$id"
+  printf '%s\n' \
+    'Self-review report: firstmate-pr-self-review.v1' \
+    "Task id: $id" \
+    '# Findings' \
+    'None.' \
+    '# Target-project diff evidence' \
+    'Reviewed exact target-project base, head, and merge-base evidence.' \
+    '# Firstmate substrate diff evidence' \
+    'Reviewed the complete Firstmate substrate diff.' \
+    '# Surface review' \
+    'Reviewed authority, security, failure, test, documentation, and delivery surfaces.' \
+    '# Verification' \
+    'Focused behavioral verification passed.' \
+    '# Residual risks' \
+    'None.' > "$report"
+  chmod 0600 "$report"
 }
 
 write_poll_meta() {
@@ -278,10 +301,43 @@ run_merge_entry() {
   local dir=$1
   shift
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
+    FM_DATA_OVERRIDE="$dir/home/data" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
     PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_MERGE" "$@"
+}
+
+test_pr_ready_requires_durable_self_review() {
+  local dir report rc
+  dir=$(make_case self-review-required)
+  write_task_meta "$dir"
+  report="$dir/home/data/task-a/pr-self-review.md"
+  rm -f "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/101 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a missing self-review report"
+  grep -qF 'durable findings-first self-review report is unavailable or invalid' "$dir/stderr" \
+    || fail "missing self-review report refusal was not explicit"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "missing self-review report left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  chmod 0644 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/102 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a non-private self-review report"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "invalid self-review report left a runnable poll"
+
+  chmod 0600 "$report"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/103 >/dev/null \
+    || fail "PR-ready path rejected a valid durable self-review report"
+  fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
+    || fail "valid self-review report did not permit a valid PR poll"
+  pass "PR-ready path requires a private durable findings-first self-review"
 }
 
 # shellcheck disable=SC2016 # Literal rejected URL bytes are parser test data.
@@ -642,6 +698,7 @@ SH
       "project=$dir/project" \
       'kind=ship' \
       'mode=local-only'
+    write_self_review_report "$dir/home" "$id"
     mkdir -p "$dir/home/state/.pr-check-quarantine"
     chmod 0700 "$dir/home/state/.pr-check-quarantine"
     printf 'reserved migration evidence\n' \
@@ -3677,6 +3734,7 @@ test_gitlab_merged_poll_retires() {
 }
 
 test_parser_matrix
+test_pr_ready_requires_durable_self_review
 test_gitlab_merge_watch
 test_merged_poll_retires_once
 test_merged_poll_reregistration_after_notification_is_absorbed
