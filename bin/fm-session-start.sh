@@ -809,6 +809,12 @@ for meta in "$STATE"/*.meta; do
   printf '\n--- %s ---\n' "$id"
   cat "$meta"
 
+  backend=
+  if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
+    backend=$(fm_meta_get "$meta" remote_backend)
+  else
+    backend=$(fm_backend_of_meta "$meta" 2>/dev/null) || backend=legacy
+  fi
   window=$(fm_meta_get "$meta" window)
   target=$(fm_backend_target_of_meta "$meta")
   if [ -n "$window" ]; then
@@ -835,7 +841,14 @@ for meta in "$STATE"/*.meta; do
       printf 'endpoint: legacy record, read-only (backend=%s window=%s); Herdr is the sole supported runtime backend - see docs/configuration.md "Legacy task records"\n' "${backend:-absent}" "$window"
     fi
   else
-    printf 'endpoint: unknown (no window recorded)\n'
+    case "$backend" in
+      legacy|tmux|zellij|orca|cmux|'')
+        printf 'endpoint: legacy record, read-only (backend=%s; no window recorded); Herdr is the sole supported runtime backend - see docs/configuration.md "Legacy task records"\n' "${backend:-absent}"
+        ;;
+      *)
+        printf 'endpoint: unknown (no window recorded)\n'
+        ;;
+    esac
   fi
 
   status="$STATE/$id.status"

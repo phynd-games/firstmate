@@ -92,6 +92,7 @@ remote_endpoint_load() {
       return 1
       ;;
   esac
+  fm_backend_herdr_capability_preflight "remote endpoint route for $id" || return 1
 }
 
 remote_endpoint_require() {

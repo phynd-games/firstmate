@@ -335,15 +335,15 @@ fm_send_resolve_target() {  # <raw-target>
       RESOLUTION_TRIED="meta=$meta; placement=remote"
       return 0
     fi
+    # A legacy (absent or non-herdr) record refuses here by name, once, and the
+    # steer is never delivered (AGENTS.md hard rule 6).
+    backend=$(fm_backend_of_meta "$meta") || return 1
     RESOLUTION_TRIED="meta=$meta; backend=from-meta"
     target=$(fm_backend_target_of_meta "$meta")
     if [ -z "$target" ]; then
       echo "error: no backend target recorded in $meta (tried $RESOLUTION_TRIED)" >&2
       return 1
     fi
-    # A legacy (absent or non-herdr) record refuses here by name, once, and the
-    # steer is never delivered (AGENTS.md hard rule 6).
-    backend=$(fm_backend_of_meta "$meta") || return 1
     RESOLVED_TARGET=$target
     TARGET_BACKEND=$backend
     TARGET_META=$meta
@@ -377,13 +377,13 @@ fm_send_resolve_target() {  # <raw-target>
 
   meta=$(fm_backend_meta_for_window "$raw" "$STATE" 2>/dev/null || true)
   if [ -n "$meta" ]; then
+    TARGET_BACKEND=$(fm_backend_of_meta "$meta") || return 1
     target=$(fm_backend_target_of_meta "$meta")
     if [ -z "$target" ]; then
       echo "error: no backend target recorded in $meta (tried explicit target '$raw' via recorded window/terminal; backend=from-meta)" >&2
       return 1
     fi
     RESOLVED_TARGET=$target
-    TARGET_BACKEND=$(fm_backend_of_meta "$meta") || return 1
     TARGET_META=$meta
     TARGET_HARNESS=$(fm_meta_get "$meta" harness)
     RESOLUTION_TRIED="explicit target '$raw' matched $meta; backend=$TARGET_BACKEND"

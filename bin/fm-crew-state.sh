@@ -111,6 +111,14 @@ HARNESS=$(meta_value harness)
 REMOTE_HOST=$(meta_value remote_host)
 [ -n "$KIND" ] || KIND=ship
 
+if [ -z "$REMOTE_HOST" ]; then
+  TASK_BACKEND=$(fm_backend_of_meta "$META" 2>/dev/null) \
+    || emit unknown legacy-backend "legacy-record: backend=${TASK_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \\"Legacy task records\\")"
+  if [ "$TASK_BACKEND" = herdr ]; then
+    fm_backend_herdr_capability_preflight "crew state task $ID" || exit $?
+  fi
+fi
+
 # A torn-down (or never-created) worktree has no current state to read. A
 # remote secondmate's recorded worktree is a path on ITS host, so the local
 # probe proves nothing for it - the remote arm below reads the true source.

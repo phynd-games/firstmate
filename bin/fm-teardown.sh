@@ -672,6 +672,9 @@ fi
 fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
 BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET
+if [ "$BACKEND" = herdr ]; then
+  fm_backend_herdr_capability_preflight "teardown task $ID" || exit $?
+fi
 WT=$(fm_meta_get "$META" worktree)
 PROJ=$(fm_meta_get "$META" project)
 T_ORCA=

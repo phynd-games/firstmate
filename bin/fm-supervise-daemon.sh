@@ -497,9 +497,11 @@ reconcile_pause_tracking() {  # <window> <state> <last-status-line>
 }
 
 migrate_watcher_pause_markers() {  # <state>
-  local state=$1 meta win task key last watcher_key
+  local state=$1 meta win task key last watcher_key backend
   for meta in "$state"/*.meta; do
     [ -e "$meta" ] || continue
+    backend=$(fm_backend_of_meta "$meta" 2>/dev/null || true)
+    [ "$backend" = herdr ] || continue
     win=$(fm_backend_target_of_meta "$meta")
     [ -n "$win" ] || continue
     task=$(basename "$meta"); task=${task%.meta}
@@ -1549,7 +1551,14 @@ fm_super_main() {
     # has nowhere to go, and firstmate itself is the consumer of escalations.
     # Catch-up signals persist in state/*.status and flow on the next run, so
     # this delays rather than loses work.
-    if ! fm_backend_target_exists "$BACKEND" "$TARGET"; then
+    if fm_backend_target_exists "$BACKEND" "$TARGET"; then
+      :
+    else
+      target_rc=$?
+      if [ "$target_rc" -eq 2 ]; then
+        log "error: cannot supervise backend: Herdr capability check failed; repair Herdr and verify with herdr status --json"
+        exit 1
+      fi
       log "warn: supervisor target '$TARGET' gone; backing off ${INJECT_FAIL_SLEEP}s, will retry"
       # Flush is pointless with no pane; preserve any buffered escalations.
       sleep "$INJECT_FAIL_SLEEP"

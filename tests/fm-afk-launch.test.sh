@@ -7,23 +7,11 @@
 #   fresh entry vs a refresh, and the correct-ordered stop (daemon SIGTERM'd
 #   while state/.afk is still present, .afk cleared last).
 #
-#   E2E TOPOLOGY (per backend, skipped when its tool is absent): the anti-
-#   regression for the pane split/shrink - entering AND exiting away mode leaves
-#   the captain's active tab topology UNCHANGED, because the daemon lands in a
-#   NON-VISIBLE separate terminal (a herdr dedicated workspace, a detached tmux
-#   session), never a split of the captain's pane. The herdr path runs on a
-#   throwaway, NEVER-default HERDR_SESSION and asserts the default session is
-#   byte-identical via the fm-herdr-lab.sh fleet-state tripwire; the tmux path
-#   uses uniquely-named throwaway sessions killed by exact name. A harmless
-#   sleeper replaces the real daemon (FM_AFK_LAUNCH_ENTRY) so the test observes
+#   E2E TOPOLOGY: the Herdr-only anti-regression for pane split/shrink uses a
+#   throwaway, NEVER-default HERDR_SESSION and the fm-herdr-lab.sh fleet-state
+#   tripwire. A harmless sleeper replaces the real daemon so the test observes
 #   only the terminal lifecycle.
 set -u
-# This suite drives a retained legacy runtime adapter directly, outside
-# tests/lib.sh, so it re-admits the retained adapters itself. Herdr is the sole
-# supported runtime backend in the active runtime (AGENTS.md hard rule 6;
-# bin/fm-backend-policy-lib.sh owns this suite-only lane).
-export FM_BACKEND_LEGACY_TEST_LANE=1
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export FM_BACKEND_TEST_HARNESS=1 FM_BACKEND_TEST_ROOT="$ROOT"
 LAUNCH="$ROOT/bin/fm-afk-launch.sh"
@@ -36,13 +24,8 @@ pass() { printf 'ok - %s\n' "$1"; }
 SLEEPER=$(mktemp "${TMPDIR:-/tmp}/fm-afk-sleeper.XXXXXX")
 printf '#!/usr/bin/env bash\nexec sleep 600\n' > "$SLEEPER"
 chmod +x "$SLEEPER"
-TRACK_TMUX_SESSIONS=""
 GLOBAL_CLEANUP() {
   rm -f "$SLEEPER" 2>/dev/null || true
-  local s
-  for s in $TRACK_TMUX_SESSIONS; do
-    tmux kill-session -t "$s" 2>/dev/null || true
-  done
 }
 trap GLOBAL_CLEANUP EXIT
 
@@ -234,32 +217,6 @@ unit_failed_start_rolls_back_state() {
   else
     fail "failed start: left false away state or discarded delivery artifacts"
   fi
-  rm -rf "$st"
-}
-
-unit_concurrent_start_serialized() {
-  command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found (concurrent start)"; return 0; }
-  local st cap_session cap_pane first second rec count
-  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-concurrent.XXXXXX")
-  cap_session="fm-afk-concurrent-cap-$$"
-  tmux new-session -d -s "$cap_session" 2>/dev/null || { fail "concurrent start: captain session creation failed"; rm -rf "$st"; return 0; }
-  TRACK_TMUX_SESSIONS="$TRACK_TMUX_SESSIONS $cap_session"
-  cap_pane=$(tmux display-message -p -t "$cap_session" '#{pane_id}')
-  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_TARGET="$cap_pane" \
-    FM_SUPERVISOR_BACKEND=tmux FM_AFK_LAUNCH_ENTRY="$SLEEPER" "$LAUNCH" start >/dev/null 2>&1 & first=$!
-  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_TARGET="$cap_pane" \
-    FM_SUPERVISOR_BACKEND=tmux FM_AFK_LAUNCH_ENTRY="$SLEEPER" "$LAUNCH" start >/dev/null 2>&1 & second=$!
-  wait "$first"; wait "$second"
-  rec=$(cut -f2 "$st/state/.afk-daemon-terminal" 2>/dev/null || true)
-  count=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | awk -v expected="$rec" '$0 == expected {n++} END{print n+0}')
-  TRACK_TMUX_SESSIONS="$TRACK_TMUX_SESSIONS $rec"
-  if [ -n "$rec" ] && tmux has-session -t "$rec" 2>/dev/null && [ "$count" -eq 1 ]; then
-    pass "concurrent start: one serialized daemon terminal remains tracked"
-  else
-    fail "concurrent start: leaked or lost daemon terminal (count $count, record $rec)"
-  fi
-  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" stop >/dev/null 2>&1
-  tmux kill-session -t "$cap_session" 2>/dev/null || true
   rm -rf "$st"
 }
 
@@ -897,38 +854,6 @@ e2e_herdr() {
 # E2E tmux: topology invariant (captain window untouched; daemon in a separate
 # detached session).
 # ---------------------------------------------------------------------------
-e2e_tmux() {
-  command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found (tmux e2e)"; return 0; }
-  local cap_session home_tmp cap_pane before during after rec
-  cap_session="fm-afk-launch-cap-$$"
-  home_tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-tmux-home.XXXXXX")
-  tmux new-session -d -s "$cap_session" 2>/dev/null || { fail "tmux e2e: could not create captain session"; rm -rf "$home_tmp"; return 0; }
-  TRACK_TMUX_SESSIONS="$TRACK_TMUX_SESSIONS $cap_session"
-  cap_pane=$(tmux display-message -p -t "$cap_session" '#{pane_id}')
-  before=$(tmux list-panes -t "$cap_session" | wc -l | tr -d ' ')
-
-  FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
-    FM_SUPERVISOR_TARGET="$cap_pane" FM_SUPERVISOR_BACKEND=tmux FM_AFK_LAUNCH_ENTRY="$SLEEPER" \
-    "$LAUNCH" start >/dev/null 2>&1
-
-  during=$(tmux list-panes -t "$cap_session" | wc -l | tr -d ' ')
-  rec=$(cut -f2 "$home_tmp/state/.afk-daemon-terminal" 2>/dev/null || true)
-  TRACK_TMUX_SESSIONS="$TRACK_TMUX_SESSIONS $rec"
-  if [ "$before" = "$during" ]; then pass "tmux e2e: captain window pane count unchanged after start (no split-window)"; else fail "tmux e2e: captain window pane count changed ($before -> $during)"; fi
-  if [ -n "$rec" ] && tmux has-session -t "$rec" 2>/dev/null && [ "$rec" != "$cap_session" ]; then pass "tmux e2e: daemon launched in a separate detached session"; else fail "tmux e2e: no separate daemon session ($rec)"; fi
-
-  FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
-    FM_SUPERVISOR_TARGET="$cap_pane" FM_SUPERVISOR_BACKEND=tmux "$LAUNCH" stop >/dev/null 2>&1
-
-  after=$(tmux list-panes -t "$cap_session" | wc -l | tr -d ' ')
-  if [ "$after" = "$before" ]; then pass "tmux e2e: captain window pane count unchanged after stop"; else fail "tmux e2e: captain window changed ($before -> $after)"; fi
-  if [ -n "$rec" ] && ! tmux has-session -t "$rec" 2>/dev/null; then pass "tmux e2e: daemon session killed by exact id on stop"; else fail "tmux e2e: daemon session leaked ($rec)"; fi
-  if [ ! -e "$home_tmp/state/.afk-daemon-terminal" ] && [ ! -e "$home_tmp/state/.afk" ]; then pass "tmux e2e: record + .afk cleared on stop"; else fail "tmux e2e: record or .afk not cleared"; fi
-
-  tmux kill-session -t "$cap_session" 2>/dev/null || true
-  rm -rf "$home_tmp" 2>/dev/null || true
-}
-
 unit_clear_stale
 unit_relative_paths_are_absolute_before_daemon_launch
 unit_fresh_vs_refresh
@@ -962,6 +887,4 @@ unit_confirmed_absence_succeeds
 unit_incomplete_restore_retains_backup
 unit_flag_write_failure_aborts
 e2e_herdr
-e2e_tmux
-
 [ "$FAILED" -eq 0 ] || exit 1

@@ -80,9 +80,34 @@ fm_backend_policy_pid_is_current_or_ancestor() {
   return 1
 }
 
+fm_backend_policy_fd_target() {
+  local pid=$1 fd=$2 target
+  case "$pid:$fd" in *[!0-9:]*|*:0) return 1 ;; esac
+  if [ -r "/proc/$pid/fd/$fd" ]; then
+    target=$(readlink "/proc/$pid/fd/$fd" 2>/dev/null) || return 1
+  else
+    target=$(lsof -Fn -a -p "$pid" -d "$fd" 2>/dev/null | sed -n 's/^n//p' | tail -1) || return 1
+  fi
+  [ -n "$target" ] || return 1
+  printf '%s\n' "$target"
+}
+
+fm_backend_policy_test_capability() {
+  local owner_pid=${FM_BACKEND_TEST_OWNER_PID:-} fd=${FM_BACKEND_TEST_CAPABILITY_FD:-}
+  local owner_target current_target
+  case "$fd" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$owner_pid" ] || return 1
+  owner_target=$(fm_backend_policy_fd_target "$owner_pid" "$fd") || return 1
+  current_target=$(fm_backend_policy_fd_target "${BASHPID:-$$}" "$fd") || return 1
+  [ "$owner_target" = "$current_target" ] || return 1
+  case "$owner_target" in *'/fm-test-capability.'*) return 0 ;; esac
+  return 1
+}
+
 fm_backend_policy_test_process() {
   local owner_pid=${FM_BACKEND_TEST_OWNER_PID:-} owner_identity=${FM_BACKEND_TEST_OWNER_IDENTITY:-} current_identity source resolved root
   [ -n "$owner_pid" ] && [ -n "$owner_identity" ] || return 1
+  fm_backend_policy_test_capability || return 1
   root=$(cd "${BASH_SOURCE[0]%/*}/.." 2>/dev/null && pwd -P) || return 1
   if [ "$owner_pid" = "${BASHPID:-$$}" ]; then
     for source in "${BASH_SOURCE[@]}"; do

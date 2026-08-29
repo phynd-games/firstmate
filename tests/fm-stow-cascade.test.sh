@@ -110,6 +110,9 @@ run_cascade() { # <primary-home> [env assignments...]
     FM_BACKEND_LEGACY_TEST_LANE=1 \
     FM_BACKEND_TEST_HARNESS=1 \
     FM_BACKEND_TEST_ROOT="$ROOT" \
+    FM_BACKEND_TEST_OWNER_PID=$$ \
+    FM_BACKEND_TEST_OWNER_IDENTITY="$FM_TEST_OWNER_IDENTITY" \
+    FM_BACKEND_TEST_CAPABILITY_FD=9 \
     "$@" \
     "$CASCADE"
 }
