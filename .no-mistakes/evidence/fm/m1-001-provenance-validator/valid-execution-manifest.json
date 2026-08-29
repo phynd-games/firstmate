@@ -1,0 +1,121 @@
+{
+  "schema": "firstmate.m1-execution-manifest.v1",
+  "manifest_id": "m1-local-factory-001",
+  "validator": {
+    "name": "firstmate_factory",
+    "version": "1.0.0"
+  },
+  "source": [
+    {
+      "path": "assets/local-software-factory-m1/phynd-firstmate-local-software-factory-m1-tasks.json",
+      "sha256": "9046dee80162c391a320df074a1b888c1e0c88fa69f8a6e04788f0d32d1a0b63",
+      "schema": "phynd-firstmate-m1-task-graph.v1"
+    }
+  ],
+  "plan": {
+    "artifact_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "repo_commit": "2222222222222222222222222222222222222222"
+  },
+  "authority": {
+    "state": "draft",
+    "approval_id": null,
+    "scope": [
+      "M1-001",
+      "M1-002",
+      "M1-003"
+    ]
+  },
+  "tasks": [
+    {
+      "schema": "firstmate.execution-task.v1",
+      "id": "M1-001",
+      "title": "Task M1-001",
+      "kind": "ship",
+      "dependencies": [],
+      "route_request": {
+        "schema": "firstmate.route-request.v1",
+        "level_floor": "L3",
+        "role": "implementer"
+      },
+      "delivery": {
+        "mode": "no-mistakes",
+        "yolo": false
+      },
+      "artifacts": [],
+      "acceptance": [
+        "Behavior is verified through the public CLI."
+      ],
+      "rollback": [
+        "Remove the behavior-free manifest artifact."
+      ],
+      "source_refs": [
+        "E0.01"
+      ]
+    },
+    {
+      "schema": "firstmate.execution-task.v1",
+      "id": "M1-002",
+      "title": "Task M1-002",
+      "kind": "ship",
+      "dependencies": [],
+      "route_request": {
+        "schema": "firstmate.route-request.v1",
+        "level_floor": "L3",
+        "role": "implementer"
+      },
+      "delivery": {
+        "mode": "no-mistakes",
+        "yolo": false
+      },
+      "artifacts": [],
+      "acceptance": [
+        "Behavior is verified through the public CLI."
+      ],
+      "rollback": [
+        "Remove the behavior-free manifest artifact."
+      ],
+      "source_refs": [
+        "E0.01"
+      ]
+    },
+    {
+      "schema": "firstmate.execution-task.v1",
+      "id": "M1-003",
+      "title": "Task M1-003",
+      "kind": "ship",
+      "dependencies": [
+        "M1-001",
+        "M1-002"
+      ],
+      "route_request": {
+        "schema": "firstmate.route-request.v1",
+        "level_floor": "L3",
+        "role": "implementer"
+      },
+      "delivery": {
+        "mode": "no-mistakes",
+        "yolo": false
+      },
+      "artifacts": [],
+      "acceptance": [
+        "Behavior is verified through the public CLI."
+      ],
+      "rollback": [
+        "Remove the behavior-free manifest artifact."
+      ],
+      "source_refs": [
+        "E0.01"
+      ]
+    }
+  ],
+  "acceptance_tasks": [
+    "M1-003"
+  ],
+  "gates": [
+    "D0"
+  ],
+  "not_in_m1": [
+    "Runtime authority changes"
+  ],
+  "manifest_hash": "3fd069816d672118637b6341b8026cfc9c2962347a77fa52a4fc00c4ba53c80a"
+}
