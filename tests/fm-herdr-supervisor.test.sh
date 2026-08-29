@@ -291,6 +291,8 @@ fm_write_meta "$HOME3/state/ext-task.meta" "window=firstmate:fm-ext-task"
 bash -c 'exec -a pi bash -c "sleep 300 & wait"' &
 PI_OWNER_PID=$!
 printf '%s\n' "$PI_OWNER_PID" > "$HOME3/state/.lock"
+fm_test_pid_identity "$PI_OWNER_PID" > "$HOME3/state/.lock-pid-identity" \
+  || fail "could not record the Pi session identity"
 for pair in "fm-primary-pi-watch.ts:.pi-watch-extension-loaded" \
             "fm-primary-turnend-guard.ts:.pi-turnend-extension-loaded"; do
   src=${pair%%:*}
@@ -688,6 +690,33 @@ assert_grep "FM_WATCH_ARM_SCRIPT" "$HOME13E/state/.herdr-supervisor-launch.sh" \
 [ -x "$HOME13E/state/.herdr-supervisor-launch.sh" ] || fail "the launcher script is not executable"
 pass "the pane command stays short and the loop's environment travels in a launcher script"
 stop_loop "$HOME13E"
+
+# =============================================================================
+# 13f. The supervisor remains healthy while a foreground arm is waiting, and
+#      termination cleans up that exact arm child before releasing the record.
+# =============================================================================
+HOME13F=$(new_home foreground-arm)
+fm_write_meta "$HOME13F/state/foreground-task.meta" "window=firstmate:fm-foreground-task"
+cat > "$HOME13F/arm.sh" <<SH
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "\$\$" > "$HOME13F/arm.pid"
+sleep 300
+echo "signal: /fake/state/task.status"
+SH
+chmod +x "$HOME13F/arm.sh"
+out=$(FM_HERDR_SUPERVISOR_HEARTBEAT_GRACE=3 run_supervisor "$HOME13F" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "herdr-supervisor: started" "a waiting arm still establishes"
+sleep 4
+out=$(FM_HERDR_SUPERVISOR_HEARTBEAT_GRACE=3 run_supervisor "$HOME13F" "$FAKEBIN" status 2>&1)
+assert_contains "$out" "supervisor: healthy" "a waiting arm keeps the supervisor heartbeat fresh"
+ARM_PID=$(cat "$HOME13F/arm.pid" 2>/dev/null || true)
+[ -n "$ARM_PID" ] || fail "the foreground arm did not publish its child pid"
+LOOP_PID=$(cat "$HOME13F/fakestate/loop-pid" 2>/dev/null || true)
+kill -TERM "$LOOP_PID" 2>/dev/null || fail "could not terminate the foreground supervisor"
+wait_for 10 sh -c "! kill -0 $ARM_PID 2>/dev/null" \
+  || fail "terminating the supervisor left its foreground arm child alive"
+pass "foreground arm heartbeat and exact-child cleanup remain bounded"
 
 # =============================================================================
 # 14. retire clears the record and closes exactly the workspace it created.

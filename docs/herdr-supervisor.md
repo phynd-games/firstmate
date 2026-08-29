@@ -151,10 +151,12 @@ All under `state/`, all private to the home.
   It is a separate file on purpose: `ensure` holds the establish lock across the wait for the loop to come up, so a single shared record would deadlock the loop that has to publish into it.
 - `.herdr-supervisor-launch.sh` - the generated launcher the pane executes, mode 0700.
   It exists so the pane command can stay short; it is rewritten on every establish and removed on retire, and is never edited by hand.
-- `.herdr-supervisor-heartbeat` - the supervisor's liveness beacon, refreshed every pass.
+- `.herdr-supervisor-heartbeat` - the supervisor's liveness beacon, refreshed every pass and while the arm child is waiting.
 - `.herdr-supervisor-alarm` - the durable actionable diagnostic; present means an escalation is outstanding.
+- `.herdr-supervisor-emergency` - fallback evidence when alarm or queue persistence fails.
 - `.herdr-supervisor.log` - a bounded lifecycle ledger.
   Diagnostic evidence only, written best-effort, and never read as authority for any decision, so an observability failure cannot stall supervision.
+- `.lock-pid-identity` - the process-instance identity paired with the Pi session lock.
 
 ## Regression coverage
 
@@ -165,7 +167,7 @@ Every gate in that list is mutation-tested: reverting the guard in the script ma
 
 `tests/fm-herdr-supervisor-smoke.test.sh` is the real-Herdr contract, and it passes.
 It runs entirely inside a named non-default `fm-lab-*` session provisioned and torn down through `bin/fm-herdr-lab.sh`, whose fleet-state tripwire proves the default session never changed.
-It establishes against a real server, checks that Herdr's own process tracking names the live supervisor in its pane, proves continuity by counting real arm cycles, proves a repeat `ensure` adds no second pane or owner, kills the supervisor and proves a new generation takes over, and proves `retire` releases both the record and its own workspace.
+It establishes against a real server, checks that Herdr's own process tracking names the live supervisor in its pane, proves continuity by counting real watcher cycles, proves a duplicate real arm attaches without a second watcher, proves a repeat `ensure` adds no second pane or owner, kills the supervisor and proves a new generation takes over, and proves `retire` releases both the record and its own workspace.
 
 That suite is in the `real-herdr-gated` family, so it never runs in a portable CI lane.
 It is where the two mechanics above were found: the pane-command truncation, and the server-start hang that a fake CLI cannot reproduce.

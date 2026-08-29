@@ -214,7 +214,7 @@ fm_pi_extension_loaded() {
 # backstop that catches a cycle the watch extension failed to restore, so a home
 # missing it has no benign hand-off to tolerate.
 fm_pi_extension_owns_supervision() {
-  local state=$1 root=$2 lock session_pid pair source marker version
+  local state=$1 root=$2 lock session_pid lock_identity current_identity pair source marker version
   lock="$state/.lock"
   for pair in \
     "fm-primary-pi-watch.ts:.pi-watch-extension-loaded" \
@@ -225,6 +225,10 @@ fm_pi_extension_owns_supervision() {
     fm_pi_extension_loaded "$state/$marker" "$version" "$lock" || return 1
   done
   session_pid=$(sed -n '1p' "$lock" 2>/dev/null)
+  lock_identity=$(sed -n '1p' "$state/.lock-pid-identity" 2>/dev/null)
+  [ -n "$lock_identity" ] || return 1
+  current_identity=$(fm_pid_identity "$session_pid" 2>/dev/null) || return 1
+  [ "$current_identity" = "$lock_identity" ] || return 1
   fm_harness_pid_alive "$session_pid"
 }
 
@@ -1360,6 +1364,7 @@ fm_wake_clean_field() {
 
 fm_wake_append() {
   local kind=$1 key=$2 payload=$3 clean_key clean_payload epoch seq seq_file status
+  local lock_tries=${FM_WAKE_APPEND_LOCK_TRIES:-0} lock_attempt=0
   local recovery_marker
   case "$kind" in
     signal|stale|check|heartbeat) ;;
@@ -1373,7 +1378,18 @@ fm_wake_append() {
   recovery_marker="$STATE/.watcher-down"
   status=0
 
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  case "$lock_tries" in
+    ''|*[!0-9]*) lock_tries=0 ;;
+  esac
+  if [ "$lock_tries" -gt 0 ]; then
+    while ! fm_lock_try_acquire "$FM_WAKE_QUEUE_LOCK"; do
+      [ "$lock_attempt" -lt "$lock_tries" ] || return 1
+      sleep 0.02
+      lock_attempt=$((lock_attempt + 1))
+    done
+  else
+    fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  fi
   _fm_recovery_marker_publish "$recovery_marker" downtime || status=$?
   if [ "$status" -eq 0 ]; then
     seq=$(cat "$seq_file" 2>/dev/null || echo 0)

@@ -89,10 +89,12 @@ RECORD="$STATE/.herdr-supervisor"
 # the live record, and both are stamped with the same generation so a stale
 # pairing can never be read as healthy.
 LIVE="$STATE/.herdr-supervisor-live"
+LIVE_LOCK="$STATE/.herdr-supervisor-live.lock"
 LAUNCHER="$STATE/.herdr-supervisor-launch.sh"
 RECORD_LOCK="$STATE/.herdr-supervisor.lock"
 HEARTBEAT="$STATE/.herdr-supervisor-heartbeat"
 ALARM="$STATE/.herdr-supervisor-alarm"
+EMERGENCY="$STATE/.herdr-supervisor-emergency"
 LEDGER="$STATE/.herdr-supervisor.log"
 # FM_WATCH_ARM_SCRIPT is the same seam the Pi extension already uses to name the
 # arm it launches; honoring it here keeps one spelling for "which arm script"
@@ -283,12 +285,20 @@ alarm_clear() {
 # escalate: one durable diagnostic plus one durable wake, using the queue that
 # already exists. It never prompts a harness session this process does not own.
 escalate() {  # <reason>
-  local reason=$1 status=0
-  alarm_write "$reason" || status=1
+  local reason=$1 status=0 alarm_status=0 queue_status=0
+  alarm_write "$reason" || { alarm_status=1; status=1; }
   ledger_append escalated "$reason"
-  fm_wake_append check herdr-supervisor \
-    "check: herdr-supervisor - $reason" 2>/dev/null || status=1
+  FM_WAKE_APPEND_LOCK_TRIES=100 fm_wake_append check herdr-supervisor \
+    "check: herdr-supervisor - $reason" 2>/dev/null \
+    || { queue_status=1; status=1; }
   if [ "$status" -ne 0 ]; then
+    {
+      printf 'at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      printf 'home=%s\n' "$FM_HOME"
+      printf 'alarm_persistence=%s\n' "$alarm_status"
+      printf 'queue_persistence=%s\n' "$queue_status"
+      printf 'reason=%s\n' "$(ledger_clean_field "$reason")"
+    } >> "$EMERGENCY" 2>/dev/null || true
     printf 'herdr-supervisor: ESCALATION PERSISTENCE FAILED - %s\n' "$reason" >&2
   fi
   return "$status"
@@ -705,6 +715,10 @@ establish() {  # <reason>
     printf 'export FM_STATE_OVERRIDE=%s\n' "$(shell_quote "$STATE")"
     printf 'export FM_CONFIG_OVERRIDE=%s\n' "$(shell_quote "$CONFIG")"
     printf 'export FM_WATCH_ARM_SCRIPT=%s\n' "$(shell_quote "$ARM")"
+    [ -z "${FM_SIGNAL_GRACE:-}" ] || printf 'export FM_SIGNAL_GRACE=%s\n' "$(shell_quote "$FM_SIGNAL_GRACE")"
+    [ -z "${FM_POLL:-}" ] || printf 'export FM_POLL=%s\n' "$(shell_quote "$FM_POLL")"
+    [ -z "${FM_CHECK_INTERVAL:-}" ] || printf 'export FM_CHECK_INTERVAL=%s\n' "$(shell_quote "$FM_CHECK_INTERVAL")"
+    [ -z "${FM_HEARTBEAT:-}" ] || printf 'export FM_HEARTBEAT=%s\n' "$(shell_quote "$FM_HEARTBEAT")"
     printf 'export FM_HERDR_SUPERVISOR_HEARTBEAT_GRACE=%s\n' "$HEARTBEAT_GRACE"
     printf 'export FM_HERDR_SUPERVISOR_RETRY_LIMIT=%s\n' "$RETRY_LIMIT"
     printf 'export FM_HERDR_SUPERVISOR_RETRY_BASE=%s\n' "$RETRY_BASE"
@@ -931,6 +945,9 @@ cmd_status() {  # <verbose>
 # --- the loop -----------------------------------------------------------------
 
 LOOP_GENERATION=
+LOOP_ARM_PID=
+LOOP_ARM_IDENTITY=
+LOOP_OWNER_PID=
 loop_owns_generation() {
   [ "$(record_get generation 2>/dev/null || printf '')" = "$LOOP_GENERATION" ]
 }
@@ -939,32 +956,79 @@ loop_owns_generation() {
 # live record this generation published, so a successor that already replaced it
 # is never disturbed.
 loop_release_live() {
-  [ "$(live_get generation 2>/dev/null || printf '')" = "$LOOP_GENERATION" ] || return 0
-  rm -f "$LIVE" 2>/dev/null || true
+  fm_lock_acquire_wait "$LIVE_LOCK" || return 0
+  if [ "$(live_get generation 2>/dev/null || printf '')" = "$LOOP_GENERATION" ]; then
+    rm -f "$LIVE" 2>/dev/null || true
+  fi
+  fm_lock_release "$LIVE_LOCK"
 }
 
 # loop_publish_live writes ONLY the live record, so it never contends with the
 # establish lock the caller is still holding while it waits for this.
 loop_publish_live() {  # <pane-pid>
   local pid=$1 identity tmp
+  fm_lock_acquire_wait "$LIVE_LOCK" || return 1
   identity=$(fm_pid_identity "$pid" 2>/dev/null || printf '')
-  [ -n "$identity" ] || return 1
-  loop_owns_generation || return 1
+  if [ -z "$identity" ] || ! loop_owns_generation; then
+    fm_lock_release "$LIVE_LOCK"
+    return 1
+  fi
   tmp="$LIVE.tmp.$pid"
   {
     printf 'generation=%s\n' "$LOOP_GENERATION"
     printf 'loop_pid=%s\n' "$pid"
     printf 'loop_identity=%s\n' "$identity"
-  } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
-  mv -f "$tmp" "$LIVE" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
-  # The binding may have been retired or superseded between the check above and
-  # the publish; drop the live record rather than leave one claiming a dead
-  # generation.
-  if ! loop_owns_generation; then
-    rm -f "$LIVE" 2>/dev/null || true
+  } > "$tmp" 2>/dev/null || {
+    rm -f "$tmp" 2>/dev/null || true
+    fm_lock_release "$LIVE_LOCK"
+    return 1
+  }
+  if ! mv -f "$tmp" "$LIVE" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    fm_lock_release "$LIVE_LOCK"
     return 1
   fi
+  if ! loop_owns_generation; then
+    rm -f "$LIVE" 2>/dev/null || true
+    fm_lock_release "$LIVE_LOCK"
+    return 1
+  fi
+  fm_lock_release "$LIVE_LOCK"
   return 0
+}
+
+loop_arm_matches() {
+  local pid=${LOOP_ARM_PID:-} current parent process_state
+  [ -n "$pid" ] && fm_pid_alive "$pid" || return 1
+  process_state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  case "$process_state" in Z*) return 1 ;; esac
+  current=$(fm_pid_identity "$pid" 2>/dev/null || printf '')
+  if [ -n "$LOOP_ARM_IDENTITY" ]; then
+    [ "$current" = "$LOOP_ARM_IDENTITY" ] && return 0
+  fi
+  parent=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+  [ -n "$parent" ] && [ "$parent" = "$LOOP_OWNER_PID" ]
+}
+
+loop_stop_arm() {
+  local pid=${LOOP_ARM_PID:-} current i=0
+  [ -n "$pid" ] || return 0
+  if loop_arm_matches; then
+    kill -TERM "$pid" 2>/dev/null || true
+    while loop_arm_matches && [ "$i" -lt 20 ]; do
+      sleep 0.05
+      i=$((i + 1))
+    done
+    if loop_arm_matches; then
+      current=$(fm_pid_identity "$pid" 2>/dev/null || printf '')
+      if [ -n "$LOOP_ARM_IDENTITY" ] && [ "$current" = "$LOOP_ARM_IDENTITY" ]; then
+        kill -KILL "$pid" 2>/dev/null || true
+      fi
+    fi
+  fi
+  wait "$pid" 2>/dev/null || true
+  LOOP_ARM_PID=
+  LOOP_ARM_IDENTITY=
 }
 
 backoff_delay() {  # <attempt>
@@ -986,6 +1050,7 @@ cmd_run() {
   local LOOP_ARM_OUT
 
   self=${BASHPID:-$$}
+  LOOP_OWNER_PID=$self
   if ! loop_owns_generation; then
     # A superseded or retired generation must never arm. This is the duplicate
     # arm guard: only the generation the record names may run.
@@ -1003,7 +1068,7 @@ cmd_run() {
   # A retire, a supersession, or an operator closing the pane must end this
   # cleanly rather than leaving a record claiming a process that is going away.
   LOOP_ARM_OUT=
-  trap 'ledger_append loop-signal "terminated"; [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT"; loop_release_live; exit 0' HUP TERM INT
+  trap 'loop_stop_arm; ledger_append loop-signal "terminated"; [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT"; loop_release_live; exit 0' HUP TERM INT
 
   while :; do
     if ! loop_owns_generation; then
@@ -1048,8 +1113,18 @@ cmd_run() {
     started=$(date +%s)
     # Plain attach-or-start, never --restart: a watcher that is already healthy
     # must be followed, not evicted, so the singleton survives a duplicate arm.
-    "$ARM" >"$out" 2>&1
+    "$ARM" >"$out" 2>&1 &
+    LOOP_ARM_PID=$!
+    LOOP_ARM_IDENTITY=$(fm_pid_identity "$LOOP_ARM_PID" 2>/dev/null || printf '')
+    while loop_arm_matches; do
+      : > "$HEARTBEAT" 2>/dev/null || true
+      sleep 0.5
+    done
+    wait "$LOOP_ARM_PID" 2>/dev/null
     rc=$?
+    LOOP_ARM_PID=
+    LOOP_ARM_IDENTITY=
+    : > "$HEARTBEAT" 2>/dev/null || true
     ended=$(date +%s)
     elapsed=$((ended - started))
     reason=$(arm_output_reason "$out")

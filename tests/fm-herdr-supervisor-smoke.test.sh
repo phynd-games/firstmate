@@ -13,9 +13,8 @@
 # up only through herdr_safe_stop_and_delete. It never touches a captain's real
 # Herdr usage, and it skips cleanly where herdr or jq is absent.
 #
-# The arm is a scripted stub, never the real bin/fm-watch-arm.sh: this proves
-# the HOSTING and CONTINUITY contract, and driving a real watcher would mutate
-# a real home's supervision state.
+# The supervisor runs the real bin/fm-watch-arm.sh and bin/fm-watch.sh here, so
+# the smoke proves the singleton lock and watcher lifecycle as well as hosting.
 #
 # The lab contract owns every lifecycle action here: a named non-default
 # fm-lab-* session, provisioned and torn down only through bin/fm-herdr-lab.sh,
@@ -78,6 +77,10 @@ export HERDR_SESSION="$SESSION"
 SCRATCH=
 cleanup_all() {
   local loop_pid
+  if [ -n "${DUP_PID:-}" ]; then
+    kill -TERM "$DUP_PID" 2>/dev/null || true
+    wait "$DUP_PID" 2>/dev/null || true
+  fi
   if [ -n "$SCRATCH" ] && [ -f "$SCRATCH/home/state/.herdr-supervisor" ]; then
     run_supervisor retire --reason "smoke cleanup" >/dev/null 2>&1 || true
   fi
@@ -102,30 +105,18 @@ mkdir -p "$HOME_DIR/state" "$HOME_DIR/config"
 printf 'herdr\n' > "$HOME_DIR/config/backend"
 # One in-flight task so supervision is genuinely needed.
 printf 'window=%s:fm-smoke\n' "$SESSION" > "$HOME_DIR/state/smoke.meta"
-
-# A scripted arm that counts invocations and returns one actionable reason,
-# exactly like a real watcher cycle closing on a wake.
-# The counter path is baked in, not read from the environment: `herdr pane run`
-# starts the loop in a pane shell whose environment comes from Herdr, so an
-# env-var dependency here would silently break the arm inside the pane while
-# working perfectly when run by hand.
-cat > "$SCRATCH/arm.sh" <<ARM
-#!/usr/bin/env bash
-set -u
-C="$SCRATCH/arm.count"
-printf '%s\n' "\$(( \$(cat "\$C" 2>/dev/null || echo 0) + 1 ))" > "\$C"
-sleep 0.3
-echo "signal: smoke"
-exit 0
-ARM
-chmod +x "$SCRATCH/arm.sh"
+printf 'done: smoke one\n' > "$HOME_DIR/state/smoke.status"
 
 run_supervisor() {
   FM_HOME="$HOME_DIR" \
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$HOME_DIR/state" \
   FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
-  FM_WATCH_ARM_SCRIPT="$SCRATCH/arm.sh" \
+  FM_SIGNAL_GRACE=0 \
+  FM_POLL=1 \
+  FM_CHECK_INTERVAL=999999 \
+  FM_HEARTBEAT=999999 \
+  FM_WATCH_ARM_ATTACH_POLL=0.1 \
   FM_SUPERVISION_MODEL=extension \
   FM_HERDR_SUPERVISOR_IDLE_INTERVAL=2 \
   FM_HERDR_SUPERVISOR_RETRY_BASE=1 \
@@ -135,8 +126,8 @@ run_supervisor() {
 
 record_field() { grep -m1 "^$1=" "$HOME_DIR/state/.herdr-supervisor" 2>/dev/null | sed "s/^$1=//"; }
 live_field() { grep -m1 "^$1=" "$HOME_DIR/state/.herdr-supervisor-live" 2>/dev/null | sed "s/^$1=//"; }
-arm_count() { cat "$SCRATCH/arm.count" 2>/dev/null || echo 0; }
-arm_count_at_least() { [ "$(arm_count)" -ge "$1" ]; }
+cycle_count() { grep -c '^arm_pid=' "$HOME_DIR/state/.watch-cycle-exits.log" 2>/dev/null || echo 0; }
+cycle_count_at_least() { [ "$(cycle_count)" -ge "$1" ]; }
 
 wait_until() {  # <seconds> <cmd...>
   local budget=$1 i=0
@@ -174,11 +165,39 @@ pass "Herdr's own process tracking names the live supervisor in its pane"
 
 # --- 3. continuity: one establish keeps re-arming -----------------------------
 # The incident's signature was one cycle per hand-start with successor=none.
-wait_until 40 arm_count_at_least 3 \
-  || fail "one establish produced only $(arm_count) arm cycles in a real pane; continuity is not restored"
-pass "one establish keeps re-arming the watcher inside its Herdr pane"
+wait_until 40 cycle_count_at_least 1 \
+  || fail "the real watcher did not complete its first cycle in a real pane"
+printf 'done: smoke two\n' > "$HOME_DIR/state/smoke.status"
+wait_until 40 cycle_count_at_least 2 \
+  || fail "one establish did not re-arm the real watcher after its first wake"
+printf 'done: smoke three\n' > "$HOME_DIR/state/smoke.status"
+wait_until 40 cycle_count_at_least 3 \
+  || fail "one establish did not keep re-arming the real watcher"
+pass "one establish keeps re-arming the real watcher inside its Herdr pane"
 
-# --- 4. no duplicate supervisor ----------------------------------------------
+# --- 4. duplicate arm attaches to the existing real watcher ------------------
+DUP_OUT="$SCRATCH/duplicate-arm.out"
+FM_HOME="$HOME_DIR" \
+FM_ROOT_OVERRIDE="$ROOT" \
+FM_STATE_OVERRIDE="$HOME_DIR/state" \
+FM_SIGNAL_GRACE=0 \
+FM_POLL=1 \
+FM_CHECK_INTERVAL=999999 \
+FM_HEARTBEAT=999999 \
+FM_WATCH_ARM_ATTACH_POLL=0.1 \
+HERDR_SESSION="$SESSION" \
+  "$ROOT/bin/fm-watch-arm.sh" > "$DUP_OUT" 2>&1 &
+DUP_PID=$!
+wait_until 20 grep -q '^watcher: attached pid=' "$DUP_OUT" \
+  || fail "a duplicate real arm did not attach to the existing watcher"
+WATCH_LOCK_PID=$(cat "$HOME_DIR/state/.watch.lock/pid" 2>/dev/null || true)
+[ -n "$WATCH_LOCK_PID" ] || fail "the real watcher lock did not name a live watcher"
+kill -TERM "$DUP_PID" 2>/dev/null || true
+wait "$DUP_PID" 2>/dev/null || true
+DUP_PID=
+pass "a duplicate real arm attaches without creating a second watcher"
+
+# --- 5. no duplicate supervisor ----------------------------------------------
 out=$(run_supervisor ensure --reason "second call" 2>&1)
 case "$out" in
   *'herdr-supervisor: unchanged'*) ;;
@@ -191,7 +210,7 @@ SUPERVISOR_PANES=$(fm_herdr_lab_cli "$SESSION" pane list --workspace "$WS" 2>/de
   || fail "the supervisor workspace holds $SUPERVISOR_PANES panes; exactly one host is allowed"
 pass "a repeated ensure adds no second supervisor pane and no second owner"
 
-# --- 5. a killed supervisor is detected and re-established --------------------
+# --- 6. a killed supervisor is detected and re-established --------------------
 kill -KILL "$LOOP_PID" 2>/dev/null || fail "could not kill the supervisor for the recovery case"
 wait_until 20 sh -c "! kill -0 $LOOP_PID 2>/dev/null" \
   || fail "the supervisor did not die"
@@ -200,7 +219,7 @@ case "$out" in
   *'supervisor: unhealthy'*) ;;
   *) fail "a killed supervisor still reported healthy: $out" ;;
 esac
-BEFORE=$(arm_count)
+BEFORE=$(cycle_count)
 out=$(run_supervisor ensure --reason "after kill" 2>&1) \
   || fail "re-establish after a kill failed: $out"
 case "$out" in
@@ -208,7 +227,7 @@ case "$out" in
   *) fail "re-establish did not start a replacement: $out" ;;
 esac
 [ "$(record_field generation)" != "$GEN" ] || fail "re-establish reused the dead generation"
-wait_until 40 arm_count_at_least "$((BEFORE + 2))" \
+wait_until 40 cycle_count_at_least "$((BEFORE + 2))" \
   || fail "the replacement supervisor never resumed arming"
 pass "a killed supervisor is detected as unhealthy and a new generation takes over"
 
