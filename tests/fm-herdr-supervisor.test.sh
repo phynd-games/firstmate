@@ -365,6 +365,43 @@ created=$(grep -c 'workspace.create' "$HOME5/fakestate/calls.log" 2>/dev/null ||
 [ "$created" -le 1 ] || fail "a repeat ensure created $created workspaces; exactly one owner is allowed"
 pass "a repeated ensure is idempotent and creates no second supervisor"
 
+out=$(FM_TEST_READY_TIMEOUT=1 run_supervisor "$HOME5" "$FAKEBIN" run --generation "$GEN5" 2>&1) \
+  && fail "an ordinary shell could launch the supervisor run path"
+assert_contains "$out" "recorded Herdr pane and process" \
+  "an ordinary shell cannot become an untracked supervisor"
+pass "the public run path requires its recorded Herdr pane and process"
+
+# =============================================================================
+# 6b. A live watcher with a stale beacon is restarted only after its home,
+#      path, and process identity are all verified.
+# =============================================================================
+HOME6B=$(new_home stale-watcher)
+fm_write_meta "$HOME6B/state/stale-task.meta" "window=firstmate:fm-stale-task"
+sleep 300 &
+STALE_WATCHER_PID=$!
+mkdir -p "$HOME6B/state/.watch.lock"
+printf '%s\n' "$HOME6B" > "$HOME6B/state/.watch.lock/fm-home"
+printf '%s\n' "$ROOT/bin/fm-watch.sh" > "$HOME6B/state/.watch.lock/watcher-path"
+fm_test_pid_identity "$STALE_WATCHER_PID" > "$HOME6B/state/.watch.lock/pid-identity" \
+  || fail "could not record the stale watcher identity"
+printf '%s\n' "$STALE_WATCHER_PID" > "$HOME6B/state/.watch.lock/pid"
+touch -t 200001010000 "$HOME6B/state/.last-watcher-beat"
+cat > "$HOME6B/arm.sh" <<SH
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "\$*" > "$HOME6B/arm.args"
+echo "signal: /fake/state/task.status"
+SH
+chmod +x "$HOME6B/arm.sh"
+out=$(FM_WATCHER_STALE_GRACE=1 run_supervisor "$HOME6B" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "herdr-supervisor: started" "a stale watcher still allows supervisor establishment"
+wait_for 10 grep -q -- '--restart' "$HOME6B/arm.args" \
+  || fail "a live stale watcher was not sent through the bounded restart path"
+pass "a stale watcher beacon uses the identity-verified restart path"
+kill "$STALE_WATCHER_PID" 2>/dev/null || true
+wait "$STALE_WATCHER_PID" 2>/dev/null || true
+stop_loop "$HOME6B"
+
 # =============================================================================
 # 7. A recycled pid never reads as healthy.
 # =============================================================================
@@ -667,7 +704,8 @@ pass "a hanging Herdr CLI is bounded and can never wedge the caller"
 HOME13E=$(new_home "launcher-$(printf 'x%.0s' $(seq 1 60))")
 make_arm_stub "$HOME13E/arm.sh" ok
 fm_write_meta "$HOME13E/state/launch-task.meta" "window=firstmate:fm-launch-task"
-out=$(run_supervisor "$HOME13E" "$FAKEBIN" ensure 2>&1)
+out=$(FM_GUARD_GRACE=17 FM_WATCHER_STALE_GRACE=19 FM_ARM_CONFIRM_TIMEOUT=23 \
+  run_supervisor "$HOME13E" "$FAKEBIN" ensure 2>&1)
 assert_contains "$out" "herdr-supervisor: started" "a long home path still establishes"
 PANE_CMD=$(tr '\037' ' ' < "$HOME13E/fakestate/calls.log" | grep 'pane run' | head -1)
 [ -n "$PANE_CMD" ] || fail "no pane run call was recorded"
@@ -687,6 +725,12 @@ assert_grep "FM_STATE_OVERRIDE" "$HOME13E/state/.herdr-supervisor-launch.sh" \
   "the launcher exports the state directory the pane shell cannot inherit"
 assert_grep "FM_WATCH_ARM_SCRIPT" "$HOME13E/state/.herdr-supervisor-launch.sh" \
   "the launcher exports the arm script the pane shell cannot inherit"
+assert_grep "FM_GUARD_GRACE='17'" "$HOME13E/state/.herdr-supervisor-launch.sh" \
+  "the launcher exports the caller's guard grace"
+assert_grep "FM_WATCHER_STALE_GRACE='19'" "$HOME13E/state/.herdr-supervisor-launch.sh" \
+  "the launcher exports the caller's watcher stale grace"
+assert_grep "FM_ARM_CONFIRM_TIMEOUT='23'" "$HOME13E/state/.herdr-supervisor-launch.sh" \
+  "the launcher exports the caller's arm confirmation timeout"
 [ -x "$HOME13E/state/.herdr-supervisor-launch.sh" ] || fail "the launcher script is not executable"
 pass "the pane command stays short and the loop's environment travels in a launcher script"
 stop_loop "$HOME13E"

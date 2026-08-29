@@ -520,6 +520,22 @@ _fm_recovery_marker_write_locked() {
   fi
 }
 
+_fm_recovery_marker_lock_acquire() {
+  local lock=$1 tries=${FM_RECOVERY_MARKER_LOCK_TRIES:-${FM_WAKE_APPEND_LOCK_TRIES:-0}} attempt=0
+  case "$tries" in
+    ''|*[!0-9]*) tries=0 ;;
+  esac
+  if [ "$tries" -gt 0 ]; then
+    while ! fm_lock_try_acquire "$lock"; do
+      [ "$attempt" -lt "$tries" ] || return 1
+      sleep 0.02
+      attempt=$((attempt + 1))
+    done
+  else
+    fm_lock_acquire_wait "$lock"
+  fi
+}
+
 # Preserve a pending or announced episode's generation across downtime
 # republication so its outstanding acknowledgement remains usable, and keep an
 # already-announced generation announced so it cannot be re-presented until a
@@ -529,7 +545,7 @@ _fm_recovery_marker_publish() {
   local marker=$1 kind=${2:-downtime} lock saved_token generation='' status=pending
   case "$kind" in handling|downtime) ;; *) return 1 ;; esac
   lock="${marker}.lock"
-  fm_lock_acquire_wait "$lock" || return 1
+  _fm_recovery_marker_lock_acquire "$lock" || return 1
   if [ -d "$marker" ] && [ ! -L "$marker" ]; then
     fm_lock_release "$lock"
     return 1
@@ -563,7 +579,7 @@ _fm_recovery_marker_publish() {
 _fm_recovery_marker_begin_handling() {
   local marker=$1 expected_generation=${2:-} lock line generation
   lock="${marker}.lock"
-  fm_lock_acquire_wait "$lock" || return 1
+  _fm_recovery_marker_lock_acquire "$lock" || return 1
   if ! fm_recovery_marker_read "$marker"; then
     fm_lock_release "$lock"
     return 1
@@ -599,7 +615,7 @@ fm_recovery_marker_snapshot() {
   local marker=$1 lock
   FM_RECOVERY_MARKER_TOKEN=
   lock="${marker}.lock"
-  fm_lock_acquire_wait "$lock" || return 1
+  _fm_recovery_marker_lock_acquire "$lock" || return 1
   fm_recovery_marker_read "$marker" || true
   fm_lock_release "$lock"
 }
@@ -608,7 +624,7 @@ _fm_recovery_marker_ack() {
   local marker=$1 expected_generation=$2 lock tmp line
   [ -n "$expected_generation" ] || return 2
   lock="${marker}.lock"
-  fm_lock_acquire_wait "$lock" || return 1
+  _fm_recovery_marker_lock_acquire "$lock" || return 1
   if ! fm_recovery_marker_read "$marker" \
     || [ "${FM_RECOVERY_MARKER_TOKEN##*:}" != "$expected_generation" ]; then
     fm_lock_release "$lock"
@@ -636,7 +652,7 @@ _fm_recovery_marker_arm_check() {
   FM_RECOVERY_MARKER_ACTION='none'
   lock="${marker}.lock"
   fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
-  if ! fm_lock_acquire_wait "$lock"; then
+  if ! _fm_recovery_marker_lock_acquire "$lock"; then
     fm_lock_release "$FM_WAKE_QUEUE_LOCK"
     return 1
   fi
@@ -712,7 +728,7 @@ _fm_recovery_marker_arm_check() {
 _fm_recovery_marker_reopen_announced() {
   local marker=$1 lock
   lock="${marker}.lock"
-  fm_lock_acquire_wait "$lock" || return 1
+  _fm_recovery_marker_lock_acquire "$lock" || return 1
   if ! fm_recovery_marker_read "$marker"; then
     fm_lock_release "$lock"
     return 0
@@ -751,7 +767,7 @@ fm_recovery_transition() {
     release-lock-existing)
       [ -n "$target" ] || return 1
       local lock="${marker}.lock"
-      fm_lock_acquire_wait "$lock" || return 1
+      _fm_recovery_marker_lock_acquire "$lock" || return 1
       if ! fm_recovery_marker_read "$marker"; then
         fm_lock_release "$lock"
         return 1

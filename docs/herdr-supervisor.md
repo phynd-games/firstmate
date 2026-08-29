@@ -39,7 +39,7 @@ It is not a second lifecycle authority.
 
 - It starts nothing but `bin/fm-watch-arm.sh`.
   The arm layer stays the only thing that starts, attaches to, or verifies a watcher, and `state/.watch.lock` stays the only singleton.
-- It uses the plain attach-or-start arm, never `--restart`.
+- It uses the plain attach-or-start arm for healthy watchers, and uses `--restart` only for a live watcher whose home, path, process identity, and beacon staleness are all verified.
   A second supervisor that somehow raced past the establish lock attaches to the live watcher rather than evicting it, so the one-watcher singleton holds even under a duplicate arm.
 - It never writes `state/.last-watcher-beat`.
   Only the watcher touches that beacon, so no helper can make a wedged watcher look alive.
@@ -94,8 +94,8 @@ Recovery is bounded, idempotent, and generation-safe.
 | --- | --- |
 | Watcher exits on a wake | The loop re-arms immediately; the wake is already durable on the queue |
 | Arm crashes, is killed, or fails | Every attempt leaves a durable alarm, ledger entry, and queue escalation; bounded exponential retry runs in rounds of five attempts by default while the tracked continuity owner remains alive |
-| Stale or dead watcher lock | The arm layer's own self-eviction and steal path settles it; the supervisor never evicts a watcher itself |
-| Stale or missing watcher beacon | The arm layer refuses to report a watcher it cannot verify, so the loop keeps trying within its bound |
+| Stale or dead watcher lock | A dead holder is reclaimed by the arm layer's own self-eviction and steal path; an identity-verified live holder with a stale beacon is replaced through the arm's bounded `--restart` path |
+| Stale or missing watcher beacon | An identity-verified live holder is replaced through the arm's bounded `--restart` path; unknown holders fail closed with durable escalation |
 | Supervisor process killed | Unhealthy at the next `ensure`, which establishes a fresh generation |
 | Supervisor wedged but alive | Its heartbeat goes stale and it reads unhealthy, even though the process and pane still check out |
 | Herdr pane closed or moved | The pane binding stops matching and it reads unhealthy |
@@ -152,6 +152,7 @@ All under `state/`, all private to the home.
 - `.herdr-supervisor-launch.sh` - the generated launcher the pane executes, mode 0700.
   It exists so the pane command can stay short; it is rewritten on every establish and removed on retire, and is never edited by hand.
 - `.herdr-supervisor-heartbeat` - the supervisor's liveness beacon, refreshed every pass and while the arm child is waiting.
+- `.herdr-supervisor-pending-cleanup` - an exact session, socket, workspace, tab, and pane receipt retained across uncertain establish or retirement cleanup.
 - `.herdr-supervisor-alarm` - the durable actionable diagnostic; present means an escalation is outstanding.
 - `.herdr-supervisor-emergency` - fallback evidence when alarm or queue persistence fails.
 - `.herdr-supervisor.log` - a bounded lifecycle ledger.
