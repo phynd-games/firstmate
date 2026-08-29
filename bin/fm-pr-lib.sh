@@ -280,12 +280,12 @@ fm_pr_self_review_report_path() {
 }
 
 fm_pr_self_review_report_valid() {
-  local data=$1 id=$2 report data_device
+  local data=$1 id=$2 expected_head=${3-} report data_device
   report=$(fm_pr_self_review_report_path "$data" "$id") || return 1
   data_device=$(fm_pr_file_device "$data") || return 1
   fm_pr_private_file_valid "$report" 600 "$data_device" || return 1
   [ "$(wc -c < "$report" | tr -d '[:space:]')" -le 1048576 ] || return 1
-  awk -v task="$id" '
+  awk -v task="$id" -v expected_head="$expected_head" '
     BEGIN {
       headings[1] = "# Findings"
       headings[2] = "# Target-project diff evidence"
@@ -295,6 +295,12 @@ fm_pr_self_review_report_valid() {
       headings[6] = "# Residual risks"
       expected = 1
       valid = 1
+    }
+    function field(prefix) {
+      return substr($0, length(prefix) + 1)
+    }
+    function full_sha(value) {
+      return (length(value) == 40 || length(value) == 64) && value !~ /[^0-9a-f]/
     }
     NR == 1 {
       valid = valid && ($0 == "Self-review report: firstmate-pr-self-review.v1")
@@ -324,9 +330,45 @@ fm_pr_self_review_report_valid() {
         }
       }
       if ($0 !~ /^[[:space:]]*$/) content = 1
+      if (expected == 3) {
+        if (index($0, "Target repository: ") == 1 && length(field("Target repository: ")) > 0) target_repository = 1
+        if (index($0, "Base ref: ") == 1 && length(field("Base ref: ")) > 0) base_ref = 1
+        if (index($0, "Base SHA: ") == 1 && full_sha(field("Base SHA: "))) base_sha = 1
+        if (index($0, "Head SHA: ") == 1 && full_sha(field("Head SHA: "))) {
+          head_sha = field("Head SHA: ")
+          target_head = 1
+        }
+        if (index($0, "Merge-base SHA: ") == 1 && full_sha(field("Merge-base SHA: "))) merge_base_sha = 1
+        if (index($0, "Changed files: ") == 1 && length(field("Changed files: ")) > 0) changed_files = 1
+        if (index($0, "Tree status: ") == 1 && length(field("Tree status: ")) > 0) tree_status = 1
+      }
+      if (expected == 4) {
+        if (index($0, "Substrate base SHA: ") == 1 && full_sha(field("Substrate base SHA: "))) substrate_base_sha = 1
+        if (index($0, "Substrate head SHA: ") == 1 && full_sha(field("Substrate head SHA: "))) substrate_head_sha = 1
+        if (index($0, "Substrate changed files: ") == 1 && length(field("Substrate changed files: ")) > 0) substrate_changed_files = 1
+        if ($0 == "Substrate diff: no substrate diff") substrate_no_diff = 1
+      }
+      if (expected == 5) {
+        if (index($0, "Authority: ") == 1 && length(field("Authority: ")) > 0) authority = 1
+        if (index($0, "Security: ") == 1 && length(field("Security: ")) > 0) security = 1
+        if (index($0, "Path: ") == 1 && length(field("Path: ")) > 0) path = 1
+        if (index($0, "Failure: ") == 1 && length(field("Failure: ")) > 0) failure = 1
+        if (index($0, "Tests: ") == 1 && length(field("Tests: ")) > 0) tests = 1
+        if (index($0, "Documentation: ") == 1 && length(field("Documentation: ")) > 0) documentation = 1
+        if (index($0, "Delivery: ") == 1 && length(field("Delivery: ")) > 0) delivery = 1
+      }
+      if (expected == 6) {
+        if (index($0, "Command: ") == 1 && length(field("Command: ")) > 0) command = 1
+        if (index($0, "Result: ") == 1 && length(field("Result: ")) > 0) result = 1
+      }
     }
     END {
       if (!content) bad = 1
+      if (!target_repository || !base_ref || !base_sha || !target_head || !merge_base_sha || !changed_files || !tree_status) bad = 1
+      if (!substrate_base_sha || !substrate_head_sha || (!substrate_changed_files && !substrate_no_diff)) bad = 1
+      if (!authority || !security || !path || !failure || !tests || !documentation || !delivery) bad = 1
+      if (!command || !result) bad = 1
+      if (expected_head != "" && head_sha != expected_head) bad = 1
       exit !(valid && !bad && expected == 7 && NR >= 8)
     }
   ' "$report"

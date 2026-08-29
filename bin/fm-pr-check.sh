@@ -41,8 +41,14 @@ if [ ! -f "$META" ] || [ -L "$META" ] || [ "$(fm_pr_file_link_count "$META")" !=
   echo "error: task metadata is unavailable" >&2
   exit 1
 fi
+WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
+REVIEW_HEAD=
+if [ -n "$WT" ] && [ -d "$WT" ] && command -v git >/dev/null 2>&1; then
+  REVIEW_HEAD=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null || true)
+  fm_pr_head_valid "$REVIEW_HEAD" || REVIEW_HEAD=
+fi
 if [ "$(grep '^kind=' "$META" | tail -1 | cut -d= -f2- || true)" = ship ] \
-  && ! fm_pr_self_review_report_valid "$DATA" "$ID"; then
+  && ! fm_pr_self_review_report_valid "$DATA" "$ID" "$REVIEW_HEAD"; then
   echo "error: durable findings-first self-review report is unavailable or invalid" >&2
   exit 1
 fi
@@ -79,7 +85,6 @@ fi
 # bin/fm-review-diff.sh resolves the head from the remote when none is recorded.
 # bin/fm-pr-merge.sh reads a GitLab head live at merge time for the same reason,
 # and treats a recorded value that disagrees as stale rather than authoritative.
-WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_HEAD=
 if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/dev/null 2>&1; then
   if REMOTE_HEAD=$(cd "$WT" && gh pr view "$URL" --json headRefOid -q .headRefOid 2>/dev/null) \

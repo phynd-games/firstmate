@@ -56,6 +56,10 @@ Use this section order:
 
 The report is a private mode-0600 Markdown artifact whose first two lines are exactly `Self-review report: firstmate-pr-self-review.v1` and `Task id: <task-id>`.
 The required headings below must appear exactly once and in the listed order, with non-empty content in every section.
+The target-project section must contain non-empty `Target repository:`, `Base ref:`, `Changed files:`, and `Tree status:` fields plus full lowercase-hex `Base SHA:`, `Head SHA:`, and `Merge-base SHA:` fields.
+The substrate section must contain full lowercase-hex `Substrate base SHA:` and `Substrate head SHA:` fields plus either a non-empty `Substrate changed files:` field or `Substrate diff: no substrate diff`.
+The surface section must contain non-empty `Authority:`, `Security:`, `Path:`, `Failure:`, `Tests:`, `Documentation:`, and `Delivery:` fields.
+The verification section must contain at least one non-empty `Command:` field and one non-empty `Result:` field.
 
 1. `Findings` with severity, `path:line`, evidence, consequence, and required fix for each issue.
 2. `Target-project diff evidence` with exact base/head refs, base/head/merge-base SHAs, changed-file inventory, and clean-tree status.

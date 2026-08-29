@@ -103,13 +103,28 @@ make_case() {
     '# Findings' \
     'None.' \
     '# Target-project diff evidence' \
-    'Reviewed exact target-project base, head, and merge-base evidence.' \
+    'Target repository: fixture/project' \
+    'Base ref: captain-approved-base' \
+    'Base SHA: 0000000000000000000000000000000000000000' \
+    'Head SHA: 0123456789abcdef0123456789abcdef01234567' \
+    'Merge-base SHA: 0000000000000000000000000000000000000000' \
+    'Changed files: fixture-change' \
+    'Tree status: clean' \
     '# Firstmate substrate diff evidence' \
-    'Reviewed the complete Firstmate substrate diff.' \
+    'Substrate base SHA: 0000000000000000000000000000000000000000' \
+    'Substrate head SHA: 0123456789abcdef0123456789abcdef01234567' \
+    'Substrate changed files: fixture-substrate-change' \
     '# Surface review' \
-    'Reviewed all required review surfaces.' \
+    'Authority: no-mistakes remains delivery authority.' \
+    'Security: private evidence is validated.' \
+    'Path: task-bound paths are safe.' \
+    'Failure: malformed evidence fails closed.' \
+    'Tests: public boundary cases are covered.' \
+    'Documentation: generated contract is aligned.' \
+    'Delivery: no independent approval is added.' \
     '# Verification' \
-    'Focused behavioral verification passed.' \
+    'Command: focused PR-ready boundary test' \
+    'Result: passed' \
     '# Residual risks' \
     'None.' > "$case_dir/home/data/task-x1/pr-self-review.md"
   chmod 0600 "$case_dir/home/data/task-x1/pr-self-review.md"

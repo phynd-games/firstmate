@@ -149,13 +149,28 @@ write_self_review_report() {
     '# Findings' \
     'None.' \
     '# Target-project diff evidence' \
-    'Reviewed exact target-project base, head, and merge-base evidence.' \
+    'Target repository: fixture/project' \
+    'Base ref: captain-approved-base' \
+    'Base SHA: 0000000000000000000000000000000000000000' \
+    'Head SHA: 0123456789abcdef0123456789abcdef01234567' \
+    'Merge-base SHA: 0000000000000000000000000000000000000000' \
+    'Changed files: fixture-change' \
+    'Tree status: clean' \
     '# Firstmate substrate diff evidence' \
-    'Reviewed the complete Firstmate substrate diff.' \
+    'Substrate base SHA: 0000000000000000000000000000000000000000' \
+    'Substrate head SHA: 0123456789abcdef0123456789abcdef01234567' \
+    'Substrate changed files: fixture-substrate-change' \
     '# Surface review' \
-    'Reviewed authority, security, failure, test, documentation, and delivery surfaces.' \
+    'Authority: no-mistakes remains delivery authority.' \
+    'Security: private evidence is validated.' \
+    'Path: task-bound paths are safe.' \
+    'Failure: malformed evidence fails closed.' \
+    'Tests: public boundary cases are covered.' \
+    'Documentation: generated contract is aligned.' \
+    'Delivery: no independent approval is added.' \
     '# Verification' \
-    'Focused behavioral verification passed.' \
+    'Command: focused PR-ready boundary test' \
+    'Result: passed' \
     '# Residual risks' \
     'None.' > "$report"
   chmod 0600 "$report"
@@ -332,6 +347,24 @@ test_pr_ready_requires_durable_self_review() {
   [ "$rc" -ne 0 ] || fail "PR-ready path accepted a non-private self-review report"
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "invalid self-review report left a runnable poll"
 
+  printf '%s\n' \
+    'Self-review report: firstmate-pr-self-review.v1' \
+    'Task id: task-a' \
+    '# Findings' 'word' \
+    '# Target-project diff evidence' 'word' \
+    '# Firstmate substrate diff evidence' 'word' \
+    '# Surface review' 'word' \
+    '# Verification' 'word' \
+    '# Residual risks' 'word' > "$report"
+  chmod 0600 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/102 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a shallow self-review report"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "shallow self-review report left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
   chmod 0600 "$report"
   run_check_entry "$dir" task-a https://github.com/o/r/pull/103 >/dev/null \
     || fail "PR-ready path rejected a valid durable self-review report"
