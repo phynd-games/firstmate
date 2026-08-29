@@ -1,0 +1,400 @@
+#!/usr/bin/env bash
+# Behavior tests for the read-only control-plane dashboard composer
+# (bin/fm-dashboard.sh), exercised end to end against synthetic homes. Every
+# assertion is on the command's own output contract - the fm-dashboard.v1
+# payload and the built page - never on the script's source text.
+set -u
+
+# shellcheck source=tests/lib.sh
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+DASH="$ROOT/bin/fm-dashboard.sh"
+SNAPSHOT="$ROOT/bin/fm-fleet-snapshot.sh"
+TMP_ROOT=$(fm_test_tmproot fm-dashboard)
+
+command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
+
+# A home with one worker, a backlog, a status log and a report. Callers add the
+# malformed, missing, and oversized variants they need on top.
+make_home() {  # <name>
+  local home="$TMP_ROOT/$1" fakebin
+  mkdir -p "$home/state" "$home/data/scout-one" "$home/config"
+  printf '7500\n' > "$home/config/startup-memory-budget"
+  printf 'Captain prefers short answers.\n' > "$home/data/captain.md"
+  fakebin=$(fm_fakebin "$home")
+  fm_fake_exit0 "$fakebin" tmux no-mistakes
+  fm_write_meta "$home/state/worker-one.meta" \
+    "window=firstmate:fm-worker-one" \
+    "endpoint_task_id=worker-one" \
+    "worktree=$home/wt" \
+    "project=$home/project" \
+    "harness=claude" \
+    "model=opus" \
+    "effort=xhigh" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "yolo=off" \
+    "backend=tmux"
+  cat > "$home/data/backlog.md" <<'MD'
+# Backlog
+
+## In flight
+- [ ] worker-one - Build the thing (repo: sample) (kind: ship) (priority: 0) (since 2026-08-01)
+
+## Queued
+
+## Done
+MD
+  cat > "$home/data/scout-one/report.md" <<'MD'
+# Scout one
+
+## Verdict
+
+The **thing** works. See `bin/thing.sh` and https://example.invalid/pr/1 for detail.
+
+| finding | severity |
+| ------- | -------- |
+| none    | -        |
+MD
+  printf '%s\n' "$home"
+}
+
+file_mode() {  # <path> -> octal permission bits, portably
+  stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1" 2>/dev/null
+}
+
+run_dash() {  # <home> <args...>
+  local home=$1
+  shift
+  PATH="$home/fakebin:$PATH" FM_HOME="$home" \
+    FM_SNAPSHOT_NOW=2026-08-01T00:00:00Z \
+    "$DASH" "$@"
+}
+
+test_path_is_stable_and_inside_the_home() {
+  local home out
+  home=$(make_home stable-path)
+  out=$(run_dash "$home" path) || fail "the dashboard could not report its page path"
+  [ "$out" = "$home/.dashboard/control-plane.html" ] \
+    || fail "the page path is not the stable per-home path: $out"
+  pass "the page path is stable and inside the home"
+}
+
+test_the_payload_embeds_the_canonical_snapshot_unchanged() {
+  local home payload canonical embedded direct
+  home=$(make_home canonical)
+  payload=$(run_dash "$home" json) || fail "the dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '.schema == "fm-dashboard.v1"' >/dev/null \
+    || fail "the payload does not carry the fm-dashboard.v1 schema"
+  canonical=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-08-01T00:00:00Z \
+    "$SNAPSHOT" --json) || fail "the canonical snapshot could not be produced"
+  embedded=$(printf '%s' "$payload" | jq -S 'del(.snapshot.generated) | .snapshot')
+  direct=$(printf '%s' "$canonical" | jq -S 'del(.generated)')
+  [ "$embedded" = "$direct" ] \
+    || fail "the embedded fleet snapshot is not the canonical snapshot verbatim"
+  pass "the payload embeds the canonical fleet snapshot unchanged"
+}
+
+test_a_worker_carries_its_recorded_model_and_effort() {
+  local home payload
+  home=$(make_home runtime-record)
+  payload=$(run_dash "$home" json) || fail "the dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '
+    (.usage.agents | length) == 1
+    and .usage.agents[0].harness == "claude"
+    and .usage.agents[0].model == "opus"
+    and .usage.agents[0].effort == "xhigh"' >/dev/null \
+    || fail "the dispatched runtime record is missing its model or effort"
+  pass "a worker carries the model and effort its spawn recorded"
+}
+
+test_a_missing_status_log_is_reported_not_degraded() {
+  local home payload
+  home=$(make_home no-status)
+  payload=$(run_dash "$home" json) || fail "the dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '
+    (.events | length) == 1
+    and .events[0].readable == false
+    and .events[0].reason == "not present"
+    and (.events[0].lines | length) == 0
+    and (.degraded | length) == 0' >/dev/null \
+    || fail "a task with no event history was not reported as simply absent"
+  pass "a worker with no event history reads as absent, not as a broken source"
+}
+
+test_event_history_is_bounded_and_discloses_what_it_dropped() {
+  local home payload i
+  home=$(make_home bounded-events)
+  for i in $(seq 1 25); do
+    printf 'working: step %s\n' "$i" >> "$home/state/worker-one.status"
+  done
+  payload=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" \
+    FM_SNAPSHOT_NOW=2026-08-01T00:00:00Z FM_DASHBOARD_EVENT_LINES=10 \
+    "$DASH" json) || fail "the dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '
+    .events[0].readable == true
+    and .events[0].total == 25
+    and .events[0].shown == 10
+    and .events[0].truncated == 15
+    and (.events[0].lines | length) == 10
+    and .events[0].lines[9].raw == "working: step 25"' >/dev/null \
+    || fail "the bounded event tail did not disclose the events it dropped"
+  pass "event history is bounded and says how many older events it dropped"
+}
+
+test_status_lines_keep_their_recorded_verb_and_note() {
+  local home payload
+  home=$(make_home classified-events)
+  {
+    printf 'working: started\n'
+    printf 'needs-decision [key=pick-one]: two options remain\n'
+  } >> "$home/state/worker-one.status"
+  payload=$(run_dash "$home" json) || fail "the dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '
+    .events[0].lines[1].verb == "needs-decision"
+    and .events[0].lines[1].note == "two options remain"
+    and .events[0].lines[1].raw == "needs-decision [key=pick-one]: two options remain"' >/dev/null \
+    || fail "a keyed status line lost its verb or note"
+  pass "status lines keep the verb and note their own classifier assigns"
+}
+
+test_a_symlinked_status_log_is_refused_and_disclosed() {
+  local home payload
+  home=$(make_home symlink-status)
+  printf 'working: elsewhere\n' > "$TMP_ROOT/outside-status"
+  ln -s "$TMP_ROOT/outside-status" "$home/state/worker-one.status"
+  payload=$(run_dash "$home" json) || fail "the dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '
+    .events[0].readable == false
+    and (.events[0].reason | test("symlink"))
+    and (.events[0].lines | length) == 0
+    and (.degraded | map(select(.source | test("status log"))) | length) == 1' >/dev/null \
+    || fail "a symlinked status log was not refused and disclosed"
+  pass "a symlinked event log is refused and the gap is disclosed"
+}
+
+# The guarantee under test is end to end - nothing outside this home's own
+# evidence roots is ever read onto the page - so it is asserted on the built
+# page rather than on whichever layer currently refuses first. Today the
+# canonical scan excludes symlinked report paths and the composer's own
+# containment check backs it up; either alone must keep this true.
+test_a_report_symlinked_out_of_the_home_never_reaches_the_page() {
+  local home payload page
+  home=$(make_home escaping-report)
+  mkdir -p "$TMP_ROOT/outside-data"
+  printf '# elsewhere\n\nsentinel-outside-the-home\n' > "$TMP_ROOT/outside-data/report.md"
+  rm -rf "$home/data/scout-one"
+  ln -s "$TMP_ROOT/outside-data" "$home/data/scout-one"
+  mkdir -p "$home/data/scout-two"
+  ln -s "$TMP_ROOT/outside-data/report.md" "$home/data/scout-two/report.md"
+
+  payload=$(run_dash "$home" json) || fail "the dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '.reports.total == 0 and (.reports.records | length) == 0' >/dev/null \
+    || fail "a report symlinked out of the home was read into the payload"
+  printf '%s' "$payload" | grep -q 'sentinel-outside-the-home' \
+    && fail "content from outside the home leaked into the payload"
+
+  run_dash "$home" build >/dev/null || fail "the page could not be built"
+  page="$home/.dashboard/control-plane.html"
+  grep -q 'sentinel-outside-the-home' "$page" \
+    && fail "content from outside the home leaked into the built page"
+  pass "a report symlinked out of the home never reaches the payload or the page"
+}
+
+test_a_large_report_is_truncated_and_says_so() {
+  local home payload
+  home=$(make_home large-report)
+  head -c 4000 /dev/zero | LC_ALL=C tr '\0' 'x' > "$home/data/scout-one/report.md"
+  payload=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" \
+    FM_SNAPSHOT_NOW=2026-08-01T00:00:00Z FM_DASHBOARD_REPORT_BYTES=512 \
+    "$DASH" json) || fail "the dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '
+    .reports.records[0].readable == true
+    and .reports.records[0].truncated == true
+    and .reports.records[0].bytes == 4000
+    and (.reports.records[0].body | length) == 512' >/dev/null \
+    || fail "an oversized report was not bounded and disclosed"
+  pass "an oversized report is bounded to its byte cap and says it was truncated"
+}
+
+test_a_report_holding_binary_bytes_still_produces_valid_output() {
+  local home payload
+  home=$(make_home binary-report)
+  printf '# title\n\000\000binary\000 tail\n' > "$home/data/scout-one/report.md"
+  payload=$(run_dash "$home" json) || fail "a report with NUL bytes broke the payload"
+  printf '%s' "$payload" | jq -e '
+    .reports.records[0].readable == true
+    and (.reports.records[0].body | test("binary"))
+    and (.reports.records[0].body | test("\u0000") | not)' >/dev/null \
+    || fail "NUL bytes were not stripped out of the rendered report body"
+  pass "a report holding binary bytes still produces valid, readable output"
+}
+
+test_a_malformed_queued_notification_is_flagged_not_mis_parsed() {
+  local home payload
+  home=$(make_home malformed-wake)
+  {
+    printf '1750000000\t7\tcheck\tworker-one\tPR merged\n'
+    printf 'this line was hand edited\n'
+  } > "$home/state/.wake-queue"
+  payload=$(run_dash "$home" json) || fail "the dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '
+    .supervision.wakes.available == true
+    and .supervision.wakes.total == 2
+    and (.supervision.wakes.records | length) == 2
+    and .supervision.wakes.records[0].malformed == false
+    and .supervision.wakes.records[0].kind == "check"
+    and .supervision.wakes.records[0].key == "worker-one"
+    and .supervision.wakes.records[1].malformed == true
+    and .supervision.wakes.records[1].payload == "this line was hand edited"' >/dev/null \
+    || fail "a hand-edited queue line was mis-parsed instead of flagged"
+  pass "a malformed queued notification is flagged rather than parsed into the wrong columns"
+}
+
+test_queued_notifications_are_bounded() {
+  local home payload i
+  home=$(make_home bounded-wakes)
+  for i in $(seq 1 12); do
+    printf '175000000%s\t%s\tsignal\tworker-one\tnote %s\n' "0" "$i" "$i" >> "$home/state/.wake-queue"
+  done
+  payload=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" \
+    FM_SNAPSHOT_NOW=2026-08-01T00:00:00Z FM_DASHBOARD_WAKES=5 \
+    "$DASH" json) || fail "the dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '
+    .supervision.wakes.total == 12
+    and .supervision.wakes.shown == 5
+    and .supervision.wakes.truncated == 7
+    and .supervision.wakes.records[4].payload == "note 12"' >/dev/null \
+    || fail "the queued-notification list was not bounded with disclosure"
+  pass "queued notifications are bounded and disclose the older records they drop"
+}
+
+test_away_mode_and_missing_heartbeat_are_reported() {
+  local home payload
+  home=$(make_home supervision)
+  : > "$home/state/.afk"
+  payload=$(run_dash "$home" json) || fail "the dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '
+    .supervision.away_mode == true
+    and .supervision.beacon_present == false
+    and .supervision.beacon_age_seconds == null
+    and (.supervision.model | length) > 0' >/dev/null \
+    || fail "away mode or an absent monitoring heartbeat was not reported honestly"
+  pass "away mode and an absent monitoring heartbeat are reported, not guessed"
+}
+
+test_the_local_token_record_is_read_or_disclosed_as_missing() {
+  local home payload
+  home=$(make_home token-record)
+  payload=$(run_dash "$home" json) || fail "the dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '
+    .usage.budget.available == true
+    and .usage.budget.effective_budget_tokens == 7500
+    and (.usage.budget.files | map(select(.file == "data/captain.md")) | length) == 1
+    and (.usage.budget.files | map(select(.file == "data/captain.md")) | .[0].estimated_tokens) > 0' \
+    >/dev/null || fail "the local token record was not read from its owner command"
+
+  rm -f "$home/config/startup-memory-budget"
+  payload=$(run_dash "$home" json) || fail "the dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '
+    .usage.budget.available == false
+    and (.degraded | map(select(.source == "startup memory budget")) | length) == 1' >/dev/null \
+    || fail "an unreadable token record was not disclosed as a gap"
+  pass "the local token record is read from its owner, or disclosed as missing"
+}
+
+test_the_built_page_carries_one_readable_payload_and_is_private() {
+  local home out mode slots
+  home=$(make_home build-page)
+  out=$(run_dash "$home" build) || fail "the page could not be built"
+  [ "$out" = "dashboard: $home/.dashboard/control-plane.html" ] \
+    || fail "build did not report the stable page path: $out"
+  [ -f "$home/.dashboard/control-plane.html" ] || fail "the page was not written"
+  mode=$(file_mode "$home/.dashboard/control-plane.html")
+  [ "$mode" = "600" ] || fail "the built page is not private to its owner: $mode"
+  slots=$(grep -c '__FM_DASHBOARD_DATA__' "$home/.dashboard/control-plane.html" || true)
+  [ "$slots" -eq 0 ] || fail "the page still carries its unfilled data slot"
+  sed -n '/<script id="fm-dashboard-data" type="application\/json">/,/<\/script>/p' \
+    "$home/.dashboard/control-plane.html" | sed '1d;$d' \
+    | jq -e '.schema == "fm-dashboard.v1"' >/dev/null \
+    || fail "the built page does not carry a readable fm-dashboard.v1 payload"
+  pass "the built page carries exactly one readable payload and stays private"
+}
+
+test_a_payload_string_cannot_close_the_data_block_early() {
+  local home page body
+  home=$(make_home script-escape)
+  printf '# report\n\nA literal </script><script>alert(1)</script> inside a report.\n' \
+    > "$home/data/scout-one/report.md"
+  run_dash "$home" build >/dev/null || fail "the page could not be built"
+  page="$home/.dashboard/control-plane.html"
+  body=$(sed -n '/<script id="fm-dashboard-data" type="application\/json">/,/<\/script>/p' "$page" \
+    | sed '1d;$d')
+  printf '%s' "$body" | jq -e '.schema == "fm-dashboard.v1"' >/dev/null \
+    || fail "a report containing a closing script tag truncated the data block"
+  printf '%s' "$body" | jq -e '
+    .reports.records[0].body | test("alert\\(1\\)")' >/dev/null \
+    || fail "the report body did not survive escaping"
+  grep -q '\\u003c/script' "$page" \
+    || fail "the injected payload did not escape its angle brackets"
+  pass "a report containing a closing script tag cannot end the data block early"
+}
+
+test_the_build_refuses_a_template_without_a_data_slot() {
+  local home out status=0
+  home=$(make_home no-slot)
+  printf '<html><body>no slot here</body></html>\n' > "$home/template.html"
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" \
+    FM_SNAPSHOT_NOW=2026-08-01T00:00:00Z FM_DASHBOARD_TEMPLATE="$home/template.html" \
+    "$DASH" build 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "a template with no data slot was accepted"
+  assert_contains "$out" "data slot" "the refusal did not name the missing data slot"
+  [ ! -e "$home/.dashboard/control-plane.html" ] \
+    || fail "a refused build still published a page"
+  pass "the build refuses a template that carries no data slot"
+}
+
+test_the_dashboard_refuses_when_the_fleet_snapshot_fails() {
+  local home out status=0
+  home=$(make_home snapshot-fails)
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" \
+    FM_SNAPSHOT_SECONDMATES=not-a-number "$DASH" json 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "the dashboard rendered anyway after the snapshot failed"
+  assert_contains "$out" "snapshot" "the refusal did not name the failed fleet snapshot"
+  pass "the dashboard refuses to render when the fleet snapshot fails"
+}
+
+test_the_dashboard_refuses_an_invalid_bound_or_port() {
+  local home out status=0
+  home=$(make_home invalid-bounds)
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_DASHBOARD_EVENT_LINES=0 \
+    "$DASH" json 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "a zero event bound was accepted"
+  assert_contains "$out" "FM_DASHBOARD_EVENT_LINES" "the refusal did not name the invalid bound"
+  status=0
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" "$DASH" serve --port 99999 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "an out-of-range port was accepted"
+  assert_contains "$out" "1-65535" "the refusal did not name the valid port range"
+  pass "the dashboard refuses an invalid bound or an out-of-range port"
+}
+
+test_path_is_stable_and_inside_the_home
+test_the_payload_embeds_the_canonical_snapshot_unchanged
+test_a_worker_carries_its_recorded_model_and_effort
+test_a_missing_status_log_is_reported_not_degraded
+test_event_history_is_bounded_and_discloses_what_it_dropped
+test_status_lines_keep_their_recorded_verb_and_note
+test_a_symlinked_status_log_is_refused_and_disclosed
+test_a_report_symlinked_out_of_the_home_never_reaches_the_page
+test_a_large_report_is_truncated_and_says_so
+test_a_report_holding_binary_bytes_still_produces_valid_output
+test_a_malformed_queued_notification_is_flagged_not_mis_parsed
+test_queued_notifications_are_bounded
+test_away_mode_and_missing_heartbeat_are_reported
+test_the_local_token_record_is_read_or_disclosed_as_missing
+test_the_built_page_carries_one_readable_payload_and_is_private
+test_a_payload_string_cannot_close_the_data_block_early
+test_the_build_refuses_a_template_without_a_data_slot
+test_the_dashboard_refuses_when_the_fleet_snapshot_fails
+test_the_dashboard_refuses_an_invalid_bound_or_port
