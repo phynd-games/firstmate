@@ -217,6 +217,8 @@ test_a_report_symlinked_out_of_the_home_never_reaches_the_page() {
   payload=$(run_dash "$home" json) || fail "the dashboard payload could not be composed"
   printf '%s' "$payload" | jq -e '.reports.total == 0 and (.reports.records | length) == 0' >/dev/null \
     || fail "a report symlinked out of the home was read into the payload"
+  printf '%s' "$payload" | jq -e '.snapshot.tasks[0].hints.scout_report_present == false' >/dev/null \
+    || fail "a report symlinked out of the home was advertised as present"
   printf '%s' "$payload" | grep -q 'sentinel-outside-the-home' \
     && fail "content from outside the home leaked into the payload"
 
@@ -225,6 +227,31 @@ test_a_report_symlinked_out_of_the_home_never_reaches_the_page() {
   grep -q 'sentinel-outside-the-home' "$page" \
     && fail "content from outside the home leaked into the built page"
   pass "a report symlinked out of the home never reaches the payload or the page"
+}
+
+test_a_dangling_wake_queue_is_disclosed_as_unsafe() {
+  local home payload
+  home=$(make_home dangling-wake-queue)
+  ln -s "$TMP_ROOT/missing-wake-queue" "$home/state/.wake-queue"
+  payload=$(run_dash "$home" json) || fail "the dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '
+    .supervision.wakes.available == false
+    and (.supervision.wakes.reason | test("symlink"))
+    and (.degraded | map(select(.source == "wake queue")) | length) == 1' >/dev/null \
+    || fail "a dangling wake queue was treated as healthy empty evidence"
+  pass "a dangling wake queue is disclosed as unsafe evidence"
+}
+
+test_a_symlinked_secondmate_registry_is_disclosed_as_unsafe() {
+  local home payload
+  home=$(make_home symlinked-registry)
+  ln -s "$TMP_ROOT/missing-secondmates" "$home/data/secondmates.md"
+  payload=$(run_dash "$home" json) || fail "the dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '
+    .snapshot.secondmate_current.registry.available == false
+    and (.snapshot.secondmate_current.registry.reason | test("symlink"))' >/dev/null \
+    || fail "a symlinked secondmate registry was reported as available"
+  pass "a symlinked secondmate registry is disclosed as unsafe evidence"
 }
 
 test_a_large_report_is_truncated_and_says_so() {
@@ -486,6 +513,28 @@ test_a_herdr_backed_snapshot_times_out_its_local_probe() {
   pass "Herdr-backed snapshot probes are bounded and preserve unknown evidence"
 }
 
+test_initial_serve_build_is_bounded_before_binding() {
+  local home port out real_jq
+  home=$(make_home bounded-initial-build)
+  port=$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+  )
+  real_jq=$(command -v jq)
+  printf '#!/usr/bin/env bash\nsleep 5\nexec %q "$@"\n' "$real_jq" > "$home/fakebin/jq"
+  chmod +x "$home/fakebin/jq"
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_DASHBOARD_BUILD_TIMEOUT=1 \
+    "$DASH" serve --port "$port" --owner-digest 00000000 2>&1) && \
+    fail "an unbounded initial build was reported as successful: $out"
+  assert_contains "$out" "initial dashboard build exceeded" \
+    "an initial build timeout did not block before binding"
+  pass "the initial serve build is bounded before the dashboard binds"
+}
+
 test_path_is_stable_and_inside_the_home
 test_the_payload_embeds_the_canonical_snapshot_unchanged
 test_a_worker_carries_its_recorded_model_and_effort
@@ -495,6 +544,8 @@ test_status_lines_keep_their_recorded_verb_and_note
 test_a_symlinked_status_log_is_refused_and_disclosed
 test_the_dashboard_skips_remote_evidence_in_local_only_mode
 test_a_report_symlinked_out_of_the_home_never_reaches_the_page
+test_a_dangling_wake_queue_is_disclosed_as_unsafe
+test_a_symlinked_secondmate_registry_is_disclosed_as_unsafe
 test_a_large_report_is_truncated_and_says_so
 test_a_report_holding_binary_bytes_still_produces_valid_output
 test_a_malformed_queued_notification_is_flagged_not_mis_parsed
@@ -512,3 +563,4 @@ test_a_symlinked_output_parent_is_refused
 test_a_symlinked_evidence_root_is_refused_before_reading_it
 test_a_symlinked_watcher_heartbeat_is_not_reported_as_healthy
 test_a_herdr_backed_snapshot_times_out_its_local_probe
+test_initial_serve_build_is_bounded_before_binding

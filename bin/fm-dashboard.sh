@@ -71,11 +71,13 @@
 #   FM_DASHBOARD_WAKES         queued wake records kept (default 50)
 #   FM_DASHBOARD_REPORTS       report bodies read (default 40)
 #   FM_DASHBOARD_REPORT_BYTES  bytes read per report body (default 65536)
+#   FM_DASHBOARD_BUILD_TIMEOUT seconds allowed for each complete build (default 120)
 #   FM_DASHBOARD_PORT          default serve port (default 8787)
 # FM_DASHBOARD_TEMPLATE overrides the shipped template path (tests only).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
@@ -91,6 +93,7 @@ FM_DASHBOARD_EVENT_LINES=${FM_DASHBOARD_EVENT_LINES:-40}
 FM_DASHBOARD_WAKES=${FM_DASHBOARD_WAKES:-50}
 FM_DASHBOARD_REPORTS=${FM_DASHBOARD_REPORTS:-40}
 FM_DASHBOARD_REPORT_BYTES=${FM_DASHBOARD_REPORT_BYTES:-65536}
+FM_DASHBOARD_BUILD_TIMEOUT=${FM_DASHBOARD_BUILD_TIMEOUT:-120}
 FM_DASHBOARD_PORT=${FM_DASHBOARD_PORT:-8787}
 
 fail() {
@@ -115,6 +118,7 @@ validate_bound FM_DASHBOARD_EVENT_LINES "$FM_DASHBOARD_EVENT_LINES"
 validate_bound FM_DASHBOARD_WAKES "$FM_DASHBOARD_WAKES"
 validate_bound FM_DASHBOARD_REPORTS "$FM_DASHBOARD_REPORTS"
 validate_bound FM_DASHBOARD_REPORT_BYTES "$FM_DASHBOARD_REPORT_BYTES"
+validate_bound FM_DASHBOARD_BUILD_TIMEOUT "$FM_DASHBOARD_BUILD_TIMEOUT"
 
 DASH_ROOT_REASON=
 HOME_REAL=$(cd "$FM_HOME" 2>/dev/null && pwd -P || printf '%s' "$FM_HOME")
@@ -480,7 +484,7 @@ collect_supervision() {  # -> JSON object on stdout
 
 collect_wakes() {  # -> JSON object on stdout
   local queue="$STATE/.wake-queue" total=0 tail_file="$TMP/wakes.txt"
-  if [ ! -e "$queue" ]; then
+  if [ ! -e "$queue" ] && [ ! -L "$queue" ]; then
     jq -n '{records:[], total:0, shown:0, truncated:0, available:true, reason:"no queued notifications"}'
     return 0
   fi
@@ -851,7 +855,10 @@ command_serve() {
   export FM_DASHBOARD_REPORTS FM_DASHBOARD_REPORT_BYTES
   # Prove the page builds before binding a port, so serve fails closed at
   # startup rather than answering its first request with an error.
-  build_html - >/dev/null || exit 1
+  export FM_DASHBOARD_BUILD_TIMEOUT
+  fm_run_timed "$FM_DASHBOARD_BUILD_TIMEOUT" "$SCRIPT_DIR/fm-dashboard.sh" \
+    build --out - >/dev/null \
+    || fail "the initial dashboard build exceeded its ${FM_DASHBOARD_BUILD_TIMEOUT}s bound"
   printf 'serving: http://127.0.0.1:%s/ (local only; Ctrl-C to stop)\n' "$port"
   FM_DASHBOARD_SELF="$SCRIPT_DIR/fm-dashboard.sh" FM_DASHBOARD_BIND_PORT="$port" \
     FM_DASHBOARD_OWNER_DIGEST="$digest" FM_DASHBOARD_HEALTH_HOME="$FM_HOME" \
@@ -860,11 +867,14 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 
 SELF = os.environ["FM_DASHBOARD_SELF"]
 PORT = int(os.environ["FM_DASHBOARD_BIND_PORT"])
 HTTP_IO_TIMEOUT = 5
+MAX_CLIENTS = 8
 # Only the DIGEST of the owner token reaches this process, and only the digest
 # is ever published. A caller proves it started this exact server for this
 # exact home by hashing the token it holds privately and comparing; the token
@@ -909,10 +919,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"not found\n", "text/plain; charset=utf-8")
             return
         try:
-            done = subprocess.run(
-                [SELF, "build", "--out", "-"],
-                capture_output=True, timeout=120,
-            )
+            with self.server.build_lock:
+                done = subprocess.run(
+                    [SELF, "build", "--out", "-"],
+                    capture_output=True,
+                    timeout=int(os.environ["FM_DASHBOARD_BUILD_TIMEOUT"]),
+                )
         except Exception as exc:  # noqa: BLE001 - reported, never swallowed
             self._send(500, ("the dashboard could not be rebuilt: %s\n" % exc).encode(),
                        "text/plain; charset=utf-8")
@@ -928,9 +940,35 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("fm-dashboard: %s\n" % (fmt % args))
 
 
+class BoundedHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+    request_queue_size = MAX_CLIENTS
+
+    def __init__(self, server_address, handler_class):
+        super().__init__(server_address, handler_class)
+        self.build_lock = threading.Lock()
+        self.client_slots = threading.BoundedSemaphore(MAX_CLIENTS)
+
+    def process_request(self, request, client_address):
+        if not self.client_slots.acquire(False):
+            request.close()
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.client_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.client_slots.release()
+
+
 # Loopback only. Binding 127.0.0.1 rather than 0.0.0.0 is the whole
 # local-only guarantee, so it is not configurable.
-with HTTPServer(("127.0.0.1", PORT), Handler) as httpd:
+with BoundedHTTPServer(("127.0.0.1", PORT), Handler) as httpd:
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

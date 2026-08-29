@@ -57,9 +57,9 @@ A health answer counts as this home's dashboard only when its schema, home, and 
 That is what separates our dashboard from an unrelated local process that happens to hold the port, which a bare port check cannot tell apart.
 
 **Repeat starts converge.** A per-home lock serializes concurrent starts, and a start that cannot take the lock waits, re-reads the winner's record, and reports that URL rather than starting a second server.
-A record whose exact pane is gone or whose health does not answer is stale: its pane is closed, the record is dropped, and startup begins again.
+A record whose exact pane is gone is stale: the record is dropped, and startup begins again.
+A health timeout or identity mismatch is unconfirmed ownership: the pane and record are preserved, and startup blocks rather than closing or replacing them.
 A pane whose state Herdr cannot confirm is neither reclaimed nor discarded - starting a second server beside one that may still be live is exactly the false claim the command refuses to make.
-An unknown or mismatched pane identity is preserved and blocks replacement for the same reason.
 
 **Ports.** A port already held by something that is not ours is a collision, and startup moves to the next candidate rather than reporting a URL that belongs to another process.
 
@@ -82,6 +82,7 @@ An uncertain launch also lands in `state/.dashboard-quarantine` and blocks repla
 | `FM_DASHBOARD_READY_DELAY_MS` | 200 | delay between readiness polls |
 | `FM_DASHBOARD_LOCK_WAIT` | 15 | seconds to wait for the startup lock |
 | `FM_DASHBOARD_HERDR_TIMEOUT` | 2 | seconds allowed for each Herdr call |
+| `FM_DASHBOARD_BUILD_TIMEOUT` | 120 | seconds allowed for each complete page build |
 
 ## What the page shows
 

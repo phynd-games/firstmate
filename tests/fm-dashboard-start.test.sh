@@ -232,6 +232,61 @@ test_a_lost_workspace_creation_response_is_recovered_before_reporting() {
   pass "a lost workspace creation response is recovered before the URL is reported"
 }
 
+test_lost_resource_recovery_is_quarantined_with_the_journaled_identity() {
+  local home port out
+  home=$(make_home lost-resource-recovery)
+  port=$(free_port)
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FAKE_HERDR_STATE="$home/herdr" \
+    FAKE_HERDR_LOST_RESPONSE="tab create,tab list" FM_DASHBOARD_PORT="$port" \
+    "$START" ensure 2>&1) && fail "an unidentifiable resource was reported as successful: $out"
+  assert_contains "$out" "DASHBOARD_BLOCKED" "lost resource recovery did not block"
+  [ ! -e "$home/state/.dashboard-owner" ] || fail "lost resource recovery published an owner"
+  [ -f "$home/state/.dashboard-quarantine" ] || fail "lost resource recovery was not quarantined"
+  grep -q '^label=firstmate-dashboard-' "$home/state/.dashboard-quarantine" \
+    || fail "the quarantine omitted the journaled resource label"
+  grep -q '^workspace=w1$' "$home/state/.dashboard-quarantine" \
+    || fail "the quarantine omitted the recovered workspace identity"
+  pass "lost resource recovery preserves the journaled identity in quarantine"
+}
+
+test_health_remains_responsive_while_a_client_stalls() {
+  local home port slow
+  home=$(make_home stalled-client)
+  port=$(free_port)
+  start "$home" "$port" ensure >/dev/null || fail "ensure failed"
+  python3 - "$port" <<'PY' >"$home/stalled-client.log" 2>&1 &
+import socket
+import sys
+import time
+
+sock = socket.create_connection(("127.0.0.1", int(sys.argv[1])))
+sock.sendall(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n")
+time.sleep(8)
+PY
+  slow=$!
+  sleep 0.2
+  curl -fsS --max-time 2 "http://127.0.0.1:$port/healthz" >/dev/null \
+    || fail "a stalled page client prevented a health response"
+  kill "$slow" 2>/dev/null || true
+  wait "$slow" 2>/dev/null || true
+  pass "a stalled client cannot block the dashboard health endpoint"
+}
+
+test_stop_preserves_an_owner_without_complete_proof() {
+  local home port out
+  home=$(make_home stop-unproven)
+  port=$(free_port)
+  start "$home" "$port" ensure >/dev/null || fail "ensure failed"
+  sed -i '' 's/^digest=.*/digest=0000000000000000000000000000000000000000000000000000000000000000/' \
+    "$home/state/.dashboard-owner"
+  out=$(start "$home" "$port" stop 2>&1) && fail "stop accepted an unproven owner: $out"
+  assert_contains "$out" "DASHBOARD_BLOCKED" "stop did not block an unproven owner"
+  [ -f "$home/state/.dashboard-owner" ] || fail "stop dropped an unproven owner record"
+  [ "$(cat "$home/herdr/panes/w1p1.state")" = open ] \
+    || fail "stop closed a pane without complete owner proof"
+  pass "stop preserves the pane and record until ownership is fully proven"
+}
+
 test_owner_lifecycle_uses_the_recorded_herdr_session() {
   local home port first second
   home=$(make_home recorded-session)
@@ -424,6 +479,9 @@ test_an_unprovable_owner_is_never_silently_replaced
 test_a_health_mismatch_preserves_an_open_owner
 test_a_lost_tab_creation_response_is_recovered_before_reporting
 test_a_lost_workspace_creation_response_is_recovered_before_reporting
+test_lost_resource_recovery_is_quarantined_with_the_journaled_identity
+test_health_remains_responsive_while_a_client_stalls
+test_stop_preserves_an_owner_without_complete_proof
 test_owner_lifecycle_uses_the_recorded_herdr_session
 test_a_mismatched_pane_identity_is_unknown_and_preserved
 test_a_foreign_listener_is_a_collision_not_an_adoption

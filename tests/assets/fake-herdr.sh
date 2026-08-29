@@ -28,9 +28,13 @@ if [ -n "${FAKE_HERDR_DOWN:-}" ]; then
 fi
 
 fail_if_requested() {  # <subcommand-pair>
-  [ "${FAKE_HERDR_FAIL:-}" = "$1" ] || return 0
+  case " ${FAKE_HERDR_FAIL:-} " in *" $1 "*) ;; *) return 0 ;; esac
   echo "fake-herdr: forced failure for $1" >&2
   exit 1
+}
+
+lost_response() {  # <subcommand-pair>
+  case ",${FAKE_HERDR_LOST_RESPONSE:-}," in *",$1,"*) return 0 ;; *) return 1 ;; esac
 }
 
 # Drop the flags the caller passes; capture only the values this double needs.
@@ -81,11 +85,12 @@ case "${1:-}:${2:-}" in
     fail_if_requested "workspace create"
     printf 'w1\n' > "$STATE/workspace"
     printf '%s\n' "$LABEL" > "$STATE/workspace.label"
-    [ "${FAKE_HERDR_LOST_RESPONSE:-}" = "workspace create" ] && exit 1
+    lost_response "workspace create" && exit 1
     printf '{"result":{"workspace":{"workspace_id":"w1"}}}\n'
     ;;
   tab:list)
     fail_if_requested "tab list"
+    lost_response "tab list" && exit 1
     printf '{"result":{"tabs":['
     first=1
     for tab_label in "$STATE"/tabs/*.label; do
@@ -104,7 +109,7 @@ case "${1:-}:${2:-}" in
     [ -n "$WORKSPACE" ] || WORKSPACE=w1
     printf '%s\n' "$LABEL" > "$STATE/tabs/${WORKSPACE}:t${n}.label"
     printf 'open\n' > "$STATE/panes/${WORKSPACE}p${n}.state"
-    [ "${FAKE_HERDR_LOST_RESPONSE:-}" = "tab create" ] && exit 1
+    lost_response "tab create" && exit 1
     printf '{"result":{"tab":{"tab_id":"%s:t%s"},"root_pane":{"pane_id":"%sp%s"}}}\n' \
       "$WORKSPACE" "$n" "$WORKSPACE" "$n"
     ;;

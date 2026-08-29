@@ -30,11 +30,12 @@
 # IDEMPOTENT AND RESTART-SAFE. Repeated starts, including rapid concurrent
 # ones, converge on one pane: a per-home lock serializes them, and a start that
 # cannot take the lock waits, re-reads the winner's record, and reports that URL
-# rather than starting a second server. A record whose exact pane is gone or
-# whose health does not answer is stale: its pane is closed if it still exists,
-# the record is dropped, and startup begins again. An unknown or mismatched
-# pane identity is preserved and blocks replacement. A port held by something
-# that is not ours is a collision, and startup moves to the next candidate port
+# rather than starting a second server. A record whose exact pane is gone is
+# stale: the record is dropped, and startup begins
+# again. A health timeout or identity mismatch is preserved and blocks
+# replacement. An unknown or mismatched pane identity is preserved and blocks
+# replacement. A port held by something that is not ours is a collision, and
+# startup moves to the next candidate port
 # rather than reporting a URL that belongs to another process.
 #
 # BOUNDED. Lock wait, readiness polling, port candidates, and every Herdr call
@@ -51,6 +52,8 @@
 #   .dashboard-owner       the owner record (mode 0600; holds the owner token)
 #   .dashboard-start.log   bounded diagnostics, one line per attempt outcome
 #   .dashboard-start.lock  the per-home startup lock
+#   .dashboard-startup     in-flight startup identity journal
+#   .dashboard-quarantine  durable quarantine for unresolved startup identity
 #
 # Tuning:
 #   FM_DASHBOARD_PORT             first candidate port (default 8787)
@@ -76,6 +79,7 @@ RECORD="$STATE/.dashboard-owner"
 LOG="$STATE/.dashboard-start.log"
 LOCK="$STATE/.dashboard-start.lock"
 QUARANTINE="$STATE/.dashboard-quarantine"
+JOURNAL="$STATE/.dashboard-startup"
 LOG_MAX_LINES=200
 
 FM_DASHBOARD_PORT=${FM_DASHBOARD_PORT:-8787}
@@ -90,6 +94,7 @@ STARTUP_TRANSACTION_REASON=
 STARTUP_TRANSACTION_PORT=
 STARTUP_TRANSACTION_DIGEST=
 START_CLEANUP_STATUS=clean
+STARTED_LABEL=
 
 STARTUP_PATH_REASON=
 STARTUP_HOME_REAL=$(cd "$FM_HOME" 2>/dev/null && pwd -P || printf '%s' "$FM_HOME")
@@ -135,6 +140,7 @@ startup_state_boundary_safe() {
     startup_path_safe "$LOCK" || return 1
   fi
   startup_path_safe "$QUARANTINE" || return 1
+  startup_path_safe "$JOURNAL" || return 1
   return 0
 }
 
@@ -376,6 +382,40 @@ record_write() {  # <session> <workspace> <tab> <pane> <port> <token> <digest>
 
 record_drop() { rm -f -- "$RECORD"; }
 
+startup_journal_get() {  # <key>
+  [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || return 1
+  sed -n "s/^$1=//p" "$JOURNAL" 2>/dev/null | head -1
+}
+
+startup_journal_write() {
+  local tmp
+  startup_state_boundary_safe || return 1
+  tmp=$(umask 077; mktemp "$STATE/.dashboard-startup.XXXXXX") || return 1
+  {
+    printf 'schema=fm-dashboard-startup.v1\n'
+    printf 'label=%s\n' "${STARTED_LABEL:-}"
+    printf 'session=%s\n' "${STARTED_SESSION:-}"
+    printf 'workspace=%s\n' "${STARTED_WORKSPACE:-}"
+    printf 'tab=%s\n' "${STARTED_TAB:-}"
+    printf 'pane=%s\n' "${STARTED_PANE:-}"
+    printf 'port=%s\n' "${STARTUP_TRANSACTION_PORT:-}"
+    printf 'digest=%s\n' "${STARTUP_TRANSACTION_DIGEST:-}"
+  } > "$tmp" || { rm -f -- "$tmp"; return 1; }
+  chmod 0600 "$tmp" 2>/dev/null || { rm -f -- "$tmp"; return 1; }
+  mv -f -- "$tmp" "$JOURNAL" || { rm -f -- "$tmp"; return 1; }
+}
+
+startup_journal_load() {
+  [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || return 0
+  [ -n "${STARTED_LABEL:-}" ] || STARTED_LABEL=$(startup_journal_get label)
+  [ -n "${STARTED_SESSION:-}" ] || STARTED_SESSION=$(startup_journal_get session)
+  [ -n "${STARTED_WORKSPACE:-}" ] || STARTED_WORKSPACE=$(startup_journal_get workspace)
+  [ -n "${STARTED_TAB:-}" ] || STARTED_TAB=$(startup_journal_get tab)
+  [ -n "${STARTED_PANE:-}" ] || STARTED_PANE=$(startup_journal_get pane)
+}
+
+startup_journal_drop() { rm -f -- "$JOURNAL"; }
+
 quarantine_write() {  # <reason> <session> <workspace> <tab> <pane> <port> <digest>
   local tmp
   startup_state_boundary_safe || return 1
@@ -383,6 +423,7 @@ quarantine_write() {  # <reason> <session> <workspace> <tab> <pane> <port> <dige
   {
     printf 'schema=fm-dashboard-quarantine.v1\n'
     printf 'reason=%s\n' "$1"
+    printf 'label=%s\n' "${STARTED_LABEL:-}"
     printf 'session=%s\n' "$2"
     printf 'workspace=%s\n' "$3"
     printf 'tab=%s\n' "$4"
@@ -398,10 +439,12 @@ quarantine_write() {  # <reason> <session> <workspace> <tab> <pane> <port> <dige
 cleanup_started() {  # <reason> <port> <digest>
   local reason=$1 port=$2 digest=$3 state
   START_CLEANUP_STATUS=clean
+  startup_journal_load
   if [ -z "${STARTED_PANE:-}" ]; then
     if quarantine_write "$reason" "${STARTED_SESSION:-}" "${STARTED_WORKSPACE:-}" \
       "${STARTED_TAB:-}" "" "$port" "$digest"; then
       START_CLEANUP_STATUS=quarantined
+      startup_journal_drop
     else
       START_CLEANUP_STATUS=quarantine-failed
     fi
@@ -410,15 +453,16 @@ cleanup_started() {  # <reason> <port> <digest>
   state=$(pane_state "$STARTED_PANE" "${STARTED_SESSION:-}" \
     "${STARTED_WORKSPACE:-}" "${STARTED_TAB:-}")
   case "$state" in
-    gone) return 0 ;;
+    gone) startup_journal_drop; return 0 ;;
     open)
       pane_close "${STARTED_SESSION:-}" "${STARTED_WORKSPACE:-}" \
-        "${STARTED_TAB:-}" "$STARTED_PANE" && return 0
+        "${STARTED_TAB:-}" "$STARTED_PANE" && { startup_journal_drop; return 0; }
       ;;
   esac
   if quarantine_write "$reason" "${STARTED_SESSION:-}" "${STARTED_WORKSPACE:-}" \
     "${STARTED_TAB:-}" "$STARTED_PANE" "$port" "$digest"; then
     START_CLEANUP_STATUS=quarantined
+    startup_journal_drop
   else
     START_CLEANUP_STATUS=quarantine-failed
   fi
@@ -436,12 +480,24 @@ startup_transaction_disarm() {
   STARTUP_TRANSACTION_ACTIVE=0
 }
 
+quarantine_started() {  # <reason> <port> <digest>
+  startup_journal_load
+  START_CLEANUP_STATUS=clean
+  if quarantine_write "$1" "${STARTED_SESSION:-}" "${STARTED_WORKSPACE:-}" \
+    "${STARTED_TAB:-}" "${STARTED_PANE:-}" "$2" "$3"; then
+    START_CLEANUP_STATUS=quarantined
+    startup_journal_drop
+  else
+    START_CLEANUP_STATUS=quarantine-failed
+  fi
+}
+
 startup_transaction_exit() {
   local status
   [ "$STARTUP_TRANSACTION_ACTIVE" -eq 1 ] || return 0
   STARTUP_TRANSACTION_ACTIVE=0
-  cleanup_started "$STARTUP_TRANSACTION_REASON" "$STARTUP_TRANSACTION_PORT" \
-    "$STARTUP_TRANSACTION_DIGEST" || true
+  quarantine_started "$STARTUP_TRANSACTION_REASON" "$STARTUP_TRANSACTION_PORT" \
+    "$STARTUP_TRANSACTION_DIGEST"
   status=$START_CLEANUP_STATUS
   if [ "$status" = quarantined ]; then
     log_line blocked "startup interrupted; cleanup quarantined at $QUARANTINE"
@@ -554,7 +610,9 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
   local port=$1 digest=$2 out ws label
   label="firstmate-dashboard-$digest"
   STARTED_SESSION=$(herdr_session)
+  STARTED_LABEL=$label
   STARTED_WORKSPACE=; STARTED_TAB=; STARTED_PANE=
+  startup_journal_write || return 1
   # Reuse the session's first workspace when it has one, so a normal firstmate
   # session gains a tab rather than a whole new workspace; create one only when
   # the session is empty.
@@ -566,12 +624,16 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
     [ -n "$ws" ] || ws=$(recover_workspace "$label") || return 1
   fi
   STARTED_WORKSPACE=$ws
+  startup_journal_write || return 1
   out=$(herdr_cli tab create --workspace "$ws" --cwd "$FM_HOME" \
     --label "$label" --no-focus 2>/dev/null) || :
   STARTED_TAB=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   STARTED_PANE=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
+  startup_journal_write || return 1
   [ -n "$STARTED_TAB" ] || STARTED_TAB=$(recover_tab "$ws" "$label") || return 1
+  startup_journal_write || return 1
   [ -n "$STARTED_PANE" ] || STARTED_PANE=$(recover_pane "$ws" "$STARTED_TAB") || return 1
+  startup_journal_write || return 1
   # `env` carries this home explicitly: the pane inherits the Herdr server's
   # environment, not this shell's, so an inherited FM_HOME cannot be assumed.
   herdr_cli pane run "$STARTED_PANE" \
@@ -648,9 +710,9 @@ command_ensure() {
   fi
   # From here the lock is held; every exit path must release it.
 
-  if [ -e "$QUARANTINE" ]; then
+  if [ -e "$QUARANTINE" ] || [ -e "$JOURNAL" ]; then
     fm_lock_release "$LOCK" >/dev/null 2>&1
-    blocked "dashboard startup is quarantined; inspect $QUARANTINE before retrying"
+    blocked "dashboard startup has unresolved ownership; inspect $QUARANTINE or $JOURNAL before retrying"
     return 1
   fi
 
@@ -729,6 +791,7 @@ command_ensure() {
   fi
 
   startup_transaction_disarm
+  startup_journal_drop
 
   await_ready "$port" "$digest" "$STARTED_SESSION" "$STARTED_WORKSPACE" \
     "$STARTED_TAB" "$STARTED_PANE"
@@ -791,9 +854,17 @@ command_stop() {
     blocked "the dashboard owner record is a symlink and was not read"
     return 1
   fi
+  if [ -e "$JOURNAL" ]; then
+    blocked "dashboard startup has unresolved ownership; the owner record was kept"
+    return 1
+  fi
   if [ ! -f "$RECORD" ]; then
     printf 'dashboard: nothing to stop\n'
     return 0
+  fi
+  if ! record_is_live; then
+    blocked "the recorded dashboard owner could not be fully proven; the owner record was kept"
+    return 1
   fi
   session=$(record_get session)
   workspace=$(record_get workspace)

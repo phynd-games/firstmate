@@ -675,7 +675,11 @@ task_json_lines() {
       fi
     fi
 
-    [ -f "$report_path" ] && report_present=1 || report_present=0
+    if [ "$LOCAL_ONLY" -eq 1 ]; then
+      snapshot_local_file_safe "$report_path" && report_present=1 || report_present=0
+    else
+      [ -f "$report_path" ] && report_present=1 || report_present=0
+    fi
     meta_json=$(path_present_json "$meta")
     status_json=$event_json
     report_json=$(path_present_json "$report_path")
@@ -979,6 +983,11 @@ fi
 
 registry_secondmates_json() {
   local reg="$DATA/secondmates.md" out rc reason mode script parse_filter output_filter
+  if [ "$LOCAL_ONLY" -eq 1 ] && [ -L "$reg" ]; then
+    jq -n --arg path "$reg" --arg observed "$SNAPSHOT_NOW" \
+      '{present:true,available:false,complete:false,reason:"refused: the path is a symlink",provenance:"registered-table",path:$path,freshness:{status:"unavailable",observed_at:$observed},records:[],input_truncated:false,records_truncated:false,reasons:["refused: the path is a symlink"],lines_in_window:0,records_in_window:0}'
+    return 0
+  fi
   if [ ! -f "$reg" ]; then
     jq -n --arg path "$reg" --arg observed "$SNAPSHOT_NOW" \
       '{present:false,available:true,complete:true,reason:null,provenance:"registered-table",path:$path,freshness:{status:"fresh",observed_at:$observed},records:[],input_truncated:false,records_truncated:false,reasons:[],lines_in_window:0,records_in_window:0}'
