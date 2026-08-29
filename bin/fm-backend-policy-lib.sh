@@ -105,7 +105,7 @@ fm_backend_policy_test_capability() {
 
 fm_backend_policy_test_process() {
   local owner_pid=${FM_BACKEND_TEST_OWNER_PID:-} owner_identity=${FM_BACKEND_TEST_OWNER_IDENTITY:-}
-  local owner_script=${FM_BACKEND_TEST_OWNER_SCRIPT:-} current_identity owner_command source resolved root
+  local owner_script=${FM_BACKEND_TEST_OWNER_SCRIPT:-} current_identity owner_command owner_cwd owner_comm source resolved root
   [ -n "$owner_pid" ] && [ -n "$owner_identity" ] || return 1
   fm_backend_policy_test_capability || return 1
   root=$(cd "${BASH_SOURCE[0]%/*}/.." 2>/dev/null && pwd -P) || return 1
@@ -114,10 +114,17 @@ fm_backend_policy_test_process() {
     *) return 1 ;;
   esac
   owner_command=$(ps -p "$owner_pid" -o command= 2>/dev/null) || return 1
-  case "$owner_command" in
-    *"$(basename "$owner_script")"*) ;;
-    *) return 1 ;;
-  esac
+  owner_comm=$(ps -p "$owner_pid" -o comm= 2>/dev/null) || return 1
+  case "$owner_comm" in bash|zsh|sh) ;; *) return 1 ;; esac
+  case "$owner_command" in *"$root/tests/"*.test.sh*|*"tests/"*.test.sh*) ;; *) return 1 ;; esac
+  if [ -r "/proc/$owner_pid/cwd" ]; then
+    owner_cwd=$(readlink "/proc/$owner_pid/cwd" 2>/dev/null) || return 1
+  else
+    owner_cwd=$(lsof -Fn -a -p "$owner_pid" -d cwd 2>/dev/null | sed -n 's/^n//p' | tail -1) || return 1
+  fi
+  case "$owner_cwd" in "$root"|"$root"/*) ;; *) return 1 ;; esac
+  case "$owner_script" in "$root"/tests/*.test.sh) ;; *) return 1 ;; esac
+  case "$owner_command" in *"$(basename "$owner_script")"*) ;; *) return 1 ;; esac
   if [ "$owner_pid" = "${BASHPID:-$$}" ]; then
     for source in "${BASH_SOURCE[@]}"; do
       case "$source" in

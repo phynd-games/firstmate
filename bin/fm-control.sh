@@ -305,6 +305,9 @@ fm_control_harness_supported "$HARNESS" \
   || die "task $ID records harness '${RECORDED_HARNESS:-none}', which has no verified control mechanics; fm-control refuses to guess an interrupt key or exit command"
 
 fm_backend_validate "$BACKEND" || exit 1
+if ! fm_backend_policy_legacy_lane; then
+  fm_backend_herdr_capability_preflight "lifecycle control for task $ID" || exit 1
+fi
 
 fm_lock_try_acquire "$CONTROL_LOCK" \
   || die "another lifecycle action is already running for task $ID"
@@ -312,6 +315,9 @@ CONTROL_LOCK_HELD=1
 fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
 BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET
+if ! fm_backend_policy_legacy_lane; then
+  fm_backend_herdr_capability_preflight "lifecycle control for task $ID" || exit 1
+fi
 
 # --- shared helpers ---------------------------------------------------------
 

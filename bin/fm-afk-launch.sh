@@ -213,6 +213,12 @@ fm_afk_launch_record_validate_if_present() {
   [ "$result" -ne 2 ]
 }
 
+fm_afk_launch_stop_preflight() {
+  fm_backend_policy_legacy_lane && return 0
+  fm_afk_launch_record_validate_if_present || return 1
+  fm_backend_herdr_capability_preflight "AFK lifecycle" || return 1
+}
+
 # Close a recorded terminal by EXACT id (never a broad sweep). The
 # recorded workspace id (herdr) needs no separate close: closing the pane takes
 # its single-tab dedicated workspace with it.
@@ -598,6 +604,9 @@ fm_afk_launch_stop() {
     fm_afk_launch_log "malformed daemon terminal record; refusing to stop away mode"
     return 1
   fi
+  if ! fm_backend_policy_legacy_lane; then
+    fm_backend_herdr_capability_preflight "AFK stop" || return 1
+  fi
   # (1) SIGTERM the daemon so its cleanup trap flushes buffered escalations
   # WHILE state/.afk is still present (the exit-ordering fix: clearing .afk
   # first would make that flush a no-op via inject_msg's presence gate).
@@ -657,6 +666,14 @@ fm_afk_launch_main() {
   case "${1:-start}" in
     start|start-native)
       if fm_afk_launch_preflight; then
+        :
+      else
+        preflight_rc=$?
+        return "$preflight_rc"
+      fi
+      ;;
+    stop|reconcile)
+      if fm_afk_launch_stop_preflight; then
         :
       else
         preflight_rc=$?

@@ -418,6 +418,23 @@ spawn_remote_secondmate() {
   fm_backend_source "$BACKEND" "remote secondmate backend" || return 1
   id=${POS[0]:-}
   fm_task_id_creation_valid "$id" || { echo "error: invalid task id" >&2; return 2; }
+  remote=$(secondmate_registry_field "$DATA/secondmates.md" "$id" remote 2>/dev/null || true)
+  [ "$remote" = 1 ] || return 3
+  host=$(secondmate_registry_field "$DATA/secondmates.md" "$id" host)
+  root=$(secondmate_registry_field "$DATA/secondmates.md" "$id" root)
+  home=$(secondmate_registry_field "$DATA/secondmates.md" "$id" home)
+  rc=0
+  fm_remote_readiness_ensure "$SCRIPT_DIR" "$id" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if [ "$rc" -eq 255 ]; then
+      echo "error: remote secondmate $id readiness could not be confirmed; preserved route $host:$home" >&2
+    else
+      echo "error: remote secondmate $id host $host is not ready for a remote second mate; launch refused" >&2
+    fi
+    [ -z "$FM_REMOTE_READINESS_OUT" ] || printf '%s\n' "$FM_REMOTE_READINESS_OUT" >&2
+    [ "$rc" -ne 255 ] || return 255
+    return 1
+  fi
   mkdir -p "$STATE" || { echo "error: could not create parent state directory" >&2; return 1; }
   SPAWN_TASK_LOCK="$STATE/.spawn-$id.lock"
   if ! fm_lock_try_acquire "$SPAWN_TASK_LOCK"; then

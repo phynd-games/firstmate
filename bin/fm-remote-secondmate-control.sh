@@ -177,7 +177,15 @@ cmd_launch() {
   # Herdr is required on this host, not merely preferred: its server belongs to
   # the GUI login session, so the endpoint survives every SSH disconnection that
   # a remote route depends on. bin/fm-remote-doctor.sh is the readiness owner.
-  case "$selected_backend" in herdr) ;; *) die "a remote secondmate runs only on the herdr backend, not '$selected_backend'" ;; esac
+  case "$selected_backend" in
+    herdr) ;;
+    *)
+      fm_backend_policy_refuse "remote secondmate launch backend" "$selected_backend" \
+        "Declare Herdr explicitly with --backend herdr, then prove the runtime with 'herdr status --json'."
+      return 1
+      ;;
+  esac
+  fm_backend_herdr_capability_preflight "remote secondmate launch for $id" || return 1
   mkdir -p "$CONTROL_STATE" "$CONTROL_DATA"
   meta=$(meta_path "$id")
   if [ -f "$meta" ]; then
