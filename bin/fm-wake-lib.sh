@@ -9,6 +9,8 @@ STATE="${FM_STATE_OVERRIDE:-${STATE:-$FM_HOME/state}}"
 FM_WAKE_QUEUE="${FM_WAKE_QUEUE:-$STATE/.wake-queue}"
 FM_WAKE_QUEUE_LOCK="${FM_WAKE_QUEUE_LOCK:-$STATE/.wake-queue.lock}"
 FM_LOCK_STALE_AFTER="${FM_LOCK_STALE_AFTER:-2}"
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$FM_WAKE_LIB_DIR/fm-session-lock-lib.sh"
 # Resolved once at source time: fm_pid_identity and fm_path_mtime run inside 0.2s
 # confirm and 0.5s attach polls, and forking uname per call is a measurable cost on
 # the platform (Git Bash/MSYS) that already pays the highest fork price.
@@ -223,7 +225,7 @@ fm_pi_extension_owns_supervision() {
     fm_pi_extension_loaded "$state/$marker" "$version" "$lock" || return 1
   done
   session_pid=$(sed -n '1p' "$lock" 2>/dev/null)
-  fm_pid_alive "$session_pid"
+  fm_harness_pid_alive "$session_pid"
 }
 
 # fm_watcher_supervision_verdict <state> <watch-path> [grace] [home] [root]

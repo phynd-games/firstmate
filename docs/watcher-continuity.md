@@ -21,7 +21,7 @@ The Claude turn-end guard owns that notice commit contract, the monotonic failur
 While supervision is still needed and away mode remains inactive, an actionable close wakes the idle session through exit 2.
 
 Every owner above lives inside the primary harness process, so a home whose harness never loaded its owner has none at all and supervision ends after one cycle.
-`bin/fm-herdr-supervisor.sh` is the fallback for exactly that case: it hosts one continuity owner in a Herdr-tracked pane, stands down whenever a harness-native or away-mode owner is provable, and never becomes a second authority over the watcher.
+`bin/fm-herdr-supervisor.sh` is the fallback for exactly that case: it hosts one continuity owner in a Herdr-tracked pane, stands down whenever a live harness-native or away-mode owner is provable, and never becomes a second authority over the watcher.
 [`herdr-supervisor.md`](herdr-supervisor.md) owns its eligibility, health, recovery, and the boundary it does not promise to recover across.
 
 ## Actionable wake ordering

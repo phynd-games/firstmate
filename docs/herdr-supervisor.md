@@ -58,7 +58,7 @@ It is not a second lifecycle authority.
 - `config/herdr-supervisor` is not `off`.
 - Supervision is genuinely needed - in-flight work, a registered event source, or a Relay poll.
 - No other owner is provable.
-  Away mode is provable through `state/.afk`, and a loaded Pi primary extension is provable through both extension markers naming the live session-lock process at their current on-disk builds.
+  Away mode is provable through `state/.afk` plus its live daemon lock and identity, and a loaded Pi primary extension is provable through both extension markers naming a live verified harness process at their current on-disk builds.
 
 With `config/herdr-supervisor` absent or `auto`, the default scope is exactly the harness class this was built for: a supervision model of `extension`, meaning Pi or pi-signed, whose owner lives in a project-local extension that can silently fail to load.
 Any other harness needs a deliberate `on`, because its owner's presence is not provable from durable state and guessing would create the duplicate owner this design exists to avoid.
@@ -93,7 +93,7 @@ Recovery is bounded, idempotent, and generation-safe.
 | Situation | What happens |
 | --- | --- |
 | Watcher exits on a wake | The loop re-arms immediately; the wake is already durable on the queue |
-| Arm crashes, is killed, or fails | Bounded exponential retry, default five attempts, then a durable alarm and one escalation |
+| Arm crashes, is killed, or fails | Bounded exponential retry in rounds of five attempts by default, then a durable alarm and escalation while the tracked continuity owner remains alive for the next round |
 | Stale or dead watcher lock | The arm layer's own self-eviction and steal path settles it; the supervisor never evicts a watcher itself |
 | Stale or missing watcher beacon | The arm layer refuses to report a watcher it cannot verify, so the loop keeps trying within its bound |
 | Supervisor process killed | Unhealthy at the next `ensure`, which establishes a fresh generation |
@@ -112,7 +112,7 @@ That reuses the channels that already exist rather than inventing one, so the la
 
 Guaranteed while the Herdr server that hosts the supervisor stays up:
 
-- After one successful `ensure`, a watcher cycle follows every watcher cycle until the home stops needing supervision, another owner takes over, or the retry bound is exhausted with a durable alarm.
+- After one successful `ensure`, a watcher cycle follows every watcher cycle until the home stops needing supervision, another owner takes over, or an external Herdr failure prevents the tracked owner from continuing.
 - Exactly one continuity owner per home.
 - No wake is lost, because the watcher appends every reason to the durable queue before it exits.
 - No healthy claim from a stale beacon, a recycled pid, or an unknown Herdr pane.
