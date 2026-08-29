@@ -113,7 +113,7 @@ REMOTE_HOST=$(meta_value remote_host)
 
 if [ -z "$REMOTE_HOST" ]; then
   TASK_BACKEND=$(fm_backend_of_meta "$META" 2>/dev/null) \
-    || emit unknown legacy-backend "legacy-record: backend=${TASK_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \\"Legacy task records\\")"
+    || emit unknown legacy-backend "legacy-record: backend=${TASK_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
   if [ "$TASK_BACKEND" = herdr ]; then
     fm_backend_herdr_capability_preflight "crew state task $ID" || exit $?
   fi
@@ -173,7 +173,7 @@ if [ -n "$REMOTE_HOST" ]; then
     emit unknown legacy-backend "legacy-record: remote backend=${REMOTE_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
   fi
   if ! REMOTE_STATE=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-on.sh" "$ID" \
-    fm-remote-secondmate-control.sh state "$ID" < /dev/null 2>/dev/null); then
+    fm-remote-secondmate-control.sh state "$ID" < /dev/null); then
     REMOTE_STATE=
   fi
   REMOTE_STATE=$(printf '%s\n' "$REMOTE_STATE" | tail -1)
@@ -189,6 +189,9 @@ if [ -n "$REMOTE_HOST" ]; then
       ;;
     dead|missing)
       emit unknown remote-endpoint "remote endpoint $REMOTE_STATE on $REMOTE_HOST"
+      ;;
+    capability-failure)
+      emit unknown herdr-capability "Herdr capability is unavailable; repair Herdr and verify with herdr status --json"
       ;;
     '')
       emit unknown remote-endpoint "unknown-remote: $REMOTE_HOST unreachable or endpoint unreadable (not proof of death)"

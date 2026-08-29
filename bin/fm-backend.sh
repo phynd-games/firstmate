@@ -513,12 +513,12 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   FM_BACKEND_VALIDATED_TARGET=
   [ -f "$meta" ] && [ ! -L "$meta" ] || {
     fm_backend_policy_refuse "task $id endpoint record" "" \
-      "Repair or explicitly migrate this task record through docs/configuration.md \\"Legacy task records\\". Task state is preserved."
+      "Repair or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
     return 1
   }
   case "$id" in ''|*[!A-Za-z0-9._-]*)
     fm_backend_policy_refuse "task endpoint identity" "" \
-      "Use a valid task id and explicitly migrate any legacy record through docs/configuration.md \\"Legacy task records\\"."
+      "Use a valid task id and explicitly migrate any legacy record through docs/configuration.md \"Legacy task records\"."
     return 1
   esac
   backend_count=$(grep -c '^backend=' "$meta" 2>/dev/null || true)
@@ -552,22 +552,22 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   fi
   window=$(fm_backend_meta_exact_value "$meta" window) || {
     fm_backend_policy_refuse "task $id endpoint record (window)" "$backend" \
-      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \\"Legacy task records\\". Task state is preserved."
+      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
     return 1
   }
   worktree=$(fm_backend_meta_exact_value "$meta" worktree) || {
     fm_backend_policy_refuse "task $id endpoint record (worktree)" "$backend" \
-      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \\"Legacy task records\\". Task state is preserved."
+      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
     return 1
   }
   project=$(fm_backend_meta_exact_value "$meta" project) || {
     fm_backend_policy_refuse "task $id endpoint record (project)" "$backend" \
-      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \\"Legacy task records\\". Task state is preserved."
+      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
     return 1
   }
   case "$worktree$project$window" in *$'\n'*|*$'\r'*|*$'\t'*)
     fm_backend_policy_refuse "task $id endpoint record (malformed metadata)" "$backend" \
-      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \\"Legacy task records\\". Task state is preserved."
+      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
     return 1
   esac
   binding_count=$(grep -c '^endpoint_task_id=' "$meta" 2>/dev/null || true)
@@ -576,19 +576,19 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
     1)
       binding=$(fm_backend_meta_exact_value "$meta" endpoint_task_id) || {
         fm_backend_policy_refuse "task $id endpoint record (empty task binding)" "$backend" \
-          "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \\"Legacy task records\\". Task state is preserved."
+      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
         return 1
       }
       ;;
     *)
       fm_backend_policy_refuse "task $id endpoint record (ambiguous task binding)" "$backend" \
-        "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \\"Legacy task records\\". Task state is preserved."
+      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
       return 1
       ;;
   esac
   if [ -n "$binding" ] && [ "$binding" != "$id" ]; then
     fm_backend_policy_refuse "task $id endpoint record (task binding mismatch)" "$backend" \
-      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \\"Legacy task records\\". Task state is preserved."
+      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
     return 1
   fi
 
@@ -606,7 +606,7 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
     herdr)
       [ "$binding" = "$id" ] || {
         fm_backend_policy_refuse "task $id endpoint record (Herdr binding)" "$backend" \
-          "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \\"Legacy task records\\". Task state is preserved."
+          "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
         return 1
       }
       recorded_session=$(fm_backend_meta_exact_value "$meta" herdr_session) || recorded_session=
@@ -620,7 +620,7 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
         || ! fm_backend_endpoint_atom_valid "${tab//:/_}" \
         || ! fm_backend_endpoint_atom_valid "${pane//:/_}"; then
         fm_backend_policy_refuse "task $id endpoint record (Herdr endpoint)" "$backend" \
-          "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \\"Legacy task records\\". Task state is preserved."
+          "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
         return 1
       fi
       ;;

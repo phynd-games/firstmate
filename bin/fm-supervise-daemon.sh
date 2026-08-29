@@ -1483,9 +1483,16 @@ fm_super_main() {
   # probe, so a herdr supervisor pane is checked via the herdr adapter; for
   # backend=tmux this runs the exact same `tmux display-message -p -t "$TARGET"
   # '#{pane_id}'` call as before.
-  if ! fm_backend_target_exists "$BACKEND" "$TARGET"; then
-    echo "error: supervisor target '$TARGET' does not resolve to a $BACKEND pane; set FM_SUPERVISOR_TARGET" >&2
-    log "startup failed: target '$TARGET' not found (backend=$BACKEND)"
+  if fm_backend_target_exists "$BACKEND" "$TARGET"; then
+    :
+  else
+    target_rc=$?
+    if [ "$target_rc" -eq 2 ]; then
+      log "startup failed: cannot supervise backend; repair Herdr and verify with herdr status --json"
+    else
+      echo "error: supervisor target '$TARGET' does not resolve to a $BACKEND pane; set FM_SUPERVISOR_TARGET" >&2
+      log "startup failed: target '$TARGET' not found (backend=$BACKEND)"
+    fi
     fm_lock_release "$LOCK" 2>/dev/null || true
     rm -f "$PIDFILE" 2>/dev/null || true
     exit 1

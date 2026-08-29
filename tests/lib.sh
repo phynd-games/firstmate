@@ -91,10 +91,7 @@ FM_TEST_OWNER_IDENTITY=$(fm_test_pid_identity "$$") || {
 }
 export FM_BACKEND_TEST_OWNER_PID=$$
 export FM_BACKEND_TEST_OWNER_IDENTITY="$FM_TEST_OWNER_IDENTITY"
-FM_BACKEND_TEST_CAPABILITY_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-test-capability.$$.XXXXXX") || return 1
-printf '%s\n' "${FM_TEST_OWNER_IDENTITY}" > "$FM_BACKEND_TEST_CAPABILITY_FILE" || return 1
-exec 9< "$FM_BACKEND_TEST_CAPABILITY_FILE"
-rm -f "$FM_BACKEND_TEST_CAPABILITY_FILE"
+exec 9< <(printf '%s\n' "${FM_TEST_OWNER_IDENTITY}")
 export FM_BACKEND_TEST_CAPABILITY_FD=9
 
 fm_test_cleanup() {

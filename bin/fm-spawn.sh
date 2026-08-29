@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
+# Spawn a direct report: a crewmate in a Herdr workspace, or a
 # secondmate in its isolated firstmate home.
 # Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
@@ -28,8 +28,8 @@
 #   positional, and batch pairs are all refused alongside it; only harness,
 #   model, and effort may change, which is what makes a harness switch one
 #   ordinary relaunch. It refuses unless the recorded endpoint is positively
-#   agent-free on a backend with a recovery-grade agent-state classifier (tmux
-#   or herdr), refuses unless the endpoint's shell is sitting in the recorded
+#   agent-free on a backend with a recovery-grade agent-state classifier,
+#   refuses unless the endpoint's shell is sitting in the recorded
 #   worktree, and clears the previous harness's per-task wiring before arming
 #   the new incarnation.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
@@ -40,24 +40,15 @@
 #   from that harness's launch rather than guessed.
 #   --backend <name> is the explicit runtime session-provider backend for this
 #   exact task only (docs/configuration.md "Runtime backend" owns when that flag
-#   is authorized). Without it, the script resolves FM_BACKEND, then
-#   config/backend, then runtime auto-detection from the runtime firstmate's
-#   environment: $TMUX, HERDR_ENV=1, or cmux runtime signals (via
-#   bin/fm-backend.sh's fm_backend_detect, with cmux fallback details in
-#   docs/cmux-backend.md),
-#   then tmux.
-#   Spawn-capable backends are the reference tmux adapter and experimental
-#   herdr, zellij, orca, and cmux. Orca owns both the task worktree and
-#   terminal, so ship/scout Orca spawns do not run treehouse get; cmux is a
-#   session provider only, exactly like herdr/zellij, so it does. An
-#   auto-detected herdr or cmux spawn prints a loud stderr notice;
-#   auto-detected tmux stays silent; zellij and orca are never auto-detected.
-#   codex-app is not a known backend yet; docs/codex-app-backend.md owns that
-#   blocked backend contract. Default tmux spawns do not write backend= to meta;
-#   absent backend= means tmux. cmux does not support --secondmate spawns yet.
+#   is authorized). Without it, FM_BACKEND or config/backend must explicitly
+#   declare herdr; a missing identity refuses. The selected Herdr runtime is
+#   proven by native capability and version checks before any endpoint exists.
+#   Every other backend value is refused with actionable Herdr remediation, and
+#   runtime markers never select a backend. Herdr is the sole supported backend
+#   for crewmates, scouts, secondmates, supervision, and task endpoints.
 #   A backend spawn refusal (missing dependency, version gate, unauthenticated
-#   socket, or unsupported secondmate mode) is terminal for that selected backend;
-#   callers must surface it instead of silently retrying another backend.
+#   service, or unsupported secondmate mode) is terminal and callers must
+#   surface it instead of silently retrying another backend.
 #   A herdr crewmate or scout is placed in the exact workspace of the firstmate
 #   or secondmate process launching it, resolved from that process's own herdr
 #   pane rather than from a workspace label (herdr enforces no label uniqueness,
@@ -418,6 +409,13 @@ spawn_remote_secondmate() {
   local remote_backend remote_target remote_harness remote_herdr_session registry_lock remote_lock remote_generation
   local remote_traceparent remote_recorded_traceparent
   local -a launch_args
+  if [ "$BACKEND_SET" -eq 1 ]; then
+    BACKEND=$BACKEND_ARG
+  else
+    BACKEND=$(fm_backend_name) || return 1
+  fi
+  fm_backend_validate_spawn "$BACKEND" "remote secondmate backend" || return 1
+  fm_backend_source "$BACKEND" "remote secondmate backend" || return 1
   id=${POS[0]:-}
   fm_task_id_creation_valid "$id" || { echo "error: invalid task id" >&2; return 2; }
   mkdir -p "$STATE" || { echo "error: could not create parent state directory" >&2; return 1; }

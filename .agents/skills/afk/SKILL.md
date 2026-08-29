@@ -109,20 +109,20 @@ The alarm is defense in depth rather than a substitute for keeping every genuine
 If that submit cannot be confirmed, it raises a loud, rate-limited wedge alarm:
 an ERROR in the daemon log, a durable
 `state/.subsuper-inject-wedged` marker (surface it on the "while you were out"
-catch-up if present), a retained-lane status-line flash when applicable, and a configurable Herdr-compatible active alert.
+catch-up if present), and a Herdr-compatible active alert.
 `docs/wedge-alarm.md` owns the alert channel setup, and `docs/verification/supervision.md` "Wedge-alarm channels" owns active evidence.
 So a guard false-positive becomes a visible stall, never an unbounded silent no-op.
 
 ## Submit model
 
-The digest is typed **once** (`send-keys -l` on tmux, `pane send-text` on
-herdr - both literal, non-submitting sends), then submitted with Enter and
-**verified** through the selected backend's submit primitive.
+The digest is typed **once** with Herdr's literal `pane send-text` primitive,
+then submitted with Enter and **verified** through Herdr's submit primitive.
 Enter is retried (Enter only, never a retype) until the backend confirms the
 submit landed.
-For tmux that confirmation is normally a proven cleared composer from the shared classifier; an idle baseline transitioning to busy across this submit's own Enter also confirms that the turn started when a working harness hides its composer.
-Without that baseline, busy state never converts an `unknown` composer into confirmation.
-For herdr, idle-baseline submits first seek native agent-state showing a real turn started, then use the shared classifier when native state remains idle: a cleared composer confirms delivery, while pending text retries Enter and reaches the shared busy-queue verdict only after the retry budget.
+A Herdr idle-baseline submit first seeks native agent-state showing a real turn
+started, then uses the shared classifier when native state remains idle: a
+cleared composer confirms delivery, while pending text retries Enter and
+reaches the shared busy-queue verdict only after the retry budget.
 A bordered-empty or ghost-only composer is recognized as empty where that backend uses composer confirmation, rather than mistaken for a swallowed Enter.
 `fm-send.sh` uses the same primitive only on its typed plane and exits non-zero when that plane's Enter is positively swallowed; ordinary local text steers use the durable inbox and do not treat doorbell submission as delivery proof.
 
@@ -182,16 +182,17 @@ the operational prefix lets firstmate distinguish it from a real captain message
   buffered past `FM_MAX_DEFER_SECS` (default 300s), the daemon attempts one
   normal flush, which still requires an idle pane and an affirmatively empty composer. If that
   cannot confirm a submit, it raises a loud, rate-limited wedge alarm: ERROR log,
-  durable `state/.subsuper-inject-wedged` marker, a tmux status-line flash when
-  applicable, and a backend-independent active alert. A
+  durable `state/.subsuper-inject-wedged` marker, and a Herdr-compatible
+  active alert. A
   composer false-positive surfaces as a visible stall, never an unbounded silent
   no-op.
-- **Verified type-once submit model** - the digest is typed once (`send-keys -l`
-  on tmux, `pane send-text` on herdr), then submitted with Enter and verified.
+- **Verified type-once submit model** - the digest is typed once with Herdr's
+  literal `pane send-text` primitive, then submitted with Enter and verified.
   Enter is retried, Enter only and never a retype, until the backend submit
   primitive reports `empty` as its caller-facing success verdict.
-  For tmux that verdict normally means the shared classifier proved the composer cleared; a baseline-gated idle-to-busy transition may instead prove this Enter started the turn.
-  For herdr's idle-baseline path it means native agent-state observed a turn start, the shared classifier proved the composer cleared, or the shared queued-Enter verdict proved delivery while busy.
+  For Herdr's idle-baseline path it means native agent-state observed a turn
+  start, the shared classifier proved the composer cleared, or the shared
+  queued-Enter verdict proved delivery while busy.
   This lets ghost-only or bordered-empty composers count as empty where a composer read is the active confirmation signal.
 - **Marker strip** - `strip_injection_marker` removes the current operational
   prefix or legacy bare marker before classification or relay, so the digest
