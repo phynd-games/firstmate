@@ -130,45 +130,10 @@ startup_path_safe() {  # <path>
 }
 
 startup_state_boundary_safe() {
-  local lock_target lock_pid lock_prefix
   startup_path_safe "$STATE" || return 1
   startup_path_safe "$RECORD" || return 1
   startup_path_safe "$LOG" || return 1
-  if [ -L "$LOCK" ]; then
-    lock_prefix=$(cd "${LOCK%/*}" 2>/dev/null && pwd -P)/${LOCK##*/} || {
-      STARTUP_PATH_REASON='the lock directory could not be resolved'
-      return 1
-    }
-    lock_target=$(readlink "$LOCK" 2>/dev/null) || {
-      STARTUP_PATH_REASON='the lock symlink could not be read'
-      return 1
-    }
-    case "$lock_target" in
-      /*) ;;
-      *) lock_target="${LOCK%/*}/$lock_target" ;;
-    esac
-    case "$lock_target" in
-      "$lock_prefix".owner.*) ;;
-      *)
-        STARTUP_PATH_REASON='the lock symlink targets an unexpected path'
-        return 1
-        ;;
-    esac
-    startup_path_safe "$lock_target" || return 1
-    [ -d "$lock_target" ] && [ ! -L "$lock_target" ] && [ -f "$lock_target/pid" ] || {
-      STARTUP_PATH_REASON='the lock symlink does not name a lock owner'
-      return 1
-    }
-    lock_pid=$(cat "$lock_target/pid" 2>/dev/null || true)
-    case "$lock_pid" in
-      ''|*[!0-9]*)
-        STARTUP_PATH_REASON='the lock owner is invalid'
-        return 1
-        ;;
-    esac
-  else
-    startup_path_safe "$LOCK" || return 1
-  fi
+  startup_path_safe "$LOCK" || return 1
   startup_path_safe "$QUARANTINE" || return 1
   startup_path_safe "$JOURNAL" || return 1
   return 0
@@ -191,15 +156,61 @@ validate_bound FM_DASHBOARD_READY_DELAY_MS "$FM_DASHBOARD_READY_DELAY_MS"
 validate_bound FM_DASHBOARD_LOCK_WAIT "$FM_DASHBOARD_LOCK_WAIT"
 validate_bound FM_DASHBOARD_HERDR_TIMEOUT "$FM_DASHBOARD_HERDR_TIMEOUT"
 
-# shellcheck source=bin/fm-wake-lib.sh
-# shellcheck disable=SC1091
-. "$SCRIPT_DIR/fm-wake-lib.sh"  # fm_lock_try_acquire / fm_lock_release
 # shellcheck source=bin/fm-backend.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-backend.sh"   # fm_backend_herdr_cli, via fm_backend_source
 # shellcheck source=bin/fm-timeout-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+
+DASHBOARD_LOCK_HELD=0
+dashboard_lock_try_acquire() {
+  local pid current
+  DASHBOARD_LOCK_HELD=0
+  [ ! -L "$LOCK" ] || return 1
+  if ! mkdir -m 700 "$LOCK" 2>/dev/null; then
+    [ -d "$LOCK" ] && [ ! -L "$LOCK" ] || return 1
+    [ ! -L "$LOCK/pid" ] || return 1
+    pid=$(cat "$LOCK/pid" 2>/dev/null || true)
+    case "$pid" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+    kill -0 "$pid" 2>/dev/null && return 1
+    rm -f -- "$LOCK/pid" 2>/dev/null || return 1
+    rmdir "$LOCK" 2>/dev/null || return 1
+    return 1
+  fi
+  [ ! -L "$LOCK/pid" ] || {
+    rmdir "$LOCK" 2>/dev/null || true
+    return 1
+  }
+  current=${BASHPID:-$$}
+  printf '%s\n' "$current" > "$LOCK/pid" 2>/dev/null || {
+    rm -f -- "$LOCK/pid" 2>/dev/null || true
+    rmdir "$LOCK" 2>/dev/null || true
+    return 1
+  }
+  chmod 600 "$LOCK/pid" 2>/dev/null || {
+    rm -f -- "$LOCK/pid" 2>/dev/null || true
+    rmdir "$LOCK" 2>/dev/null || true
+    return 1
+  }
+  DASHBOARD_LOCK_HELD=1
+  return 0
+}
+
+dashboard_lock_release() {
+  local pid current
+  [ "$DASHBOARD_LOCK_HELD" -eq 1 ] || return 0
+  [ -d "$LOCK" ] && [ ! -L "$LOCK" ] && [ ! -L "$LOCK/pid" ] || return 0
+  pid=$(cat "$LOCK/pid" 2>/dev/null || true)
+  current=${BASHPID:-$$}
+  [ "$pid" = "$current" ] || return 0
+  rm -f -- "$LOCK/pid" 2>/dev/null || return 1
+  rmdir "$LOCK" 2>/dev/null || return 1
+  DASHBOARD_LOCK_HELD=0
+  return 0
+}
 
 usage() {
   awk '
@@ -551,7 +562,10 @@ quarantine_started() {  # <reason> <port> <digest>
 
 startup_transaction_exit() {
   local status
-  [ "$STARTUP_TRANSACTION_ACTIVE" -eq 1 ] || return 0
+  if [ "$STARTUP_TRANSACTION_ACTIVE" -ne 1 ]; then
+    dashboard_lock_release >/dev/null 2>&1 || true
+    return 0
+  fi
   STARTUP_TRANSACTION_ACTIVE=0
   quarantine_started "$STARTUP_TRANSACTION_REASON" "$STARTUP_TRANSACTION_PORT" \
     "$STARTUP_TRANSACTION_DIGEST"
@@ -563,7 +577,7 @@ startup_transaction_exit() {
   else
     log_line blocked "startup interrupted before ownership was published"
   fi
-  fm_lock_release "$LOCK" >/dev/null 2>&1 || true
+  dashboard_lock_release >/dev/null 2>&1 || true
 }
 
 startup_transaction_signal() {
@@ -605,6 +619,8 @@ record_is_live() {  # -> 0 and sets ADOPTED_PORT
   esac
   health=$(probe_health "$port") || { RECORD_PROBE_STATE=unknown; return 1; }
   health_is_ours "$health" "$digest" || { RECORD_PROBE_STATE=unknown; return 1; }
+  [ "$(pane_state "$pane" "$session" "$workspace" "$tab")" = open ] \
+    || { RECORD_PROBE_STATE=unknown; return 1; }
   RECORD_PROBE_STATE=live
   ADOPTED_PORT=$port
   return 0
@@ -761,7 +777,7 @@ command_ensure() {
   herdr_ready \
     || { blocked "herdr and jq are required to run the dashboard in a tracked pane"; return 1; }
 
-  if ! fm_lock_try_acquire "$LOCK" >/dev/null 2>&1; then
+  if ! dashboard_lock_try_acquire >/dev/null 2>&1; then
     # Another start is already running. Wait for it, then report ITS result
     # rather than racing it into a second server.
     local waited=0 lock_acquired=0
@@ -773,7 +789,7 @@ command_ensure() {
         report_url reused "$ADOPTED_PORT"
         return 0
       fi
-      if fm_lock_try_acquire "$LOCK" >/dev/null 2>&1; then
+      if dashboard_lock_try_acquire >/dev/null 2>&1; then
         lock_acquired=1
         break
       fi
@@ -786,13 +802,13 @@ command_ensure() {
   # From here the lock is held; every exit path must release it.
 
   if [ -e "$QUARANTINE" ] || [ -e "$JOURNAL" ]; then
-    fm_lock_release "$LOCK" >/dev/null 2>&1
+    dashboard_lock_release >/dev/null 2>&1
     blocked "dashboard startup has unresolved ownership; inspect $QUARANTINE or $JOURNAL before retrying"
     return 1
   fi
 
   if record_is_live; then
-    fm_lock_release "$LOCK" >/dev/null 2>&1
+    dashboard_lock_release >/dev/null 2>&1
     log_line reused "already serving on port $ADOPTED_PORT"
     report_url reused "$ADOPTED_PORT"
     return 0
@@ -806,7 +822,7 @@ command_ensure() {
         record_drop
         ;;
       *)
-        fm_lock_release "$LOCK" >/dev/null 2>&1
+        dashboard_lock_release >/dev/null 2>&1
         blocked "the recorded dashboard owner could not be re-proven; its ownership record was kept"
         return 1
         ;;
@@ -815,13 +831,13 @@ command_ensure() {
 
   token=$(mint_token)
   digest=$(digest_of "$token") || {
-    fm_lock_release "$LOCK" >/dev/null 2>&1
+    dashboard_lock_release >/dev/null 2>&1
     blocked "no SHA-256 tool is available to prove dashboard identity"
     return 1
   }
 
   if ! port=$(pick_port "$digest"); then
-    fm_lock_release "$LOCK" >/dev/null 2>&1
+    dashboard_lock_release >/dev/null 2>&1
     blocked "no free port in $FM_DASHBOARD_PORT_TRIES candidates from $FM_DASHBOARD_PORT"
     return 1
   fi
@@ -829,7 +845,7 @@ command_ensure() {
   if [ -n "$ADOPT_HEALTH_PORT" ]; then
     # Unreachable in practice, because a fresh token cannot match a running
     # server; kept so a future adoption path cannot silently skip readiness.
-    fm_lock_release "$LOCK" >/dev/null 2>&1
+    dashboard_lock_release >/dev/null 2>&1
     log_line adopted "an existing dashboard already owned port $port"
     report_url reused "$port"
     return 0
@@ -839,7 +855,7 @@ command_ensure() {
   if ! start_pane "$port" "$digest"; then
     cleanup_started "herdr could not start the dashboard pane" "$port" "$digest" || true
     startup_transaction_disarm
-    fm_lock_release "$LOCK" >/dev/null 2>&1
+    dashboard_lock_release >/dev/null 2>&1
     if [ "$START_CLEANUP_STATUS" = quarantined ]; then
       blocked "herdr could not start the dashboard pane; cleanup was quarantined at $QUARANTINE"
     elif [ "$START_CLEANUP_STATUS" = quarantine-failed ]; then
@@ -854,7 +870,7 @@ command_ensure() {
     "$STARTED_PANE" "$port" "$token" "$digest"; then
     cleanup_started "the dashboard owner record could not be written" "$port" "$digest" || true
     startup_transaction_disarm
-    fm_lock_release "$LOCK" >/dev/null 2>&1
+    dashboard_lock_release >/dev/null 2>&1
     if [ "$START_CLEANUP_STATUS" = quarantined ]; then
       blocked "the dashboard owner record could not be written; cleanup was quarantined at $QUARANTINE"
     elif [ "$START_CLEANUP_STATUS" = quarantine-failed ]; then
@@ -875,7 +891,7 @@ command_ensure() {
     case "$(pane_state "$STARTED_PANE" "$STARTED_SESSION" \
       "$STARTED_WORKSPACE" "$STARTED_TAB")" in
       open)
-        fm_lock_release "$LOCK" >/dev/null 2>&1
+        dashboard_lock_release >/dev/null 2>&1
         blocked "the dashboard was not ready and its pane is still open; the owner record was kept"
         return 1
         ;;
@@ -883,18 +899,22 @@ command_ensure() {
         record_drop
         ;;
       *)
-        fm_lock_release "$LOCK" >/dev/null 2>&1
+        dashboard_lock_release >/dev/null 2>&1
         blocked "herdr could not confirm the dashboard pane state after readiness failed; the owner record was kept"
         return 1
         ;;
     esac
-    fm_lock_release "$LOCK" >/dev/null 2>&1
+    dashboard_lock_release >/dev/null 2>&1
     blocked "the dashboard did not become ready on port $port within the readiness budget"
     return 1
   fi
 
-  fm_lock_release "$LOCK" >/dev/null 2>&1
+  dashboard_lock_release >/dev/null 2>&1
   log_line started "serving on port $port in pane $STARTED_PANE"
+  if ! record_is_live || [ "$ADOPTED_PORT" != "$port" ]; then
+    blocked "the dashboard owner could not be re-proven immediately before URL publication"
+    return 1
+  fi
   report_url started "$port"
   return 0
 }

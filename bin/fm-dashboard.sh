@@ -829,6 +829,7 @@ inject_payload() {  # <payload-file> <out-file>
     return 0
   fi
   output_parent_safe "$out" || fail "the output parent is not a safe directory inside this home: $OUTPUT_PARENT_REASON"
+  [ ! -L "$out" ] || fail "the output path is a symlink and cannot be published: $out"
   if ! chmod 0600 "$tmp"; then
     fail "cannot make the page private before publishing it"
   fi
@@ -932,6 +933,7 @@ command_serve() {
     python3 - <<'PY'
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -941,7 +943,7 @@ from socketserver import ThreadingMixIn
 SELF = os.environ["FM_DASHBOARD_SELF"]
 PORT = int(os.environ["FM_DASHBOARD_BIND_PORT"])
 HTTP_IO_TIMEOUT = 5
-MAX_CLIENTS = 9
+MAX_CLIENTS = 10
 MAX_PAGE_BUILDS = 8
 # Only the DIGEST of the owner token reaches this process, and only the digest
 # is ever published. A caller proves it started this exact server for this
@@ -992,7 +994,6 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         # One page and one liveness probe. Every other path is refused: this
         # server never serves a file from disk and has no directory route.
-        self.release_client_slot()
         if self.path == "/healthz":
             self._send(200, HEALTH, "application/json; charset=utf-8")
             return
@@ -1004,12 +1005,36 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             with self.server.build_lock:
-                done = subprocess.run(
+                build = subprocess.Popen(
                     [SELF, "build", "--out", "-"],
                     capture_output=True,
-                    timeout=int(os.environ["FM_DASHBOARD_BUILD_TIMEOUT"]),
+                    start_new_session=True,
                     env=dict(os.environ, FM_DASHBOARD_BUILD_INNER="1"),
                 )
+                try:
+                    stdout, stderr = build.communicate(
+                        timeout=int(os.environ["FM_DASHBOARD_BUILD_TIMEOUT"])
+                    )
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(build.pid, signal.SIGTERM)
+                    except OSError:
+                        pass
+                    try:
+                        stdout, stderr = build.communicate(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            os.killpg(build.pid, signal.SIGKILL)
+                        except OSError:
+                            pass
+                        stdout, stderr = build.communicate()
+                    done = subprocess.CompletedProcess(
+                        build.args, 124, stdout, stderr
+                    )
+                else:
+                    done = subprocess.CompletedProcess(
+                        build.args, build.returncode, stdout, stderr
+                    )
         except Exception as exc:  # noqa: BLE001 - reported, never swallowed
             self._send(500, ("the dashboard could not be rebuilt: %s\n" % exc).encode(),
                        "text/plain; charset=utf-8")
