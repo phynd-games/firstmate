@@ -36,8 +36,7 @@ batched digest rather than per-wake injections.
      Do not wrap it in `nohup ... &` (Codex/herdr can reap fire-and-forget shell children after a tool call returns).
    - **Harness WITHOUT one** (e.g. pi): run `bin/fm-afk-launch.sh start`. It is
      the single owner of the daemon terminal: it creates a NON-VISIBLE tracked
-     terminal for the current backend (a herdr dedicated `--no-focus` workspace,
-     a detached tmux session), records its exact id, and passes the captain pane
+     Herdr terminal in a dedicated `--no-focus` workspace, records its exact id, and passes the captain pane
      in as `FM_SUPERVISOR_TARGET` so the daemon injects into the captain, not its
      own new pane. **Never manufacture a terminal by splitting the captain's
      active pane** (`herdr pane split`): a split co-tenants the tab and visibly
@@ -110,7 +109,7 @@ The alarm is defense in depth rather than a substitute for keeping every genuine
 If that submit cannot be confirmed, it raises a loud, rate-limited wedge alarm:
 an ERROR in the daemon log, a durable
 `state/.subsuper-inject-wedged` marker (surface it on the "while you were out"
-catch-up if present), a tmux status-line flash when applicable, and a configurable backend-independent active alert.
+catch-up if present), a retained-lane status-line flash when applicable, and a configurable Herdr-compatible active alert.
 `docs/wedge-alarm.md` owns the alert channel setup, and `docs/verification/supervision.md` "Wedge-alarm channels" owns active evidence.
 So a guard false-positive becomes a visible stall, never an unbounded silent no-op.
 
@@ -127,8 +126,8 @@ For herdr, idle-baseline submits first seek native agent-state showing a real tu
 A bordered-empty or ghost-only composer is recognized as empty where that backend uses composer confirmation, rather than mistaken for a swallowed Enter.
 `fm-send.sh` uses the same primitive only on its typed plane and exits non-zero when that plane's Enter is positively swallowed; ordinary local text steers use the durable inbox and do not treat doorbell submission as delivery proof.
 
-**Busy-queued Enter exception (opencode 1.18.4).** OpenCode keeps queued text visible while it is mid-turn, so tmux and herdr delegate the final delivery decision to `fm_composer_queued_enter_verdict` in `bin/fm-composer-lib.sh` rather than treating visible text alone as a swallowed Enter.
-The daemon still clears its buffer only on the backend's `empty` success verdict; [`docs/tmux-backend.md`](../../../docs/tmux-backend.md) and [`docs/herdr-backend.md`](../../../docs/herdr-backend.md) own the backend-specific confirmation signals.
+**Busy-queued Enter exception (opencode 1.18.4).** OpenCode keeps queued text visible while it is mid-turn, so Herdr delegates the final delivery decision to `fm_composer_queued_enter_verdict` in `bin/fm-composer-lib.sh` rather than treating visible text alone as a swallowed Enter.
+The daemon still clears its buffer only on the backend's `empty` success verdict; [`docs/herdr-backend.md`](../../../docs/herdr-backend.md) owns the active backend-specific confirmation signals.
 
 ## Classification policy
 

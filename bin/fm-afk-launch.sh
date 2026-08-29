@@ -10,7 +10,7 @@
 # native background mechanism (pi) has to manufacture a terminal, and doing that
 # by SPLITTING the captain's active pane visibly shrinks it - the regression this
 # script fixes. Instead this creates a non-visible tracked terminal (a herdr tab/
-# workspace with --no-focus, or a detached tmux session) that never touches the
+# workspace with --no-focus) that never touches the
 # captain's active tab, and NEVER uses shell `&` (which herdr/codex can reap).
 #
 # Correct supervisor targeting: the daemon finds the captain pane to inject into
@@ -36,8 +36,8 @@
 #   fm-afk-launch.sh reconcile Close a recorded-but-dead daemon terminal by exact
 #                              id and drop the record (recovery after a crash).
 #
-# Supported backends: herdr, tmux. Others (zellij, orca, cmux) have no verified
-# non-visible-launch primitive here yet and refuse loudly.
+# Supported active backend: herdr. Retained adapters are available only in the
+# repository's regression lane.
 #
 # Test seam: FM_AFK_LAUNCH_ENTRY overrides the command run in the created
 # terminal (default bin/fm-afk-start.sh), so a topology test can run a harmless
@@ -163,6 +163,13 @@ fm_afk_launch_record_write() {  # <backend> <target> <extra>
   mv "$pending" "$FM_AFK_LAUNCH_RECORD" || { rm -f "$pending"; return 1; }
 }
 
+fm_afk_launch_allow_tmux() {
+  fm_backend_policy_legacy_lane && return 0
+  fm_backend_policy_refuse "AFK daemon terminal record" tmux \
+    "Retire this pre-invariant AFK terminal record through docs/configuration.md \"Legacy task records\"."
+  return 1
+}
+
 fm_afk_launch_flag_write() {
   fm_afk_flag_write "$FM_AFK_LAUNCH_STATE"
 }
@@ -184,7 +191,7 @@ fm_afk_launch_record_read() {
   fi
   case "$FM_AFK_REC_BACKEND" in
     herdr) [ -n "$extra" ] ;;
-    tmux) : ;;
+    tmux) fm_afk_launch_allow_tmux || return 2 ;;
     none) [ "$FM_AFK_REC_TARGET" = - ] && [ "$extra" = native ] ;;
     *) return 2 ;;
   esac || { fm_afk_launch_log "daemon terminal record is malformed; refusing to act on it"; return 2; }
@@ -210,6 +217,7 @@ fm_afk_launch_close_terminal() {  # <backend> <target>
       fm_backend_herdr_cli "$session" pane close "$pane" >/dev/null 2>&1
       ;;
     tmux)
+      fm_afk_launch_allow_tmux || return 1
       # target is the dedicated daemon session name - kill exactly it.
       tmux kill-session -t "$target" 2>/dev/null
       ;;
@@ -227,6 +235,7 @@ fm_afk_launch_terminal_absent() {  # <backend> <target>
   local backend=$1 target=$2 session pane out result code
   case "$backend" in
     herdr)
+      fm_backend_source herdr "AFK terminal liveness" || return 1
       session=${target%%:*}
       pane=${target#*:}
       [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
@@ -237,6 +246,7 @@ fm_afk_launch_terminal_absent() {  # <backend> <target>
       [ "$code" = pane_not_found ]
       ;;
     tmux)
+      fm_afk_launch_allow_tmux || return 1
       out=$(tmux has-session -t "$target" 2>&1)
       result=$?
       [ "$result" -eq 1 ] || return 1
@@ -265,6 +275,7 @@ fm_afk_launch_terminal_alive() {  # <backend> <target>
   local backend=$1 target=$2 session pane
   case "$backend" in
     herdr)
+      fm_backend_source herdr "AFK terminal liveness" || return 1
       session=${target%%:*}
       pane=${target#*:}
       [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
@@ -432,11 +443,10 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
   fm_afk_launch_log "daemon launched in non-visible herdr workspace $wsid (pane $session:$pane), supervising $captain_target"
 }
 
-# Launch the daemon in a detached tmux session (never a split-window in the
-# captain's window). tmux pane ids are server-global, so the daemon reaches the
-# captain pane by its %id from this separate session.
+# Retained-adapter daemon launch for the repository's regression lane.
 fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
   local captain_target=$1 captain_backend=$2 session entry cmd hash nonce
+  fm_afk_launch_allow_tmux || return 1
   hash=$(printf '%s' "$FM_HOME" | cksum | cut -d' ' -f1)
   nonce="$$-${RANDOM:-0}-$(date '+%s')"
   session="fm-afk-daemon-$hash-$nonce"
@@ -448,14 +458,14 @@ fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
     return 1
   fi
   if ! tmux new-session -d -s "$session" "$cmd" 2>/dev/null; then
-    fm_afk_launch_log "failed to create detached tmux daemon session '$session'"
+    fm_afk_launch_log "failed to create retained-lane tmux daemon session '$session'"
     if ! rm -f "$FM_AFK_LAUNCH_RECORD"; then
       fm_afk_launch_log "failed to remove planned tmux daemon record after creation failure"
     fi
     return 1
   fi
   fm_afk_launch_commit_terminal tmux "$session" "" 1 || return 1
-  fm_afk_launch_log "daemon launched in detached tmux session '$session', supervising $captain_target"
+  fm_afk_launch_log "daemon launched in retained-lane tmux session '$session', supervising $captain_target"
 }
 
 fm_afk_launch_start() {
@@ -469,6 +479,7 @@ fm_afk_launch_start() {
     fm_afk_launch_log "could not resolve the captain supervisor pane (set FM_SUPERVISOR_TARGET)"; return 1; }
   captain_backend=$(discover_supervisor_backend) || {
     fm_afk_launch_log "could not resolve the captain supervisor backend (set FM_SUPERVISOR_BACKEND)"; return 1; }
+  fm_backend_source "$captain_backend" "AFK launcher" || return 1
 
   mkdir -p "$FM_AFK_LAUNCH_STATE"
 
@@ -514,7 +525,7 @@ fm_afk_launch_start() {
       herdr) fm_afk_launch_create_herdr "$captain_target" "$captain_backend"; result=$? ;;
       tmux)  fm_afk_launch_create_tmux "$captain_target" "$captain_backend"; result=$? ;;
       *)
-        fm_afk_launch_log "no non-visible daemon-launch primitive for backend '$captain_backend' yet (supported: herdr, tmux)"
+        fm_afk_launch_log "no non-visible daemon-launch primitive for backend '$captain_backend'"
         result=1
         ;;
     esac

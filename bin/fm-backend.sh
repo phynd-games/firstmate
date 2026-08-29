@@ -102,13 +102,13 @@ fm_backend_is_known() {  # <name>
   fm_backend_list_contains "$FM_BACKEND_KNOWN" "$1"
 }
 
-# fm_backend_detect: detect the runtime firstmate itself is CURRENTLY executing
-# inside, from verified environment markers (mirrors bin/fm-harness.sh's
-# env-marker detection layer for harnesses). Prints the detected backend name
-# and returns 0, or returns 1 when nothing is detected. Nesting resolves
-# INNERMOST-first: tmux sets $TMUX in every process running inside it, even a
-# tmux started inside a herdr pane, so $TMUX is checked first and wins over
-# HERDR_ENV=1 in that nested case. herdr injects HERDR_ENV=1 (plus
+# fm_backend_detect: retain the pre-invariant runtime marker probe only for the
+# repository's regression lane. In the active runtime it is inert and returns
+# 1: markers never select a backend. Inside the regression lane, it prints the
+# detected backend name and returns 0, or returns 1 when nothing is detected.
+# Nesting resolves INNERMOST-first: tmux sets $TMUX in every process running
+# inside it, even a tmux started inside a herdr pane, so $TMUX is checked first
+# and wins over HERDR_ENV=1 in that nested case. herdr injects HERDR_ENV=1 (plus
 # HERDR_SOCKET_PATH/HERDR_PANE_ID) into every process it manages a pane for;
 # HERDR_ENV=1 alone (no $TMUX) selects herdr. cmux injects CMUX_WORKSPACE_ID
 # (plus CMUX_SURFACE_ID/CMUX_SOCKET_PATH and the legacy CMUX_TAB_ID/
@@ -408,10 +408,8 @@ fm_meta_get() {  # <meta-file> <key>
 # Active runtime: prints `herdr` for a Herdr record. Any other record is
 # refused - an absent `backend=` line is a pre-invariant legacy record, a
 # non-Herdr value is a retained-adapter record - with one
-# fm_backend_policy_refuse line naming the record, and return 1. The recorded
-# non-empty value is still echoed so a caller that ignores the exit status
-# hands that exact name to fm_backend_validate, which refuses it again by name;
-# an absent identity echoes nothing. Callers that render fleet state
+# fm_backend_policy_refuse line naming the record, and return 1. Refusals never
+# print an accepted backend to stdout. Callers that render fleet state
 # (fm-session-start.sh, fm-crew-state.sh, fm-fleet-snapshot.sh) check the
 # status and present the record as legacy instead of dispatching on it.
 # Regression lane only: absent means `tmux` (the pre-invariant contract).
@@ -426,7 +424,6 @@ fm_backend_of_meta() {  # <meta-file>
     printf '%s' "$v"
     return 0
   fi
-  printf '%s' "$v"
   if [ -z "$v" ]; then
     fm_backend_policy_refuse "task record $1 (no backend= line)" "" \
       "$(fm_backend_policy_legacy_record_remediation)"
@@ -482,9 +479,8 @@ fm_backend_validate_remote_meta() {  # <meta-file> <task-id>
   return 1
 }
 
-fm_backend_herdr_capability_preflight() {  # <origin>
+fm_backend_herdr_capability_check() {  # <origin>
   local origin=$1 detail
-  fm_backend_source herdr || return 1
   if detail=$(fm_backend_herdr_version_check 2>&1); then
     return 0
   fi
@@ -492,6 +488,10 @@ fm_backend_herdr_capability_preflight() {  # <origin>
   fm_backend_policy_refuse "$origin" herdr \
     "The native Herdr capability check failed${detail:+: $detail} Upgrade or repair Herdr, then verify with 'herdr status --json'."
   return 1
+}
+
+fm_backend_herdr_capability_preflight() {  # <origin>
+  fm_backend_source herdr "$1"
 }
 
 fm_backend_endpoint_atom_valid() {  # <value>
@@ -513,28 +513,9 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
     echo "REFUSED: task endpoint identity has an invalid task id; preserving task state." >&2
     return 1
   esac
-  window=$(fm_backend_meta_exact_value "$meta" window) || {
-    echo "REFUSED: task $id has a missing, empty, or ambiguous window endpoint; preserving task state." >&2
-    return 1
-  }
-  worktree=$(fm_backend_meta_exact_value "$meta" worktree) || {
-    echo "REFUSED: task $id has a missing, empty, or ambiguous worktree identity; preserving task state." >&2
-    return 1
-  }
-  project=$(fm_backend_meta_exact_value "$meta" project) || {
-    echo "REFUSED: task $id has a missing, empty, or ambiguous project identity; preserving task state." >&2
-    return 1
-  }
-  case "$worktree$project$window" in *$'\n'*|*$'\r'*|*$'\t'*)
-    echo "REFUSED: task $id has malformed endpoint metadata; preserving task state." >&2
-    return 1
-  esac
   backend_count=$(grep -c '^backend=' "$meta" 2>/dev/null || true)
   case "$backend_count" in
     0)
-      # Active runtime: a record with no backend= line predates the Herdr-only
-      # invariant and is refused read-only (docs/configuration.md "Legacy task
-      # records"); the tmux meaning survives only in the regression lane.
       if fm_backend_policy_legacy_lane; then
         backend=tmux
       else
@@ -561,6 +542,22 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
       "Retire or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
     return 1
   fi
+  window=$(fm_backend_meta_exact_value "$meta" window) || {
+    echo "REFUSED: task $id has a missing, empty, or ambiguous window endpoint; preserving task state." >&2
+    return 1
+  }
+  worktree=$(fm_backend_meta_exact_value "$meta" worktree) || {
+    echo "REFUSED: task $id has a missing, empty, or ambiguous worktree identity; preserving task state." >&2
+    return 1
+  }
+  project=$(fm_backend_meta_exact_value "$meta" project) || {
+    echo "REFUSED: task $id has a missing, empty, or ambiguous project identity; preserving task state." >&2
+    return 1
+  }
+  case "$worktree$project$window" in *$'\n'*|*$'\r'*|*$'\t'*)
+    echo "REFUSED: task $id has malformed endpoint metadata; preserving task state." >&2
+    return 1
+  esac
   binding_count=$(grep -c '^endpoint_task_id=' "$meta" 2>/dev/null || true)
   case "$binding_count" in
     0) binding= ;;
@@ -744,8 +741,8 @@ fm_backend_expected_label_of_selector() {  # <raw-target> <state-dir>
 # Each adapter is an independently linted canonical root. The /dev/null source
 # boundaries keep runtime dispatch from importing all five adapter ASTs into
 # every dispatcher consumer while preserving the runtime source operations.
-fm_backend_source() {  # <name>
-  local name=$1
+fm_backend_source() {  # <name> [origin]
+  local name=$1 origin=${2:-Herdr runtime operation}
   fm_backend_validate "$name" || return 1
   case "$name" in
     tmux)
@@ -784,6 +781,9 @@ fm_backend_source() {  # <name>
       fi
       ;;
   esac
+  if [ "$name" = herdr ]; then
+    fm_backend_herdr_capability_check "$origin" || return 1
+  fi
 }
 
 # fm_backend_resolve_selector: resolve a raw fm-send.sh/fm-peek.sh style

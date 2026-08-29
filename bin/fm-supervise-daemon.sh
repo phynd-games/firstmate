@@ -1104,14 +1104,16 @@ housekeeping() {  # <state>
 
 # Find a recorded or live window target whose task id matches the marker key.
 window_for_task() {  # <task-key> [state]
-  local key=$1 state=${2:-$(_state_root)} meta task w t
+  local key=$1 state=${2:-$(_state_root)} meta task w t backend
   for meta in "$state"/*.meta; do
     [ -e "$meta" ] || continue
     task=$(basename "$meta"); task=${task%.meta}
     [ "$(_stale_key "$task")" = "$key" ] || continue
+    backend=$(fm_backend_of_meta "$meta" 2>/dev/null) || continue
     w=$(fm_backend_target_of_meta "$meta")
     [ -n "$w" ] && { printf '%s' "$w"; return 0; }
   done
+  fm_backend_policy_legacy_lane || return 1
   for w in $(tmux list-windows -a -F '#{session_name}:#{window_name}' 2>/dev/null | grep ':fm-' || true); do
     t=$(window_to_task "$w" "$state")
     [ "$(_stale_key "$t")" = "$key" ] && { printf '%s' "$w"; return 0; }

@@ -935,6 +935,15 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fi
 fi
 if [ "$RELAUNCH" -eq 0 ]; then
+  if [ "$BACKEND_SET" -eq 1 ]; then
+    BACKEND=$BACKEND_ARG
+  else
+    BACKEND=$(fm_backend_name) || exit 1
+  fi
+  fm_backend_validate_spawn "$BACKEND" || exit 1
+  fm_backend_source "$BACKEND" "spawn backend selection" || exit 1
+fi
+if [ "$RELAUNCH" -eq 0 ]; then
   mkdir -p "$STATE" || {
     echo "error: could not create parent state directory" >&2
     exit 1
@@ -982,13 +991,6 @@ fi
 # endpoint fields; the tmux-default path that wrote no backend= line survives
 # only in the regression lane.
 if [ "$RELAUNCH" -eq 0 ]; then
-  if [ "$BACKEND_SET" -eq 1 ]; then
-    BACKEND=$BACKEND_ARG
-  else
-    BACKEND=$(fm_backend_name) || exit 1
-    fm_backend_validate_spawn "$BACKEND" || exit 1
-  fi
-  fm_backend_source "$BACKEND" || exit 1
   if [ "$BACKEND" = orca ] && [ "$KIND" = secondmate ]; then
     echo "error: backend=orca does not support --secondmate spawns yet" >&2
     exit 1

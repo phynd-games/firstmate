@@ -27,10 +27,10 @@
 #   fm_backend_policy_config_remediation, fm_backend_policy_legacy_record_remediation,
 #   fm_backend_policy_marker_note   remediation and marker text used by every boundary
 #
-# Legacy test lane. The retained adapters are admitted only when the repository's
-# test harness exports the lane marker together with its own root identity.
-# Ordinary Firstmate processes cannot enable this lane by setting one backend
-# variable; the lane is removed together with the retained adapters.
+# Legacy test lane. The retained adapters are admitted only from a repository
+# test process with the harness marker and root identity.
+# Ordinary Firstmate processes cannot enable this lane by setting backend
+# variables; the lane is removed together with the retained adapters.
 #
 # Sourced by bin/fm-backend.sh and bin/fm-supervisor-target-lib.sh. It sets no
 # FM_ROOT/FM_HOME globals and runs no commands at source time.
@@ -43,10 +43,33 @@ _FM_BACKEND_POLICY_LIB_SOURCED=1
 FM_BACKEND_ACTIVE="herdr"
 FM_BACKEND_RETAINED_LEGACY="tmux zellij orca cmux"
 
+fm_backend_policy_test_process() {
+  local source pid command parent hops=0
+  for source in "${BASH_SOURCE[@]}"; do
+    case "$source" in
+      */tests/*.test.sh) return 0 ;;
+    esac
+  done
+  pid=${PPID:-}
+  while [ -n "$pid" ] && [ "$pid" -gt 1 ] && [ "$hops" -lt 32 ]; do
+    command=$(ps -o command= -p "$pid" 2>/dev/null || true)
+    case "$command" in
+      */tests/*.test.sh*|*" tests/"*.test.sh*) return 0 ;;
+    esac
+    parent=$(ps -o ppid= -p "$pid" 2>/dev/null || true)
+    parent=${parent//[[:space:]]/}
+    [ "$parent" != "$pid" ] || break
+    pid=$parent
+    hops=$((hops + 1))
+  done
+  return 1
+}
+
 fm_backend_policy_legacy_lane() {
   [ "${FM_BACKEND_LEGACY_TEST_LANE:-}" = 1 ] || return 1
   [ "${FM_BACKEND_TEST_HARNESS:-}" = 1 ] || return 1
-  [ "${FM_BACKEND_TEST_ROOT:-}" = "$(cd "${BASH_SOURCE[0]%/*}/.." 2>/dev/null && pwd -P)" ]
+  [ "${FM_BACKEND_TEST_ROOT:-}" = "$(cd "${BASH_SOURCE[0]%/*}/.." 2>/dev/null && pwd -P)" ] || return 1
+  fm_backend_policy_test_process
 }
 
 fm_backend_policy_is_retained() {  # <name>
