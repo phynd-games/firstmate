@@ -61,6 +61,8 @@ elif mode == "unknown-dependency":
 elif mode == "cycle":
     doc["tasks"][0]["dependencies"] = ["E0.02"]
     doc["epics"][0]["tasks"][0][5] = ["E0.02"]
+elif mode == "malformed-epic":
+    doc["tasks"][0]["epic"] = []
 else:
     raise SystemExit(f"unknown mutation: {mode}")
 pathlib.Path(output).write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
@@ -137,6 +139,7 @@ test_malformed_source_fixtures() {
   run_invalid_source duplicate-id id.duplicate-flat-task
   run_invalid_source unknown-dependency graph.unknown-dependency
   run_invalid_source cycle graph.cycle
+  run_invalid_source malformed-epic schema.type
   pass "malformed source fixtures reject mismatches, counts, IDs, edges, and cycles"
 }
 
@@ -199,7 +202,7 @@ canonical = (json.dumps(doc, ensure_ascii=False, sort_keys=True, separators=(","
 doc["manifest_hash"] = hashlib.sha256(canonical).hexdigest()
 if mode == "bad-hash":
     doc["manifest_hash"] = "0" * 64
-pathlib.Path(output).write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+pathlib.Path(output).write_text(json.dumps(doc, ensure_ascii=mode == "nonbmp-title", indent=2) + "\n", encoding="utf-8")
 PY
 }
 

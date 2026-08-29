@@ -536,15 +536,15 @@ def validate_source_bytes(
             continue
         task_id = task["id"]
         valid_task_id = _string(task_id, f"{task_path}.id", errors, SOURCE_ID)
-        _string(task["epic"], f"{task_path}.epic", errors, EPIC_ID)
+        valid_epic_id = _string(task["epic"], f"{task_path}.epic", errors, EPIC_ID)
         for field in ("epic_title", "phase", "title", "detail", "output", "acceptance", "owner"):
             _string(task[field], f"{task_path}.{field}", errors)
         _string_list(task["dependencies"], f"{task_path}.dependencies", errors, SOURCE_ID)
         if not valid_task_id:
             continue
-        if task["epic"] not in epic_ids:
+        if valid_epic_id and task["epic"] not in epic_ids:
             errors.add("id.unknown-epic", f"{task_path}.epic", f"unknown epic: {task['epic']}")
-        if not task_id.startswith(str(task["epic"]) + "."):
+        if valid_epic_id and not task_id.startswith(task["epic"] + "."):
             errors.add("id.epic-prefix", f"{task_path}.id", f"task {task_id} does not belong to {task['epic']}")
         if task_id in flat_records:
             errors.add("id.duplicate-flat-task", f"{task_path}.id", f"duplicate flat task ID: {task_id}")
