@@ -279,6 +279,37 @@ fm_pr_self_review_report_path() {
   printf '%s/%s/pr-self-review.md\n' "$data" "$id"
 }
 
+fm_pr_default_branch() {
+  local repo=$1 ref branch
+  [ -d "$repo" ] && [ ! -L "$repo" ] || return 1
+  ref=$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  if [ -n "$ref" ]; then
+    printf '%s\n' "${ref#origin/}"
+    return 0
+  fi
+  for branch in main master; do
+    if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
+      printf '%s\n' "$branch"
+      return 0
+    fi
+  done
+  return 1
+}
+
+fm_pr_substrate_launch_sha() {
+  local data=$1 id=$2 brief value count
+  fm_pr_task_id_valid "$id" || return 1
+  [ -d "$data" ] && [ ! -L "$data" ] || return 1
+  [ -d "$data/$id" ] && [ ! -L "$data/$id" ] || return 1
+  brief="$data/$id/brief.md"
+  [ -f "$brief" ] && [ ! -L "$brief" ] || return 1
+  count=$(grep -c '^- Firstmate substrate launch SHA: `\([0-9a-f][0-9a-f]*\)`$' "$brief" || true)
+  [ "$count" = 1 ] || return 1
+  value=$(sed -n 's/^- Firstmate substrate launch SHA: `\([0-9a-f][0-9a-f]*\)`$/\1/p' "$brief")
+  fm_pr_head_valid "$value" || return 1
+  printf '%s\n' "$value"
+}
+
 fm_pr_sha256_stream() {
   if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 | awk '{print $1}'
@@ -290,7 +321,7 @@ fm_pr_sha256_stream() {
 }
 
 fm_pr_self_review_report_valid() {
-  local data=$1 id=$2 expected_head=${3-} worktree=${4-} substrate_root=${5-}
+  local data=$1 id=$2 expected_head=${3-} worktree=${4-} substrate_root=${5-} expected_substrate_base=${6-}
   local report data_device parsed target_repository base_ref base_sha head_sha merge_base_sha changed_files tree_status
   local substrate_base_sha substrate_head_sha substrate_changed_files
   [ -n "$worktree" ] && [ -d "$worktree" ] && [ ! -L "$worktree" ] || return 1
@@ -347,6 +378,18 @@ fm_pr_self_review_report_valid() {
         }
       }
       if ($0 !~ /^[[:space:]]*$/) content = 1
+      if (expected == 2) {
+        if ($0 == "Review status: complete") finding_review = 1
+        if (index($0, "Finding count: ") == 1 && field("Finding count: ") ~ /^[0-9]+$/) {
+          finding_count = field("Finding count: ") + 0
+          finding_count_seen = 1
+        }
+        if ($0 == "Finding summary: none") finding_summary = 1
+        if (index($0, "Finding: ") == 1) {
+          finding_entries++
+          if (substr($0, length("Finding: ") + 1) !~ /^severity=(error|warning|info); path=[^;]+; evidence=[^;]+; consequence=[^;]+; fix=[^;]+$/) bad = 1
+        }
+      }
       if (expected == 3) {
         if (index($0, "Target repository: ") == 1 && length(field("Target repository: ")) > 0) {
           target_repository = 1
@@ -393,13 +436,13 @@ fm_pr_self_review_report_valid() {
         if ($0 == "Substrate diff: no substrate diff") substrate_no_diff = 1
       }
       if (expected == 5) {
-        if (index($0, "Authority: ") == 1 && length(field("Authority: ")) > 0) authority = 1
-        if (index($0, "Security: ") == 1 && length(field("Security: ")) > 0) security = 1
-        if (index($0, "Path: ") == 1 && length(field("Path: ")) > 0) path = 1
-        if (index($0, "Failure: ") == 1 && length(field("Failure: ")) > 0) failure = 1
-        if (index($0, "Tests: ") == 1 && length(field("Tests: ")) > 0) tests = 1
-        if (index($0, "Documentation: ") == 1 && length(field("Documentation: ")) > 0) documentation = 1
-        if (index($0, "Delivery: ") == 1 && length(field("Delivery: ")) > 0) delivery = 1
+        if (index($0, "Authority: ") == 1 && substantive(field("Authority: "))) authority = 1
+        if (index($0, "Security: ") == 1 && substantive(field("Security: "))) security = 1
+        if (index($0, "Path: ") == 1 && substantive(field("Path: "))) path = 1
+        if (index($0, "Failure: ") == 1 && substantive(field("Failure: "))) failure = 1
+        if (index($0, "Tests: ") == 1 && substantive(field("Tests: "))) tests = 1
+        if (index($0, "Documentation: ") == 1 && substantive(field("Documentation: "))) documentation = 1
+        if (index($0, "Delivery: ") == 1 && substantive(field("Delivery: "))) delivery = 1
       }
       if (expected == 6) {
         if (index($0, "Command: ") == 1 && length(field("Command: ")) > 0) command = 1
@@ -408,6 +451,8 @@ fm_pr_self_review_report_valid() {
     }
     END {
       if (!content) bad = 1
+      if (!finding_review || !finding_count_seen || finding_count != finding_entries) bad = 1
+      if (finding_count == 0 && !finding_summary) bad = 1
       if (!target_repository || !base_ref || !base_sha || !target_head || !merge_base_sha || !changed_files || !tree_status) bad = 1
       if (!substrate_base_sha || !substrate_head_sha || !substrate_changed_files) bad = 1
       if (!authority || !security || !path || !failure || !tests || !documentation || !delivery) bad = 1
@@ -419,6 +464,12 @@ fm_pr_self_review_report_valid() {
       }
       exit 1
     }
+    function substantive(value,    n, parts, i) {
+      n = split(value, parts, "; ")
+      if (n != 5 || parts[1] != "reviewed") return 0
+      for (i = 2; i <= 5; i++) if (parts[i] !~ /^[a-z]+=.+$/) return 0
+      return 1
+    }
   ' "$report") || return 1
   IFS="$(printf '\t')" read -r target_repository base_ref base_sha head_sha merge_base_sha changed_files tree_status \
     substrate_base_sha substrate_head_sha substrate_changed_files substrate_no_diff <<EOF
@@ -427,11 +478,13 @@ EOF
   case "$base_ref" in
     ''|[-.]*|*..*|*@\{*|*[!A-Za-z0-9._/-]*) return 1 ;;
   esac
-  local actual_repository actual_head resolved_base actual_merge_base actual_changed_files
+  local actual_repository actual_head authoritative_base_ref resolved_base actual_merge_base actual_changed_files
   actual_repository=$(cd "$worktree" && pwd -P) || return 1
   actual_head=$(git -C "$worktree" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1
   [ "$target_repository" = "$actual_repository" ] || return 1
   [ "$head_sha" = "$actual_head" ] || return 1
+  authoritative_base_ref=$(fm_pr_default_branch "$worktree") || return 1
+  [ "$base_ref" = "$authoritative_base_ref" ] || return 1
   resolved_base=$(git -C "$worktree" rev-parse --verify "$base_ref^{commit}" 2>/dev/null) || return 1
   [ "$base_sha" = "$resolved_base" ] || return 1
   actual_merge_base=$(git -C "$worktree" merge-base "$base_sha" "$head_sha" 2>/dev/null) || return 1
@@ -442,6 +495,7 @@ EOF
   local actual_substrate_head actual_substrate_changed
   actual_substrate_head=$(git -C "$substrate_root" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1
   [ "$substrate_head_sha" = "$actual_substrate_head" ] || return 1
+  [ -n "$expected_substrate_base" ] && [ "$substrate_base_sha" = "$expected_substrate_base" ] || return 1
   git -C "$substrate_root" cat-file -e "$substrate_base_sha^{commit}" 2>/dev/null || return 1
   actual_substrate_changed=$(git -C "$substrate_root" diff --name-status "$substrate_base_sha" "$substrate_head_sha" | fm_pr_sha256_stream) || return 1
   [ "$substrate_changed_files" = "$actual_substrate_changed" ] || return 1

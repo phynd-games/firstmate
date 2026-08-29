@@ -142,7 +142,7 @@ JS
 }
 
 test_invalid_current_encodings_are_rejected() {
-  local output malformed parsed
+  local output malformed parsed unknown_version
   output=$(printf 'body' | "$OWNER" encode legacy-operational 2>/dev/null) \
     && fail "legacy-operational was accepted as a current producer kind"
   [ -z "$output" ] || fail "invalid current kind printed protocol data"
@@ -152,6 +152,9 @@ test_invalid_current_encodings_are_rejected() {
   malformed="${FM_OPERATIONAL_HEADER_PREFIX}watcher: "
   ! fm_operational_input_classify "$malformed" parsed \
     || fail "malformed current input downgraded into legacy kind $parsed"
+  unknown_version="${FM_OPERATIONAL_PREFIX}v2 watcher: body"
+  ! fm_operational_input_classify "$unknown_version" parsed \
+    || fail "unknown operational wire version downgraded into $parsed"
   output=$(printf '%s' "$malformed" | "$OWNER" inspect 2>/dev/null) \
     && fail "structural inspection accepted malformed current input"
   [ -z "$output" ] || fail "malformed current inspection emitted a trust report"

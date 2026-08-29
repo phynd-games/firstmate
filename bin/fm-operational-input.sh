@@ -193,7 +193,9 @@ fm_operational_input_classify() {  # <message> <result-var>
   fi
   # A malformed current-version envelope never downgrades into the broad
   # pre-version FIRSTMATE_OP compatibility parser.
-  case "$message" in "$FM_OPERATIONAL_HEADER_PREFIX"*) return 1 ;; esac
+  case "$message" in
+    "$FM_OPERATIONAL_PREFIX"v*) return 1 ;;
+  esac
   if fm_legacy_operational_input_kind "$message" classified_kind; then
     printf -v "$result_var" '%s' "$classified_kind"
     return 0

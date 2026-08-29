@@ -14,6 +14,7 @@ set -u
 
 PR_CHECK="$ROOT/bin/fm-pr-check.sh"
 SELF_REVIEW_CHECK="$ROOT/bin/fm-pr-self-review-check.sh"
+PR_CREATE="$ROOT/bin/fm-pr-create.sh"
 PR_MERGE="$ROOT/bin/fm-pr-merge.sh"
 MIGRATE="$ROOT/bin/fm-pr-check-migrate.sh"
 POLL="$ROOT/bin/fm-pr-poll.sh"
@@ -68,17 +69,20 @@ state_snapshot() {
 }
 
 make_case() {
-  local name=$1 dir fakebin fake_root
+  local name=$1 dir fakebin fake_root substrate_head
   dir="$TMP_ROOT/$name"
   fakebin="$dir/fakebin"
   fake_root="$dir/root"
-  mkdir -p "$dir/home/state" "$dir/home/data" "$dir/home/config" "$dir/wt" "$fakebin" "$fake_root/bin"
+  mkdir -p "$dir/home/state" "$dir/home/data/task-a" "$dir/home/config" "$dir/wt" "$fakebin" "$fake_root/bin"
   git init -q "$dir/wt"
   git -C "$dir/wt" config user.name fmtest
   git -C "$dir/wt" config user.email fmtest@example.invalid
   printf 'fixture\n' > "$dir/wt/fixture.txt"
   git -C "$dir/wt" add fixture.txt
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
+  git -C "$dir/wt" branch -M main
+  substrate_head=$(git -C "$ROOT" rev-parse HEAD)
+  printf '%s\n' "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$dir/home/data/task-a/brief.md"
   cat > "$fake_root/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'guard\n' >> "$FM_TEST_GUARD_LOG"
@@ -135,7 +139,10 @@ SH
 }
 
 write_task_meta() {
-  local dir=$1 id=${2:-task-a}
+  local dir=$1 id=${2:-task-a} substrate_head
+  substrate_head=$(git -C "$ROOT" rev-parse HEAD)
+  mkdir -p "$dir/home/data/$id"
+  printf '%s\n' "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$dir/home/data/$id/brief.md"
   fm_write_meta "$dir/home/state/$id.meta" \
     "window=firstmate:fm-$id" \
     "endpoint_task_id=$id" \
@@ -156,14 +163,18 @@ write_self_review_report() {
   substrate_head=$(git -C "$substrate_root" rev-parse HEAD)
   empty_digest=$(printf '' | fm_pr_sha256_stream)
   mkdir -p "$home/data/$id"
+  printf '%s\n' "- Firstmate substrate launch SHA: \`$(git -C "$ROOT" rev-parse HEAD)\`" > "$home/data/$id/brief.md"
   printf '%s\n' \
     'Self-review report: firstmate-pr-self-review.v1' \
     "Task id: $id" \
     '# Findings' \
+    'Review status: complete' \
+    'Finding count: 0' \
+    'Finding summary: none' \
     'None.' \
     '# Target-project diff evidence' \
     "Target repository: $target_repository" \
-    'Base ref: HEAD' \
+    'Base ref: main' \
     "Base SHA: $target_head" \
     "Head SHA: $target_head" \
     "Merge-base SHA: $target_head" \
@@ -174,13 +185,13 @@ write_self_review_report() {
     "Substrate head SHA: $substrate_head" \
     "Substrate changed files: $empty_digest" \
     '# Surface review' \
-    'Authority: no-mistakes remains delivery authority.' \
-    'Security: private evidence is validated.' \
-    'Path: task-bound paths are safe.' \
-    'Failure: malformed evidence fails closed.' \
-    'Tests: public boundary cases are covered.' \
-    'Documentation: generated contract is aligned.' \
-    'Delivery: no independent approval is added.' \
+    'Authority: reviewed; files=bin/fm-pr-check.sh,bin/fm-pr-lib.sh; evidence=delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing.' \
+    'Security: reviewed; files=bin/fm-pr-lib.sh,tests/fm-pr-check-security.test.sh; evidence=private report identity is checked; consequence=tampering is refused; fix=preserve single-link mode checks.' \
+    'Path: reviewed; files=bin/fm-pr-check.sh,bin/fm-pr-self-review-check.sh; evidence=task paths are validated; consequence=path traversal is rejected; fix=retain canonical task boundaries.' \
+    'Failure: reviewed; files=bin/fm-pr-lib.sh,bin/fm-operational-input.sh; evidence=malformed inputs fail closed; consequence=no fallback authority is granted; fix=keep deterministic refusal.' \
+    'Tests: reviewed; files=tests/fm-pr-check-security.test.sh,tests/fm-pr-merge.test.sh; evidence=public boundary cases execute; consequence=regressions are visible; fix=retain negative coverage.' \
+    'Documentation: reviewed; files=.agents/skills/firstmate-pr-self-review/SKILL.md,bin/fm-brief.sh; evidence=generated contracts name exact evidence; consequence=workers have durable requirements; fix=keep docs aligned.' \
+    'Delivery: reviewed; files=bin/fm-pr-create.sh,bin/fm-merge-local.sh; evidence=readiness paths invoke the shared check; consequence=direct bypasses refuse; fix=preserve no-mistakes authority.' \
     '# Verification' \
     'Command: focused PR-ready boundary test' \
     'Result: passed' \
@@ -326,6 +337,17 @@ run_check_entry() {
     "$PR_CHECK" "$@"
 }
 
+run_create_entry() {
+  local dir=$1
+  shift
+  FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
+    FM_SUBSTRATE_ROOT_OVERRIDE="$ROOT" \
+    FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
+    FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
+    PATH="$dir/fakebin:$BASE_PATH" \
+    "$PR_CREATE" "$@"
+}
+
 run_merge_entry() {
   local dir=$1
   shift
@@ -386,6 +408,21 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
+path.write_text(text.replace("Base ref: main", "Base ref: HEAD"), encoding="utf-8")
+PY
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/104 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a self-referential target base"
+
+  write_self_review_report "$dir/home" task-a
+  python3 - "$report" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
 path.write_text(text.replace("Changed files: " + "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "Changed files: " + "1" * 64), encoding="utf-8")
 PY
   chmod 0600 "$report"
@@ -405,6 +442,27 @@ PY
   fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
     || fail "valid self-review report did not permit a valid PR poll"
   pass "PR-ready path requires a private durable findings-first self-review"
+}
+
+test_direct_pr_creation_requires_self_review() {
+  local dir rc report
+  dir=$(make_case direct-pr-create)
+  fm_write_meta "$dir/home/state/task-a.meta" \
+    'window=firstmate:fm-task-a' "worktree=$dir/wt" 'kind=ship' 'mode=direct-PR'
+  report="$dir/home/data/task-a/pr-self-review.md"
+  rm -f "$report"
+  set +e
+  run_create_entry "$dir" task-a --title blocked > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "direct PR creation accepted a missing self-review report"
+  [ ! -s "$dir/gh-axi.log" ] || fail "direct PR creation called gh-axi after validation refusal"
+  write_self_review_report "$dir/home" task-a
+  run_create_entry "$dir" task-a --title accepted >/dev/null \
+    || fail "direct PR creation rejected a valid self-review report"
+  grep -qxF 'pr create --title accepted' "$dir/gh-axi.log" \
+    || fail "direct PR creation did not forward arguments after validation"
+  pass "direct PR creation enforces self-review before gh-axi"
 }
 
 # shellcheck disable=SC2016 # Literal rejected URL bytes are parser test data.
@@ -3806,6 +3864,7 @@ test_gitlab_merged_poll_retires() {
 
 test_parser_matrix
 test_pr_ready_requires_durable_self_review
+test_direct_pr_creation_requires_self_review
 test_gitlab_merge_watch
 test_merged_poll_retires_once
 test_merged_poll_reregistration_after_notification_is_absorbed

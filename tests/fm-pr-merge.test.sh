@@ -105,18 +105,23 @@ make_case() {
   printf 'fixture\n' > "$case_dir/wt/fixture.txt"
   git -C "$case_dir/wt" add fixture.txt
   git -C "$case_dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
+  git -C "$case_dir/wt" branch -M main
   target_head=$(git -C "$case_dir/wt" rev-parse HEAD)
   target_repository=$(cd "$case_dir/wt" && pwd -P)
   substrate_head=$(git -C "$ROOT" rev-parse HEAD)
   empty_digest=$(printf '' | fm_pr_sha256_stream)
+  printf '%s\n' "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$case_dir/home/data/task-x1/brief.md"
   printf '%s\n' \
     'Self-review report: firstmate-pr-self-review.v1' \
     'Task id: task-x1' \
     '# Findings' \
+    'Review status: complete' \
+    'Finding count: 0' \
+    'Finding summary: none' \
     'None.' \
     '# Target-project diff evidence' \
     "Target repository: $target_repository" \
-    'Base ref: HEAD' \
+    'Base ref: main' \
     "Base SHA: $target_head" \
     "Head SHA: $target_head" \
     "Merge-base SHA: $target_head" \
@@ -127,13 +132,13 @@ make_case() {
     "Substrate head SHA: $substrate_head" \
     "Substrate changed files: $empty_digest" \
     '# Surface review' \
-    'Authority: no-mistakes remains delivery authority.' \
-    'Security: private evidence is validated.' \
-    'Path: task-bound paths are safe.' \
-    'Failure: malformed evidence fails closed.' \
-    'Tests: public boundary cases are covered.' \
-    'Documentation: generated contract is aligned.' \
-    'Delivery: no independent approval is added.' \
+    'Authority: reviewed; files=bin/fm-pr-check.sh,bin/fm-pr-lib.sh; evidence=delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing.' \
+    'Security: reviewed; files=bin/fm-pr-lib.sh,tests/fm-pr-check-security.test.sh; evidence=private report identity is checked; consequence=tampering is refused; fix=preserve single-link mode checks.' \
+    'Path: reviewed; files=bin/fm-pr-check.sh,bin/fm-pr-self-review-check.sh; evidence=task paths are validated; consequence=path traversal is rejected; fix=retain canonical task boundaries.' \
+    'Failure: reviewed; files=bin/fm-pr-lib.sh,bin/fm-operational-input.sh; evidence=malformed inputs fail closed; consequence=no fallback authority is granted; fix=keep deterministic refusal.' \
+    'Tests: reviewed; files=tests/fm-pr-check-security.test.sh,tests/fm-pr-merge.test.sh; evidence=public boundary cases execute; consequence=regressions are visible; fix=retain negative coverage.' \
+    'Documentation: reviewed; files=.agents/skills/firstmate-pr-self-review/SKILL.md,bin/fm-brief.sh; evidence=generated contracts name exact evidence; consequence=workers have durable requirements; fix=keep docs aligned.' \
+    'Delivery: reviewed; files=bin/fm-pr-create.sh,bin/fm-merge-local.sh; evidence=readiness paths invoke the shared check; consequence=direct bypasses refuse; fix=preserve no-mistakes authority.' \
     '# Verification' \
     'Command: focused PR-ready boundary test' \
     'Result: passed' \

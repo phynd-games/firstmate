@@ -52,7 +52,8 @@ fm_pr_head_valid "$HEAD" || {
   echo "error: PR-ready task worktree has no valid HEAD" >&2
   exit 1
 }
-if ! fm_pr_self_review_report_valid "$DATA" "$ID" "$HEAD" "$WT" "$SUBSTRATE_ROOT"; then
+SUBSTRATE_LAUNCH_SHA=$(fm_pr_substrate_launch_sha "$DATA" "$ID" || true)
+if ! fm_pr_self_review_report_valid "$DATA" "$ID" "$HEAD" "$WT" "$SUBSTRATE_ROOT" "$SUBSTRATE_LAUNCH_SHA"; then
   echo "error: durable findings-first self-review report is unavailable or invalid" >&2
   exit 1
 fi

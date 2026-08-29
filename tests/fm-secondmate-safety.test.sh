@@ -9,6 +9,8 @@ set -u
 
 # shellcheck source=tests/secondmate-helpers.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/secondmate-helpers.sh"
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-pr-lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-secondmate-safety)
 export FM_BACKEND=tmux
@@ -48,7 +50,7 @@ SH
 }
 
 test_fm_home_parameterization() {
-  local brief home_one home_two out
+  local brief home_one home_two out task_wt target_head substrate_sha empty_digest
   home_one="$TMP_ROOT/home one"
   home_two="$TMP_ROOT/home-two"
   mkdir -p "$home_one/data" "$home_one/state" "$home_two/data" "$home_two/state"
@@ -73,7 +75,48 @@ test_fm_home_parameterization() {
   brief="$home_one/data/task-c/brief.md"
   grep -F ">> '$home_one/state/task-c.status'" "$brief" >/dev/null || fail "secondmate brief did not shell-quote FM_HOME state path"
 
-  printf 'project=x\n' > "$home_one/state/task-a.meta"
+  task_wt="$home_one/task-wt"
+  fm_git_init_commit "$task_wt"
+  git -C "$task_wt" branch -M main
+  target_head=$(git -C "$task_wt" rev-parse HEAD)
+  substrate_sha=$(git -C "$ROOT" rev-parse HEAD)
+  empty_digest=$(printf '' | fm_pr_sha256_stream)
+  printf '%s\n' \
+    'Self-review report: firstmate-pr-self-review.v1' \
+    'Task id: task-a' \
+    '# Findings' \
+    'Review status: complete' \
+    'Finding count: 0' \
+    'Finding summary: none' \
+    '# Target-project diff evidence' \
+    "Target repository: $(cd "$task_wt" && pwd -P)" \
+    'Base ref: main' \
+    "Base SHA: $target_head" \
+    "Head SHA: $target_head" \
+    "Merge-base SHA: $target_head" \
+    "Changed files: $empty_digest" \
+    'Tree status: clean' \
+    '# Firstmate substrate diff evidence' \
+    "Substrate base SHA: $substrate_sha" \
+    "Substrate head SHA: $substrate_sha" \
+    "Substrate changed files: $empty_digest" \
+    '# Surface review' \
+    'Authority: reviewed; files=bin/fm-pr-check.sh; evidence=no-mistakes owns delivery; consequence=readiness is non-authorizing; fix=retain one delivery owner.' \
+    'Security: reviewed; files=bin/fm-pr-lib.sh; evidence=private report is validated; consequence=tampering is refused; fix=retain identity checks.' \
+    'Path: reviewed; files=bin/fm-pr-check.sh; evidence=task path is bound; consequence=wrong worktrees refuse; fix=retain path validation.' \
+    'Failure: reviewed; files=bin/fm-operational-input.sh; evidence=unknown versions refuse; consequence=legacy downgrade is blocked; fix=retain fail-closed parsing.' \
+    'Tests: reviewed; files=tests/fm-secondmate-safety.test.sh; evidence=public interface executes; consequence=fixture drift is visible; fix=retain focused coverage.' \
+    'Documentation: reviewed; files=bin/fm-brief.sh; evidence=brief records launch SHA; consequence=substrate scope is durable; fix=retain generated contract.' \
+    'Delivery: reviewed; files=bin/fm-pr-create.sh; evidence=PR creation checks reports; consequence=direct bypasses refuse; fix=retain shared boundary.' \
+    '# Verification' \
+    'Command: fm-pr-check.sh task-a https://github.com/example/repo/pull/1' \
+    'Result: passed' \
+    '# Residual risks' \
+    'None.' > "$home_one/data/task-a/pr-self-review.md"
+  chmod 0600 "$home_one/data/task-a/pr-self-review.md"
+  fm_write_meta "$home_one/state/task-a.meta" \
+    "window=firstmate:fm-task-a" "worktree=$task_wt" "project=x" \
+    'kind=ship' 'mode=no-mistakes'
   FM_HOME="$home_one" FM_GUARD_GRACE=999999 "$ROOT/bin/fm-pr-check.sh" task-a https://github.com/example/repo/pull/1 >/dev/null 2>/dev/null \
     || fail "fm-pr-check failed under FM_HOME"
   [ -f "$home_one/state/task-a.check.sh" ] || fail "pr check was not written under FM_HOME/state"
