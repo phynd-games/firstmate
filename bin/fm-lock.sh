@@ -12,6 +12,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 LOCK="$STATE/.lock"
+LOCK_IDENTITY="$STATE/.lock-pid-identity"
 mkdir -p "$STATE" 2>/dev/null || {
   echo "error: cannot create session-lock state directory $STATE; operate read-only until resolved" >&2
   exit 1
@@ -44,6 +45,20 @@ rm -f "$probe" 2>/dev/null || {
 }
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+publish_lock_identity() {
+  local identity tmp
+  identity=$(fm_pid_identity "$me" 2>/dev/null) || return 1
+  tmp="$LOCK_IDENTITY.tmp.${BASHPID:-$$}"
+  if ! printf '%s\n' "$identity" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  if ! mv -f "$tmp" "$LOCK_IDENTITY" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  [ "$(cat "$LOCK_IDENTITY" 2>/dev/null)" = "$identity" ]
+}
 CLAIM_LOCK="$STATE/.lock.acquire"
 CLAIM_LOCK_HELD=0
 release_claim_lock() {
@@ -58,6 +73,10 @@ trap 'exit 1' HUP INT TERM
 if [ -f "$LOCK" ] && [ ! -L "$LOCK" ]; then
   old=$(cat "$LOCK" 2>/dev/null || true)
   if [ "$old" = "$me" ]; then
+    publish_lock_identity || {
+      echo "error: cannot verify session-lock process identity; operate read-only until resolved" >&2
+      exit 1
+    }
     echo "lock acquired: harness pid $me"
     exit 0
   fi
@@ -95,11 +114,16 @@ if ! { printf '%s\n' "$me" > "$LOCK"; } 2>/dev/null; then
   echo "error: cannot write session lock; operate read-only until resolved" >&2
   exit 1
 fi
+if ! publish_lock_identity; then
+  echo "error: cannot publish session-lock process identity; operate read-only until resolved" >&2
+  exit 1
+fi
 written=$(cat "$LOCK" 2>/dev/null) || {
   echo "error: cannot verify session lock ownership; operate read-only until resolved" >&2
   exit 1
 }
-if [ ! -f "$LOCK" ] || [ -L "$LOCK" ] || [ "$written" != "$me" ]; then
+if [ ! -f "$LOCK" ] || [ -L "$LOCK" ] || [ "$written" != "$me" ] \
+  || [ "$(cat "$LOCK_IDENTITY" 2>/dev/null)" != "$(fm_pid_identity "$me" 2>/dev/null || true)" ]; then
   echo "error: session lock ownership verification failed; operate read-only until resolved" >&2
   exit 1
 fi
