@@ -231,7 +231,11 @@ payload_is_valid() {  # <payload-file>
     def wake:
       type == "object" and has_nullable(.; "epoch"; "number") and has_nullable(.; "seq"; "string")
       and has_nullable(.; "kind"; "string") and has_nullable(.; "key"; "string")
-      and has_type(.; "payload"; "string") and has_type(.; "malformed"; "boolean");
+      and has_type(.; "payload"; "string") and has_type(.; "malformed"; "boolean")
+      and (if .malformed then true else
+        has_type(.; "epoch"; "number") and has_type(.; "seq"; "string")
+        and has_type(.; "kind"; "string") and has_type(.; "key"; "string")
+      end);
     def evidence: type == "object";
     def secondmate:
       type == "object" and has_type(.; "id"; "string") and has_nullable(.; "home"; "string")

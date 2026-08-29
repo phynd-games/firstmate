@@ -225,6 +225,21 @@ dashboard_lock_release() {
   return 0
 }
 
+dashboard_lock_acquire_wait() {
+  local waited=0
+  if dashboard_lock_try_acquire >/dev/null 2>&1; then
+    return 0
+  fi
+  while [ "$waited" -lt "$FM_DASHBOARD_LOCK_WAIT" ]; do
+    sleep 1
+    waited=$((waited + 1))
+    if dashboard_lock_try_acquire >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 usage() {
   awk '
     NR == 1 { next }
@@ -301,25 +316,39 @@ herdr_ready() {
 # Otherwise it is evidence of nothing, and treating it as "gone" would drop a
 # record whose server is still live and still holding its port.
 pane_state() {  # <pane-id> <session> <workspace> <tab>
-  local pane=$1 session=${2:-$(herdr_session)} workspace=${3:-} tab=${4:-} out
+  local pane=$1 session=${2:-$(herdr_session)} workspace=${3:-} tab=${4:-} out rc=0
   if [ -z "$pane" ] || [ -z "$session" ] || [ -z "$workspace" ] || [ -z "$tab" ]; then
     printf 'unknown'
     return 0
   fi
-  if out=$(HERDR_SESSION_OVERRIDE="$session" herdr_cli pane get "$pane" 2>/dev/null); then
-    if printf '%s' "$out" | jq -e --arg pane "$pane" --arg workspace "$workspace" --arg tab "$tab" '
-      .result.pane.pane_id == $pane
-      and .result.pane.workspace_id == $workspace
-      and .result.pane.tab_id == $tab
-    ' >/dev/null 2>&1; then
-      printf 'open'
-    else
-      printf 'unknown'
-    fi
+  if [ -z "$FM_DASHBOARD_HERDR_CLI" ]; then
+    out=$(fm_run_timed "$FM_DASHBOARD_HERDR_TIMEOUT" env \
+      FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="${FM_ROOT_OVERRIDE:-$FM_ROOT}" \
+      bash -c '
+        . "$1"
+        fm_backend_source herdr || exit 1
+        fm_backend_herdr_pane_presence_state "$2" "$3" "$4" "$5"
+      ' dashboard-pane-presence "$SCRIPT_DIR/fm-backend.sh" \
+      "$session" "$pane" "$workspace" "$tab" 2>/dev/null) || out=unknown
+    case "$out" in
+      dead) printf 'gone' ;;
+      present) printf 'open' ;;
+      *) printf 'unknown' ;;
+    esac
     return 0
   fi
-  if HERDR_SESSION_OVERRIDE="$session" herdr_cli workspace list >/dev/null 2>&1; then
+  out=$(HERDR_SESSION_OVERRIDE="$session" herdr_cli pane get "$pane" 2>&1) || rc=$?
+  if printf '%s' "$out" | jq -e '.error.code == "pane_not_found"' >/dev/null 2>&1; then
     printf 'gone'
+  elif [ "$rc" -ne 0 ]; then
+    printf 'unknown'
+  elif printf '%s' "$out" | jq -e --arg pane "$pane" --arg workspace "$workspace" --arg tab "$tab" '
+    (.result.pane | type == "object")
+    and (.result.pane.pane_id == $pane)
+    and (.result.pane.workspace_id == $workspace)
+    and (.result.pane.tab_id == $tab)
+  ' >/dev/null 2>&1; then
+    printf 'open'
   else
     printf 'unknown'
   fi
@@ -723,12 +752,20 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
   # session gains a tab rather than a whole new workspace; create one only when
   # the session is empty.
   out=$(herdr_cli workspace list 2>/dev/null) || return 1
+  printf '%s' "$out" | jq -e '
+    (.result.workspaces | type) == "array"
+    and all(.result.workspaces[]; type == "object"
+      and (.workspace_id | type == "string")
+      and (.workspace_id | length > 0))
+  ' >/dev/null 2>&1 || return 1
   ws=$(printf '%s' "$out" | jq -r '.result.workspaces[0].workspace_id // empty' 2>/dev/null)
   if [ -z "$ws" ]; then
     STARTED_STAGE=workspace-create
     startup_journal_write || return 1
     out=$(herdr_cli workspace create --cwd "$FM_HOME" --label "$label" --no-focus 2>/dev/null) || :
     ws=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
+    [ -n "$ws" ] && STARTED_WORKSPACE=$ws
+    startup_journal_write || return 1
     [ -n "$ws" ] || ws=$(recover_workspace "$label") || return 1
   fi
   STARTED_WORKSPACE=$ws
@@ -812,11 +849,6 @@ command_ensure() {
     while [ "$waited" -lt "$FM_DASHBOARD_LOCK_WAIT" ]; do
       sleep 1
       waited=$((waited + 1))
-      if record_is_live; then
-        log_line adopted "a concurrent start published port $ADOPTED_PORT"
-        report_url reused "$ADOPTED_PORT"
-        return 0
-      fi
       if dashboard_lock_try_acquire >/dev/null 2>&1; then
         lock_acquired=1
         break
@@ -836,9 +868,9 @@ command_ensure() {
   fi
 
   if record_is_live; then
-    dashboard_lock_release >/dev/null 2>&1
     log_line reused "already serving on port $ADOPTED_PORT"
     report_url reused "$ADOPTED_PORT"
+    dashboard_lock_release >/dev/null 2>&1
     return 0
   fi
 
@@ -873,9 +905,9 @@ command_ensure() {
   if [ -n "$ADOPT_HEALTH_PORT" ]; then
     # Unreachable in practice, because a fresh token cannot match a running
     # server; kept so a future adoption path cannot silently skip readiness.
-    dashboard_lock_release >/dev/null 2>&1
     log_line adopted "an existing dashboard already owned port $port"
     report_url reused "$port"
+    dashboard_lock_release >/dev/null 2>&1
     return 0
   fi
 
@@ -937,24 +969,31 @@ command_ensure() {
     return 1
   fi
 
-  dashboard_lock_release >/dev/null 2>&1
   log_line started "serving on port $port in pane $STARTED_PANE"
   if ! record_is_live || [ "$ADOPTED_PORT" != "$port" ]; then
+    dashboard_lock_release >/dev/null 2>&1
     blocked "the dashboard owner could not be re-proven immediately before URL publication"
     return 1
   fi
   report_url started "$port"
+  dashboard_lock_release >/dev/null 2>&1
   return 0
 }
 
 command_status() {
   [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  if ! dashboard_lock_acquire_wait; then
+    blocked "another dashboard lifecycle operation held the lock for ${FM_DASHBOARD_LOCK_WAIT}s"
+    return 1
+  fi
   if [ -L "$RECORD" ]; then
     printf 'DASHBOARD_BLOCKED: the dashboard owner record is a symlink and was not read\n'
+    dashboard_lock_release >/dev/null 2>&1
     return 1
   fi
   if [ ! -f "$RECORD" ]; then
     printf 'dashboard: no owner recorded for this home\n'
+    dashboard_lock_release >/dev/null 2>&1
     return 0
   fi
   printf 'dashboard: recorded owner\n'
@@ -967,26 +1006,35 @@ command_status() {
   else
     printf '  live: no - the recorded owner could not be proven\n'
   fi
+  dashboard_lock_release >/dev/null 2>&1
   return 0
 }
 
 command_stop() {
   local pane session workspace tab
   [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  if ! dashboard_lock_acquire_wait; then
+    blocked "another dashboard lifecycle operation held the lock for ${FM_DASHBOARD_LOCK_WAIT}s"
+    return 1
+  fi
   if [ -L "$RECORD" ]; then
     blocked "the dashboard owner record is a symlink and was not read"
+    dashboard_lock_release >/dev/null 2>&1
     return 1
   fi
   if [ -e "$JOURNAL" ]; then
     blocked "dashboard startup has unresolved ownership; the owner record was kept"
+    dashboard_lock_release >/dev/null 2>&1
     return 1
   fi
   if [ ! -f "$RECORD" ]; then
     printf 'dashboard: nothing to stop\n'
+    dashboard_lock_release >/dev/null 2>&1
     return 0
   fi
   if ! record_is_live; then
     blocked "the recorded dashboard owner could not be fully proven; the owner record was kept"
+    dashboard_lock_release >/dev/null 2>&1
     return 1
   fi
   session=$(record_get session)
@@ -996,7 +1044,11 @@ command_stop() {
   case "$(pane_state "$pane" "$session" "$workspace" "$tab")" in
     open)
       pane_close "$session" "$workspace" "$tab" "$pane" \
-        || { blocked "herdr could not close the dashboard pane $pane"; return 1; }
+        || {
+          dashboard_lock_release >/dev/null 2>&1
+          blocked "herdr could not close the dashboard pane $pane"
+          return 1
+        }
       log_line stopped "closed pane $pane"
       printf 'dashboard: stopped\n'
       ;;
@@ -1008,10 +1060,12 @@ command_stop() {
       # Dropping the record here would orphan a server that may still be
       # holding its port, with nothing left pointing at it.
       blocked "herdr could not confirm whether the dashboard pane $pane is still running; the record was kept"
+      dashboard_lock_release >/dev/null 2>&1
       return 1
       ;;
   esac
   record_drop
+  dashboard_lock_release >/dev/null 2>&1
   return 0
 }
 

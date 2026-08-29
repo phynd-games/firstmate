@@ -142,7 +142,7 @@ case "${1:-}:${2:-}" in
       printf '{"result":{"pane":{"pane_id":"%s","workspace_id":"%s","tab_id":"%s:t%s"}}}\n' \
         "$returned" "$workspace_id" "$workspace_id" "$number"
     else
-      echo "fake-herdr: no such pane: $pane" >&2
+      printf '{"error":{"code":"pane_not_found","message":"no such pane: %s"}}\n' "$pane"
       exit 1
     fi
     ;;

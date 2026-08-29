@@ -316,6 +316,17 @@ path_present_json() {  # <path>
     '{path:$path,present:$present}'
 }
 
+regular_file_present_json() {  # <path>
+  local present=0
+  if [ "$LOCAL_ONLY" -eq 1 ]; then
+    snapshot_local_file_safe "$1" && present=1
+  else
+    [ -f "$1" ] && [ -r "$1" ] && present=1
+  fi
+  jq -n --arg path "$1" --argjson present "$(bool_json "$present")" \
+    '{path:$path,present:$present}'
+}
+
 if [ "$LOCAL_ONLY" -eq 1 ]; then
   for snapshot_root in "$STATE" "$DATA" "$CONFIG" "$PROJECTS"; do
     snapshot_local_root_safe "$snapshot_root" || {
@@ -740,11 +751,11 @@ task_json_lines() {
     if [ "$LOCAL_ONLY" -eq 1 ]; then
       snapshot_local_file_safe "$report_path" && report_present=1 || report_present=0
     else
-      [ -f "$report_path" ] && report_present=1 || report_present=0
+      [ -f "$report_path" ] && [ -r "$report_path" ] && report_present=1 || report_present=0
     fi
     meta_json=$(path_present_json "$meta")
     status_json=$event_json
-    report_json=$(path_present_json "$report_path")
+    report_json=$(regular_file_present_json "$report_path")
     if [ -n "$worktree" ]; then worktree_json=$(path_present_json "$worktree"); else worktree_json=$(jq -n '{path:null,present:false}'); fi
     if [ -n "$home" ] && [ -n "$remote_host" ]; then
       home_json=$(jq -n --arg path "$home" --argjson present "$remote_home_present" '{path:$path,present:$present}')
@@ -1049,6 +1060,13 @@ registry_secondmates_json() {
     jq -n --arg path "$reg" --arg observed "$SNAPSHOT_NOW" \
       '{present:true,available:false,complete:false,reason:"refused: the path is a symlink",provenance:"registered-table",path:$path,freshness:{status:"unavailable",observed_at:$observed},records:[],input_truncated:false,records_truncated:false,reasons:["refused: the path is a symlink"],lines_in_window:0,records_in_window:0}'
     return 0
+  fi
+  if [ -e "$reg" ] || [ -L "$reg" ]; then
+    if [ ! -f "$reg" ]; then
+      jq -n --arg path "$reg" --arg observed "$SNAPSHOT_NOW" \
+        '{present:true,available:false,complete:false,reason:"refused: the path is not a regular file",provenance:"registered-table",path:$path,freshness:{status:"unavailable",observed_at:$observed},records:[],input_truncated:false,records_truncated:false,reasons:["refused: the path is not a regular file"],lines_in_window:0,records_in_window:0}'
+      return 0
+    fi
   fi
   if [ ! -f "$reg" ]; then
     jq -n --arg path "$reg" --arg observed "$SNAPSHOT_NOW" \

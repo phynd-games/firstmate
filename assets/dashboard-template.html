@@ -524,7 +524,9 @@ __FM_DASHBOARD_DATA__
     function wake(v) {
       return nullable(v, "epoch", "number") && nullable(v, "seq", "string")
         && nullable(v, "kind", "string") && nullable(v, "key", "string")
-        && field(v, "payload", "string") && field(v, "malformed", "boolean");
+        && field(v, "payload", "string") && field(v, "malformed", "boolean")
+        && (v.malformed || (field(v, "epoch", "number") && field(v, "seq", "string")
+          && field(v, "kind", "string") && field(v, "key", "string")));
     }
     function evidence(v) { return obj(v); }
     function secondmate(v) {
@@ -1357,6 +1359,7 @@ __FM_DASHBOARD_DATA__
       && typeof snapshot.secondmate_current.registry.path === "string") {
     sources.push(["secondmate registry", snapshot.secondmate_current.registry.path]);
   }
+  sources.push(["secondmate home marker", String(data.fm_home || "").replace(/\/$/, "") + "/.fm-secondmate-home"]);
   function usageSourcePath(path) {
     var value = String(path || "");
     if (value.charAt(0) === "/") return value;
@@ -1364,6 +1367,12 @@ __FM_DASHBOARD_DATA__
   }
   tasks.forEach(function (t) {
     if (t.paths && t.paths.meta) sources.push(["metadata " + t.id, t.paths.meta.path]);
+    if (t.paths && t.paths.home && typeof t.paths.home.path === "string") {
+      sources.push(["home " + t.id, t.paths.home.path]);
+    }
+    if (t.paths && t.paths.worktree && typeof t.paths.worktree.path === "string") {
+      sources.push(["worktree " + t.id, t.paths.worktree.path]);
+    }
   });
   arr(budget.files).forEach(function (f) {
     sources.push(["usage " + f.file, usageSourcePath(f.file)]);
