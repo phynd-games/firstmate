@@ -344,6 +344,7 @@ crew_state_json() {  # <id>
       FM_DATA_OVERRIDE="$DATA" \
       FM_PROJECTS_OVERRIDE="$PROJECTS" \
       FM_CONFIG_OVERRIDE="$CONFIG" \
+      FM_BACKEND_NO_SERVER_START=1 \
       "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null || true
   )
   raw=$(printf '%s\n' "$raw" | head -1)
@@ -366,13 +367,14 @@ crew_state_json() {  # <id>
     '{state:$state,source:$source,detail:$detail,raw:$raw}'
 }
 
-snapshot_herdr_target_exists() {  # <target> <expected-label>
+snapshot_herdr_target_state() {  # <target> <expected-label>
   fm_run_timed "$FM_SNAPSHOT_HERDR_TIMEOUT" env \
     FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" \
     bash -c '
       . "$1"
       fm_backend_source herdr || exit 1
-      fm_backend_target_exists herdr "$2" "$3"
+      fm_backend_herdr_parse_target "$2" || exit 1
+      fm_backend_herdr_pane_presence_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"
     ' snapshot-herdr-target "$SCRIPT_DIR/fm-backend.sh" "$1" "$2"
 }
 
@@ -580,7 +582,7 @@ task_json_lines() {
   set -o pipefail
   local meta id kind harness model effort mode yolo project worktree home projects spawn_gen backend target status_log report_path
   local remote_host remote_root remote_state remote_rc remote_home_present remote_unavailable remote_reason
-  local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
+  local pr pr_source event_json current_json endpoint_exists endpoint_state endpoint_rc agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
   local open_decisions_tsv open_decisions_json
 
@@ -710,15 +712,20 @@ task_json_lines() {
     else
       if [ -n "$target" ]; then
         if [ "$backend" = herdr ]; then
-          snapshot_herdr_target_exists "$target" "fm-$id" >/dev/null 2>&1
+          endpoint_state=$(snapshot_herdr_target_state "$target" "fm-$id" 2>/dev/null || printf unknown)
+          case "$endpoint_state" in
+            present) endpoint_exists=true ;;
+            dead) endpoint_exists=false ;;
+            *) endpoint_exists=null ;;
+          esac
         else
           fm_backend_target_exists "$backend" "$target" "fm-$id" >/dev/null 2>&1
-        fi
-        endpoint_rc=$?
-        if [ "$endpoint_rc" -eq 0 ]; then
-          endpoint_exists=true
-        else
-          endpoint_exists=false
+          endpoint_rc=$?
+          if [ "$endpoint_rc" -eq 0 ]; then
+            endpoint_exists=true
+          else
+            endpoint_exists=false
+          fi
         fi
       fi
       if [ "$kind" = secondmate ] && [ -n "$target" ]; then

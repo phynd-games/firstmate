@@ -165,7 +165,7 @@ validate_bound FM_DASHBOARD_HERDR_TIMEOUT "$FM_DASHBOARD_HERDR_TIMEOUT"
 
 DASHBOARD_LOCK_HELD=0
 dashboard_lock_try_acquire() {
-  local pid current
+  local pid current mtime now age entry
   DASHBOARD_LOCK_HELD=0
   [ ! -L "$LOCK" ] || return 1
   if ! mkdir -m 700 "$LOCK" 2>/dev/null; then
@@ -173,7 +173,20 @@ dashboard_lock_try_acquire() {
     [ ! -L "$LOCK/pid" ] || return 1
     pid=$(cat "$LOCK/pid" 2>/dev/null || true)
     case "$pid" in
-      ''|*[!0-9]*) return 1 ;;
+      '')
+        for entry in "$LOCK"/* "$LOCK"/.[!.]* "$LOCK"/..?*; do
+          [ -e "$entry" ] || [ -L "$entry" ] || continue
+          return 1
+        done
+        mtime=$(stat -f '%m' "$LOCK" 2>/dev/null || stat -c '%Y' "$LOCK" 2>/dev/null || true)
+        now=$(date +%s)
+        case "$mtime" in ''|*[!0-9]*) return 1 ;; esac
+        age=$((now - mtime))
+        [ "$age" -ge "$FM_DASHBOARD_HERDR_TIMEOUT" ] || return 1
+        rmdir "$LOCK" 2>/dev/null || return 1
+        return 1
+        ;;
+      *[!0-9]*) return 1 ;;
     esac
     kill -0 "$pid" 2>/dev/null && return 1
     rm -f -- "$LOCK/pid" 2>/dev/null || return 1
@@ -447,12 +460,15 @@ startup_journal_write() {
     printf 'pane_parent_tab=%s\n' "${STARTED_PANE_PARENT_TAB:-}"
     printf 'stage=%s\n' "${STARTED_STAGE:-}"
     printf 'session=%s\n' "${STARTED_SESSION:-}"
-    printf 'workspace=%s\n' "${STARTED_WORKSPACE:-}"
+    printf 'workspace=%s\n' "${STARTED_WORKSPACE:-unknown}"
     printf 'workspace_id_state=%s\n' "$( [ -n "${STARTED_WORKSPACE:-}" ] && printf known || printf unknown )"
-    printf 'tab=%s\n' "${STARTED_TAB:-}"
+    printf 'workspace_locator=session:%s;label:%s\n' "${STARTED_SESSION:-}" "${STARTED_WORKSPACE_LABEL:-}"
+    printf 'tab=%s\n' "${STARTED_TAB:-unknown}"
     printf 'tab_id_state=%s\n' "$( [ -n "${STARTED_TAB:-}" ] && printf known || printf unknown )"
-    printf 'pane=%s\n' "${STARTED_PANE:-}"
+    printf 'tab_locator=workspace:%s;label:%s\n' "${STARTED_PANE_PARENT_WORKSPACE:-unknown}" "${STARTED_TAB_LABEL:-}"
+    printf 'pane=%s\n' "${STARTED_PANE:-unknown}"
     printf 'pane_id_state=%s\n' "$( [ -n "${STARTED_PANE:-}" ] && printf known || printf unknown )"
+    printf 'pane_locator=workspace:%s;tab:%s\n' "${STARTED_PANE_PARENT_WORKSPACE:-unknown}" "${STARTED_PANE_PARENT_TAB:-unknown}"
     printf 'port=%s\n' "${STARTUP_TRANSACTION_PORT:-}"
     printf 'digest=%s\n' "${STARTUP_TRANSACTION_DIGEST:-}"
   } > "$tmp" || { rm -f -- "$tmp"; return 1; }
@@ -469,9 +485,18 @@ startup_journal_load() {
   [ -n "${STARTED_PANE_PARENT_TAB:-}" ] || STARTED_PANE_PARENT_TAB=$(startup_journal_get pane_parent_tab)
   [ -n "${STARTED_STAGE:-}" ] || STARTED_STAGE=$(startup_journal_get stage)
   [ -n "${STARTED_SESSION:-}" ] || STARTED_SESSION=$(startup_journal_get session)
-  [ -n "${STARTED_WORKSPACE:-}" ] || STARTED_WORKSPACE=$(startup_journal_get workspace)
-  [ -n "${STARTED_TAB:-}" ] || STARTED_TAB=$(startup_journal_get tab)
-  [ -n "${STARTED_PANE:-}" ] || STARTED_PANE=$(startup_journal_get pane)
+  [ -n "${STARTED_WORKSPACE:-}" ] || {
+    STARTED_WORKSPACE=$(startup_journal_get workspace)
+    [ "$STARTED_WORKSPACE" = unknown ] && STARTED_WORKSPACE=
+  }
+  [ -n "${STARTED_TAB:-}" ] || {
+    STARTED_TAB=$(startup_journal_get tab)
+    [ "$STARTED_TAB" = unknown ] && STARTED_TAB=
+  }
+  [ -n "${STARTED_PANE:-}" ] || {
+    STARTED_PANE=$(startup_journal_get pane)
+    [ "$STARTED_PANE" = unknown ] && STARTED_PANE=
+  }
 }
 
 startup_journal_drop() { rm -f -- "$JOURNAL"; }
@@ -496,6 +521,9 @@ quarantine_write() {  # <reason> <session> <workspace> <tab> <pane> <port> <dige
     printf 'tab_id_state=%s\n' "$( [ -n "$4" ] && printf known || printf unknown )"
     printf 'pane=%s\n' "${5:-unknown}"
     printf 'pane_id_state=%s\n' "$( [ -n "$5" ] && printf known || printf unknown )"
+    printf 'workspace_locator=session:%s;label:%s\n' "${STARTED_SESSION:-}" "${STARTED_WORKSPACE_LABEL:-}"
+    printf 'tab_locator=workspace:%s;label:%s\n' "${STARTED_PANE_PARENT_WORKSPACE:-unknown}" "${STARTED_TAB_LABEL:-}"
+    printf 'pane_locator=workspace:%s;tab:%s\n' "${STARTED_PANE_PARENT_WORKSPACE:-unknown}" "${STARTED_PANE_PARENT_TAB:-unknown}"
     printf 'port=%s\n' "$6"
     printf 'digest=%s\n' "$7"
     printf 'created=%s\n' "$(now_epoch)"

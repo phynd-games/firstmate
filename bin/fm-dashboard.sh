@@ -830,6 +830,9 @@ inject_payload() {  # <payload-file> <out-file>
   fi
   output_parent_safe "$out" || fail "the output parent is not a safe directory inside this home: $OUTPUT_PARENT_REASON"
   [ ! -L "$out" ] || fail "the output path is a symlink and cannot be published: $out"
+  if [ -e "$out" ] || [ -L "$out" ]; then
+    [ -f "$out" ] || fail "the output path already exists and is not a regular file: $out"
+  fi
   if ! chmod 0600 "$tmp"; then
     fail "cannot make the page private before publishing it"
   fi
@@ -964,9 +967,13 @@ class Handler(BaseHTTPRequestHandler):
     sys_version = ""
 
     def setup(self):
-        super().setup()
-        self.connection.settimeout(HTTP_IO_TIMEOUT)
         self.client_slot_released = False
+        try:
+            super().setup()
+            self.connection.settimeout(HTTP_IO_TIMEOUT)
+        except BaseException:
+            self.release_client_slot()
+            raise
 
     def release_client_slot(self):
         if not self.client_slot_released:

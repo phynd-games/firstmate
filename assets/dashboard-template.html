@@ -1353,6 +1353,10 @@ __FM_DASHBOARD_DATA__
     ["startup memory captain-shared.md", (snapshot.roots && snapshot.roots.data) + "/captain-shared.md"],
     ["startup memory learnings.md", (snapshot.roots && snapshot.roots.data) + "/learnings.md"]
   ];
+  if (snapshot.secondmate_current && snapshot.secondmate_current.registry
+      && typeof snapshot.secondmate_current.registry.path === "string") {
+    sources.push(["secondmate registry", snapshot.secondmate_current.registry.path]);
+  }
   function usageSourcePath(path) {
     var value = String(path || "");
     if (value.charAt(0) === "/") return value;
