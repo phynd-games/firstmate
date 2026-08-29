@@ -60,6 +60,8 @@
 # Every ship brief also records the Firstmate substrate root, its exact launch
 # SHA, and a private durable report path, then requires the shared
 # firstmate-pr-self-review skill before validation, PR creation, or local landing.
+# When intake names an exact target-project base, firstmate adds its
+# `Target-project approved base: ref=<ref>; sha=<full-sha>` line before spawn.
 # Refuses to overwrite an existing brief.
 set -eu
 

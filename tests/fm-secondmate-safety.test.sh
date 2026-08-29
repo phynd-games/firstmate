@@ -50,7 +50,7 @@ SH
 }
 
 test_fm_home_parameterization() {
-  local brief home_one home_two out task_wt target_head substrate_sha empty_digest
+  local brief home_one home_two out task_wt target_head substrate_root substrate_sha empty_digest
   home_one="$TMP_ROOT/home one"
   home_two="$TMP_ROOT/home-two"
   mkdir -p "$home_one/data" "$home_one/state" "$home_two/data" "$home_two/state"
@@ -78,8 +78,10 @@ test_fm_home_parameterization() {
   task_wt="$home_one/task-wt"
   fm_git_init_commit "$task_wt"
   git -C "$task_wt" branch -M main
+  substrate_root="$home_one/substrate"
+  fm_git_init_commit "$substrate_root"
   target_head=$(git -C "$task_wt" rev-parse HEAD)
-  substrate_sha=$(git -C "$ROOT" rev-parse HEAD)
+  substrate_sha=$(git -C "$substrate_root" rev-parse HEAD)
   empty_digest=$(printf '' | fm_pr_sha256_stream)
   printf '%s\n' \
     'Self-review report: firstmate-pr-self-review.v1' \
@@ -116,8 +118,9 @@ test_fm_home_parameterization() {
   chmod 0600 "$home_one/data/task-a/pr-self-review.md"
   fm_write_meta "$home_one/state/task-a.meta" \
     "window=firstmate:fm-task-a" "worktree=$task_wt" "project=x" \
+    'review_base_ref=main' "review_base_sha=$target_head" \
     'kind=ship' 'mode=no-mistakes'
-  FM_HOME="$home_one" FM_GUARD_GRACE=999999 "$ROOT/bin/fm-pr-check.sh" task-a https://github.com/example/repo/pull/1 >/dev/null 2>/dev/null \
+  FM_HOME="$home_one" FM_SUBSTRATE_ROOT_OVERRIDE="$substrate_root" FM_GUARD_GRACE=999999 "$ROOT/bin/fm-pr-check.sh" task-a https://github.com/example/repo/pull/1 >/dev/null 2>/dev/null \
     || fail "fm-pr-check failed under FM_HOME"
   [ -f "$home_one/state/task-a.check.sh" ] || fail "pr check was not written under FM_HOME/state"
   [ ! -e "$home_two/state/task-a.check.sh" ] || fail "pr check leaked into another home"

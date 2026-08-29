@@ -2333,6 +2333,34 @@ if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
 fi
 
+REVIEW_BASE_REF=
+REVIEW_BASE_SHA=
+if [ "$KIND" = ship ] && [ "$RELAUNCH" -eq 0 ]; then
+  REVIEW_BASE=$(fm_pr_review_base_from_brief "$BRIEF" || true)
+  if [ -n "$REVIEW_BASE" ]; then
+    IFS="$(printf '\t')" read -r REVIEW_BASE_REF REVIEW_BASE_SHA <<EOF
+$REVIEW_BASE
+EOF
+  else
+    REVIEW_BASE_REF=$(fm_pr_default_branch "$WT") || {
+      echo "error: could not resolve the task's approved target base" >&2
+      exit 1
+    }
+    REVIEW_BASE_SHA=$(git -C "$WT" rev-parse --verify "$REVIEW_BASE_REF^{commit}" 2>/dev/null) || {
+      echo "error: could not resolve the task's approved target base commit" >&2
+      exit 1
+    }
+  fi
+  RESOLVED_REVIEW_BASE=$(git -C "$WT" rev-parse --verify "$REVIEW_BASE_REF^{commit}" 2>/dev/null) || {
+    echo "error: task's approved target base is unavailable" >&2
+    exit 1
+  }
+  [ "$REVIEW_BASE_SHA" = "$RESOLVED_REVIEW_BASE" ] || {
+    echo "error: task's approved target base ref and SHA disagree" >&2
+    exit 1
+  }
+fi
+
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
 # create GOTMPDIR, so mkdir before it is used; fm-teardown removes the whole root.
 # Nested (not a bare /tmp/fm-<id>/gotmp) so other per-task temp can live alongside
@@ -2714,6 +2742,8 @@ preserve_relaunch_meta() {
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
   echo "kind=$KIND"
+  [ -z "$REVIEW_BASE_REF" ] || echo "review_base_ref=$REVIEW_BASE_REF"
+  [ -z "$REVIEW_BASE_SHA" ] || echo "review_base_sha=$REVIEW_BASE_SHA"
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
   echo "tasktmp=$TASK_TMP"

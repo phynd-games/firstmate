@@ -284,7 +284,7 @@ fm_pr_default_branch() {
   [ -d "$repo" ] && [ ! -L "$repo" ] || return 1
   ref=$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
   if [ -n "$ref" ]; then
-    printf '%s\n' "${ref#origin/}"
+    printf '%s\n' "$ref"
     return 0
   fi
   for branch in main master; do
@@ -294,6 +294,37 @@ fm_pr_default_branch() {
     fi
   done
   return 1
+}
+
+fm_pr_review_base_from_meta() {
+  local meta=$1 ref sha
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  [ "$(fm_pr_file_link_count "$meta")" = 1 ] || return 1
+  [ "$(grep -c '^review_base_ref=' "$meta" || true)" = 1 ] || return 1
+  [ "$(grep -c '^review_base_sha=' "$meta" || true)" = 1 ] || return 1
+  ref=$(sed -n 's/^review_base_ref=//p' "$meta")
+  sha=$(sed -n 's/^review_base_sha=//p' "$meta")
+  case "$ref" in
+    ''|[-.]*|*..*|*@\{*|*[!A-Za-z0-9._/-]*) return 1 ;;
+  esac
+  fm_pr_head_valid "$sha" || return 1
+  printf '%s\t%s\n' "$ref" "$sha"
+}
+
+fm_pr_review_base_from_brief() {
+  local brief=$1 line count ref sha
+  [ -f "$brief" ] && [ ! -L "$brief" ] || return 1
+  count=$(grep -c '^Target-project approved base: ref=[A-Za-z0-9._/-][A-Za-z0-9._/-]*; sha=[0-9a-f][0-9a-f]*$' "$brief" || true)
+  [ "$count" = 1 ] || return 1
+  line=$(sed -n 's/^Target-project approved base: ref=\([^;]*\); sha=\([0-9a-f][0-9a-f]*\)$/\1\t\2/p' "$brief")
+  IFS="$(printf '\t')" read -r ref sha <<EOF
+$line
+EOF
+  case "$ref" in
+    ''|[-.]*|*..*|*@\{*|*[!A-Za-z0-9._/-]*) return 1 ;;
+  esac
+  fm_pr_head_valid "$sha" || return 1
+  printf '%s\t%s\n' "$ref" "$sha"
 }
 
 fm_pr_substrate_launch_sha() {
@@ -321,7 +352,7 @@ fm_pr_sha256_stream() {
 }
 
 fm_pr_self_review_report_valid() {
-  local data=$1 id=$2 expected_head=${3-} worktree=${4-} substrate_root=${5-} expected_substrate_base=${6-}
+  local data=$1 id=$2 expected_head=${3-} worktree=${4-} substrate_root=${5-} expected_base_ref=${6-} expected_base_sha=${7-} expected_substrate_base=${8-}
   local report data_device parsed target_repository base_ref base_sha head_sha merge_base_sha changed_files tree_status
   local substrate_base_sha substrate_head_sha substrate_changed_files
   [ -n "$worktree" ] && [ -d "$worktree" ] && [ ! -L "$worktree" ] || return 1
@@ -467,7 +498,11 @@ fm_pr_self_review_report_valid() {
     function substantive(value,    n, parts, i) {
       n = split(value, parts, "; ")
       if (n != 5 || parts[1] != "reviewed") return 0
-      for (i = 2; i <= 5; i++) if (parts[i] !~ /^[a-z]+=.+$/) return 0
+      if (parts[2] !~ /^files=[^;[:space:]][^;]*$/ || parts[2] !~ /[\/.]/) return 0
+      for (i = 3; i <= 5; i++) {
+        if (parts[i] !~ /^(evidence|consequence|fix)=[^;[:space:]][^;]*$/) return 0
+        if (length(parts[i]) < 12 || parts[i] ~ /=(none|n\/a|x|todo|tbd)$/) return 0
+      }
       return 1
     }
   ' "$report") || return 1
@@ -478,20 +513,21 @@ EOF
   case "$base_ref" in
     ''|[-.]*|*..*|*@\{*|*[!A-Za-z0-9._/-]*) return 1 ;;
   esac
-  local actual_repository actual_head authoritative_base_ref resolved_base actual_merge_base actual_changed_files
+  local actual_repository actual_head resolved_base actual_merge_base actual_changed_files
   actual_repository=$(cd "$worktree" && pwd -P) || return 1
   actual_head=$(git -C "$worktree" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1
   [ "$target_repository" = "$actual_repository" ] || return 1
   [ "$head_sha" = "$actual_head" ] || return 1
-  authoritative_base_ref=$(fm_pr_default_branch "$worktree") || return 1
-  [ "$base_ref" = "$authoritative_base_ref" ] || return 1
+  [ -n "$expected_base_ref" ] && [ "$base_ref" = "$expected_base_ref" ] || return 1
+  [ -n "$expected_base_sha" ] && [ "$base_sha" = "$expected_base_sha" ] || return 1
   resolved_base=$(git -C "$worktree" rev-parse --verify "$base_ref^{commit}" 2>/dev/null) || return 1
   [ "$base_sha" = "$resolved_base" ] || return 1
   actual_merge_base=$(git -C "$worktree" merge-base "$base_sha" "$head_sha" 2>/dev/null) || return 1
   [ "$merge_base_sha" = "$actual_merge_base" ] || return 1
-  actual_changed_files=$(git -C "$worktree" diff --name-status "$base_sha" "$head_sha" | fm_pr_sha256_stream) || return 1
+  actual_changed_files=$(git -C "$worktree" diff --name-status "$merge_base_sha" "$head_sha" | fm_pr_sha256_stream) || return 1
   [ "$changed_files" = "$actual_changed_files" ] || return 1
   [ -z "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] || return 1
+  [ -z "$(git -C "$substrate_root" status --porcelain 2>/dev/null)" ] || return 1
   local actual_substrate_head actual_substrate_changed
   actual_substrate_head=$(git -C "$substrate_root" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1
   [ "$substrate_head_sha" = "$actual_substrate_head" ] || return 1

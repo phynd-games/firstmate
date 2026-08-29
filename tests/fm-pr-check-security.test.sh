@@ -73,7 +73,7 @@ make_case() {
   dir="$TMP_ROOT/$name"
   fakebin="$dir/fakebin"
   fake_root="$dir/root"
-  mkdir -p "$dir/home/state" "$dir/home/data/task-a" "$dir/home/config" "$dir/wt" "$fakebin" "$fake_root/bin"
+  mkdir -p "$dir/home/state" "$dir/home/data/task-a" "$dir/home/config" "$dir/wt" "$dir/substrate" "$fakebin" "$fake_root/bin"
   git init -q "$dir/wt"
   git -C "$dir/wt" config user.name fmtest
   git -C "$dir/wt" config user.email fmtest@example.invalid
@@ -81,7 +81,13 @@ make_case() {
   git -C "$dir/wt" add fixture.txt
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
   git -C "$dir/wt" branch -M main
-  substrate_head=$(git -C "$ROOT" rev-parse HEAD)
+  git -C "$dir/substrate" init -q
+  git -C "$dir/substrate" config user.name fmtest
+  git -C "$dir/substrate" config user.email fmtest@example.invalid
+  printf 'substrate fixture\n' > "$dir/substrate/fixture.txt"
+  git -C "$dir/substrate" add fixture.txt
+  git -C "$dir/substrate" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
+  substrate_head=$(git -C "$dir/substrate" rev-parse HEAD)
   printf '%s\n' "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$dir/home/data/task-a/brief.md"
   cat > "$fake_root/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
@@ -139,8 +145,9 @@ SH
 }
 
 write_task_meta() {
-  local dir=$1 id=${2:-task-a} substrate_head
-  substrate_head=$(git -C "$ROOT" rev-parse HEAD)
+  local dir=$1 id=${2:-task-a} substrate_head target_head
+  substrate_head=$(git -C "$dir/substrate" rev-parse HEAD)
+  target_head=$(git -C "$dir/wt" rev-parse HEAD)
   mkdir -p "$dir/home/data/$id"
   printf '%s\n' "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$dir/home/data/$id/brief.md"
   fm_write_meta "$dir/home/state/$id.meta" \
@@ -148,6 +155,8 @@ write_task_meta() {
     "endpoint_task_id=$id" \
     "worktree=$dir/wt" \
     "project=$dir/project" \
+    'review_base_ref=main' \
+    "review_base_sha=$target_head" \
     "kind=ship" \
     "mode=no-mistakes"
   write_self_review_report "$dir/home" "$id"
@@ -159,11 +168,11 @@ write_self_review_report() {
   case_dir=$(cd "$home/.." && pwd)
   target_repository=$(cd "$case_dir/wt" && pwd -P)
   target_head=$(git -C "$case_dir/wt" rev-parse HEAD)
-  substrate_root=${FM_TEST_REPORT_SUBSTRATE_ROOT:-$ROOT}
+  substrate_root=${FM_TEST_REPORT_SUBSTRATE_ROOT:-$case_dir/substrate}
   substrate_head=$(git -C "$substrate_root" rev-parse HEAD)
   empty_digest=$(printf '' | fm_pr_sha256_stream)
   mkdir -p "$home/data/$id"
-  printf '%s\n' "- Firstmate substrate launch SHA: \`$(git -C "$ROOT" rev-parse HEAD)\`" > "$home/data/$id/brief.md"
+  printf '%s\n' "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$home/data/$id/brief.md"
   printf '%s\n' \
     'Self-review report: firstmate-pr-self-review.v1' \
     "Task id: $id" \
@@ -330,7 +339,7 @@ run_check_entry() {
   local dir=$1
   shift
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
-    FM_SUBSTRATE_ROOT_OVERRIDE="$ROOT" \
+    FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
     PATH="$dir/fakebin:$BASE_PATH" \
@@ -341,7 +350,7 @@ run_create_entry() {
   local dir=$1
   shift
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
-    FM_SUBSTRATE_ROOT_OVERRIDE="$ROOT" \
+    FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
     PATH="$dir/fakebin:$BASE_PATH" \
@@ -352,7 +361,7 @@ run_merge_entry() {
   local dir=$1
   shift
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
-    FM_SUBSTRATE_ROOT_OVERRIDE="$ROOT" \
+    FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" \
     FM_DATA_OVERRIDE="$dir/home/data" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
@@ -434,13 +443,43 @@ PY
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "stale self-review evidence left a runnable poll"
 
   write_self_review_report "$dir/home" task-a
+  sed -i.bak 's/^Authority: .*/Authority: reviewed; x=files; y=weak; z=claims; q=pass./' "$report"
+  rm -f "$report.bak"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/107 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted arbitrary surface evidence fields"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "arbitrary surface evidence left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
   chmod 0600 "$report"
   run_check_entry "$dir" task-a https://github.com/o/r/pull/103 >/dev/null \
     || fail "PR-ready path rejected a valid durable self-review report"
-  FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir/home" "$SELF_REVIEW_CHECK" task-a no-mistakes >/dev/null \
+  FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" FM_HOME="$dir/home" "$SELF_REVIEW_CHECK" task-a no-mistakes >/dev/null \
     || fail "shared self-review check rejected a valid durable self-review report"
   fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
     || fail "valid self-review report did not permit a valid PR poll"
+
+  git -C "$dir/wt" branch fm/m1-001-provenance-validator HEAD
+  sed -i.bak 's/Base ref: main/Base ref: fm\/m1-001-provenance-validator/' "$report"
+  rm -f "$report.bak"
+  sed -i.bak 's/^review_base_ref=main$/review_base_ref=fm\/m1-001-provenance-validator/' "$dir/home/state/task-a.meta"
+  rm -f "$dir/home/state/task-a.meta.bak"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/105 >/dev/null \
+    || fail "PR-ready path rejected a task-approved non-default base"
+
+  sed -i.bak 's/^review_base_ref=fm\/m1-001-provenance-validator$/review_base_ref=main/' "$dir/home/state/task-a.meta"
+  rm -f "$dir/home/state/task-a.meta.bak"
+  write_self_review_report "$dir/home" task-a
+  rm -f "$dir/home/state/task-a.check.sh" "$dir/home/state/task-a.pr-poll" "$dir/home/state/task-a.pr-poll-registration"
+  printf 'uncommitted substrate change\n' >> "$dir/substrate/fixture.txt"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/106 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted dirty substrate evidence"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "dirty substrate evidence left a runnable poll"
   pass "PR-ready path requires a private durable findings-first self-review"
 }
 
@@ -448,7 +487,8 @@ test_direct_pr_creation_requires_self_review() {
   local dir rc report
   dir=$(make_case direct-pr-create)
   fm_write_meta "$dir/home/state/task-a.meta" \
-    'window=firstmate:fm-task-a' "worktree=$dir/wt" 'kind=ship' 'mode=direct-PR'
+    'window=firstmate:fm-task-a' "worktree=$dir/wt" 'review_base_ref=main' \
+    "review_base_sha=$(git -C "$dir/wt" rev-parse HEAD)" 'kind=ship' 'mode=direct-PR'
   report="$dir/home/data/task-a/pr-self-review.md"
   rm -f "$report"
   set +e
@@ -798,7 +838,7 @@ test_valid_recording_and_merge_derivation() {
   write_task_meta "$dir" Task_A.1
   run_merge_entry "$dir" Task_A.1 https://github.com/o/r/pull/3 \
     > "$dir/stdout" 2> "$dir/stderr" \
-    || fail "safe lifecycle-compatible task ID could not use the PR merge flow: $(cat "$dir/stderr")"
+    || fail "safe lifecycle-compatible task ID could not use the PR merge flow: stderr=$(cat "$dir/stderr") stdout=$(cat "$dir/stdout")"
   fm_pr_poll_artifacts_valid "$dir/home/state" Task_A.1 "$POLL" \
     || fail "safe lifecycle-compatible task ID did not publish an authenticated poll"
   rm -rf "$dir/wt"
@@ -821,6 +861,8 @@ SH
       "endpoint_task_id=$id" \
       "worktree=$dir/wt" \
       "project=$dir/project" \
+      'review_base_ref=main' \
+      "review_base_sha=$(git -C "$dir/wt" rev-parse HEAD)" \
       'kind=ship' \
       'mode=local-only'
     write_self_review_report "$dir/home" "$id"
@@ -837,7 +879,7 @@ SH
     touch "$dir/home/state/.last-watcher-beat"
     mkdir "$dir/home/state/$id.check.sh"
     set +e
-    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" PATH="$dir/fakebin:$BASE_PATH" \
       "$TEARDOWN" "$id" --force > "$dir/unsafe-teardown.out" 2> "$dir/unsafe-teardown.err"
     rc=$?
     set -e
@@ -1664,8 +1706,9 @@ test_ambiguous_failure_accepts_validated_replacement() {
   dir=$(make_case ambiguous-validated-replacement)
   state="$dir/home/state"
   write_ambiguous_poll "$dir"
-  printf '%s\n' "worktree=$dir/wt" 'kind=ship' 'mode=no-mistakes' >> "$state/task-a.meta"
-  FM_TEST_REPORT_SUBSTRATE_ROOT="$ROOT" write_self_review_report "$dir/home" task-a
+  printf '%s\n' "worktree=$dir/wt" 'review_base_ref=main' \
+    "review_base_sha=$(git -C "$dir/wt" rev-parse HEAD)" 'kind=ship' 'mode=no-mistakes' >> "$state/task-a.meta"
+  write_self_review_report "$dir/home" task-a
   mkdir "$state/task-a.pr-poll"
 
   set +e
@@ -1680,7 +1723,7 @@ test_ambiguous_failure_accepts_validated_replacement() {
     || fail "ambiguous partial migration did not persist recovery obligations"
 
   rmdir "$state/task-a.pr-poll"
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_CHECK" task-a https://github.com/o/r/pull/10 >/dev/null \
     || fail "validated replacement poll could not be published"
   fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
@@ -2479,7 +2522,7 @@ test_direct_registration_refreshes_v1_x_shim() {
         ;;
     esac
 
-    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$ROOT" FM_TEST_GUARD_LOG="$dir/guard.log" \
+    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" FM_TEST_GUARD_LOG="$dir/guard.log" \
       PATH="$dir/fakebin:$BASE_PATH" "$PR_CHECK" task-a "https://github.com/o/r/pull/$number" \
       > "$dir/register.out" 2> "$dir/register.err" \
       || fail "$marker_kind direct registration did not preserve the v1 X shim: $(cat "$dir/register.err")"
@@ -2509,7 +2552,7 @@ test_direct_registration_refreshes_v1_x_shim() {
   printf '# unrecognized version\n' >> "$shim"
   chmod 0755 "$shim"
 
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$ROOT" FM_TEST_GUARD_LOG="$dir/guard.log" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" FM_TEST_GUARD_LOG="$dir/guard.log" \
     PATH="$dir/fakebin:$BASE_PATH" "$PR_CHECK" task-a https://github.com/o/r/pull/22 \
     >/dev/null 2> "$dir/register.err" \
     || fail "direct registration failed after quarantining an X shim lookalike: $(cat "$dir/register.err")"
@@ -3090,7 +3133,7 @@ EOF
   # Arming is where a missing CLI can still be reported, so it refuses there.
   write_task_meta "$dir" task-b
   set +e
-  out=$(FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir/home" \
+  out=$(FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" FM_HOME="$dir/home" \
     FM_TEST_GUARD_LOG="$dir/guard.log" PATH="$noglab" \
     "$PR_CHECK" task-b "$url" 2>&1)
   rc=$?

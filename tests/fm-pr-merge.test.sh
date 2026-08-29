@@ -98,7 +98,7 @@ make_case() {
   local name=$1 case_dir fakebin target_head target_repository substrate_head empty_digest
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
-  mkdir -p "$case_dir/state" "$case_dir/home/data/task-x1" "$case_dir/wt" "$fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/home/data/task-x1" "$case_dir/wt" "$case_dir/substrate" "$fakebin"
   git init -q "$case_dir/wt"
   git -C "$case_dir/wt" config user.name fmtest
   git -C "$case_dir/wt" config user.email fmtest@example.invalid
@@ -106,9 +106,15 @@ make_case() {
   git -C "$case_dir/wt" add fixture.txt
   git -C "$case_dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
   git -C "$case_dir/wt" branch -M main
+  git -C "$case_dir/substrate" init -q
+  git -C "$case_dir/substrate" config user.name fmtest
+  git -C "$case_dir/substrate" config user.email fmtest@example.invalid
+  printf 'substrate fixture\n' > "$case_dir/substrate/fixture.txt"
+  git -C "$case_dir/substrate" add fixture.txt
+  git -C "$case_dir/substrate" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
   target_head=$(git -C "$case_dir/wt" rev-parse HEAD)
   target_repository=$(cd "$case_dir/wt" && pwd -P)
-  substrate_head=$(git -C "$ROOT" rev-parse HEAD)
+  substrate_head=$(git -C "$case_dir/substrate" rev-parse HEAD)
   empty_digest=$(printf '' | fm_pr_sha256_stream)
   printf '%s\n' "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$case_dir/home/data/task-x1/brief.md"
   printf '%s\n' \
@@ -149,6 +155,8 @@ make_case() {
     "window=fm-task-x1" \
     "worktree=$case_dir/wt" \
     "project=$case_dir/project" \
+    'review_base_ref=main' \
+    "review_base_sha=$target_head" \
     "kind=ship" \
     "mode=no-mistakes"
   printf '%s\n' \
@@ -399,6 +407,7 @@ glab_merge_line() {
 run_pr_merge() {
   local case_dir=$1 rc; shift
   FM_ROOT_OVERRIDE="$ROOT" \
+  FM_SUBSTRATE_ROOT_OVERRIDE="$case_dir/substrate" \
   FM_HOME="${FM_TEST_HOME:-$case_dir/home}" \
   FM_DATA_OVERRIDE="${FM_TEST_DATA:-$case_dir/home/data}" \
   FM_STATE_OVERRIDE="$case_dir/state" \

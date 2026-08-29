@@ -42,6 +42,14 @@ META="$STATE/$ID.meta"
   echo "error: self-review check requires exactly one worktree" >&2
   exit 1
 }
+REVIEW_BASE=$(fm_pr_review_base_from_meta "$META" || true)
+[ -n "$REVIEW_BASE" ] || {
+  echo "error: self-review check requires an approved target base" >&2
+  exit 1
+}
+IFS="$(printf '\t')" read -r REVIEW_BASE_REF REVIEW_BASE_SHA <<EOF
+$REVIEW_BASE
+EOF
 WT=$(grep '^worktree=' "$META" | cut -d= -f2- || true)
 [ -n "$WT" ] && [ -d "$WT" ] && [ ! -L "$WT" ] || {
   echo "error: PR-ready task worktree is unavailable" >&2
@@ -53,7 +61,7 @@ fm_pr_head_valid "$HEAD" || {
   exit 1
 }
 SUBSTRATE_LAUNCH_SHA=$(fm_pr_substrate_launch_sha "$DATA" "$ID" || true)
-if ! fm_pr_self_review_report_valid "$DATA" "$ID" "$HEAD" "$WT" "$SUBSTRATE_ROOT" "$SUBSTRATE_LAUNCH_SHA"; then
+if ! fm_pr_self_review_report_valid "$DATA" "$ID" "$HEAD" "$WT" "$SUBSTRATE_ROOT" "$REVIEW_BASE_REF" "$REVIEW_BASE_SHA" "$SUBSTRATE_LAUNCH_SHA"; then
   echo "error: durable findings-first self-review report is unavailable or invalid" >&2
   exit 1
 fi

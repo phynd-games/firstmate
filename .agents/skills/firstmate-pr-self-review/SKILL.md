@@ -23,6 +23,8 @@ A structurally valid file, schema, prompt envelope, digest match, or clean self-
 
 Resolve target base independently for this task.
 Use the exact captain-approved or task-approved base when instructions name one, and otherwise use the freshly fetched remote default branch for a remote-backed project or the current local default branch for local-only work.
+When a task names an exact base, record it before spawn in the brief as one machine-readable line: `Target-project approved base: ref=<ref>; sha=<full-sha>`.
+Spawn freezes that approved ref and SHA into task metadata, and the PR-ready boundary rejects reports that do not match the frozen pair.
 Never replace an explicitly named base with an untouched default branch or an inferred merge base.
 Record target repository, base ref, full base SHA, full head SHA, full merge-base SHA, and whether tracked or untracked changes remain.
 Use `bin/fm-review-diff.sh` from the Firstmate substrate root when its recorded task route represents the accepted target base.
