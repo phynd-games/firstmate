@@ -267,7 +267,7 @@ test_malformed_manifest_fixtures() {
 }
 
 test_malformed_json_limits() {
-  local oversized="$TMP_ROOT/oversized-integer.json" deep="$TMP_ROOT/deep-json.json" report rc
+  local oversized="$TMP_ROOT/oversized-integer.json" deep="$TMP_ROOT/deep-json.json" invalid_utf8="$TMP_ROOT/invalid-utf8.json" report rc
   python3 - "$oversized" "$deep" <<'PY'
 import pathlib
 import sys
@@ -275,7 +275,8 @@ import sys
 pathlib.Path(sys.argv[1]).write_bytes(b'{"value":' + b'9' * 5000 + b'}')
 pathlib.Path(sys.argv[2]).write_bytes(b'[' * 2000 + b']' * 2000)
 PY
-  for fixture in "$oversized" "$deep"; do
+  printf '\377\376\375' >"$invalid_utf8"
+  for fixture in "$oversized" "$deep" "$invalid_utf8"; do
     report="$fixture.report"
     set +e
     "$CLI" validate-source --source "$fixture" --expected-sha256 "$(sha256_file "$fixture")" >"$report"
@@ -285,7 +286,8 @@ PY
     json_assert "$report" "r['valid'] is False and r['errors']" "malformed JSON should produce a validation report"
   done
   error_codes_include "$oversized.report" json.parse-limit
-  pass "oversized integers and deep JSON produce deterministic validation reports"
+  error_codes_include "$invalid_utf8.report" json.utf8
+  pass "oversized integers, deep JSON, and invalid UTF-8 produce deterministic validation reports"
 }
 
 write_long_chain_manifest() {
