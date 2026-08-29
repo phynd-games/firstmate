@@ -474,7 +474,10 @@ hs_config_preference() {
 # evidence is never read as the presence of an owner.
 harness_owner_provable() {
   HS_DEFER_REASON=
-  if [ -e "$STATE/.afk" ]; then
+  if [ -e "$STATE/.afk" ] && (
+    . "$SCRIPT_DIR/fm-afk-start.sh" >/dev/null 2>&1
+    daemon_lock_held_by_live_daemon
+  ); then
     HS_DEFER_REASON="away mode is active and its daemon owns supervision"
     return 0
   fi
@@ -695,9 +698,76 @@ establish() {  # <reason>
 
 # --- commands -----------------------------------------------------------------
 
+retire_binding_locked() {  # <reason> [signal-owner]
+  local reason=$1 signal_owner=${2:-1}
+  local session workspace pane loop_pid loop_identity current close_rc=0
+  session=$(record_get herdr_session || printf '')
+  workspace=$(record_get workspace || printf '')
+  pane=$(record_get pane || printf '')
+  loop_pid=$(live_get loop_pid || printf '')
+  loop_identity=$(live_get loop_identity || printf '')
+
+  record_clear
+  ledger_append retired "$reason"
+
+  if [ "$signal_owner" -eq 1 ] && [ -n "$loop_pid" ] && [ -n "$loop_identity" ] \
+    && [ "$loop_pid" != "${BASHPID:-$$}" ] && fm_pid_alive "$loop_pid"; then
+    current=$(fm_pid_identity "$loop_pid" 2>/dev/null || printf '')
+    if [ "$current" = "$loop_identity" ]; then
+      kill -TERM "$loop_pid" 2>/dev/null || true
+    fi
+  fi
+
+  if [ -n "$workspace" ]; then
+    if [ -n "$session" ] && [ -n "$pane" ] \
+      && herdr_load >/dev/null 2>&1 \
+      && hs_herdr "$session" workspace close "$workspace" >/dev/null 2>&1; then
+      :
+    else
+      close_rc=1
+    fi
+  fi
+  rm -f "$HEARTBEAT" 2>/dev/null || true
+  launcher_clear
+  return "$close_rc"
+}
+
+reconcile_previous_locked() {
+  local old_generation rc
+  [ -f "$RECORD" ] || return 0
+  old_generation=$(record_get generation || printf unknown)
+  ledger_append replace-required "retiring unhealthy generation=$old_generation before replacement"
+  retire_binding_locked "replacing unhealthy generation=$old_generation" 1
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    escalate "the previous supervisor generation $old_generation was cleared but its exact Herdr workspace could not be retired; inspect the recorded workspace before retrying"
+    return 1
+  fi
+  [ ! -f "$RECORD" ] || {
+    escalate "the previous supervisor generation $old_generation could not be cleared before replacement"
+    return 1
+  }
+  return 0
+}
+
 cmd_ensure() {  # <reason>
-  local reason=$1 rc
+  local reason=$1 rc preference
+  preference=$(hs_config_preference)
   if ! supervisor_eligible; then
+    if [ "$preference" = off ] && [ -f "$RECORD" ]; then
+      fm_lock_acquire_wait "$RECORD_LOCK"
+      retire_binding_locked "config/herdr-supervisor changed to off" 1
+      rc=$?
+      if [ "$rc" -ne 0 ]; then
+        escalate "config/herdr-supervisor is off, but the exact supervisor workspace could not be retired"
+      fi
+      fm_lock_release "$RECORD_LOCK"
+      [ "$rc" -eq 0 ] || return "$rc"
+      [ ! -f "$RECORD" ] || {
+        escalate "config/herdr-supervisor is off, but its supervisor record remains"
+        return 1
+      }
+    fi
     echo "herdr-supervisor: not eligible - $HS_INELIGIBLE_REASON"
     return 0
   fi
@@ -723,6 +793,10 @@ cmd_ensure() {  # <reason>
     return 0
   fi
   ledger_append establish-required "${HS_UNHEALTHY_REASON:-unknown}"
+  if ! reconcile_previous_locked; then
+    fm_lock_release "$RECORD_LOCK"
+    return 1
+  fi
   establish "$reason (${HS_UNHEALTHY_REASON:-no prior record})"
   rc=$?
   fm_lock_release "$RECORD_LOCK"
@@ -730,38 +804,21 @@ cmd_ensure() {  # <reason>
 }
 
 cmd_retire() {  # <reason>
-  local reason=$1 session workspace pane loop_pid loop_identity current
+  local reason=$1 rc
   fm_lock_acquire_wait "$RECORD_LOCK"
   if [ ! -f "$RECORD" ]; then
     fm_lock_release "$RECORD_LOCK"
     echo "herdr-supervisor: nothing to retire"
     return 0
   fi
-  session=$(record_get herdr_session || printf '')
-  workspace=$(record_get workspace || printf '')
-  pane=$(record_get pane || printf '')
-  loop_pid=$(live_get loop_pid || printf '')
-  loop_identity=$(live_get loop_identity || printf '')
-
-  # Clearing the record first is what actually retires the generation: the loop
-  # re-reads it every pass and exits when its own generation is gone, so this
-  # never has to signal a process whose identity it cannot prove.
-  record_clear
-  ledger_append retired "$reason"
-
-  if [ -n "$loop_pid" ] && [ -n "$loop_identity" ] && fm_pid_alive "$loop_pid"; then
-    current=$(fm_pid_identity "$loop_pid" 2>/dev/null || printf '')
-    if [ "$current" = "$loop_identity" ]; then
-      kill -TERM "$loop_pid" 2>/dev/null || true
-    fi
-  fi
-  if [ -n "$session" ] && [ -n "$workspace" ] && [ -n "$pane" ]; then
-    herdr_load >/dev/null 2>&1 \
-      && hs_herdr "$session" workspace close "$workspace" >/dev/null 2>&1 || true
-  fi
-  rm -f "$HEARTBEAT" 2>/dev/null || true
-  launcher_clear
+  retire_binding_locked "$reason" 1
+  rc=$?
   fm_lock_release "$RECORD_LOCK"
+  if [ "$rc" -ne 0 ]; then
+    escalate "the exact supervisor workspace could not be retired for: $reason"
+    echo "herdr-supervisor: FAILED - could not retire the exact supervisor workspace" >&2
+    return "$rc"
+  fi
   echo "herdr-supervisor: retired - $reason"
   return 0
 }
@@ -888,6 +945,11 @@ cmd_run() {
       loop_release_live
       exit 0
     fi
+    if [ "$(hs_config_preference)" = off ]; then
+      cmd_retire "config/herdr-supervisor changed to off" >/dev/null 2>&1 || true
+      loop_release_live
+      exit 0
+    fi
     if harness_owner_provable; then
       ledger_append loop-exit "stood down: $HS_DEFER_REASON"
       loop_release_live
@@ -945,11 +1007,14 @@ cmd_run() {
     rm -f "$out" 2>/dev/null || true
     LOOP_ARM_OUT=
 
-    if [ "$failures" -gt "$RETRY_LIMIT" ]; then
-      escalate "the watcher arm failed $RETRY_LIMIT consecutive times in Herdr pane $(record_get pane || printf unknown); supervision is DOWN for $FM_HOME and needs a captain decision"
-      ledger_append loop-exit "retry bound exhausted"
-      loop_release_live
-      exit 1
+    if [ "$failures" -ge "$RETRY_LIMIT" ]; then
+      escalate "the watcher arm failed $failures consecutive times in Herdr pane $(record_get pane || printf unknown); the retry bound was reached, the continuity owner remains active, and another bounded recovery round will continue"
+      ledger_append retry-bound "reached after $failures failures; continuity owner remains active"
+      failures=0
+      delay=$RETRY_MAX
+      [ "$delay" -gt 0 ] || delay=1
+      sleep "$delay"
+      continue
     fi
     delay=$(backoff_delay "$failures")
     sleep "$delay"

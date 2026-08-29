@@ -187,7 +187,7 @@ run_supervisor() {  # <home> <fakebin> <args...>
   FM_SUPERVISION_MODEL="${FM_TEST_SUPERVISION_MODEL:-extension}" \
   FM_HERDR_SUPERVISOR_READY_TIMEOUT="${FM_TEST_READY_TIMEOUT:-15}" \
   FM_HERDR_SUPERVISOR_RETRY_BASE=0 \
-  FM_HERDR_SUPERVISOR_RETRY_MAX=0 \
+  FM_HERDR_SUPERVISOR_RETRY_MAX="${FM_TEST_RETRY_MAX:-0}" \
   FM_HERDR_SUPERVISOR_IDLE_INTERVAL=1 \
   HERDR_SESSION=default \
   "$SUPERVISOR" "$@"
@@ -239,17 +239,38 @@ assert_absent "$HOME1/state/.herdr-supervisor" "non-herdr home writes no supervi
 pass "a non-herdr home is not eligible and creates nothing"
 
 # =============================================================================
-# 2. Away mode owns supervision; the supervisor stands down.
+# 2. A stale away marker alone does not own supervision.
 # =============================================================================
 HOME2=$(new_home afk)
 make_arm_stub "$HOME2/arm.sh" ok
 fm_write_meta "$HOME2/state/afk-task.meta" "window=firstmate:fm-afk-task"
 : > "$HOME2/state/.afk"
 out=$(run_supervisor "$HOME2" "$FAKEBIN" ensure 2>&1)
-assert_contains "$out" "deferred" "away mode defers the supervisor"
-assert_contains "$out" "away mode" "the deferral names away mode"
-assert_absent "$HOME2/state/.herdr-supervisor" "an away-mode home hosts no supervisor"
-pass "away mode is a provable owner and the supervisor stands down"
+assert_contains "$out" "herdr-supervisor: started" "a stale away marker does not suppress recovery"
+pass "a stale away marker does not masquerade as a live owner"
+stop_loop "$HOME2"
+
+# =============================================================================
+# 2b. Away mode owns supervision only while its lock names a live, identity-
+#     matched daemon.
+# =============================================================================
+HOME2B=$(new_home live-afk)
+make_arm_stub "$HOME2B/arm.sh" ok
+fm_write_meta "$HOME2B/state/live-afk-task.meta" "window=firstmate:fm-live-afk-task"
+: > "$HOME2B/state/.afk"
+sleep 300 &
+AFK_PID=$!
+mkdir -p "$HOME2B/state/.supervise-daemon.lock"
+printf '%s\n' "$AFK_PID" > "$HOME2B/state/.supervise-daemon.lock/pid"
+fm_test_pid_identity "$AFK_PID" > "$HOME2B/state/.supervise-daemon.lock/pid-identity" \
+  || fail "could not record the away daemon identity"
+out=$(run_supervisor "$HOME2B" "$FAKEBIN" ensure 2>&1)
+kill "$AFK_PID" 2>/dev/null || true
+wait "$AFK_PID" 2>/dev/null || true
+assert_contains "$out" "deferred" "a live away daemon defers the supervisor"
+assert_contains "$out" "away mode" "the deferral names the live away owner"
+assert_absent "$HOME2B/state/.herdr-supervisor" "a live away owner hosts no supervisor"
+pass "away mode defers only to a live identity-matched daemon"
 
 # =============================================================================
 # 3. A loaded Pi primary extension owns continuity; the supervisor stands down.
@@ -259,19 +280,43 @@ pass "away mode is a provable owner and the supervisor stands down"
 HOME3=$(new_home pi-extension-loaded)
 make_arm_stub "$HOME3/arm.sh" ok
 fm_write_meta "$HOME3/state/ext-task.meta" "window=firstmate:fm-ext-task"
-printf '%s\n' "$$" > "$HOME3/state/.lock"
+bash -c 'exec -a pi bash -c "sleep 300 & wait"' &
+PI_OWNER_PID=$!
+printf '%s\n' "$PI_OWNER_PID" > "$HOME3/state/.lock"
 for pair in "fm-primary-pi-watch.ts:.pi-watch-extension-loaded" \
             "fm-primary-turnend-guard.ts:.pi-turnend-extension-loaded"; do
   src=${pair%%:*}
   marker=${pair#*:}
   version=$(shasum -a 256 "$ROOT/.pi/extensions/$src" | awk '{print "sha256:" $1}')
-  printf '%s\n%s\n' "$version" "$$" > "$HOME3/state/$marker"
+  printf '%s\n%s\n' "$version" "$PI_OWNER_PID" > "$HOME3/state/$marker"
 done
 out=$(run_supervisor "$HOME3" "$FAKEBIN" ensure 2>&1)
+kill "$PI_OWNER_PID" 2>/dev/null || true
+wait "$PI_OWNER_PID" 2>/dev/null || true
 assert_contains "$out" "deferred" "a loaded Pi extension defers the supervisor"
 assert_contains "$out" "Pi primary extension" "the deferral names the Pi extension owner"
 assert_absent "$HOME3/state/.herdr-supervisor" "an extension-owned home hosts no supervisor"
 pass "a loaded Pi extension is a provable owner and the supervisor stands down"
+
+# =============================================================================
+# 3b. A live process with a non-harness identity never proves Pi ownership,
+#     even when both markers and the session lock name its pid.
+# =============================================================================
+HOME3B=$(new_home pi-reused-pid)
+make_arm_stub "$HOME3B/arm.sh" ok
+fm_write_meta "$HOME3B/state/reused-task.meta" "window=firstmate:fm-reused-task"
+printf '%s\n' "$$" > "$HOME3B/state/.lock"
+for pair in "fm-primary-pi-watch.ts:.pi-watch-extension-loaded" \
+            "fm-primary-turnend-guard.ts:.pi-turnend-extension-loaded"; do
+  src=${pair%%:*}
+  marker=${pair#*:}
+  version=$(shasum -a 256 "$ROOT/.pi/extensions/$src" | awk '{print "sha256:" $1}')
+  printf '%s\n%s\n' "$version" "$$" > "$HOME3B/state/$marker"
+done
+out=$(run_supervisor "$HOME3B" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "herdr-supervisor: started" "a non-harness pid does not suppress recovery"
+pass "Pi ownership rejects a live non-harness pid despite matching markers"
+stop_loop "$HOME3B"
 
 # =============================================================================
 # 4. No supervision need means nothing is established.
@@ -341,6 +386,27 @@ assert_contains "$out" "herdr-supervisor: started" "a stale heartbeat is repaire
 [ "$(record_field "$HOME8" generation)" != "$GEN8" ] || fail "re-establish reused the stale generation"
 pass "a stale supervisor heartbeat is unhealthy and re-establishes a new generation"
 stop_loop "$HOME8"
+
+# =============================================================================
+# 8b. Replacing an unhealthy generation retires its exact old workspace before
+#     publishing the replacement, so no stale owner is left unreachable.
+# =============================================================================
+HOME8B=$(new_home replace-old-owner)
+make_arm_stub "$HOME8B/arm.sh" ok
+fm_write_meta "$HOME8B/state/replace-task.meta" "window=firstmate:fm-replace-task"
+run_supervisor "$HOME8B" "$FAKEBIN" ensure >/dev/null 2>&1 \
+  || fail "establish failed for replacement case"
+GEN8B=$(record_field "$HOME8B" generation)
+touch -t 200001010000 "$HOME8B/state/.herdr-supervisor-heartbeat"
+out=$(run_supervisor "$HOME8B" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "herdr-supervisor: started" "an unhealthy owner is replaced"
+[ "$(record_field "$HOME8B" generation)" != "$GEN8B" ] || fail "replacement reused the old generation"
+assert_grep 'wZ' "$HOME8B/fakestate/closed-workspaces" \
+  "replacement retired the exact old workspace before creating a successor"
+[ "$(grep -c 'workspace.create' "$HOME8B/fakestate/calls.log")" = 2 ] \
+  || fail "replacement did not create exactly one successor workspace"
+pass "replacement retires the prior exact workspace before establishing a new generation"
+stop_loop "$HOME8B"
 
 # =============================================================================
 # 9. An unknown or contradictory Herdr pane is never healthy.
@@ -431,24 +497,31 @@ pass "a Herdr pane tracking a different process is never read as healthy"
 stop_loop "$HOME10D"
 
 # =============================================================================
-# 11. A repeatedly failing arm is bounded, alarms durably, and escalates through
-#     the existing wake queue.
+# 11. A repeatedly failing arm reaches an exact retry bound, alarms durably,
+#     escalates through the existing wake queue, and leaves the continuity owner
+#     alive for another recovery round.
 # =============================================================================
 HOME11=$(new_home failing-arm)
 make_arm_stub "$HOME11/arm.sh" fail
 fm_write_meta "$HOME11/state/failing-task.meta" "window=firstmate:fm-failing-task"
-out=$(FM_TEST_READY_TIMEOUT=15 run_supervisor "$HOME11" "$FAKEBIN" ensure 2>&1) || true
+out=$(FM_TEST_READY_TIMEOUT=15 FM_TEST_RETRY_MAX=1 run_supervisor "$HOME11" "$FAKEBIN" ensure 2>&1) || true
 wait_for 25 test -f "$HOME11/state/.herdr-supervisor-alarm" \
   || fail "a repeatedly failing arm left no durable alarm"
-assert_grep "supervision is DOWN" "$HOME11/state/.herdr-supervisor-alarm" \
-  "the alarm states supervision is down"
+assert_grep "retry bound was reached" "$HOME11/state/.herdr-supervisor-alarm" \
+  "the alarm names the exact retry-bound exhaustion"
+assert_grep "continuity owner remains active" "$HOME11/state/.herdr-supervisor-alarm" \
+  "the alarm confirms the continuity owner remains alive"
 queue_has_escalation() { grep -q 'herdr-supervisor' "$1/state/.wake-queue" 2>/dev/null; }
 wait_for 10 queue_has_escalation "$HOME11" \
   || fail "the failure was not escalated onto the durable wake queue"
 assert_grep 'check' "$HOME11/state/.wake-queue" "the escalation is a check-kind wake"
 count=$(cat "$HOME11/arm.count" 2>/dev/null || echo 0)
-[ "$count" -le 8 ] || fail "the failing arm retried $count times; the retry bound did not hold"
-pass "a repeatedly failing arm is bounded, alarms durably, and escalates"
+[ "$count" -le 20 ] || fail "the failing arm retried $count times; the retry rounds were not bounded"
+assert_no_grep 'attempt=6' "$HOME11/state/.herdr-supervisor.log" \
+  "a retry round exceeded the configured five-attempt bound"
+failure_pid=$(cat "$HOME11/fakestate/loop-pid" 2>/dev/null || true)
+kill -0 "$failure_pid" 2>/dev/null || fail "retry exhaustion exited the sole continuity owner"
+pass "a repeatedly failing arm is bounded, alarms, escalates, and keeps its owner alive"
 stop_loop "$HOME11"
 
 # =============================================================================
@@ -634,5 +707,22 @@ assert_contains "$out" "not eligible" "an opted-out home hosts nothing"
 assert_contains "$out" "is off" "the refusal names the opt-out"
 assert_absent "$HOME17/state/.herdr-supervisor" "an opted-out home writes no record"
 pass "config/herdr-supervisor=off is honored"
+
+# =============================================================================
+# 17b. Changing config/herdr-supervisor to off retires the exact running owner
+#      without waiting for another ensure call.
+# =============================================================================
+HOME17B=$(new_home opt-out-transition)
+make_arm_stub "$HOME17B/arm.sh" ok
+fm_write_meta "$HOME17B/state/off-transition-task.meta" "window=firstmate:fm-off-transition-task"
+run_supervisor "$HOME17B" "$FAKEBIN" ensure >/dev/null 2>&1 \
+  || fail "establish failed for the opt-out transition"
+printf 'off\n' > "$HOME17B/config/herdr-supervisor"
+record_gone() { [ ! -f "$1/state/.herdr-supervisor" ]; }
+wait_for 10 record_gone "$HOME17B" \
+  || fail "the running owner did not retire after config changed to off"
+assert_grep 'wZ' "$HOME17B/fakestate/closed-workspaces" \
+  "config off retired the exact supervisor workspace"
+pass "config/herdr-supervisor=off retires a running owner on the next loop pass"
 
 echo "all fm-herdr-supervisor tests passed"
