@@ -193,6 +193,7 @@ write_self_review_report() {
     "Substrate base SHA: $substrate_head" \
     "Substrate head SHA: $substrate_head" \
     "Substrate changed files: $empty_digest" \
+    'Substrate diff: no substrate diff' \
     '# Surface review' \
     'Authority: reviewed; files=bin/fm-pr-check.sh,bin/fm-pr-lib.sh; evidence=delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing.' \
     'Security: reviewed; files=bin/fm-pr-lib.sh,tests/fm-pr-check-security.test.sh; evidence=private report identity is checked; consequence=tampering is refused; fix=preserve single-link mode checks.' \

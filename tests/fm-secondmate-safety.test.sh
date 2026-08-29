@@ -82,6 +82,8 @@ test_fm_home_parameterization() {
   fm_git_init_commit "$substrate_root"
   target_head=$(git -C "$task_wt" rev-parse HEAD)
   substrate_sha=$(git -C "$substrate_root" rev-parse HEAD)
+  sed -i.bak "s/^- Firstmate substrate launch SHA: .*/- Firstmate substrate launch SHA: \`$substrate_sha\`/" "$home_one/data/task-a/brief.md"
+  rm -f "$home_one/data/task-a/brief.md.bak"
   empty_digest=$(printf '' | fm_pr_sha256_stream)
   printf '%s\n' \
     'Self-review report: firstmate-pr-self-review.v1' \
@@ -102,6 +104,7 @@ test_fm_home_parameterization() {
     "Substrate base SHA: $substrate_sha" \
     "Substrate head SHA: $substrate_sha" \
     "Substrate changed files: $empty_digest" \
+    'Substrate diff: no substrate diff' \
     '# Surface review' \
     'Authority: reviewed; files=bin/fm-pr-check.sh; evidence=no-mistakes owns delivery; consequence=readiness is non-authorizing; fix=retain one delivery owner.' \
     'Security: reviewed; files=bin/fm-pr-lib.sh; evidence=private report is validated; consequence=tampering is refused; fix=retain identity checks.' \

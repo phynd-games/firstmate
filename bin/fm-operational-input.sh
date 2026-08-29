@@ -249,10 +249,12 @@ fm_operational_input_inspect() {  # <current-message> <result-var>
 }
 
 fm_operational_read_stdin() {  # <result-var>
-  local result_var=${1-} value
+  local result_var=${1-} value byte_count
   [ -n "$result_var" ] || return 2
-  value=$(cat; printf x)
+  value=$(head -c "$((FM_OPERATIONAL_MAX_BODY_BYTES + 1))" && printf x) || return 2
   value=${value%x}
+  fm_operational_body_byte_count "$value" byte_count || return 2
+  [ "$byte_count" -le "$FM_OPERATIONAL_MAX_BODY_BYTES" ] || return 2
   printf -v "$result_var" '%s' "$value"
 }
 

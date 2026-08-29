@@ -533,13 +533,19 @@ EOF
   [ "$changed_files" = "$actual_changed_files" ] || return 1
   [ -z "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] || return 1
   [ -z "$(git -C "$substrate_root" status --porcelain 2>/dev/null)" ] || return 1
-  local actual_substrate_head actual_substrate_changed
+  local actual_substrate_head actual_substrate_changed empty_digest
   actual_substrate_head=$(git -C "$substrate_root" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1
   [ "$substrate_head_sha" = "$actual_substrate_head" ] || return 1
   [ -n "$expected_substrate_base" ] && [ "$substrate_base_sha" = "$expected_substrate_base" ] || return 1
   git -C "$substrate_root" cat-file -e "$substrate_base_sha^{commit}" 2>/dev/null || return 1
   actual_substrate_changed=$(git -C "$substrate_root" diff --name-status "$substrate_base_sha" "$substrate_head_sha" | fm_pr_sha256_stream) || return 1
   [ "$substrate_changed_files" = "$actual_substrate_changed" ] || return 1
+  empty_digest=$(printf '' | fm_pr_sha256_stream) || return 1
+  if [ "$actual_substrate_changed" = "$empty_digest" ]; then
+    [ "$substrate_no_diff" = 1 ] || return 1
+  else
+    [ -z "$substrate_no_diff" ] || return 1
+  fi
 }
 
 fm_pr_regular_destination_or_absent() {

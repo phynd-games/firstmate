@@ -1792,29 +1792,64 @@ EOF
   printf '%s' "$lines" >&2
 }
 
-freshen_spawn_worktree_base() {  # <worktree>
-  local worktree=$1 default target expected actual status
+freshen_spawn_worktree_base() {  # <worktree> [<approved-ref> <approved-sha>]
+  local worktree=$1 approved_ref=${2-} approved_sha=${3-} default target expected actual status resolved remote_ref
   if ! git -C "$worktree" fetch --quiet origin; then
     echo "error: could not fetch origin for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
     return 1
   fi
-  if ! git -C "$worktree" remote set-head origin --auto >/dev/null 2>&1; then
-    echo "error: could not resolve origin's current default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
-    return 1
+  if [ -n "$approved_ref" ]; then
+    target=$approved_ref
+    expected=$approved_sha
+    resolved=$(git -C "$worktree" rev-parse --verify --quiet "$target^{commit}" 2>/dev/null || true)
+    if [ "$resolved" != "$expected" ]; then
+      case "$target" in
+        origin/*)
+          remote_ref=${target#origin/}
+          git -C "$worktree" fetch --quiet origin "+refs/heads/$remote_ref:refs/remotes/origin/$remote_ref" || {
+            echo "error: could not fetch approved base '$target' for pooled worktree '$worktree'" >&2
+            return 1
+          }
+          ;;
+        refs/remotes/origin/*)
+          remote_ref=${target#refs/remotes/origin/}
+          git -C "$worktree" fetch --quiet origin "+refs/heads/$remote_ref:refs/remotes/origin/$remote_ref" || {
+            echo "error: could not fetch approved base '$target' for pooled worktree '$worktree'" >&2
+            return 1
+          }
+          ;;
+        *)
+          git -C "$worktree" fetch --quiet origin "+refs/heads/$target:refs/heads/$target" || {
+            echo "error: could not fetch approved base '$target' for pooled worktree '$worktree'" >&2
+            return 1
+          }
+          ;;
+      esac
+      resolved=$(git -C "$worktree" rev-parse --verify --quiet "$target^{commit}" 2>/dev/null || true)
+    fi
+    [ "$resolved" = "$expected" ] || {
+      echo "error: approved base '$target' does not resolve to its recorded SHA for pooled worktree '$worktree'" >&2
+      return 1
+    }
+  else
+    if ! git -C "$worktree" remote set-head origin --auto >/dev/null 2>&1; then
+      echo "error: could not resolve origin's current default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+      return 1
+    fi
+    default=$(default_branch "$worktree") || {
+      echo "error: could not determine origin's default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+      return 1
+    }
+    target="origin/$default"
+    if ! git -C "$worktree" fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default"; then
+      echo "error: could not fetch '$target' for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+      return 1
+    fi
+    expected=$(git -C "$worktree" rev-parse --verify --quiet "$target^{commit}" 2>/dev/null) || {
+      echo "error: '$target' is not a commit for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+      return 1
+    }
   fi
-  default=$(default_branch "$worktree") || {
-    echo "error: could not determine origin's default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
-    return 1
-  }
-  target="origin/$default"
-  if ! git -C "$worktree" fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default"; then
-    echo "error: could not fetch '$target' for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
-    return 1
-  fi
-  expected=$(git -C "$worktree" rev-parse --verify --quiet "$target^{commit}" 2>/dev/null) || {
-    echo "error: '$target' is not a commit for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
-    return 1
-  }
   status=$(git -C "$worktree" -c core.quotePath=false status --porcelain) || {
     echo "error: could not inspect pooled worktree '$worktree' before refreshing its base" >&2
     return 1
@@ -1827,7 +1862,7 @@ freshen_spawn_worktree_base() {  # <worktree>
     fi
     return 1
   fi
-  if ! git -C "$worktree" reset --hard "$target" >/dev/null; then
+  if ! git -C "$worktree" reset --hard "$expected" >/dev/null; then
     echo "error: could not reset pooled worktree '$worktree' to '$target'; refusing to launch from a potentially stale base" >&2
     return 1
   fi
@@ -2329,12 +2364,9 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
 
   validate_spawn_worktree "treehouse get" "$T"
 fi
-if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
-  freshen_spawn_worktree_base "$WT" || exit 1
-fi
-
 REVIEW_BASE_REF=
 REVIEW_BASE_SHA=
+REVIEW_BASE_DEFAULT=0
 if [ "$KIND" = ship ]; then
   if [ "$RELAUNCH" -eq 1 ]; then
     REVIEW_BASE=$(fm_pr_review_base_from_meta "$RELAUNCH_META") || {
@@ -2350,6 +2382,27 @@ if [ "$KIND" = ship ]; then
       exit 1
     }
     REVIEW_BASE=
+    REVIEW_BASE_DEFAULT=1
+  fi
+  if [ -n "$REVIEW_BASE" ]; then
+    IFS="$(printf '\t')" read -r REVIEW_BASE_REF REVIEW_BASE_SHA <<EOF
+$REVIEW_BASE
+EOF
+  fi
+  if [ "$REVIEW_BASE_DEFAULT" -eq 0 ]; then
+    RESOLVED_REVIEW_BASE=$(git -C "$WT" rev-parse --verify "$REVIEW_BASE_REF^{commit}" 2>/dev/null) || {
+      echo "error: task's approved target base is unavailable" >&2
+      exit 1
+    }
+    [ "$REVIEW_BASE_SHA" = "$RESOLVED_REVIEW_BASE" ] || {
+      echo "error: task's approved target base ref and SHA disagree" >&2
+      exit 1
+    }
+  fi
+fi
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+  freshen_spawn_worktree_base "$WT" "$REVIEW_BASE_REF" "$REVIEW_BASE_SHA" || exit 1
+  if [ "$KIND" = ship ] && [ "$REVIEW_BASE_DEFAULT" -eq 1 ]; then
     REVIEW_BASE_REF=$(fm_pr_default_branch "$WT") || {
       echo "error: could not resolve the task's approved target base" >&2
       exit 1
@@ -2359,19 +2412,6 @@ if [ "$KIND" = ship ]; then
       exit 1
     }
   fi
-  if [ -n "$REVIEW_BASE" ]; then
-    IFS="$(printf '\t')" read -r REVIEW_BASE_REF REVIEW_BASE_SHA <<EOF
-$REVIEW_BASE
-EOF
-  fi
-  RESOLVED_REVIEW_BASE=$(git -C "$WT" rev-parse --verify "$REVIEW_BASE_REF^{commit}" 2>/dev/null) || {
-    echo "error: task's approved target base is unavailable" >&2
-    exit 1
-  }
-  [ "$REVIEW_BASE_SHA" = "$RESOLVED_REVIEW_BASE" ] || {
-    echo "error: task's approved target base ref and SHA disagree" >&2
-    exit 1
-  }
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
