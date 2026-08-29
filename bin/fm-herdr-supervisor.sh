@@ -29,9 +29,9 @@
 # attaches to, or verifies a watcher, and state/.watch.lock remains the only
 # singleton. It never touches the durable wake queue except through the shared
 # fm_wake_append escalation path, never acknowledges a wake, never merges,
-# tears down, promotes, steers a task, or invokes no-mistakes. It stands down
-# whenever a harness-native or away-mode owner is provable, so a home never
-# runs two continuity owners.
+# tears down, promotes, steers a task, or invokes no-mistakes. It becomes a
+# standby whenever a harness-native or away-mode owner is provable, so only one
+# active owner can arm a watcher.
 #
 # It uses the plain attach-or-start arm, never `--restart`. A second supervisor
 # that somehow raced past the establish lock therefore ATTACHES to the live
@@ -46,7 +46,7 @@
 # supervisor heartbeat ALL agree. Anything unreadable, ambiguous, or unknown is
 # unhealthy, never healthy.
 #
-# Every failed or ambiguous establish and every exhausted retry writes a durable
+# Every failed or ambiguous establish and every failed arm attempt writes a durable
 # actionable diagnostic to state/.herdr-supervisor-alarm AND appends one
 # `check: herdr-supervisor` record to the durable wake queue, so the lapse
 # reaches the captain through the channels that already exist rather than a new
@@ -223,7 +223,26 @@ record_put() {
 }
 
 record_clear() {
-  rm -f "$RECORD" "$LIVE" 2>/dev/null || true
+  rm -f "$RECORD" "$LIVE" 2>/dev/null || return 1
+  [ ! -e "$RECORD" ] && [ ! -e "$LIVE" ]
+}
+
+record_set_mode() {  # <mode>
+  local mode=$1 tmp
+  [ -f "$RECORD" ] || return 1
+  tmp="$RECORD.mode.${BASHPID:-$$}"
+  awk '!/^mode=/' "$RECORD" > "$tmp" 2>/dev/null || {
+    rm -f "$tmp" 2>/dev/null
+    return 1
+  }
+  printf 'mode=%s\n' "$mode" >> "$tmp" 2>/dev/null || {
+    rm -f "$tmp" 2>/dev/null
+    return 1
+  }
+  mv -f "$tmp" "$RECORD" 2>/dev/null || {
+    rm -f "$tmp" 2>/dev/null
+    return 1
+  }
 }
 
 launcher_clear() {
@@ -240,14 +259,21 @@ mint_generation() {
 # --- durable alarm and escalation ---------------------------------------------
 
 alarm_write() {  # <reason>
-  local reason=$1
+  local reason=$1 tmp="$ALARM.tmp.${BASHPID:-$$}"
   {
     printf 'at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'home=%s\n' "$FM_HOME"
     printf 'generation=%s\n' "$(record_get generation || printf none)"
     printf 'reason=%s\n' "$(ledger_clean_field "$reason")"
-  } > "$ALARM.tmp.${BASHPID:-$$}" 2>/dev/null || return 0
-  mv -f "$ALARM.tmp.${BASHPID:-$$}" "$ALARM" 2>/dev/null || true
+  } > "$tmp" 2>/dev/null || {
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  }
+  mv -f "$tmp" "$ALARM" 2>/dev/null || {
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  }
+  [ -f "$ALARM" ]
 }
 
 alarm_clear() {
@@ -257,11 +283,15 @@ alarm_clear() {
 # escalate: one durable diagnostic plus one durable wake, using the queue that
 # already exists. It never prompts a harness session this process does not own.
 escalate() {  # <reason>
-  local reason=$1
-  alarm_write "$reason"
+  local reason=$1 status=0
+  alarm_write "$reason" || status=1
   ledger_append escalated "$reason"
   fm_wake_append check herdr-supervisor \
-    "check: herdr-supervisor - $reason" 2>/dev/null || true
+    "check: herdr-supervisor - $reason" 2>/dev/null || status=1
+  if [ "$status" -ne 0 ]; then
+    printf 'herdr-supervisor: ESCALATION PERSISTENCE FAILED - %s\n' "$reason" >&2
+  fi
+  return "$status"
 }
 
 # --- Herdr identity -----------------------------------------------------------
@@ -400,12 +430,15 @@ pane_binding_intact() {  # <session> <workspace> <tab> <pane>
 
 HS_UNHEALTHY_REASON=
 supervisor_healthy() {
-  local session socket workspace tab pane loop_pid loop_identity current age
+  local session socket workspace tab pane loop_pid loop_identity current age mode
   HS_UNHEALTHY_REASON=
 
   [ -f "$RECORD" ] || { HS_UNHEALTHY_REASON="no supervisor record"; return 1; }
   [ "$(record_get version || printf '')" = "$RECORD_VERSION" ] \
     || { HS_UNHEALTHY_REASON="supervisor record version is not $RECORD_VERSION"; return 1; }
+  mode=$(record_get mode || printf active)
+  [ "$mode" = active ] \
+    || { HS_UNHEALTHY_REASON="supervisor binding is in $mode quarantine"; return 1; }
   [ "$(record_get fm_home || printf '')" = "$FM_HOME" ] \
     || { HS_UNHEALTHY_REASON="supervisor record belongs to another home"; return 1; }
   [ -f "$LIVE" ] \
@@ -450,6 +483,10 @@ supervisor_healthy() {
   current=$(pane_tracked_pid "$session" "$pane" 2>/dev/null || printf '')
   [ "$current" = "$loop_pid" ] \
     || { HS_UNHEALTHY_REASON="Herdr pane $pane tracks pid '${current:-unknown}', not supervisor $loop_pid"; return 1; }
+
+  current=$(fm_pid_identity "$loop_pid" 2>/dev/null || printf '')
+  [ "$current" = "$loop_identity" ] \
+    || { HS_UNHEALTHY_REASON="supervisor pid $loop_pid identity changed during health check"; return 1; }
 
   return 0
 }
@@ -537,8 +574,25 @@ supervisor_eligible() {
 rollback_workspace() {  # <session> <workspace>
   local session=$1 workspace=$2
   [ -n "$workspace" ] || return 0
-  hs_herdr "$session" workspace close "$workspace" >/dev/null 2>&1 || true
-  ledger_append rollback "closed workspace $workspace after a failed establish"
+  if hs_herdr "$session" workspace close "$workspace" >/dev/null 2>&1; then
+    ledger_append rollback "closed workspace $workspace after a failed establish"
+    return 0
+  fi
+  ledger_append rollback-failed "could not close workspace $workspace after a failed establish"
+  return 1
+}
+
+cleanup_establish_failure() {  # <session> <workspace> <detail>
+  local session=$1 workspace=$2 detail=$3
+  if ! rollback_workspace "$session" "$workspace"; then
+    escalate "$detail; exact workspace $workspace could not be closed and the supervisor binding was retained"
+    return 1
+  fi
+  if ! record_clear; then
+    escalate "$detail; exact workspace $workspace closed but supervisor binding cleanup failed"
+    return 1
+  fi
+  launcher_clear
 }
 
 supervisor_label() {
@@ -572,6 +626,7 @@ establish() {  # <reason>
     printf 'fm_root=%s\n' "$FM_ROOT"
     printf 'herdr_session=%s\n' "$HS_SESSION"
     printf 'herdr_socket=%s\n' "$HS_SOCKET"
+    printf 'mode=active\n'
     printf 'established_at=%s\n' "$(date +%s)"
     printf 'establish_reason=%s\n' "$(ledger_clean_field "$reason")"
   } | record_put || {
@@ -612,12 +667,16 @@ establish() {  # <reason>
     printf 'workspace=%s\n' "$workspace"
     printf 'tab=%s\n' "$tab"
     printf 'pane=%s\n' "$pane"
+    printf 'mode=active\n'
     printf 'established_at=%s\n' "$(date +%s)"
     printf 'establish_reason=%s\n' "$(ledger_clean_field "$reason")"
   } | record_put || {
-    rollback_workspace "$HS_SESSION" "$workspace"
-    record_clear
-    escalate "the supervisor record could not be updated after its Herdr pane was created"
+    detail="the supervisor record could not be updated after its Herdr pane was created"
+    cleanup_establish_failure "$HS_SESSION" "$workspace" "$detail" || {
+      echo "herdr-supervisor: FAILED - $detail; cleanup was retained for retry" >&2
+      return 1
+    }
+    escalate "$detail"
     echo "herdr-supervisor: FAILED - the supervisor record could not be updated" >&2
     return 1
   }
@@ -660,17 +719,23 @@ establish() {  # <reason>
     printf 'exec bash %s run --generation %s\n' \
       "$(shell_quote "$SCRIPT_DIR/fm-herdr-supervisor.sh")" "$(shell_quote "$generation")"
   } > "$LAUNCHER" 2>/dev/null || ! chmod 700 "$LAUNCHER" 2>/dev/null; then
-    rollback_workspace "$HS_SESSION" "$workspace"
-    record_clear
-    escalate "the supervisor launcher script could not be written to $LAUNCHER"
+    detail="the supervisor launcher script could not be written to $LAUNCHER"
+    cleanup_establish_failure "$HS_SESSION" "$workspace" "$detail" || {
+      echo "herdr-supervisor: FAILED - $detail; cleanup was retained for retry" >&2
+      return 1
+    }
+    escalate "$detail"
     echo "herdr-supervisor: FAILED - the supervisor launcher script could not be written" >&2
     return 1
   fi
   cmd="exec bash $(shell_quote "$LAUNCHER")"
   if ! hs_herdr "$HS_SESSION" pane run "$pane" "$cmd" >/dev/null 2>&1; then
-    rollback_workspace "$HS_SESSION" "$workspace"
-    record_clear
-    escalate "the supervisor loop could not be started in Herdr pane $pane"
+    detail="the supervisor loop could not be started in Herdr pane $pane"
+    cleanup_establish_failure "$HS_SESSION" "$workspace" "$detail" || {
+      echo "herdr-supervisor: FAILED - $detail; cleanup was retained for retry" >&2
+      return 1
+    }
+    escalate "$detail"
     echo "herdr-supervisor: FAILED - the supervisor loop could not be started in pane $pane" >&2
     return 1
   fi
@@ -689,8 +754,10 @@ establish() {  # <reason>
   done
 
   detail="the supervisor loop did not confirm within ${READY_TIMEOUT}s (${HS_UNHEALTHY_REASON:-no reason recorded})"
-  rollback_workspace "$HS_SESSION" "$workspace"
-  record_clear
+  cleanup_establish_failure "$HS_SESSION" "$workspace" "$detail" || {
+    echo "herdr-supervisor: FAILED - $detail; cleanup was retained for retry" >&2
+    return 1
+  }
   escalate "$detail"
   echo "herdr-supervisor: FAILED - $detail" >&2
   return 1
@@ -700,15 +767,14 @@ establish() {  # <reason>
 
 retire_binding_locked() {  # <reason> [signal-owner]
   local reason=$1 signal_owner=${2:-1}
-  local session workspace pane loop_pid loop_identity current close_rc=0
+  local session workspace pane loop_pid loop_identity current
   session=$(record_get herdr_session || printf '')
   workspace=$(record_get workspace || printf '')
   pane=$(record_get pane || printf '')
   loop_pid=$(live_get loop_pid || printf '')
   loop_identity=$(live_get loop_identity || printf '')
 
-  record_clear
-  ledger_append retired "$reason"
+  record_set_mode retiring || return 1
 
   if [ "$signal_owner" -eq 1 ] && [ -n "$loop_pid" ] && [ -n "$loop_identity" ] \
     && [ "$loop_pid" != "${BASHPID:-$$}" ] && fm_pid_alive "$loop_pid"; then
@@ -718,18 +784,23 @@ retire_binding_locked() {  # <reason> [signal-owner]
     fi
   fi
 
-  if [ -n "$workspace" ]; then
-    if [ -n "$session" ] && [ -n "$pane" ] \
-      && herdr_load >/dev/null 2>&1 \
-      && hs_herdr "$session" workspace close "$workspace" >/dev/null 2>&1; then
-      :
-    else
-      close_rc=1
-    fi
+  if [ -n "$workspace" ] && [ -n "$session" ] \
+    && hs_herdr "$session" workspace close "$workspace" >/dev/null 2>&1; then
+    :
+  elif [ -n "$workspace" ]; then
+    record_set_mode quarantine || true
+    ledger_append quarantine "could not close exact workspace $workspace for $reason"
+    return 1
   fi
+  if ! record_clear; then
+    record_set_mode quarantine || true
+    ledger_append quarantine "could not clear binding after closing exact workspace ${workspace:-none} for $reason"
+    return 1
+  fi
+  ledger_append retired "$reason"
   rm -f "$HEARTBEAT" 2>/dev/null || true
   launcher_clear
-  return "$close_rc"
+  return 0
 }
 
 reconcile_previous_locked() {
@@ -740,7 +811,7 @@ reconcile_previous_locked() {
   retire_binding_locked "replacing unhealthy generation=$old_generation" 1
   rc=$?
   if [ "$rc" -ne 0 ]; then
-    escalate "the previous supervisor generation $old_generation was cleared but its exact Herdr workspace could not be retired; inspect the recorded workspace before retrying"
+    escalate "the previous supervisor generation $old_generation is quarantined because its exact Herdr workspace could not be retired; retry cleanup before replacement"
     return 1
   fi
   [ ! -f "$RECORD" ] || {
@@ -772,11 +843,6 @@ cmd_ensure() {  # <reason>
     return 0
   fi
   if harness_owner_provable; then
-    # A live foreign owner means this home already has continuity. Retiring any
-    # supervisor we still hold is the point: two owners is the failure mode.
-    if [ -f "$RECORD" ]; then
-      cmd_retire "deferring to $HS_DEFER_REASON" >/dev/null 2>&1 || true
-    fi
     echo "herdr-supervisor: deferred - $HS_DEFER_REASON"
     return 0
   fi
@@ -946,14 +1012,23 @@ cmd_run() {
       exit 0
     fi
     if [ "$(hs_config_preference)" = off ]; then
-      cmd_retire "config/herdr-supervisor changed to off" >/dev/null 2>&1 || true
-      loop_release_live
-      exit 0
+      if cmd_retire "config/herdr-supervisor changed to off"; then
+        loop_release_live
+        exit 0
+      fi
+      sleep "$IDLE_INTERVAL"
+      continue
     fi
     if harness_owner_provable; then
-      ledger_append loop-exit "stood down: $HS_DEFER_REASON"
-      loop_release_live
-      exit 0
+      : > "$HEARTBEAT" 2>/dev/null || true
+      sleep "$IDLE_INTERVAL"
+      continue
+    fi
+
+    if [ "$(record_get mode || printf active)" != active ]; then
+      : > "$HEARTBEAT" 2>/dev/null || true
+      sleep "$IDLE_INTERVAL"
+      continue
     fi
 
     : > "$HEARTBEAT" 2>/dev/null || true
@@ -1004,6 +1079,7 @@ cmd_run() {
     rapid=0
     failures=$((failures + 1))
     ledger_append cycle-failed "rc=$rc elapsed=${elapsed}s attempt=$failures $(ledger_clean_field "$(head -c 400 "$out" 2>/dev/null | tr '\n' ' ')")"
+    escalate "watcher arm attempt $failures failed in Herdr pane $(record_get pane || printf unknown) (rc=$rc elapsed=${elapsed}s ${reason:-no actionable reason}); bounded recovery will continue"
     rm -f "$out" 2>/dev/null || true
     LOOP_ARM_OUT=
 
