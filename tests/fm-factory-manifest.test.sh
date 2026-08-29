@@ -133,6 +133,22 @@ test_provenance_rejection() {
   pass "source provenance mismatch is rejected"
 }
 
+test_public_api_rejects_non_string_digest() {
+  FACTORY_ROOT="$ROOT" SOURCE="$SOURCE" python3 - <<'PY'
+import os
+import sys
+
+sys.path.insert(0, os.environ["FACTORY_ROOT"] + "/bin")
+from firstmate_factory import validate_source_bytes
+
+with open(os.environ["SOURCE"], "rb") as handle:
+    report = validate_source_bytes(handle.read(), None)
+assert report["valid"] is False
+assert {error["code"] for error in report["errors"]} == {"provenance.expected-sha256"}
+PY
+  pass "public API returns a deterministic report for a non-string expected digest"
+}
+
 test_malformed_source_fixtures() {
   run_invalid_source nested-mismatch representation.mismatch
   run_invalid_source count-mismatch count.declared
@@ -365,6 +381,7 @@ test_read_only_execution() {
 test_schema_interface
 test_known_source_graph
 test_provenance_rejection
+test_public_api_rejects_non_string_digest
 test_malformed_source_fixtures
 test_normalized_manifest
 test_malformed_manifest_fixtures

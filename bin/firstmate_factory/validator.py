@@ -443,7 +443,10 @@ def validate_source_bytes(
         "matches": actual_sha256 == expected_sha256,
     }
     report["provenance"] = provenance
-    if LOWER_SHA256.fullmatch(expected_sha256) is None:
+    if (
+        not isinstance(expected_sha256, str)
+        or LOWER_SHA256.fullmatch(expected_sha256) is None
+    ):
         errors.add("provenance.expected-sha256", "$.expected_sha256", "expected SHA-256 must be 64 lowercase hexadecimal characters")
     elif actual_sha256 != expected_sha256:
         errors.add("provenance.mismatch", "$", "source bytes do not match the expected SHA-256")
