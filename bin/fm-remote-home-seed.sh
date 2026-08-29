@@ -80,6 +80,7 @@ case "$REMOTE_HOME/" in "$REMOTE_ROOT/"*) die "remote home must not be inside th
 case "$REMOTE_ROOT/" in "$REMOTE_HOME/"*) die "remote code root must not be inside the remote home" ;; esac
 
 NO_PROJECTS=0
+PROJECT_COUNT=0
 PROJECT_NAMES=()
 PROJECT_ORIGINS=()
 for arg in "$@"; do
@@ -96,12 +97,13 @@ for arg in "$@"; do
     esac
     PROJECT_NAMES+=("$name")
     PROJECT_ORIGINS+=("$origin")
+    PROJECT_COUNT=$((PROJECT_COUNT + 1))
   fi
 done
 if [ "$NO_PROJECTS" -eq 1 ]; then
-  [ "${#PROJECT_NAMES[@]}" -eq 0 ] || die "--no-projects cannot be combined with project names"
+  [ "$PROJECT_COUNT" -eq 0 ] || die "--no-projects cannot be combined with project names"
 else
-  [ "${#PROJECT_NAMES[@]}" -gt 0 ] || die "at least one project or --no-projects is required"
+  [ "$PROJECT_COUNT" -gt 0 ] || die "at least one project or --no-projects is required"
 fi
 
 mkdir -p "$STATE" || die "cannot create parent state directory"
@@ -157,6 +159,7 @@ done < "$BRIEF" > "$TMP/charter.remote"
 PROJECTS_CSV=
 : > "$TMP/project.records"
 PROJECT_INDEX=0
+if [ "$PROJECT_COUNT" -gt 0 ]; then
 for project in "${PROJECT_NAMES[@]}"; do
   ORIGIN=${PROJECT_ORIGINS[$PROJECT_INDEX]}
   PROJECT_INDEX=$((PROJECT_INDEX + 1))
@@ -188,6 +191,7 @@ EOF
   printf 'project=%s|%s|%s|%s\n' "$NAME_B64" "$ORIGIN_B64" "$PROJECT_REG_B64" "$MODE_B64" >> "$TMP/project.records"
   PROJECTS_CSV="${PROJECTS_CSV}${PROJECTS_CSV:+, }$project"
 done
+fi
 
 {
   printf 'schema=fm-remote-home-provision.v1\n'
@@ -200,7 +204,7 @@ done
   # back; the parent's real filesystem path is never sent, since it names
   # nothing on the remote filesystem.
   printf 'parent_host_b64=%s\n' "$(printf '%s' "$HOST" | encode)"
-  printf 'project_count=%s\n' "${#PROJECT_NAMES[@]}"
+  printf 'project_count=%s\n' "$PROJECT_COUNT"
   cat "$TMP/project.records"
 } > "$TMP/manifest"
 MANIFEST_BYTES=$(LC_ALL=C wc -c < "$TMP/manifest" | tr -d ' ')

@@ -261,7 +261,13 @@ cmd_sync() {
   validate_id "$id"
   validate_home "$id"
   target=$TARGET_HOME
-  dirty=$(git -C "$target" status --porcelain 2>/dev/null | awk '$0 != "?? .fm-secondmate-home" { print; exit }')
+  # Inherited config is host-local material, so an untracked config directory
+  # must not make an otherwise clean code checkout look dirty. Tracked config
+  # edits and every other untracked path remain a sync refusal.
+  dirty=$(git -C "$target" status --porcelain 2>/dev/null | awk '
+    $1 == "??" && ($2 == "config" || $2 == "config/") { next }
+    $0 != "?? .fm-secondmate-home" { print; exit }
+  ')
   [ -z "$dirty" ] || die "remote secondmate checkout is dirty; sync skipped"
   head=$(git -C "$FM_ROOT" rev-parse HEAD 2>/dev/null) || die "remote code root HEAD is unreadable"
   current=$(git -C "$target" rev-parse HEAD 2>/dev/null) || die "remote home HEAD is unreadable"

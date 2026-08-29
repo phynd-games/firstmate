@@ -243,12 +243,15 @@ SH
 chmod +x "$FAKEBIN/fake-ssh"
 
 publish_healthy_watcher_identity() { # <state> <home> <watch-script>
-  local state=$1 home=$2 watch=$3 identity
+  local state=$1 home=$2 watch=$3 identity pid=999999
   identity=$(FM_HOME="$PARENT" FM_STATE_OVERRIDE="$PARENT/state" /bin/bash -c \
     '. "$1"; fm_pid_identity "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$$") \
     || fail "could not derive fixture watcher identity"
   mkdir -p "$state/.watch.lock"
-  printf '%s\n' "$$" > "$state/.watch.lock/pid"
+  # The fixture only needs complete lock metadata. An unoccupied PID lets
+  # bootstrap's migration pass through without ever sending SIGTERM to the
+  # test process that owns this synthetic home.
+  printf '%s\n' "$pid" > "$state/.watch.lock/pid"
   printf '%s\n' "$identity" > "$state/.watch.lock/pid-identity"
   printf '%s\n' "$home" > "$state/.watch.lock/fm-home"
   printf '%s\n' "$watch" > "$state/.watch.lock/watcher-path"
