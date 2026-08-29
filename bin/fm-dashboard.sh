@@ -41,7 +41,8 @@
 # Usage:
 #   fm-dashboard.sh json                 print the fm-dashboard.v1 payload
 #   fm-dashboard.sh build [--out <path>] build the page (`--out -` to stdout)
-#   fm-dashboard.sh serve [--port <n>]   serve the page on 127.0.0.1 only
+#   fm-dashboard.sh serve [--port <n>] [--owner-digest <hex>]
+#                                        serve the page on 127.0.0.1 only
 #   fm-dashboard.sh render <payload.json> [--out <path>]
 #                                        rebuild the page from a saved payload
 #   fm-dashboard.sh path                 print this home's stable page path
@@ -58,6 +59,12 @@
 # `/healthz`, serves no other file, and fails closed with a plain-text 500 when
 # a rebuild fails. It needs python3 and refuses with that requirement named
 # when python3 is absent.
+#
+# `/healthz` answers one fm-dashboard-health.v1 JSON object naming this home and
+# the owner digest passed in with --owner-digest, which is how a caller proves
+# the process answering a port is the exact dashboard it started for this exact
+# home rather than an unrelated local listener. Only the digest is ever passed
+# in or published; bin/fm-dashboard-start.sh keeps the token itself private.
 #
 # Bounds (every one is disclosed in the payload when it truncates):
 #   FM_DASHBOARD_EVENT_LINES   status-log lines kept per task (default 40)
@@ -497,13 +504,23 @@ command_render() {
 }
 
 command_serve() {
-  local port=$FM_DASHBOARD_PORT
+  local port=$FM_DASHBOARD_PORT digest=
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --port) shift; [ "$#" -gt 0 ] || fail "--port needs a number"; port=$1; shift ;;
+      --owner-digest)
+        shift
+        [ "$#" -gt 0 ] || fail "--owner-digest needs a value"
+        digest=$1
+        shift
+        ;;
       *) usage >&2; exit 2 ;;
     esac
   done
+  case "$digest" in
+    '') ;;
+    *[!0-9a-f]*) fail "--owner-digest must be lowercase hex" ;;
+  esac
   case "$port" in
     ''|*[!0-9]*) fail "--port must be a number: $port" ;;
   esac
@@ -528,7 +545,9 @@ command_serve() {
   build_html "$TMP/preflight.html" || exit 1
   printf 'serving: http://127.0.0.1:%s/ (local only; Ctrl-C to stop)\n' "$port"
   FM_DASHBOARD_SELF="$SCRIPT_DIR/fm-dashboard.sh" FM_DASHBOARD_BIND_PORT="$port" \
+    FM_DASHBOARD_OWNER_DIGEST="$digest" FM_DASHBOARD_HEALTH_HOME="$FM_HOME" \
     python3 - <<'PY'
+import json
 import os
 import subprocess
 import sys
@@ -536,6 +555,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SELF = os.environ["FM_DASHBOARD_SELF"]
 PORT = int(os.environ["FM_DASHBOARD_BIND_PORT"])
+# Only the DIGEST of the owner token reaches this process, and only the digest
+# is ever published. A caller proves it started this exact server for this
+# exact home by hashing the token it holds privately and comparing; the token
+# itself never travels over the socket or through this process's environment.
+OWNER_DIGEST = os.environ.get("FM_DASHBOARD_OWNER_DIGEST", "")
+HEALTH_HOME = os.environ.get("FM_DASHBOARD_HEALTH_HOME", "")
+HEALTH = json.dumps({
+    "schema": "fm-dashboard-health.v1",
+    "home": HEALTH_HOME,
+    "owner": OWNER_DIGEST,
+    "ready": True,
+}).encode() + b"\n"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -555,7 +586,7 @@ class Handler(BaseHTTPRequestHandler):
         # One page and one liveness probe. Every other path is refused: this
         # server never serves a file from disk and has no directory route.
         if self.path == "/healthz":
-            self._send(200, b"ok\n", "text/plain; charset=utf-8")
+            self._send(200, HEALTH, "application/json; charset=utf-8")
             return
         if self.path not in ("/", "/index.html"):
             self._send(404, b"not found\n", "text/plain; charset=utf-8")
