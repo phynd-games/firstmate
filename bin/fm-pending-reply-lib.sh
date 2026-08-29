@@ -233,7 +233,8 @@ fm_pending_reply_embed_corr() {  # <message> <corr_id> <result-var>
       while [ "${body#$'\t'}" != "$body" ]; do body=${body#$'\t'}; done
       ;;
   esac
-  printf -v "$result_var" '%s' "${FM_FROMFIRST_MARK}${token} ${body}"
+  fm_message_mark_from_firstmate "${token} ${body}" marked || return 2
+  printf -v "$result_var" '%s' "$marked"
 }
 
 # Create a durable pending-reply expectation. Prints corr_id on success.

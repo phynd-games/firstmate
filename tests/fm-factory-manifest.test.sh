@@ -101,8 +101,11 @@ task firstmate.execution-task.v1
 route firstmate.route-request.v1
 EOF
   json_assert "$TMP_ROOT/schema-execution-manifest.json" "r['properties']['authority']['properties']['approval_id']['minLength'] == 1" "approval IDs must be non-empty in the published schema"
+  json_assert "$TMP_ROOT/schema-execution-manifest.json" "r['properties']['authority']['allOf'][0]['then']['properties']['scope']['minItems'] == 1" "published authority schema must require non-draft scope like runtime validation"
+  json_assert "$TMP_ROOT/schema-execution-manifest.json" "r['properties']['source']['minContains'] == 1 and r['properties']['source']['maxContains'] == 1" "published source schema must require exactly one task-graph binding like runtime validation"
   json_assert "$TMP_ROOT/schema-task.json" "r['properties']['source_refs']['minItems'] == 1" "source references must be non-empty in the published schema"
-  pass "public CLI exposes all four versioned schemas"
+  json_assert "$TMP_ROOT/schema-route.json" "'does not activate routing' in r['description']" "route schema must state its non-authorizing trust boundary"
+  pass "public CLI exposes four versioned schemas aligned with runtime trust constraints"
 }
 
 test_known_source_graph() {
@@ -112,7 +115,8 @@ test_known_source_graph() {
   "$CLI" validate-source --source "$SOURCE" --expected-sha256 "$SOURCE_SHA" >"$second" || fail "repeat source validation failed"
   cmp -s "$report" "$second" || fail "source validation report is not byte-stable"
   json_assert "$report" "r['valid'] is True and r['errors'] == []" "known source should be valid"
-  json_assert "$report" "r['input']['byte_count'] == 121697 and r['provenance']['matches'] is True" "source provenance facts differ"
+  json_assert "$report" "r['trust'] == {'artifact_origin_verified': False, 'authorization_granted': False, 'structural_validation_only': True}" "valid source report overstated structural validation trust"
+  json_assert "$report" "r['input']['byte_count'] == 121697 and r['provenance']['matches'] is True and r['provenance']['origin_verified'] is False" "source digest-binding facts differ"
   json_assert "$report" "r['graph']['declared_task_count'] == 121 and r['graph']['flat_task_count'] == 121 and r['graph']['nested_task_count'] == 121" "task counts differ"
   json_assert "$report" "r['graph']['epic_count'] == 8 and r['graph']['dependency_edge_count'] == 193" "epic or edge count differs"
   json_assert "$report" "r['graph']['cycle_count'] == 0 and r['graph']['wave_count'] == 26" "cycle or wave count differs"
@@ -133,8 +137,8 @@ test_provenance_rejection() {
   pass "source provenance mismatch is rejected"
 }
 
-test_public_api_rejects_non_string_digest() {
-  FACTORY_ROOT="$ROOT" SOURCE="$SOURCE" python3 - <<'PY'
+test_public_api_rejects_malformed_arguments() {
+  FACTORY_ROOT="$ROOT" SOURCE="$SOURCE" SOURCE_SHA="$SOURCE_SHA" python3 - <<'PY'
 import os
 import sys
 
@@ -142,11 +146,21 @@ sys.path.insert(0, os.environ["FACTORY_ROOT"] + "/bin")
 from firstmate_factory import validate_source_bytes
 
 with open(os.environ["SOURCE"], "rb") as handle:
-    report = validate_source_bytes(handle.read(), None)
+    source = handle.read()
+report = validate_source_bytes(source, None)
 assert report["valid"] is False
 assert {error["code"] for error in report["errors"]} == {"provenance.expected-sha256"}
+
+for acceptance_task in (None, [], {}, 7, "bad"):
+    first = validate_source_bytes(source, os.environ["SOURCE_SHA"], acceptance_task)
+    second = validate_source_bytes(source, os.environ["SOURCE_SHA"], acceptance_task)
+    assert first == second
+    assert first["valid"] is False
+    assert first["graph"]["acceptance_reachability"]["targets"] == []
+    assert {error["path"] for error in first["errors"]} == {"$.acceptance_task"}
+    assert {error["code"] for error in first["errors"]} <= {"schema.pattern", "schema.type"}
 PY
-  pass "public API returns a deterministic report for a non-string expected digest"
+  pass "public API returns deterministic reports for malformed digest and acceptance-task arguments"
 }
 
 test_malformed_source_fixtures() {
@@ -212,6 +226,12 @@ elif mode == "unknown-source-ref":
     doc["tasks"][0]["source_refs"] = ["E999.99"]
 elif mode == "nonbmp-title":
     doc["tasks"][0]["title"] = "😀"
+elif mode == "active-null-approval":
+    doc["authority"] = {"state": "active", "approval_id": None, "scope": ["M1-001"]}
+elif mode == "active-empty-scope":
+    doc["authority"] = {"state": "active", "approval_id": "approval-1", "scope": []}
+elif mode == "multiple-source-bindings":
+    doc["source"].append(dict(doc["source"][0]))
 elif mode not in ("valid", "bad-hash"):
     raise SystemExit(f"unknown mode: {mode}")
 canonical = (json.dumps(doc, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
@@ -229,6 +249,7 @@ test_normalized_manifest() {
   "$CLI" validate-manifest --manifest "$manifest" --source "$SOURCE" >"$second" || fail "repeat execution manifest validation failed"
   cmp -s "$report" "$second" || fail "execution manifest validation report is not byte-stable"
   json_assert "$report" "r['valid'] is True and r['manifest_hash']['matches'] is True and r['source_provenance']['source_valid'] is True" "valid manifest report differs"
+  json_assert "$report" "r['trust']['authorization_granted'] is False and r['trust']['artifact_origin_verified'] is False and r['source_provenance']['artifact_origin_verified'] is False" "valid manifest report overstated authorization or artifact provenance"
   json_assert "$report" "r['graph']['task_count'] == 3 and r['graph']['roots'] == ['M1-001', 'M1-002'] and r['graph']['wave_count'] == 2" "manifest graph facts differ"
   json_assert "$report" "r['graph']['acceptance_reachability']['covered_task_count'] == 3 and r['graph']['acceptance_reachability']['uncovered_task_count'] == 0" "manifest acceptance does not cover all tasks"
   pass "normalized manifest validates hashes, routes, DAG waves, roots, and acceptance reachability"
@@ -254,6 +275,9 @@ test_malformed_manifest_fixtures() {
   run_invalid_manifest cycle graph.cycle
   run_invalid_manifest empty-source-ref schema.min-items
   run_invalid_manifest unknown-source-ref provenance.unknown-source-ref
+  run_invalid_manifest active-null-approval authority.approval-required
+  run_invalid_manifest active-empty-scope authority.scope-required
+  run_invalid_manifest multiple-source-bindings manifest.source-binding
   run_invalid_manifest bad-hash manifest.hash-mismatch
   write_manifest valid "$manifest"
   mutate_source count-mismatch "$source"
@@ -383,7 +407,7 @@ test_read_only_execution() {
 test_schema_interface
 test_known_source_graph
 test_provenance_rejection
-test_public_api_rejects_non_string_digest
+test_public_api_rejects_malformed_arguments
 test_malformed_source_fixtures
 test_normalized_manifest
 test_malformed_manifest_fixtures

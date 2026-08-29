@@ -2,7 +2,8 @@
 
 This module reads bytes and returns plain JSON-compatible dictionaries. It does
 not write files, import work, select routes, launch processes, read config, or
-make network requests.
+make network requests. Structural validity and digest equality never grant
+authorization or verify artifact origin.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-VALIDATOR_VERSION = "1.0.0"
+VALIDATOR_VERSION = "1.1.0"
 REPORT_SCHEMA = "firstmate.factory-validation-report.v1"
 SOURCE_SCHEMA = "phynd-firstmate-m1-task-graph.v1"
 MANIFEST_SCHEMA = "firstmate.m1-execution-manifest.v1"
@@ -425,13 +426,18 @@ def _base_report(subject: str, data: bytes) -> dict[str, Any]:
         },
         "report_schema": REPORT_SCHEMA,
         "subject": subject,
+        "trust": {
+            "artifact_origin_verified": False,
+            "authorization_granted": False,
+            "structural_validation_only": True,
+        },
         "validator_version": VALIDATOR_VERSION,
         "valid": False,
     }
 
 
 def validate_source_bytes(
-    data: bytes, expected_sha256: str, acceptance_task: str = "E7.14"
+    data: bytes, expected_sha256: str, acceptance_task: Any = "E7.14"
 ) -> dict[str, Any]:
     """Validate immutable imported source bytes and return a deterministic report."""
     errors = Errors()
@@ -439,8 +445,10 @@ def validate_source_bytes(
     actual_sha256 = report["input"]["sha256"]
     provenance = {
         "actual_sha256": actual_sha256,
+        "binding_kind": "caller-supplied-sha256",
         "expected_sha256": expected_sha256,
         "matches": actual_sha256 == expected_sha256,
+        "origin_verified": False,
     }
     report["provenance"] = provenance
     if (
@@ -450,6 +458,12 @@ def validate_source_bytes(
         errors.add("provenance.expected-sha256", "$.expected_sha256", "expected SHA-256 must be 64 lowercase hexadecimal characters")
     elif actual_sha256 != expected_sha256:
         errors.add("provenance.mismatch", "$", "source bytes do not match the expected SHA-256")
+
+    acceptance_targets: list[str] = []
+    if _string(
+        acceptance_task, "$.acceptance_task", errors, SOURCE_ID
+    ):
+        acceptance_targets.append(acceptance_task)
 
     document = _parse_json(data, errors)
     if document is None:
@@ -579,7 +593,7 @@ def validate_source_bytes(
         lambda task_id, index: f"{flat_locations.get(task_id, '$.tasks')}.dependencies[{index}]",
     )
     graph.update({
-        "acceptance_reachability": _acceptance_analysis(flat_records, [acceptance_task], errors),
+        "acceptance_reachability": _acceptance_analysis(flat_records, acceptance_targets, errors),
         "declared_task_count": declared_count,
         "epic_count": len(epics),
         "epic_task_counts": {key: epic_counts[key] for key in sorted(epic_counts)},
@@ -674,6 +688,8 @@ def validate_execution_manifest_bytes(
     source_sha256 = hashlib.sha256(source_data).hexdigest()
     source_provenance: dict[str, Any] = {
         "actual_sha256": source_sha256,
+        "artifact_origin_verified": False,
+        "binding_kind": "manifest-declared-sha256",
         "bound_sha256": None,
         "matches": False,
         "source_valid": False,

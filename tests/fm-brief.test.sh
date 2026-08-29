@@ -217,6 +217,42 @@ test_ship_modes_generate_clean_briefs() {
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
 }
 
+test_every_ship_mode_requires_findings_first_self_review() {
+  local home id mode brief substrate_sha review_line done_line
+  home="$TMP_ROOT/self-review-home"
+  mkdir -p "$home/data"
+  substrate_sha=$(git -C "$ROOT" rev-parse 'HEAD^{commit}')
+
+  for id_mode in "review-nomistakes:no-mistakes" "review-direct:direct-PR" "review-local:local-only"; do
+    id=${id_mode%%:*}
+    mode=${id_mode##*:}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1 \
+      || fail "$mode ship brief failed while wiring self-review"
+    brief="$home/data/$id/brief.md"
+    assert_grep "# Required PR self-review" "$brief" \
+      "$mode brief omitted required self-review section"
+    assert_grep "$ROOT/.agents/skills/firstmate-pr-self-review/SKILL.md" "$brief" \
+      "$mode brief omitted reusable self-review skill"
+    assert_grep "Write its findings-first durable report to exactly \`$home/data/$id/pr-self-review.md\`." "$brief" \
+      "$mode brief omitted task-specific durable report path"
+    assert_grep "Firstmate substrate root: \`$ROOT\`" "$brief" \
+      "$mode brief omitted substrate root"
+    assert_grep "Firstmate substrate launch SHA: \`$substrate_sha\`" "$brief" \
+      "$mode brief omitted exact substrate launch SHA"
+    assert_grep "Review the complete target-project diff and the separate Firstmate substrate diff with exact base/head evidence." "$brief" \
+      "$mode brief omitted dual exact-diff contract"
+    assert_grep "adds no reviewer, delivery, approval, or merge authority" "$brief" \
+      "$mode brief stacked authority beside selected delivery path"
+    assert_grep "modify nothing outside it except the status file, inbox acknowledgements, and exact durable self-review report path" "$brief" \
+      "$mode brief did not permit its exact private report path"
+    review_line=$(grep -n '^# Required PR self-review$' "$brief" | cut -d: -f1)
+    done_line=$(grep -n '^# Definition of done$' "$brief" | cut -d: -f1)
+    [ "$review_line" -lt "$done_line" ] \
+      || fail "$mode self-review requirement appeared after its readiness path"
+  done
+  pass "fm-brief.sh: every ship path requires dual-diff findings-first self-review without new authority"
+}
+
 # A ship task's delivery mode is firstmate's per-task decision, so a missing or
 # unusable value must stop the scaffold instead of silently defaulting. The
 # no-mistakes-prod-only row is the conditional registry policy: it is never a task
@@ -755,6 +791,7 @@ test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
+test_every_ship_mode_requires_findings_first_self_review
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply

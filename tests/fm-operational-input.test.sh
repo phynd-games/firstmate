@@ -6,6 +6,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 OWNER="$ROOT/bin/fm-operational-input.sh"
+TMP_ROOT=$(fm_test_tmproot fm-operational-input)
 # shellcheck source=/dev/null
 . "$OWNER"
 
@@ -141,14 +142,107 @@ JS
 }
 
 test_invalid_current_encodings_are_rejected() {
-  local output
+  local output malformed parsed
   output=$(printf 'body' | "$OWNER" encode legacy-operational 2>/dev/null) \
     && fail "legacy-operational was accepted as a current producer kind"
   [ -z "$output" ] || fail "invalid current kind printed protocol data"
   output=$(printf '' | "$OWNER" encode watcher 2>/dev/null) \
     && fail "empty current operational body was accepted"
   [ -z "$output" ] || fail "empty current body printed protocol data"
-  pass "operational input: current construction rejects legacy kinds and empty bodies"
+  malformed="${FM_OPERATIONAL_HEADER_PREFIX}watcher: "
+  ! fm_operational_input_classify "$malformed" parsed \
+    || fail "malformed current input downgraded into legacy kind $parsed"
+  output=$(printf '%s' "$malformed" | "$OWNER" inspect 2>/dev/null) \
+    && fail "structural inspection accepted malformed current input"
+  [ -z "$output" ] || fail "malformed current inspection emitted a trust report"
+  pass "operational input: malformed current construction is rejected without legacy downgrade"
+}
+
+test_agent_interchange_schema_and_trust_boundaries() {
+  local schema body kind encoded first second limit at_limit oversized parsed schema_kinds runtime_kinds
+  schema="$TMP_ROOT/agent-interchange-schema.json"
+  "$OWNER" schema > "$schema" || fail "agent interchange schema command failed"
+  python3 - "$schema" <<'PY' || fail "agent interchange schema trust constraints differ"
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    schema = json.load(handle)
+assert schema["$id"] == "firstmate.agent-interchange.v1"
+properties = schema["properties"]
+assert properties["authorization_granted"]["const"] is False
+assert properties["provenance_verified"]["const"] is False
+assert properties["body_byte_count"]["maximum"] == 1048576
+assert set(properties["kind"]["enum"]) == {
+    "away-supervisor", "branch-outcome", "from-firstmate", "launch-brief",
+    "session-start", "turn-end-guard", "watcher",
+}
+PY
+  schema_kinds=$(python3 - "$schema" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print("\n".join(sorted(json.load(handle)["properties"]["kind"]["enum"])))
+PY
+  )
+  runtime_kinds=$(printf '%s\n' "$FM_OPERATIONAL_KINDS from-firstmate" | tr ' ' '\n' | LC_ALL=C sort)
+  [ "$runtime_kinds" = "$schema_kinds" ] \
+    || fail "runtime kinds differ from agent interchange schema"
+
+  while IFS= read -r kind; do
+    body="bounded instructions for $kind"
+    [ "$kind" != launch-brief ] || body="bounded 😀 instructions for $kind"
+    fm_operational_input_construct "$kind" "$body" encoded \
+      || fail "schema-declared kind $kind did not construct"
+    first=$(printf '%s' "$encoded" | "$OWNER" inspect) \
+      || fail "schema-declared kind $kind did not inspect"
+    second=$(printf '%s' "$encoded" | "$OWNER" inspect) \
+      || fail "schema-declared kind $kind did not inspect twice"
+    [ "$first" = "$second" ] || fail "$kind inspection was not deterministic"
+    BODY="$body" KIND="$kind" INSPECTION="$first" python3 - <<'PY' \
+      || fail "$kind inspection misstated structure or trust"
+import hashlib
+import json
+import os
+
+report = json.loads(os.environ["INSPECTION"])
+body = os.environ["BODY"].encode()
+assert report["kind"] == os.environ["KIND"]
+assert report["body_byte_count"] == len(body)
+assert report["body_sha256"] == hashlib.sha256(body).hexdigest()
+assert report["structurally_valid"] is True
+assert report["authorization_granted"] is False
+assert report["provenance_verified"] is False
+assert report["provenance_evidence"] == "body-sha256-only"
+PY
+    fm_operational_input_kind "$encoded" parsed || fail "$kind inspection fixture no longer parses"
+    [ "$parsed" = "$kind" ] || fail "$kind inspection fixture parsed as $parsed"
+  done < <(python3 - "$schema" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print("\n".join(json.load(handle)["properties"]["kind"]["enum"]))
+PY
+  )
+
+  limit=$(python3 - "$schema" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["properties"]["body_byte_count"]["maximum"])
+PY
+  )
+  [ "$limit" -eq "$FM_OPERATIONAL_MAX_BODY_BYTES" ] \
+    || fail "runtime body limit $FM_OPERATIONAL_MAX_BODY_BYTES differs from schema $limit"
+  at_limit=$(python3 -c "import sys; sys.stdout.write('x' * $limit)")
+  fm_operational_input_construct launch-brief "$at_limit" encoded \
+    || fail "schema-maximum launch brief was rejected"
+  oversized="${at_limit}x"
+  ! fm_operational_input_construct launch-brief "$oversized" encoded \
+    || fail "oversized launch brief was accepted"
+  ! fm_operational_input_construct from-firstmate "$oversized" encoded \
+    || fail "oversized secondmate instruction was accepted"
+  pass "agent interchange: runtime matches schema and structural evidence grants no trust"
 }
 
 test_current_generic_matrix
@@ -158,3 +252,4 @@ test_isolated_legacy_matrix
 test_genuine_near_misses_remain_unclassified
 test_cross_language_adapter_uses_the_owner
 test_invalid_current_encodings_are_rejected
+test_agent_interchange_schema_and_trust_boundaries

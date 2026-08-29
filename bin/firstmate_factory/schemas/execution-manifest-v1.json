@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "firstmate.m1-execution-manifest.v1",
   "title": "Firstmate M1 normalized execution manifest",
+  "description": "Offline planning interchange. Structural validation and digest matching do not authorize execution or verify artifact origin.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "manifest_id", "validator", "source", "plan", "authority", "tasks", "acceptance_tasks", "gates", "not_in_m1", "manifest_hash"],
@@ -18,8 +19,16 @@
       }
     },
     "source": {
+      "description": "Caller-declared digest bindings, not verified artifact-origin evidence.",
       "type": "array",
       "minItems": 1,
+      "contains": {
+        "type": "object",
+        "required": ["schema"],
+        "properties": {"schema": {"const": "phynd-firstmate-m1-task-graph.v1"}}
+      },
+      "minContains": 1,
+      "maxContains": 1,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -41,6 +50,7 @@
       }
     },
     "authority": {
+      "description": "Untrusted authority claim for structural checking only. Validation never grants approval or execution authority.",
       "type": "object",
       "additionalProperties": false,
       "required": ["state", "approval_id", "scope"],
@@ -48,7 +58,16 @@
         "state": {"enum": ["draft", "captain_approved", "active", "quiescing", "complete", "rolled_back"]},
         "approval_id": {"type": ["string", "null"], "minLength": 1},
         "scope": {"type": "array", "items": {"type": "string", "pattern": "^M[0-9]+-[0-9]{3}$"}, "uniqueItems": true}
-      }
+      },
+      "allOf": [{
+        "if": {"properties": {"state": {"not": {"const": "draft"}}}, "required": ["state"]},
+        "then": {
+          "properties": {
+            "approval_id": {"type": "string", "minLength": 1},
+            "scope": {"minItems": 1}
+          }
+        }
+      }]
     },
     "tasks": {"type": "array", "minItems": 1, "items": {"$ref": "execution-task-v1.json"}},
     "acceptance_tasks": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^M[0-9]+-[0-9]{3}$"}, "uniqueItems": true},

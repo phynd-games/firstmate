@@ -57,6 +57,9 @@
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
 # over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
 # self-governance section when a touched project AGENTS.md lacks it.
+# Every ship brief also records the Firstmate substrate root, its exact launch
+# SHA, and a private durable report path, then requires the shared
+# firstmate-pr-self-review skill before validation, PR creation, or local landing.
 # Refuses to overwrite an existing brief.
 set -eu
 
@@ -433,6 +436,14 @@ esac
 # briefs stay byte-identical to the historical Bash 5 output.
 DOD=${DOD%$'\n'}
 
+SELF_REVIEW_SKILL="$FM_ROOT/.agents/skills/firstmate-pr-self-review/SKILL.md"
+[ -f "$SELF_REVIEW_SKILL" ] || { echo "error: required PR self-review skill is missing: $SELF_REVIEW_SKILL" >&2; exit 1; }
+SELF_REVIEW_REPORT="$DATA/$ID/pr-self-review.md"
+SUBSTRATE_LAUNCH_SHA=$(git -C "$FM_ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || {
+  echo "error: cannot resolve the Firstmate substrate launch SHA at $FM_ROOT" >&2
+  exit 1
+}
+
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
@@ -452,7 +463,7 @@ If the top-level path is the primary checkout or not the worktree you were launc
 
 # Rules
 $RULE1
-2. Stay inside this worktree; modify nothing outside it.
+2. Stay inside this worktree; modify nothing outside it except the status file, inbox acknowledgements, and exact durable self-review report path named below.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
@@ -484,6 +495,15 @@ Record only project knowledge useful to almost every future session.
 For anything the codebase already shows, prefer a pointer to the authoritative file, command, or doc over copying the detail.
 If you touch a project \`AGENTS.md\` that lacks \`## Maintaining this file\`, add that short self-governance section from \`$FM_ROOT/bin/fm-ensure-agents-md.sh\` in the same pass.
 Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced no durable project knowledge.
+
+# Required PR self-review
+Before reporting implementation ready for validation, PR creation, or local landing, read and follow \`$SELF_REVIEW_SKILL\`.
+Write its findings-first durable report to exactly \`$SELF_REVIEW_REPORT\`.
+Use these pinned substrate inputs for the skill's separate Firstmate substrate review:
+- Firstmate substrate root: \`$FM_ROOT\`
+- Firstmate substrate launch SHA: \`$SUBSTRATE_LAUNCH_SHA\`
+Review the complete target-project diff and the separate Firstmate substrate diff with exact base/head evidence.
+This self-review adds no reviewer, delivery, approval, or merge authority; the selected delivery path below remains authoritative.
 
 $DOD
 EOF

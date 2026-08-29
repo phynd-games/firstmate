@@ -8,9 +8,11 @@ Usage:
   fm-factory-manifest.py schema source|execution-manifest|task|route
 
 Every successful command writes one canonical JSON document to stdout.
-Validation commands exit 0 when valid, 1 when content or provenance is invalid,
-and 2 for command-line or file-read errors. They never write files, mutate
-configuration, import backlog work, launch processes, or make network requests.
+Validation commands exit 0 when structurally valid, 1 when content or a digest
+binding is invalid, and 2 for command-line or file-read errors. A valid report
+never grants authorization or verifies artifact origin. Commands never write
+files, mutate configuration, import backlog work, launch processes, or make
+network requests.
 """
 
 from __future__ import annotations

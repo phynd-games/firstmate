@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "firstmate.execution-task.v1",
   "title": "Firstmate normalized execution task",
+  "description": "Offline normalized planning record. Structural validation does not dispatch or authorize this task.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "id", "title", "kind", "dependencies", "route_request", "delivery", "artifacts", "acceptance", "rollback", "source_refs"],
