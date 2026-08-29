@@ -147,6 +147,21 @@ The caller-facing label remains `fm-<id>`, but the actual cmux workspace title i
 Test cleanup must use the guarded path in [`docs/cmux-backend.md`](cmux-backend.md#current-operation-and-safety), never enumerate-and-close every workspace.
 `config/backend` is inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
 
+## Herdr-hosted watcher continuity (config/herdr-supervisor)
+
+Every harness-native watcher continuity owner lives inside the primary harness process, so a home whose harness never loaded one has none at all and supervision ends after a single watcher cycle.
+`bin/fm-herdr-supervisor.sh` hosts that owner in a Herdr-tracked pane instead, and `bin/fm-bootstrap.sh` keeps it established on the locked path.
+
+`config/herdr-supervisor` (local, gitignored) holds one value.
+Absent or `auto` is the default scope: host continuity only for a Pi or pi-signed primary, whose owner lives in a project-local extension that can silently fail to load, and only while that extension is provably not loaded.
+`on` hosts it for any harness on the herdr backend.
+`off` disables it entirely.
+Whatever the setting, it stands down while away mode is active or a harness-native owner is provable, so a home never runs two continuity owners.
+
+It only ever runs `bin/fm-watch-arm.sh`, never `--restart`, so the one-watcher singleton and every acknowledgement, merge, teardown, and no-mistakes authority are untouched.
+See [`herdr-supervisor.md`](herdr-supervisor.md) for its health predicate, bounded recovery, durable records, and the one boundary it refuses to promise: a dead Herdr server takes its host pane with it.
+The setting is inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
+
 ## Away-mode supervisor backend (FM_SUPERVISOR_BACKEND / FM_SUPERVISOR_TARGET)
 
 The `/afk` sub-supervisor injects escalation digests into firstmate's own pane independently of where new task endpoints are spawned.

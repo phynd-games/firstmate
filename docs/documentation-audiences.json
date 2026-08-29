@@ -75,6 +75,10 @@
       "target": "docs/verification/supervision.md"
     },
     {
+      "source": "docs/herdr-supervisor.md",
+      "target": "docs/watcher-continuity.md"
+    },
+    {
       "source": "docs/wedge-alarm.md",
       "target": "docs/verification/supervision.md"
     },
@@ -306,6 +310,10 @@
     },
     {
       "path": "docs/herdr-backend.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/herdr-supervisor.md",
       "audience": "operator-current"
     },
     {

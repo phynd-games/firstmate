@@ -20,6 +20,10 @@ Only an exhausted failure with no verified watcher commits one last-resort notic
 The Claude turn-end guard owns that notice commit contract, the monotonic failure progression, one-time attended fail-open, post-alarm continuation suppression, and positive recovery reset described in [`turnend-guard.md`](turnend-guard.md#harness-integrations).
 While supervision is still needed and away mode remains inactive, an actionable close wakes the idle session through exit 2.
 
+Every owner above lives inside the primary harness process, so a home whose harness never loaded its owner has none at all and supervision ends after one cycle.
+`bin/fm-herdr-supervisor.sh` is the fallback for exactly that case: it hosts one continuity owner in a Herdr-tracked pane, stands down whenever a harness-native or away-mode owner is provable, and never becomes a second authority over the watcher.
+[`herdr-supervisor.md`](herdr-supervisor.md) owns its eligibility, health, recovery, and the boundary it does not promise to recover across.
+
 ## Actionable wake ordering
 
 After an actionable Pi or OpenCode child close, the adapter starts and verifies one singleton successor before it delivers the original wake.
@@ -107,6 +111,7 @@ The same suite covers ordinary same-process session replacement for `/new`, `/re
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, and exit-2 translation.
 It also covers generation-claim single-flight, stuck-claim supersession, superseded-owner silence, notice-marker refusal and retry, ownership-atomic episode reset, and the legacy upgrade shim; [`turnend-guard.md`](turnend-guard.md) owns those behavior contracts.
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.
+`tests/fm-herdr-supervisor.test.sh` covers the Herdr-hosted owner's eligibility, deference, idempotence, identity and generation safety, bounded retry, and durable escalation; [`herdr-supervisor.md`](herdr-supervisor.md#regression-coverage) lists that suite's cases and its gated real-Herdr smoke.
 `tests/fm-turnend-guard.test.sh` covers the cooperative `--claude` guard, including monotonic failed-epoch progression, the integrated bounded fail-open, post-alarm continuation suppression, and positive recovery reset; [`turnend-guard.md`](turnend-guard.md#regression-coverage) lists that suite's full generation and legacy claim coverage.
 
 ## Active limits and verification

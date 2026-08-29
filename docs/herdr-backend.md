@@ -33,6 +33,11 @@ The required CI lane uses the pinned installers in `bin/fm-install-herdr.sh` and
 Those script headers own release assets, checksums, download bounds, and post-install gates.
 Real harness credential tests remain opt-in rather than part of default CI.
 
+## Watcher continuity
+
+A Herdr home can host its watcher continuity owner in a Herdr-tracked pane instead of in the primary harness process, which is what keeps supervision alive when the harness never loaded an owner of its own.
+`bin/fm-herdr-supervisor.sh` owns it and [`herdr-supervisor.md`](herdr-supervisor.md) owns its contract, including the one boundary it refuses to promise: a dead Herdr server takes the supervisor's host pane with it.
+
 ## Watching and task containers
 
 The ordinary topology puts one task tab per endpoint in the exact workspace of the Firstmate or secondmate that launches it.
