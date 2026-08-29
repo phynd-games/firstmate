@@ -582,7 +582,7 @@ supervisor_healthy() {
   [ -f "$RECORD" ] || { HS_UNHEALTHY_REASON="no supervisor record"; return 1; }
   [ "$(record_get version || printf '')" = "$RECORD_VERSION" ] \
     || { HS_UNHEALTHY_REASON="supervisor record version is not $RECORD_VERSION"; return 1; }
-  mode=$(record_get mode || printf active)
+  mode=$(record_get mode || printf '')
   [ "$mode" = active ] \
     || { HS_UNHEALTHY_REASON="supervisor binding is in $mode quarantine"; return 1; }
   [ "$(record_get fm_home || printf '')" = "$FM_HOME" ] \
@@ -637,6 +637,12 @@ supervisor_healthy() {
   current=$(fm_pid_identity "$loop_pid" 2>/dev/null || printf '')
   [ "$current" = "$loop_identity" ] \
     || { HS_UNHEALTHY_REASON="supervisor pid $loop_pid identity changed during health check"; return 1; }
+
+  herdr_identity >/dev/null 2>&1 \
+    || { HS_UNHEALTHY_REASON="this home's Herdr session identity changed during health check"; return 1; }
+  [ "$HS_SESSION" = "$session" ] && [ "$HS_SOCKET" = "$socket" ] \
+    && [ "$HS_SOCKET_IDENTITY" = "$socket_identity" ] \
+    || { HS_UNHEALTHY_REASON="Herdr server identity changed during health check"; return 1; }
 
   return 0
 }
@@ -1066,6 +1072,12 @@ retire_binding_locked() {  # <reason> [signal-owner]
       return 1
     }
   fi
+  if [ -n "$workspace" ] && [ "$cleanup_state" != closed ] \
+    && { ! recorded_herdr_identity_matches || ! recorded_workspace_matches; }; then
+    record_set_mode quarantine || true
+    ledger_append quarantine "could not prove the recorded Herdr binding immediately before closing $workspace for $reason"
+    return 1
+  fi
   if [ -n "$workspace" ] && [ "$cleanup_state" != closed ] && [ -n "$session" ] \
     && hs_herdr "$session" workspace close "$workspace" >/dev/null 2>&1; then
     :
@@ -1386,24 +1398,17 @@ loop_capture_arm_identity() {
   return 1
 }
 
-loop_stop_unverified_arm() {
-  local pid=${LOOP_ARM_PID:-} parent i=0
+loop_wait_unknown_arm() {
+  local pid=${LOOP_ARM_PID:-} process_state
   [ -n "$pid" ] || return 0
-  parent=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
-  [ "$parent" = "$LOOP_OWNER_PID" ] || return 1
-  if fm_pid_alive "$pid"; then
-    kill -TERM "$pid" 2>/dev/null || true
-    while [ "$i" -lt 20 ] && fm_pid_alive "$pid"; do
-      sleep 0.05
-      i=$((i + 1))
-    done
-    if fm_pid_alive "$pid"; then
-      parent=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
-      [ "$parent" = "$LOOP_OWNER_PID" ] && kill -KILL "$pid" 2>/dev/null || true
-    fi
-  fi
+  while :; do
+    process_state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    [ -n "$process_state" ] || break
+    case "$process_state" in Z*) break ;; esac
+    : > "$HEARTBEAT" 2>/dev/null || true
+    sleep 0.5
+  done
   wait "$pid" 2>/dev/null || true
-  return 0
 }
 
 loop_stop_arm() {
@@ -1427,8 +1432,8 @@ loop_stop_arm() {
     wait "$pid" 2>/dev/null || true
   elif ! fm_pid_alive "$pid"; then
     wait "$pid" 2>/dev/null || true
-  else
-    loop_stop_unverified_arm || true
+  elif fm_pid_alive "$pid"; then
+    loop_wait_unknown_arm
   fi
   LOOP_ARM_PID=
   LOOP_ARM_IDENTITY=
@@ -1637,12 +1642,11 @@ cmd_run() {
       arm_match=$?
     else
       arm_match=2
-      loop_stop_unverified_arm || true
+      escalate "the foreground watcher arm process identity became unknown or changed; retaining the child without signaling a recycled pid"
     fi
     if [ "$arm_match" -eq 2 ]; then
-      loop_stop_arm
+      loop_wait_unknown_arm
       rc=125
-      escalate "the foreground watcher arm process identity became unknown or changed; refusing to wait on or signal a recycled pid"
     else
       wait "$LOOP_ARM_PID" 2>/dev/null
       rc=$?

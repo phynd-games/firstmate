@@ -27,6 +27,7 @@ import {
   FIRSTMATE_CALM_PRESENTATION_EVENT,
 } from "./lib/fm-calm-visibility.ts";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.ts";
+import { processInstanceIdentity } from "./lib/fm-process-identity.ts";
 
 type ArmResult = {
   ok: boolean;
@@ -150,29 +151,47 @@ function lockOwnership(): LockOwnership {
 
 let markerRetryTimer: ReturnType<typeof setTimeout> | undefined;
 
+function clearMarkerRetry(): void {
+  if (!markerRetryTimer) return;
+  clearTimeout(markerRetryTimer);
+  markerRetryTimer = undefined;
+}
+
 function retryMarkLoaded(): void {
   if (markerRetryTimer) return;
-  markerRetryTimer = setTimeout(() => {
+  const timer = setTimeout(() => {
     markerRetryTimer = undefined;
     markLoaded();
   }, 250);
+  (timer as unknown as { unref?: () => void }).unref?.();
+  markerRetryTimer = timer;
 }
 
 function markLoaded(): void {
-  if (lockOwnership() === "other") return;
-  let lockIdentity = "";
+  const ownership = lockOwnership();
+  if (ownership === "other") {
+    clearMarkerRetry();
+    return;
+  }
+  if (ownership === "missing") {
+    retryMarkLoaded();
+    return;
+  }
+  let lockPid = "";
   try {
-    lockIdentity = readFileSync(`${state}/.lock-pid-identity`, "utf8").trim();
+    lockPid = readFileSync(`${state}/.lock`, "utf8").trim();
   } catch {
     retryMarkLoaded();
     return;
   }
+  const lockIdentity = processInstanceIdentity(lockPid);
   if (!lockIdentity) {
     retryMarkLoaded();
     return;
   }
   mkdirSync(state, { recursive: true });
   writeFileSync(marker, `${extensionVersion}\n${process.pid}\n${lockIdentity}\n`);
+  clearMarkerRetry();
 }
 
 function actionableLine(output: string): string {
@@ -240,6 +259,7 @@ function stopGeneration(generation: SessionGeneration): void {
 }
 
 const cleanupOnProcessExit = () => {
+  clearMarkerRetry();
   if (activeGeneration) stopGeneration(activeGeneration);
 };
 process.once("exit", cleanupOnProcessExit);
@@ -588,6 +608,7 @@ export default function (pi: ExtensionAPI) {
     markLoaded();
   });
   pi.on?.("session_shutdown", () => {
+    clearMarkerRetry();
     stopGeneration(generation);
   });
 
