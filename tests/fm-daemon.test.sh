@@ -51,7 +51,7 @@ test_afk_start_ignores_stale_pidfile_without_lock() {
 
   [ "$status" -ne 0 ] || fail "fm-afk-start.sh should attempt daemon startup instead of trusting a pidfile-only live pid"
   assert_contains "$out" "starting supervise daemon" "fm-afk-start.sh did not attempt daemon startup"
-  assert_contains "$out" "does not support supervisor backend 'unsupported'" "daemon startup did not reach backend validation"
+  assert_contains "$out" "cannot supervise backend 'unsupported'" "daemon startup did not reach backend validation"
   assert_not_contains "$out" "daemon already running" "fm-afk-start.sh trusted a stale pidfile-only live pid"
   pass "fm-afk-start.sh ignores stale pidfile-only live pids"
 }
@@ -71,7 +71,7 @@ test_afk_start_reclaims_stale_daemon_lock_reused_pid() {
 
   [ "$status" -ne 0 ] || fail "fm-afk-start.sh should attempt daemon startup after rejecting a reused-pid lock"
   assert_contains "$out" "starting supervise daemon" "fm-afk-start.sh did not attempt daemon startup after rejecting the stale lock"
-  assert_contains "$out" "does not support supervisor backend 'unsupported'" "daemon startup did not reach backend validation after stale lock cleanup"
+  assert_contains "$out" "cannot supervise backend 'unsupported'" "daemon startup did not reach backend validation after stale lock cleanup"
   assert_not_contains "$out" "daemon already running" "fm-afk-start.sh trusted a stale daemon lock with a reused pid"
   assert_not_contains "$out" "another fm-supervise-daemon is already running" "daemon singleton lock still trusted the reused pid"
   pass "fm-afk-start.sh reclaims stale daemon locks whose live pid identity no longer matches"

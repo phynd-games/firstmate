@@ -812,11 +812,16 @@ for meta in "$STATE"/*.meta; do
   window=$(fm_meta_get "$meta" window)
   target=$(fm_backend_target_of_meta "$meta")
   if [ -n "$window" ]; then
-    backend=$(fm_backend_of_meta "$meta")
-    if fm_backend_target_exists "$backend" "${target:-$window}" "fm-$id"; then
-      printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"
+    # A record whose backend identity is absent or not herdr is a legacy
+    # record (hard rule 6): present it as such, never probe or dispatch on it.
+    if backend=$(fm_backend_of_meta "$meta" 2>/dev/null); then
+      if fm_backend_target_exists "$backend" "${target:-$window}" "fm-$id"; then
+        printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"
+      else
+        printf 'endpoint: dead (backend=%s window=%s)\n' "$backend" "$window"
+      fi
     else
-      printf 'endpoint: dead (backend=%s window=%s)\n' "$backend" "$window"
+      printf 'endpoint: legacy record, read-only (backend=%s window=%s); Herdr is the sole supported runtime backend - see docs/configuration.md "Legacy task records"\n' "${backend:-absent}" "$window"
     fi
   else
     printf 'endpoint: unknown (no window recorded)\n'

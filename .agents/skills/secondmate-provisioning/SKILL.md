@@ -108,9 +108,10 @@ The same placement-specific launch and deferred bootstrap sweep also propagate t
 Because these paths are gitignored, that propagation is a separate, primary-authoritative copy independent of the tracked-files fast-forward: it re-converges every live home whether or not its tracked files advanced, and it touches only the declared items.
 Propagation failures warn without blocking secondmate launch or session-start continuation, and the destination keeps whatever safely validated state the helper left behind.
 Inheritance copies the literal `config/crew-harness` file, so a secondmate's own crewmates use the primary's crewmate harness only when it names a concrete adapter such as `codex`; an unset or `default` value has nothing concrete to inherit, and the secondmate's own crewmates fall back to the secondmate's own or detected harness instead.
-Inherited `config/backend` becomes that secondmate home's local runtime-backend default for future spawns only; it never retargets, rewrites, migrates, stops, or restarts an already-live worker endpoint.
-A present primary value always converges byte-exact into validated secondmate homes, and primary absence removes the destination so those homes keep runtime auto-detection.
-Explicit per-spawn `--backend` and `FM_BACKEND` remain stronger than every home's local `config/backend`, including an inherited default.
+Inherited `config/backend` becomes that secondmate home's local runtime-backend declaration for future spawns only; it never retargets, rewrites, migrates, stops, or restarts an already-live worker endpoint.
+A present primary value always converges byte-exact into validated secondmate homes, and primary absence removes the destination.
+The inherited bytes are judged by the same Herdr-only rule as the primary's (`AGENTS.md` hard rule 6): only `herdr` lets that home spawn, while an absent or non-Herdr inherited value makes its spawns and session-start bootstrap refuse by name with the remediation, never fall back or auto-detect.
+Explicit per-spawn `--backend` and `FM_BACKEND` remain stronger than every home's local `config/backend`, including an inherited value, and are held to the same rule.
 `config/secondmate-harness` is not inherited because it is only the primary's knob for launching secondmate agents.
 `data/captain-shared.md` is main-authoritative in the primary home and read-only in secondmate homes.
 Its primary file header must state that the file is main-authoritative, read-only in secondmate homes, must not be edited there, and that new captain-preference discoveries are routed to the main firstmate through marked status or a document pointer.

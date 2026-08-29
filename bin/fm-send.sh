@@ -340,7 +340,9 @@ fm_send_resolve_target() {  # <raw-target>
       echo "error: no backend target recorded in $meta (tried $RESOLUTION_TRIED)" >&2
       return 1
     fi
-    backend=$(fm_backend_of_meta "$meta")
+    # A legacy (absent or non-herdr) record refuses here by name, once, and the
+    # steer is never delivered (AGENTS.md hard rule 6).
+    backend=$(fm_backend_of_meta "$meta") || return 1
     RESOLVED_TARGET=$target
     TARGET_BACKEND=$backend
     TARGET_META=$meta
@@ -380,7 +382,7 @@ fm_send_resolve_target() {  # <raw-target>
       return 1
     fi
     RESOLVED_TARGET=$target
-    TARGET_BACKEND=$(fm_backend_of_meta "$meta")
+    TARGET_BACKEND=$(fm_backend_of_meta "$meta") || return 1
     TARGET_META=$meta
     TARGET_HARNESS=$(fm_meta_get "$meta" harness)
     RESOLUTION_TRIED="explicit target '$raw' matched $meta; backend=$TARGET_BACKEND"
@@ -390,7 +392,11 @@ fm_send_resolve_target() {  # <raw-target>
   case "$raw" in
     *:*)
       colons=$(fm_send_count_colons "$raw")
-      if [ "$colons" -ge 2 ]; then
+      # Active runtime (hard rule 6): an explicit target is a Herdr
+      # "<session>:<pane-id>" endpoint, proven live by the adapter's own pane
+      # read below, never a tmux window. The one-colon tmux reading survives
+      # only in the regression lane.
+      if [ "$colons" -ge 2 ] || ! fm_backend_policy_legacy_lane; then
         assumed=herdr
       else
         assumed=tmux
@@ -856,7 +862,9 @@ else
     CURRENT_INBOX_SPAWN_GEN=
     if [ -f "$TARGET_META" ]; then
       CURRENT_INBOX_TARGET=$(fm_backend_target_of_meta "$TARGET_META")
-      CURRENT_INBOX_BACKEND=$(fm_backend_of_meta "$TARGET_META")
+      # A record that has become legacy since resolution cannot match the
+      # herdr backend resolved above, so the identity check below refuses it.
+      CURRENT_INBOX_BACKEND=$(fm_backend_of_meta "$TARGET_META" 2>/dev/null) || CURRENT_INBOX_BACKEND=
       CURRENT_INBOX_SPAWN_GEN=$(fm_meta_get "$TARGET_META" spawn_gen)
     fi
     if [ "$CURRENT_INBOX_TARGET" != "$T" ] \

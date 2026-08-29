@@ -1,6 +1,7 @@
 # Herdr runtime backend
 
-Herdr is an experimental agent-native terminal backend with native per-pane agent state and push events.
+Herdr is Firstmate's sole supported runtime backend (`AGENTS.md` hard rule 6): every session, secondmate, crewmate, scout, endpoint, supervision surface, and lab operation runs on it, and nothing falls back to, auto-detects, or defaults to another backend.
+It is an agent-native terminal backend with native per-pane agent state and push events.
 Firstmate requires Herdr protocol 14 or newer; broad backend verification covers versions 0.7.1, 0.7.3, 0.7.4, 0.7.5, and 0.8.0, while protocol-16 features remain gated by availability.
 Default-on presentation spaces have a higher floor of Herdr 0.8.0 for the reason given under [Presentation spaces](#presentation-spaces).
 Herdr provides the terminal session while Treehouse continues to provide task worktrees.
@@ -8,7 +9,7 @@ Herdr provides the terminal session while Treehouse continues to provide task wo
 
 ## Setup
 
-Pick Herdr when you want native busy, idle, and blocked state and accept the experimental limits below.
+Herdr is the only runtime backend a Firstmate home can run on; the limits below describe what that runtime currently supports, not a reason to pick another backend.
 
 Prerequisites:
 
@@ -20,13 +21,12 @@ Prerequisites:
 Herdr is dual-licensed AGPL-3.0-or-later or commercial.
 Firstmate invokes its CLI as a separate process.
 
-Select Herdr with local `config/backend` containing `herdr`, `FM_BACKEND=herdr` for one launch, or an explicit request to Firstmate.
-A remote second-mate agent is the one case with no choice: it always runs on Herdr, and [`remote-secondmates.md`](remote-secondmates.md) owns that requirement and the readiness its host must meet.
-It is also auto-detected when the primary runs natively under `HERDR_ENV=1` and is not inside tmux.
-A tmux pane nested inside Herdr resolves to tmux because the innermost multiplexer wins.
-An auto-detected Herdr spawn prints an opt-out notice.
+Declare Herdr with `config/backend` containing exactly `herdr` (`bin/fm-setup-phynd.sh` writes it) or `FM_BACKEND=herdr` for one launch; [`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns the full selection contract.
+Nothing is auto-detected: a home that declares nothing is refused by name even when it runs under `HERDR_ENV=1`, and runtime markers appear in the refusal only as ignored evidence.
+A remote second-mate agent has the same answer: it runs on Herdr, and [`remote-secondmates.md`](remote-secondmates.md) owns the readiness its host must meet.
 
-Spawn stops before creating a Herdr container or acquiring a task worktree when `herdr`, `jq`, or the protocol floor is unavailable.
+The declared name is a label; the runtime is proven on use by the adapter's own native checks - `herdr status --json` for the client protocol floor, the named-session server, launcher pane identity, and every per-operation pane read.
+Spawn stops before creating a Herdr container or acquiring a task worktree when `herdr`, `jq`, or the protocol floor is unavailable, and that stop is a blocker to surface, never a fallback to another backend.
 No separate first-run provisioning is required.
 
 The required CI lane uses the pinned installers in `bin/fm-install-herdr.sh` and `bin/fm-install-treehouse.sh`.
@@ -286,9 +286,8 @@ There is still one watcher process; the event reader is a bounded child of that 
 
 ## Away-mode supervisor support
 
-The away daemon supports tmux and Herdr supervisor panes only.
-It refuses Zellij, Orca, and cmux as supervisor backends rather than applying the wrong transport.
-For Herdr, target existence, native state, capture, composer state, and verified submit all route through the shared backend dispatcher and the explicit named-session CLI owner.
+The away daemon supervises a Herdr pane only: it discovers the captain's pane from Herdr's injected `HERDR_ENV=1` and `HERDR_PANE_ID`, or from an explicit `FM_SUPERVISOR_BACKEND=herdr` plus `FM_SUPERVISOR_TARGET=<session>:<pane-id>`, and refuses any other supervisor backend at startup rather than applying the wrong transport ([`configuration.md`](configuration.md#away-mode-supervisor-backend-fm_supervisor_backend--fm_supervisor_target)).
+Target existence, native state, capture, composer state, and verified submit all route through the shared backend dispatcher and the explicit named-session CLI owner.
 The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-alarm.md).
 
 Harnesses with native tracked background execution can run the daemon in their terminal.
@@ -315,13 +314,13 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 
 ## Active limits
 
-- Herdr remains experimental.
+- Herdr is the only runtime backend; a missing, below-floor, or unhealthy Herdr stops work with a blocker instead of selecting anything else.
 - Presentation ordering needs protocol 16 and Python and is best-effort only.
 - Mutable labels can collide; they are never placement or destructive authority.
 - A Firstmate outside Herdr cannot resolve a launcher workspace, so a colliding home label refuses new spawns until the collision is cleared.
 - Ghost and placeholder recognition uses ANSI de-emphasis when available; an unstyled glyph row carrying trailing non-idle text fails safely to `unknown`.
 - Mid-session secondmate agent-process liveness is not implemented.
-- Only tmux and Herdr can host the away-mode supervisor terminal.
+- Only a Herdr pane can host the away-mode supervisor terminal.
 
 ## Regression entry points
 

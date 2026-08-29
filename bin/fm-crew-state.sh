@@ -190,10 +190,12 @@ fi
 # pane_readable is consulted ONLY in the no-run fallback below. The run-step path
 # stays authoritative regardless of pane liveness - judge by the run-step, not the
 # shell - so a finished crew whose endpoint has closed still reports its run-step
-# state (e.g. done) instead of being masked as unknown. Backend-aware
-# (fm_backend_of_meta defaults absent backend= to tmux, the P1 contract): a
-# herdr task is read through fm_backend_capture instead of a bare tmux probe.
-TASK_BACKEND=$(fm_backend_of_meta "$META")
+# state (e.g. done) instead of being masked as unknown. Backend-aware: a
+# herdr task is read through fm_backend_capture. A record whose backend
+# identity is absent or not herdr is a legacy record (AGENTS.md hard rule 6):
+# it is reported as such and never probed, since no read path exists for it.
+TASK_BACKEND=$(fm_backend_of_meta "$META" 2>/dev/null) \
+  || emit unknown legacy-backend "legacy-record: backend=${TASK_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
 BACKEND_TARGET=$(fm_backend_target_of_meta "$META")
 EXPECTED_LABEL="fm-$ID"
 pane_readable() {  # <target>

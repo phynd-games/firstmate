@@ -10,37 +10,62 @@
 # auto-discover its OWN pane and inject there instead of into the captain's).
 #
 # Because both callers need the identical resolution, it lives here once. The
-# function names and precedence are unchanged from when this logic lived inline
-# in bin/fm-supervise-daemon.sh, so its unit tests (tests/fm-daemon.test.sh)
-# keep exercising the same names after the daemon sources this file.
+# function names are unchanged from when this logic lived inline in
+# bin/fm-supervise-daemon.sh, so its unit tests (tests/fm-daemon.test.sh) keep
+# exercising the same names after the daemon sources this file.
+#
+# HERDR-ONLY RUNTIME (AGENTS.md hard rule 6; owner bin/fm-backend-policy-lib.sh).
+# In the active runtime the supervisor pane is a Herdr pane or nothing:
+# FM_SUPERVISOR_BACKEND must be herdr when set, $TMUX_PANE never selects, and
+# with no override the pane is discovered only from Herdr's own injected
+# HERDR_ENV=1 + HERDR_PANE_ID identity. There is no `firstmate:0` tmux default;
+# an undiscoverable pane refuses through fm_backend_policy_refuse and prints
+# nothing, so a caller can never inject into a guessed endpoint. The
+# pre-invariant precedence (override > TMUX_PANE > HERDR_ENV > tmux default)
+# survives only inside the regression lane (FM_BACKEND_LEGACY_TEST_LANE=1).
 
-# Default supervisor pane target/backend when nothing is configured or detected.
-# "firstmate:0" is a tmux session:window name, so the bare fallback (nothing
-# configured, nothing detected) assumes tmux - matching the daemon's pre-herdr
-# behavior byte-for-byte when run outside both tmux and herdr.
-FM_SUPERVISOR_TARGET_DEFAULT="firstmate:0"
-FM_SUPERVISOR_BACKEND_DEFAULT="tmux"
+_FM_SUPERVISOR_TARGET_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-backend-policy-lib.sh
+. "$_FM_SUPERVISOR_TARGET_LIB_DIR/fm-backend-policy-lib.sh"
+
+# Defaults consulted when nothing is configured or detected. In the active
+# runtime the backend default is herdr and the target default is EMPTY: the
+# daemon's inject/busy readers (which fall back to these when startup discovery
+# never ran, e.g. sourced test contexts) must then fail their existence check
+# rather than address a tmux pane named "firstmate:0". The tmux pair survives
+# only in the regression lane, byte-for-byte the daemon's pre-herdr behavior.
+if fm_backend_policy_legacy_lane; then
+  FM_SUPERVISOR_TARGET_DEFAULT="firstmate:0"
+  FM_SUPERVISOR_BACKEND_DEFAULT="tmux"
+else
+  FM_SUPERVISOR_TARGET_DEFAULT=""
+  FM_SUPERVISOR_BACKEND_DEFAULT="$FM_BACKEND_ACTIVE"
+fi
+
+# Remediation shared by both discovery refusals below.
+fm_supervisor_herdr_remediation() {
+  printf 'Run the primary Firstmate session inside a Herdr pane so Herdr injects HERDR_ENV=1 and HERDR_PANE_ID, or set FM_SUPERVISOR_BACKEND=herdr and FM_SUPERVISOR_TARGET=<herdr-session>:<pane-id> explicitly.%s' \
+    "$(fm_backend_policy_marker_note)"
+}
 
 # discover_supervisor_target: resolve the pane running firstmate. Priority:
-#   1. FM_SUPERVISOR_TARGET env (explicit override) - may be a tmux target or a
-#      herdr "<session>:<pane-id>" target (paired with discover_supervisor_backend
-#      to know which).
-#   2. $TMUX_PANE - tmux sets this in every pane's environment; inherited by a
-#      process launched from firstmate's own pane.
-#   3. $HERDR_ENV=1 + $HERDR_PANE_ID - herdr injects both into every process it
+#   1. FM_SUPERVISOR_TARGET env (explicit override) - a herdr
+#      "<session>:<pane-id>" target (paired with discover_supervisor_backend
+#      to know which backend; a tmux target is accepted only in the lane).
+#   2. $HERDR_ENV=1 + $HERDR_PANE_ID - herdr injects both into every process it
 #      manages a pane for; compose the "<session>:<pane-id>" target from
 #      $HERDR_SESSION (defaulting to "default", mirroring bin/backends/herdr.sh's
-#      fm_backend_herdr_session) and $HERDR_PANE_ID. Checked after $TMUX_PANE so a
-#      tmux pane nested inside herdr still resolves to tmux, matching
-#      fm_backend_detect's innermost-first rule.
-#   4. FM_SUPERVISOR_TARGET_DEFAULT - legacy tmux fallback (may not resolve if the
-#      session is named differently). Returns 1 so the caller can warn.
+#      fm_backend_herdr_session) and $HERDR_PANE_ID.
+#   3. Refuse: print nothing, emit the policy diagnostic, return 1.
+# Regression lane only: $TMUX_PANE is consulted between 1 and 2 (a tmux pane
+# nested inside herdr resolves to tmux), and step 3 prints the legacy tmux
+# default "firstmate:0" while still returning 1 so the caller can warn.
 discover_supervisor_target() {
   if [ -n "${FM_SUPERVISOR_TARGET:-}" ]; then
     printf '%s' "$FM_SUPERVISOR_TARGET"
     return 0
   fi
-  if [ -n "${TMUX_PANE:-}" ]; then
+  if fm_backend_policy_legacy_lane && [ -n "${TMUX_PANE:-}" ]; then
     printf '%s' "$TMUX_PANE"
     return 0
   fi
@@ -48,31 +73,48 @@ discover_supervisor_target() {
     printf '%s:%s' "${HERDR_SESSION:-default}" "$HERDR_PANE_ID"
     return 0
   fi
-  printf '%s' "$FM_SUPERVISOR_TARGET_DEFAULT"
+  if fm_backend_policy_legacy_lane; then
+    printf '%s' "$FM_SUPERVISOR_TARGET_DEFAULT"
+    return 1
+  fi
+  fm_backend_policy_refuse "supervisor pane discovery (FM_SUPERVISOR_TARGET unset, no Herdr pane identity in the environment)" "" \
+    "$(fm_supervisor_herdr_remediation)"
   return 1
 }
 
 # discover_supervisor_backend: resolve the supervisor pane's BACKEND, independent
 # of the target string so an explicit FM_SUPERVISOR_TARGET override still knows
-# which primitives (tmux vs herdr) to dispatch through. Priority mirrors
-# discover_supervisor_target and bin/fm-backend.sh's fm_backend_detect:
-#   1. FM_SUPERVISOR_BACKEND env (explicit override).
-#   2. $TMUX_PANE set - tmux.
-#   3. $HERDR_ENV=1 (with $HERDR_PANE_ID present) - herdr.
-#   4. FM_SUPERVISOR_BACKEND_DEFAULT (tmux) - matches the target fallback. Returns 1.
+# which primitives to dispatch through. Priority:
+#   1. FM_SUPERVISOR_BACKEND env (explicit override) - must be herdr; any other
+#      value refuses through the policy diagnostic (accepted verbatim only in
+#      the regression lane, where the daemon's own supported-set check judges it).
+#   2. $HERDR_ENV=1 (with $HERDR_PANE_ID present) - herdr.
+#   3. Refuse: print nothing, emit the policy diagnostic, return 1.
+# Regression lane only: $TMUX_PANE set selects tmux between 1 and 2, and step 3
+# prints the legacy tmux default while returning 1.
 discover_supervisor_backend() {
   if [ -n "${FM_SUPERVISOR_BACKEND:-}" ]; then
-    printf '%s' "$FM_SUPERVISOR_BACKEND"
-    return 0
+    if fm_backend_policy_legacy_lane || [ "$FM_SUPERVISOR_BACKEND" = "$FM_BACKEND_ACTIVE" ]; then
+      printf '%s' "$FM_SUPERVISOR_BACKEND"
+      return 0
+    fi
+    fm_backend_policy_refuse "FM_SUPERVISOR_BACKEND" "$FM_SUPERVISOR_BACKEND" \
+      "$(fm_supervisor_herdr_remediation)"
+    return 1
   fi
-  if [ -n "${TMUX_PANE:-}" ]; then
+  if fm_backend_policy_legacy_lane && [ -n "${TMUX_PANE:-}" ]; then
     printf 'tmux'
     return 0
   fi
   if [ "${HERDR_ENV:-}" = "1" ] && [ -n "${HERDR_PANE_ID:-}" ]; then
-    printf 'herdr'
+    printf '%s' "$FM_BACKEND_ACTIVE"
     return 0
   fi
-  printf '%s' "$FM_SUPERVISOR_BACKEND_DEFAULT"
+  if fm_backend_policy_legacy_lane; then
+    printf '%s' "$FM_SUPERVISOR_BACKEND_DEFAULT"
+    return 1
+  fi
+  fm_backend_policy_refuse "supervisor backend discovery (FM_SUPERVISOR_BACKEND unset, no Herdr pane identity in the environment)" "" \
+    "$(fm_supervisor_herdr_remediation)"
   return 1
 }

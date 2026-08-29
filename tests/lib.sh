@@ -34,6 +34,16 @@ FM_TEST_LIB_SOURCED=1
 # strips this to verify real refusal.
 export FM_GATE_REFUSE_BYPASS=1
 
+# Re-admit the retained legacy runtime adapters (tmux, zellij, orca, cmux) and
+# their pre-invariant selection contract for this suite. Herdr is the sole
+# supported runtime backend in the active runtime (AGENTS.md hard rule 6;
+# bin/fm-backend-policy-lib.sh), but the retained adapter code stays under
+# regression here until it is removed, and most suites in this directory drive
+# fm-spawn/fm-send/fm-watch/fm-teardown against a fake tmux. Same shape as
+# FM_GATE_REFUSE_BYPASS above: a suite self-exemption, never an operator knob.
+# tests/fm-backend-herdr-only.test.sh strips it to prove the real refusals.
+export FM_BACKEND_LEGACY_TEST_LANE=1
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034

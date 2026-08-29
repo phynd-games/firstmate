@@ -1,6 +1,10 @@
-# Zellij runtime backend
+# Zellij runtime backend (retained legacy adapter)
 
-Zellij is an experimental explicit-only session backend.
+**Retired from the active runtime.**
+Herdr is Firstmate's sole supported runtime backend (`AGENTS.md` hard rule 6); selecting `zellij` through `config/backend`, `FM_BACKEND`, or `--backend` is refused by name, and `bin/backends/zellij.sh` stays on disk only for the repository's regression lane.
+[`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns the current contract and [`architecture.md`](architecture.md#runtime-session-backends) owns the removal plan; the rest of this page describes the retained adapter as it behaved when it was selectable.
+
+Zellij was an experimental explicit-only session backend.
 It provides the terminal session while Treehouse continues to provide task worktrees.
 [`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns shared selection and metadata semantics.
 

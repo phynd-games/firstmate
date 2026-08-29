@@ -187,14 +187,18 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$FM_DAEMON_DIR/fm-busy-lib.sh"
 
 # --- tunables ---------------------------------------------------------------
-# Supervisor backends this daemon knows how to inject into today. zellij, orca,
-# and cmux are real backends elsewhere in firstmate (bin/fm-backend.sh) but this
-# daemon has no verified composer/busy primitives wired up for them yet - see
-# docs/herdr-backend.md and AGENTS.md section 4's
-# harness-verification discipline. Selecting one refuses loudly at startup
-# instead of silently running tmux primitives against a pane that is not a tmux
-# pane.
-FM_SUPERVISOR_SUPPORTED_BACKENDS="tmux herdr"
+# Supervisor backends this daemon may inject into. In the active runtime that is
+# Herdr alone (AGENTS.md hard rule 6; bin/fm-backend-policy-lib.sh): the tmux
+# injection primitives this file still carries are reachable only inside the
+# repository's regression lane, where tmux stays supported so the fake-tmux
+# daemon suites keep exercising them. Selecting anything outside the set
+# refuses loudly at startup instead of running one backend's primitives against
+# another backend's pane.
+if fm_backend_policy_legacy_lane; then
+  FM_SUPERVISOR_SUPPORTED_BACKENDS="tmux herdr"
+else
+  FM_SUPERVISOR_SUPPORTED_BACKENDS="$FM_BACKEND_ACTIVE"
+fi
 INJECT_SKIP_DEFAULT="heartbeat"
 STALE_ESCALATE_SECS_DEFAULT=240
 ESCALATE_BATCH_SECS_DEFAULT=90
@@ -1158,10 +1162,11 @@ inject_msg() {  # <message> [state]
   target="${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}"
   # BACKEND-AWARE (previously a raw `tmux display-message` pane-exists probe):
   # dispatches through bin/fm-backend.sh so a herdr supervisor pane is checked
-  # via the herdr adapter instead of always assuming tmux. Falls back to tmux
-  # when unset (sourced/test contexts that never ran fm_super_main's startup
-  # discovery), matching this function's pre-existing default assumption.
-  backend="${FM_SUPERVISOR_BACKEND:-tmux}"
+  # via the herdr adapter instead of always assuming tmux. Falls back to the
+  # policy-owned default (herdr; tmux only inside the regression lane) when
+  # unset, i.e. in sourced/test contexts that never ran fm_super_main's startup
+  # discovery.
+  backend="${FM_SUPERVISOR_BACKEND:-$FM_SUPERVISOR_BACKEND_DEFAULT}"
   fm_backend_target_exists "$backend" "$target" || return 1
   # (3) Busy-guard: never inject into an in-use supervisor pane.
   if pane_is_busy "$target" "$backend"; then
@@ -1419,25 +1424,31 @@ fm_super_main() {
   local discovered_backend backend_source
   backend_source="FM_SUPERVISOR_BACKEND"
   if [ -z "${FM_SUPERVISOR_BACKEND:-}" ]; then
-    if [ -n "${TMUX_PANE:-}" ]; then
+    if fm_backend_policy_legacy_lane && [ -n "${TMUX_PANE:-}" ]; then
       backend_source="TMUX_PANE"
     elif [ "${HERDR_ENV:-}" = "1" ] && [ -n "${HERDR_PANE_ID:-}" ]; then
       backend_source="HERDR_ENV"
-    else
+    elif fm_backend_policy_legacy_lane; then
       backend_source="FALLBACK($FM_SUPERVISOR_BACKEND_DEFAULT)"
+    else
+      backend_source="REFUSED(no Herdr pane identity)"
     fi
   fi
+  # A refused discovery (active runtime, no Herdr identity or a non-Herdr
+  # override) has already printed its policy diagnostic and yields an empty
+  # backend, which the supported-set check below turns into the startup refusal.
   discovered_backend=$(discover_supervisor_backend) || true
   FM_SUPERVISOR_BACKEND="$discovered_backend"
   local BACKEND="$FM_SUPERVISOR_BACKEND"
 
   # --- refuse an unsupported supervisor backend loudly, before ever trying a
-  # tmux/herdr-specific call against it (zellij, orca, and cmux have no verified
-  # composer/busy primitives wired up for this daemon yet - AGENTS.md section 4
-  # harness-verification discipline). This is the clear refusal the task calls
-  # for, instead of a confusing "does not resolve to a tmux pane" error.
+  # backend-specific call against it. In the active runtime only herdr is
+  # supported (hard rule 6); inside the regression lane tmux stays supported
+  # while zellij, orca, and cmux still have no verified composer/busy primitives
+  # for this daemon. This is the clear refusal the invariant calls for, instead
+  # of a confusing "does not resolve to a pane" error.
   if ! fm_backend_list_contains "$FM_SUPERVISOR_SUPPORTED_BACKENDS" "$BACKEND"; then
-    echo "error: away-mode daemon does not support supervisor backend '$BACKEND' yet (supported: $FM_SUPERVISOR_SUPPORTED_BACKENDS); set FM_SUPERVISOR_BACKEND=tmux|herdr and FM_SUPERVISOR_TARGET to run firstmate's own pane under a supported backend" >&2
+    echo "error: away-mode daemon cannot supervise backend '${BACKEND:-none}' (supported: $FM_SUPERVISOR_SUPPORTED_BACKENDS); Herdr is the sole supported Firstmate runtime backend - run firstmate's own pane inside Herdr, or set FM_SUPERVISOR_BACKEND=herdr and FM_SUPERVISOR_TARGET=<herdr-session>:<pane-id> explicitly" >&2
     log "startup failed: unsupported supervisor backend '$BACKEND' (source=$backend_source)"
     fm_lock_release "$LOCK" 2>/dev/null || true
     rm -f "$PIDFILE" 2>/dev/null || true

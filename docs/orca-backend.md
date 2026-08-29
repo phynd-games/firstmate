@@ -1,6 +1,10 @@
-# Orca runtime backend
+# Orca runtime backend (retained legacy adapter)
 
-Orca is an experimental macOS backend in which the Orca app owns both the task worktree and terminal endpoint.
+**Retired from the active runtime.**
+Herdr is Firstmate's sole supported runtime backend (`AGENTS.md` hard rule 6); selecting `orca` through `config/backend`, `FM_BACKEND`, or `--backend` is refused by name, and `bin/backends/orca.sh` stays on disk only for the repository's regression lane.
+[`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns the current contract, including the read-only handling of pre-invariant Orca task records, and [`architecture.md`](architecture.md#runtime-session-backends) owns the removal plan; the rest of this page describes the retained adapter as it behaved when it was selectable.
+
+Orca was an experimental macOS backend in which the Orca app owns both the task worktree and terminal endpoint.
 The crewmate harness remains the agent process launched inside that endpoint.
 Firstmate agents load [`firstmate-orca`](../.agents/skills/firstmate-orca/SKILL.md) before operating or recovering this backend.
 

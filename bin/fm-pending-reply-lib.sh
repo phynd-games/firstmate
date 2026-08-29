@@ -1354,7 +1354,10 @@ fm_pending_reply_tick() {  # <state-dir>
     harness=
     if [ -f "$meta" ]; then
       remote_host=$(fm_meta_get "$meta" remote_host)
-      backend=$(fm_backend_of_meta "$meta")
+      # This is a fleet-wide sweep, not the operation on that task: a legacy
+      # (absent or non-herdr) record is simply unobservable here, and its
+      # diagnostic belongs to the direct operations that refuse it by name.
+      backend=$(fm_backend_of_meta "$meta" 2>/dev/null) || backend=
       target=$(fm_backend_target_of_meta "$meta")
       sm_home=$(fm_meta_get "$meta" home)
       harness=$(fm_meta_get "$meta" harness)

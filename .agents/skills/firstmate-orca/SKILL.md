@@ -1,6 +1,6 @@
 ---
 name: firstmate-orca
-description: Agent-only operator checklist for Firstmate's Orca runtime backend. Use when switching to Orca, spawning or supervising Orca-backed work, smoke-testing Orca backend behavior, debugging Orca task state, or reconciling Orca-backed task metadata.
+description: Agent-only reference for Firstmate's retained legacy Orca runtime adapter. Use only when reconciling a pre-invariant Orca-backed task record; Herdr is the sole supported runtime backend, so requests to switch to, spawn on, or smoke-test Orca are refused rather than planned.
 user-invocable: false
 metadata:
   internal: true
@@ -8,8 +8,9 @@ metadata:
 
 # firstmate-orca
 
-Use this as the operator checklist for Firstmate's experimental Orca runtime backend.
-It does not replace `AGENTS.md`, `docs/orca-backend.md`, or `harness-adapters`.
+Orca is a retained legacy adapter, not a selectable backend: Herdr is Firstmate's sole supported runtime backend (`AGENTS.md` hard rule 6), so `--backend orca`, `FM_BACKEND=orca`, and `config/backend` naming `orca` are refused by name, and a request to switch to, spawn on, or smoke-test Orca is answered with that refusal and the Herdr remediation rather than planned.
+Load this skill only to reconcile a pre-invariant Orca-backed task record, which the runtime treats as read-only under `docs/configuration.md` "Legacy task records".
+The checklist below describes the adapter as it behaved when it was selectable and does not replace `AGENTS.md`, `docs/orca-backend.md`, or `harness-adapters`.
 
 Orca is a runtime backend, not an agent harness.
 The runtime backend owns the task endpoint and, for Orca, the task worktree.

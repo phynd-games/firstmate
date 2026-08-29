@@ -2,6 +2,11 @@
 # Opt-in credentialed Grok regression proving the shared arm wrapper still works
 # through Grok's tracked background-task notification path.
 set -u
+# This suite drives a retained legacy runtime adapter directly, outside
+# tests/lib.sh, so it re-admits the retained adapters itself. Herdr is the sole
+# supported runtime backend in the active runtime (AGENTS.md hard rule 6;
+# bin/fm-backend-policy-lib.sh owns this suite-only lane).
+export FM_BACKEND_LEGACY_TEST_LANE=1
 
 if [ "${FM_GROK_LIVE_E2E:-0}" != 1 ]; then
   echo "skip: set FM_GROK_LIVE_E2E=1 to run the interactive Grok continuity regression"

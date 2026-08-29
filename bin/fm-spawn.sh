@@ -961,20 +961,23 @@ if [ "$KIND" = secondmate ]; then
   fi
   [ "$remote_spawn_rc" -eq 3 ] || exit "$remote_spawn_rc"
 fi
-# Backend selection (data/fm-backend-design-d7): explicit --backend, else
-# FM_BACKEND env, else config/backend, else runtime auto-detection, else
-# default tmux (fm_backend_name). fm_backend_validate_spawn refuses unknown or
-# non-spawn-capable backends. The resolved value is
-# recorded in meta only when it is NOT tmux (fm-teardown.sh and fm-watch.sh's
-# window_backend/fm_backend_of_meta already treat an absent backend= as tmux),
-# so the default path's meta stays byte-identical.
+# Backend selection: explicit --backend, else fm_backend_name (FM_BACKEND, then
+# config/backend). Herdr is the sole supported runtime backend (AGENTS.md hard
+# rule 6; bin/fm-backend-policy-lib.sh): every input must name herdr, an
+# undeclared home refuses, and runtime markers never select, so no spawn can
+# fall back to tmux or another retained adapter. fm_backend_validate_spawn
+# refuses any other or unknown value by name before any worktree, lock, or
+# runtime side effect. A herdr task records backend=herdr plus its exact
+# endpoint fields; the tmux-default path that wrote no backend= line survives
+# only in the regression lane.
 if [ "$RELAUNCH" -eq 0 ]; then
   if [ "$BACKEND_SET" -eq 1 ]; then
     BACKEND=$BACKEND_ARG
+    fm_backend_validate_spawn "$BACKEND" "--backend" || exit 1
   else
-    BACKEND=$(fm_backend_name)
+    BACKEND=$(fm_backend_name) || exit 1
+    fm_backend_validate_spawn "$BACKEND" || exit 1
   fi
-  fm_backend_validate_spawn "$BACKEND" || exit 1
   fm_backend_source "$BACKEND" || exit 1
   if [ "$BACKEND" = orca ] && [ "$KIND" = secondmate ]; then
     echo "error: backend=orca does not support --secondmate spawns yet" >&2

@@ -23,6 +23,11 @@
 #
 # This costs real Pi model turns and requires its normal authenticated profile.
 set -u
+# This suite drives a retained legacy runtime adapter directly, outside
+# tests/lib.sh, so it re-admits the retained adapters itself. Herdr is the sole
+# supported runtime backend in the active runtime (AGENTS.md hard rule 6;
+# bin/fm-backend-policy-lib.sh owns this suite-only lane).
+export FM_BACKEND_LEGACY_TEST_LANE=1
 
 if [ "${FM_SESSIONSTART_INSTRUCTION_REFRESH_LIVE_E2E:-0}" != 1 ]; then
   echo "skip: set FM_SESSIONSTART_INSTRUCTION_REFRESH_LIVE_E2E=1 to run the isolated real-Pi instruction-refresh regression"

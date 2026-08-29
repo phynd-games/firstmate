@@ -7,6 +7,11 @@
 # server, isolated on a private socket (`-L`) so it never touches the host's
 # actual sessions.
 set -u
+# This suite drives a retained legacy runtime adapter directly, outside
+# tests/lib.sh, so it re-admits the retained adapters itself. Herdr is the sole
+# supported runtime backend in the active runtime (AGENTS.md hard rule 6;
+# bin/fm-backend-policy-lib.sh owns this suite-only lane).
+export FM_BACKEND_LEGACY_TEST_LANE=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

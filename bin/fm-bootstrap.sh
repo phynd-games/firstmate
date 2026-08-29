@@ -7,7 +7,8 @@
 #          Silent = all good.
 #          Lines: "MISSING: <tool> (install: <command>)",
 #                 "MISSING_MANUAL: <tool> (instructions: <url>)", "NEEDS_GH_AUTH",
-#                 "BACKEND_INVALID: <name> (known: <names>)",
+#                 "BACKEND_INVALID: <name>|none - <policy diagnostic naming Herdr and the remediation>"
+#                 (or the legacy-lane form "BACKEND_INVALID: <name> (known: <names>)"),
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
@@ -763,7 +764,12 @@ secondmate_liveness_one() {  # <meta> <id>
     esac
     return 0
   fi
-  backend=$(fm_backend_of_meta "$meta")
+  if ! backend=$(fm_backend_of_meta "$meta" 2>/dev/null); then
+    # A pre-invariant or non-Herdr record is read-only (hard rule 6): never
+    # relaunch or probe it; the captain retires it through the documented path.
+    echo "SECONDMATE_LIVENESS: secondmate $id: skipped: legacy backend record (backend=${backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
+    return 0
+  fi
   target=$(fm_backend_target_of_meta "$meta")
   [ -n "$target" ] || target="$window"
   agent_state=$(fm_backend_agent_state "$backend" "$target" 2>/dev/null) || agent_state=unreadable
@@ -865,12 +871,25 @@ missing_tool_diagnostic() {
 # never told tmux is missing, and only orca drops treehouse. A backend value with
 # no verified dependency set is reported before the universal checks continue.
 COMMON_TOOLS="node git gh no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi"
-BACKEND=$(fm_backend_name)
+# fm_backend_name refuses anything but a declared herdr (AGENTS.md hard rule 6);
+# its one-line diagnostic is captured here and surfaced as the BACKEND_INVALID
+# line so the digest carries the remediation instead of a bare name.
+BACKEND_DIAGNOSTIC=""
 BACKEND_VALID=1
-if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
+BACKEND_DIAG_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-bootstrap-backend.XXXXXX" 2>/dev/null) || BACKEND_DIAG_FILE=/dev/null
+if BACKEND=$(fm_backend_name 2>"$BACKEND_DIAG_FILE"); then
+  # A successful resolution may still have printed a notice (the regression
+  # lane's auto-detect notice); forward it unchanged so the digest keeps it.
+  [ -s "$BACKEND_DIAG_FILE" ] && cat "$BACKEND_DIAG_FILE" >&2
+else
   BACKEND_VALID=0
-  BACKEND_TOOLS=""
+  BACKEND_DIAGNOSTIC=$(head -n 1 "$BACKEND_DIAG_FILE" 2>/dev/null || true)
 fi
+[ "$BACKEND_DIAG_FILE" = /dev/null ] || rm -f "$BACKEND_DIAG_FILE"
+if [ "$BACKEND_VALID" -eq 1 ] && ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
+  BACKEND_VALID=0
+fi
+[ "$BACKEND_VALID" -eq 1 ] || BACKEND_TOOLS=""
 TOOLS="$BACKEND_TOOLS $COMMON_TOOLS"
 NO_MISTAKES_MIN=1.46.0
 # AXI-FAMILY FLOOR POLICY. Every axi-family floor is the CURRENT LATEST published
@@ -1207,7 +1226,11 @@ fi
 # leaves this machine, so it stays on the session-start critical path.
 detect_local_tools() {
   if [ "$BACKEND_VALID" -eq 0 ]; then
-    echo "BACKEND_INVALID: $BACKEND (known: $FM_BACKEND_KNOWN)"
+    if [ -n "$BACKEND_DIAGNOSTIC" ]; then
+      echo "BACKEND_INVALID: ${BACKEND:-none} - $BACKEND_DIAGNOSTIC"
+    else
+      echo "BACKEND_INVALID: $BACKEND (known: $FM_BACKEND_KNOWN)"
+    fi
   fi
   for t in $BACKEND_TOOLS; do
     fm_backend_required_tool_available "$BACKEND" "$t" \

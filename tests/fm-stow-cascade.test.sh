@@ -99,12 +99,15 @@ remote_record() { # <id> <host> <root> <home>
 run_cascade() { # <primary-home> [env assignments...]
   local home=$1
   shift
+  # The sanitized environment must re-admit the retained tmux adapter these
+  # fixtures record (tests/lib.sh's lane export does not survive env -i).
   env -i \
     PATH="$FAKEBIN:$BASE_PATH" \
     HOME="${HOME:-/tmp}" \
     TMPDIR="${TMPDIR:-/tmp}" \
     FM_HOME="$home" \
     FM_SSH_BIN="$FAKEBIN/fake-ssh" \
+    FM_BACKEND_LEGACY_TEST_LANE=1 \
     "$@" \
     "$CASCADE"
 }

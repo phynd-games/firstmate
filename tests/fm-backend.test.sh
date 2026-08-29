@@ -19,6 +19,13 @@
 #   3. Asserts the `--backend`/`FM_BACKEND` selection refuses unknown backends
 #      and the blocked `codex-app` backend loudly.
 #
+# This suite runs INSIDE the retained-adapter regression lane (tests/lib.sh
+# exports FM_BACKEND_LEGACY_TEST_LANE=1; owner bin/fm-backend-policy-lib.sh), so
+# the tmux default, innermost-first detection, and absent-backend=tmux contract
+# it asserts describe the retained adapters, not the active runtime. Herdr is the
+# sole supported runtime backend (AGENTS.md hard rule 6), and
+# tests/fm-backend-herdr-only.test.sh proves the active-runtime refusals.
+#
 # fm-watch.sh's signal/stale/check/heartbeat wake-string contract is already
 # exercised end-to-end against this refactor by tests/fm-watch-triage.test.sh
 # and tests/wake-helpers.sh (same fake-tmux convention, run against the

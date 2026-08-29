@@ -29,12 +29,22 @@
 # Codex App is intentionally not in the known set yet.
 # docs/codex-app-backend.md owns that blocked backend contract.
 #
-# Compatibility contract: a task's meta may omit `backend=`; every reader here
-# treats that as `tmux` (fm_backend_of_meta), and fm-spawn.sh does not write
-# `backend=tmux` for a default-backend task, so existing and newly spawned
-# default-path metas stay byte-identical. Only a task spawned on a non-tmux
-# spawn-capable backend, currently experimental herdr, zellij, orca, or cmux,
-# carries an explicit `backend=` line.
+# HERDR-ONLY RUNTIME INVARIANT (AGENTS.md hard rule 6; owner:
+# bin/fm-backend-policy-lib.sh). The paragraphs above are the adapter history.
+# In the active runtime only `herdr` is known, spawn-capable, selectable, or
+# dispatchable: FM_BACKEND, config/backend, --backend, inherited secondmate
+# config, task metadata, selectors, and supervisor discovery all refuse any
+# other value and any absent identity through fm_backend_policy_refuse, and
+# fm_backend_detect never selects anything. The tmux, zellij, orca, and cmux
+# adapter files stay on disk as retained legacy code reachable only inside the
+# repository's regression lane (FM_BACKEND_LEGACY_TEST_LANE=1), where the
+# pre-invariant contract below still applies.
+#
+# Pre-invariant compatibility contract (legacy lane only): a task's meta may
+# omit `backend=`; readers treat that as `tmux` (fm_backend_of_meta), and
+# fm-spawn.sh does not write `backend=tmux` for a default-backend task. In the
+# active runtime an absent `backend=` is a legacy record and is refused
+# read-only (docs/configuration.md "Legacy task records").
 #
 # Event-source framing (herdr-addendum "Events as the core abstraction"): a
 # backend's supervision surface is conceptually an EVENT SOURCE - it produces
@@ -54,20 +64,25 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-${FM_ROOT:-$FM_BACKEND_DEFAULT_ROOT}}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 FM_BACKEND_CONFIG_DIR="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
-# Verified backend adapters. Extend only after a backend gets its own
-# bin/backends/<name>.sh and empirical verification, mirroring AGENTS.md
-# section 4's harness-verification discipline. herdr is EXPERIMENTAL (P2;
-# data/fm-backend-design-d7/herdr-addendum.md) - verified against the real
-# v0.7.1/protocol-14 binary (data/fm-backend-design-d7/herdr-verification-p2.md)
-# but newer than tmux's long-proven default path. zellij is EXPERIMENTAL (P3;
-# data/fm-backend-design-d7/report.md "Zellij Backend") - verified against the
-# real 0.44.0 binary (docs/zellij-backend.md). orca is EXPERIMENTAL and
-# spawn-capable; unlike tmux/herdr/zellij it is also the worktree provider.
-# cmux is EXPERIMENTAL and spawn-capable, session-provider-only like
-# herdr/zellij - verified against the real 0.64.17 binary (docs/cmux-backend.md).
+# The Herdr-only invariant and its retained-adapter regression lane.
+# shellcheck source=bin/fm-backend-policy-lib.sh
+. "$FM_BACKEND_LIB_DIR/fm-backend-policy-lib.sh"
+
+# Known and spawn-capable backends. In the active runtime both sets are exactly
+# the one supported backend, herdr (FM_BACKEND_ACTIVE). Inside the regression
+# lane they widen to the retained legacy adapters, each of which still has its
+# own bin/backends/<name>.sh and the empirical record that verified it: herdr
+# (data/fm-backend-design-d7/herdr-verification-p2.md, docs/herdr-backend.md),
+# zellij (docs/zellij-backend.md, real 0.44.0), orca (docs/orca-backend.md,
+# also the worktree provider), and cmux (docs/cmux-backend.md, real 0.64.17).
 # codex-app remains deliberately absent; see docs/codex-app-backend.md.
-FM_BACKEND_KNOWN="tmux herdr zellij orca cmux"
-FM_BACKEND_SPAWN="tmux herdr zellij orca cmux"
+if fm_backend_policy_legacy_lane; then
+  FM_BACKEND_KNOWN="tmux herdr zellij orca cmux"
+  FM_BACKEND_SPAWN="tmux herdr zellij orca cmux"
+else
+  FM_BACKEND_KNOWN="$FM_BACKEND_ACTIVE"
+  FM_BACKEND_SPAWN="$FM_BACKEND_ACTIVE"
+fi
 
 # fm_backend_list_contains: whitespace-delimited membership without relying on
 # shell word splitting. fm-backend.sh is normally sourced by bash scripts, but
@@ -140,6 +155,10 @@ FM_BACKEND_CMUX_BUNDLE_ID="com.cmuxterm.app"
 fm_backend_detect() {
   FM_BACKEND_DETECTED=""
   FM_BACKEND_DETECT_SIGNAL=""
+  # Active runtime: runtime markers are never a selection input (hard rule 6).
+  # HERDR_ENV=1 does not auto-select herdr either; the home declares it. The
+  # innermost-first detection below survives only inside the regression lane.
+  fm_backend_policy_legacy_lane || return 1
   if [ -n "${TMUX:-}" ]; then
     FM_BACKEND_DETECTED=tmux
     FM_BACKEND_DETECT_SIGNAL=TMUX
@@ -229,31 +248,60 @@ fm_backend_detect_cmux_app_is_ancestor() {
 
 # fm_backend_name: resolve the ACTIVE backend for a NEW spawn, absent an
 # explicit per-task override. Precedence: FM_BACKEND env, then config/backend
-# (a single word on its first non-empty line, mirroring config/crew-harness),
-# then runtime auto-detection (fm_backend_detect), then default tmux. A
-# per-task `--backend` flag is parsed by the caller (fm-spawn.sh) and takes
-# precedence over this resolution entirely; it is not read here. Auto-detect
-# fires only when nothing was explicitly configured, so an explicit setting
-# always wins. Selecting herdr or cmux via auto-detect prints one loud stderr
-# notice (both are experimental); auto-detecting tmux stays silent - it is
-# today's default-path behavior and callers must see zero change. The cmux
-# notice names the winning signal, so a fallback-detected cmux (bundle id or
-# ancestry, after the claude wrapper stripped CMUX_WORKSPACE_ID) is visibly
-# distinct from the primary-marker case.
+# (a single word on its first non-empty line, mirroring config/crew-harness).
+# A per-task `--backend` flag is parsed by the caller (fm-spawn.sh) and takes
+# precedence over this resolution entirely; it is not read here.
+#
+# Active runtime (hard rule 6): whichever input is consulted first must name
+# herdr, and a home that declares nothing is refused - there is no default and
+# runtime markers ($TMUX, HERDR_ENV=1, cmux signals) never select. A refusal
+# prints exactly one fm_backend_policy_refuse line naming the input, Herdr, and
+# the remediation, prints NOTHING to stdout, and returns 1, so a caller that
+# captures the name can never receive a usable non-Herdr value.
+#
+# Regression lane only: the pre-invariant contract continues below - runtime
+# auto-detection (fm_backend_detect) after config, then default tmux, with the
+# loud notice for auto-detected herdr or cmux naming the winning signal.
 fm_backend_name() {
-  local line v detected marker
-  if [ -n "${FM_BACKEND:-}" ]; then
-    printf '%s' "$FM_BACKEND"
-    return 0
-  fi
+  local line v detected marker config_line=""
   if [ -f "$FM_BACKEND_CONFIG_DIR/backend" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
       v=$(printf '%s' "$line" | tr -d '[:space:]')
       if [ -n "$v" ]; then
-        printf '%s' "$v"
-        return 0
+        config_line=$v
+        break
       fi
     done < "$FM_BACKEND_CONFIG_DIR/backend"
+  fi
+  if ! fm_backend_policy_legacy_lane; then
+    if [ -n "${FM_BACKEND:-}" ]; then
+      [ "$FM_BACKEND" = "$FM_BACKEND_ACTIVE" ] && { printf '%s' "$FM_BACKEND_ACTIVE"; return 0; }
+      fm_backend_policy_refuse "FM_BACKEND" "$FM_BACKEND" \
+        "$(fm_backend_policy_config_remediation "$FM_BACKEND_CONFIG_DIR")"
+      return 1
+    fi
+    if [ -n "$config_line" ]; then
+      [ "$config_line" = "$FM_BACKEND_ACTIVE" ] && { printf '%s' "$FM_BACKEND_ACTIVE"; return 0; }
+      fm_backend_policy_refuse "$FM_BACKEND_CONFIG_DIR/backend" "$config_line" \
+        "$(fm_backend_policy_config_remediation "$FM_BACKEND_CONFIG_DIR")"
+      return 1
+    fi
+    if [ -f "$FM_BACKEND_CONFIG_DIR/backend" ]; then
+      fm_backend_policy_refuse "$FM_BACKEND_CONFIG_DIR/backend (present but empty)" "" \
+        "$(fm_backend_policy_config_remediation "$FM_BACKEND_CONFIG_DIR")"
+      return 1
+    fi
+    fm_backend_policy_refuse "neither FM_BACKEND nor $FM_BACKEND_CONFIG_DIR/backend" "" \
+      "$(fm_backend_policy_config_remediation "$FM_BACKEND_CONFIG_DIR")"
+    return 1
+  fi
+  if [ -n "${FM_BACKEND:-}" ]; then
+    printf '%s' "$FM_BACKEND"
+    return 0
+  fi
+  if [ -n "$config_line" ]; then
+    printf '%s' "$config_line"
+    return 0
   fi
   # Called directly (not in a command substitution) so the detect signal
   # globals survive into the notice below.
@@ -276,19 +324,32 @@ fm_backend_name() {
   printf 'tmux'
 }
 
-# fm_backend_validate: refuse an unknown backend LOUDLY. Silent on success.
-fm_backend_validate() {  # <name>
-  local name=$1
-  if ! fm_backend_is_known "$name"; then
-    echo "error: unknown backend '$name' (known: $FM_BACKEND_KNOWN)" >&2
+# fm_backend_validate: refuse anything but a dispatchable backend LOUDLY.
+# Silent on success. <origin> names the input being judged in the refusal
+# (default: "the selected runtime backend"). Every dispatcher below routes
+# through fm_backend_source, which calls this, so a retained legacy adapter is
+# unreachable for the active runtime no matter which operation names it.
+fm_backend_validate() {  # <name> [origin]
+  local name=$1 origin=${2:-the selected runtime backend}
+  if fm_backend_policy_permits "$name"; then
+    return 0
+  fi
+  if fm_backend_policy_is_retained "$name"; then
+    fm_backend_policy_refuse "$origin" "$name" \
+      "Select herdr instead; the $name adapter is retained on disk only for the repository's regression lane and is unreachable for the active runtime."
     return 1
   fi
-  return 0
+  if fm_backend_policy_legacy_lane; then
+    echo "error: unknown backend '$name' (known: $FM_BACKEND_KNOWN)" >&2
+  else
+    echo "error: unknown backend '$name' (known: $FM_BACKEND_KNOWN); Herdr is the sole supported Firstmate runtime backend - select herdr" >&2
+  fi
+  return 1
 }
 
-fm_backend_validate_spawn() {  # <name>
+fm_backend_validate_spawn() {  # <name> [origin]
   local name=$1
-  fm_backend_validate "$name" || return 1
+  fm_backend_validate "$name" "${2-}" || return 1
   fm_backend_list_contains "$FM_BACKEND_SPAWN" "$name" && return 0
   echo "error: backend '$name' does not support task spawning yet (spawn-supported: $FM_BACKEND_SPAWN)" >&2
   return 1
@@ -341,17 +402,45 @@ fm_meta_get() {  # <meta-file> <key>
   grep "^$key=" "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
 
-# fm_backend_of_meta: the backend recorded in <meta-file>, defaulting to
-# `tmux` when the field is absent - the P1 compatibility contract.
+# fm_backend_of_meta: the backend identity recorded in <meta-file>.
+# Active runtime: prints `herdr` for a Herdr record. Any other record is
+# refused - an absent `backend=` line is a pre-invariant legacy record, a
+# non-Herdr value is a retained-adapter record - with one
+# fm_backend_policy_refuse line naming the record, and return 1. The recorded
+# non-empty value is still echoed so a caller that ignores the exit status
+# hands that exact name to fm_backend_validate, which refuses it again by name;
+# an absent identity echoes nothing. Callers that render fleet state
+# (fm-session-start.sh, fm-crew-state.sh, fm-fleet-snapshot.sh) check the
+# status and present the record as legacy instead of dispatching on it.
+# Regression lane only: absent means `tmux` (the pre-invariant contract).
 fm_backend_of_meta() {  # <meta-file>
   local v
   v=$(fm_meta_get "$1" backend)
-  printf '%s' "${v:-tmux}"
+  if fm_backend_policy_legacy_lane; then
+    printf '%s' "${v:-tmux}"
+    return 0
+  fi
+  if [ "$v" = "$FM_BACKEND_ACTIVE" ]; then
+    printf '%s' "$v"
+    return 0
+  fi
+  printf '%s' "$v"
+  if [ -z "$v" ]; then
+    fm_backend_policy_refuse "task record $1 (no backend= line)" "" \
+      "$(fm_backend_policy_legacy_record_remediation)"
+  else
+    fm_backend_policy_refuse "task record $1 (backend=$v)" "$v" \
+      "$(fm_backend_policy_legacy_record_remediation)"
+  fi
+  return 1
 }
 
 fm_backend_target_of_meta() {  # <meta-file>
   local meta=$1 backend terminal window
-  backend=$(fm_backend_of_meta "$meta")
+  # A pure record read: the recorded name only chooses which field holds the
+  # target. Identity judgement belongs to fm_backend_of_meta, so a legacy record
+  # is diagnosed exactly once, by the caller that asks for its backend.
+  backend=$(fm_meta_get "$meta" backend)
   if [ "$backend" = orca ]; then
     terminal=$(fm_meta_get "$meta" terminal)
     [ -n "$terminal" ] && { printf '%s' "$terminal"; return 0; }
@@ -414,12 +503,32 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   esac
   backend_count=$(grep -c '^backend=' "$meta" 2>/dev/null || true)
   case "$backend_count" in
-    0) backend=tmux ;;
+    0)
+      # Active runtime: a record with no backend= line predates the Herdr-only
+      # invariant and is refused read-only (docs/configuration.md "Legacy task
+      # records"); the tmux meaning survives only in the regression lane.
+      if fm_backend_policy_legacy_lane; then
+        backend=tmux
+      else
+        fm_backend_policy_refuse "task $id endpoint record $meta (no backend= line)" "" \
+          "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
+        return 1
+      fi
+      ;;
     1) backend=$(fm_backend_meta_exact_value "$meta" backend) || backend= ;;
     *) backend= ;;
   esac
-  if [ -z "$backend" ] || ! fm_backend_is_known "$backend"; then
-    echo "REFUSED: task $id has a missing, ambiguous, or unknown backend identity; preserving task state." >&2
+  if [ -z "$backend" ]; then
+    echo "REFUSED: task $id has a missing or ambiguous backend identity; preserving task state." >&2
+    return 1
+  fi
+  if ! fm_backend_policy_permits "$backend"; then
+    fm_backend_policy_refuse "task $id endpoint record $meta (backend=$backend)" "$backend" \
+      "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
+    return 1
+  fi
+  if ! fm_backend_is_known "$backend"; then
+    echo "REFUSED: task $id has an unknown backend identity '$backend'; preserving task state." >&2
     return 1
   fi
   binding_count=$(grep -c '^endpoint_task_id=' "$meta" 2>/dev/null || true)
@@ -573,12 +682,25 @@ fm_backend_meta_for_selector() {  # <raw-target> <state-dir>
 fm_backend_of_selector() {  # <raw-target> <resolved-target> <state-dir>
   local raw=$1 resolved=$2 state=$3 meta
   meta=$(fm_backend_meta_for_selector "$raw" "$state" 2>/dev/null || true)
-  [ -n "$meta" ] && { fm_backend_of_meta "$meta"; return 0; }
+  if [ -n "$meta" ]; then
+    fm_backend_of_meta "$meta"
+    return $?
+  fi
   if [ -n "$resolved" ]; then
     meta=$(fm_backend_meta_for_window "$resolved" "$state" 2>/dev/null || true)
-    [ -n "$meta" ] && { fm_backend_of_meta "$meta"; return 0; }
+    if [ -n "$meta" ]; then
+      fm_backend_of_meta "$meta"
+      return $?
+    fi
   fi
-  printf 'tmux'
+  # An explicit target with no matching record is a Herdr "<session>:<pane-id>"
+  # endpoint in the active runtime; the adapter's own pane read proves it on
+  # use. The bare tmux assumption survives only in the regression lane.
+  if fm_backend_policy_legacy_lane; then
+    printf 'tmux'
+  else
+    printf '%s' "$FM_BACKEND_ACTIVE"
+  fi
 }
 
 fm_backend_expected_label_of_selector() {  # <raw-target> <state-dir>
@@ -677,6 +799,13 @@ fm_backend_resolve_selector() {  # <raw-target> <state-dir>
         [ -n "$window" ] || { echo "error: no backend target recorded in $meta" >&2; return 1; }
         printf '%s' "$window"
         return 0
+      fi
+      # Active runtime: a bare window name has no inventory to search - Herdr
+      # endpoints are "<session>:<pane-id>" and every task is reachable by id.
+      # The legacy tmux live-inventory search survives only in the regression lane.
+      if ! fm_backend_policy_legacy_lane; then
+        echo "error: target '$raw' has no task record in $state, and bare window names are not resolvable because Herdr is the sole supported runtime backend; pass a task id, fm-<id>, or an explicit <herdr-session>:<pane-id> target" >&2
+        return 1
       fi
       fm_backend_source tmux || return 1
       fm_backend_tmux_resolve_bare_selector "$raw"
@@ -833,6 +962,10 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # digests, the session-start fleet digest) do not re-derive it inline.
 fm_backend_target_exists() {  # <backend> <target> [expected-label]
   local backend=$1 target=$2 expected_label=${3:-} session pane
+  # The tmux arm below calls the tmux CLI directly rather than through
+  # fm_backend_source, so the invariant is enforced here explicitly: a retained
+  # legacy backend is refused before any runtime command runs.
+  fm_backend_validate "$backend" || return 1
   case "$backend" in
     tmux)
       tmux display-message -p -t "$target" '#{pane_id}' >/dev/null 2>&1

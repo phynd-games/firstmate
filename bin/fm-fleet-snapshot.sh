@@ -457,7 +457,10 @@ task_json_lines() {
       [ -n "$backend" ] || backend=unknown
       target=$(meta_value "$meta" remote_target)
     else
-      backend=$(fm_backend_of_meta "$meta")
+      # A legacy (absent or non-herdr) backend identity is displayed as recorded
+      # with a marker, never dispatched on (hard rule 6); the snapshot is a view.
+      backend=$(fm_backend_of_meta "$meta" 2>/dev/null) \
+        || backend="legacy:${backend:-unrecorded}"
       target=$(fm_backend_target_of_meta "$meta")
     fi
     status_log="$STATE/$id.status"

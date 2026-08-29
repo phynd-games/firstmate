@@ -40,7 +40,8 @@ fi
 
 T=$(fm_backend_resolve_selector "$RAW_TARGET" "$STATE")
 
-BACKEND=$(fm_backend_of_selector "$RAW_TARGET" "$T" "$STATE")
+# A legacy (absent or non-herdr) record is refused here by name and never read.
+BACKEND=$(fm_backend_of_selector "$RAW_TARGET" "$T" "$STATE") || exit 1
 EXPECTED_LABEL=$(fm_backend_expected_label_of_selector "$RAW_TARGET" "$STATE")
 
 fm_backend_capture "$BACKEND" "$T" "$N" "$EXPECTED_LABEL"
