@@ -451,6 +451,17 @@ test_a_bare_output_filename_is_published_in_the_current_directory() {
   pass "a bare output filename is published in the current directory"
 }
 
+test_an_absolute_output_outside_the_home_is_refused() {
+  local home out status=0 target
+  home=$(make_home absolute-output)
+  target="$TMP_ROOT/absolute-output.html"
+  out=$(run_dash "$home" build --out "$target" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "an absolute output outside the home was accepted"
+  assert_contains "$out" "safe directory" "the absolute output refusal was unclear"
+  [ ! -e "$target" ] || fail "the page escaped to an absolute path outside the home"
+  pass "an absolute output outside the home is refused before publication"
+}
+
 test_a_symlinked_output_parent_is_refused() {
   local home out status=0
   home=$(make_home symlink-output)
@@ -478,6 +489,17 @@ test_a_symlinked_evidence_root_is_refused_before_reading_it() {
   assert_contains "$out" "unsafe evidence root" "the symlinked root refusal was unclear"
   [ ! -e "$outside/.wake-queue" ] || fail "the dashboard wrote through a symlinked state root"
   pass "a symlinked evidence root is refused before any outside read or write"
+}
+
+test_a_symlinked_task_metadata_is_not_silently_dropped() {
+  local home outside out
+  home=$(make_home unsafe-meta)
+  outside="$TMP_ROOT/unsafe-meta-outside"
+  printf 'kind=ship\n' > "$outside"
+  ln -s "$outside" "$home/state/unsafe.meta"
+  out=$(run_dash "$home" json 2>&1) && fail "unsafe task metadata was silently dropped: $out"
+  assert_contains "$out" "unsafe task metadata" "unsafe task metadata was not disclosed"
+  pass "unsafe task metadata blocks the canonical snapshot instead of disappearing"
 }
 
 test_a_symlinked_watcher_heartbeat_is_not_reported_as_healthy() {
@@ -535,6 +557,19 @@ PY
   pass "the initial serve build is bounded before the dashboard binds"
 }
 
+test_direct_json_build_is_bounded() {
+  local home out real_jq
+  home=$(make_home bounded-direct-build)
+  real_jq=$(command -v jq)
+  printf '#!/usr/bin/env bash\nsleep 5\nexec %q "$@"\n' "$real_jq" > "$home/fakebin/jq"
+  chmod +x "$home/fakebin/jq"
+  SECONDS=0
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_DASHBOARD_BUILD_TIMEOUT=1 \
+    "$DASH" json 2>&1) && fail "an unbounded direct build was reported as successful: $out"
+  [ "$SECONDS" -lt 6 ] || fail "a direct dashboard build exceeded its bound: ${SECONDS}s"
+  pass "a direct dashboard JSON build is bounded"
+}
+
 test_path_is_stable_and_inside_the_home
 test_the_payload_embeds_the_canonical_snapshot_unchanged
 test_a_worker_carries_its_recorded_model_and_effort
@@ -559,8 +594,11 @@ test_the_dashboard_refuses_when_the_fleet_snapshot_fails
 test_the_dashboard_refuses_an_invalid_bound_or_port
 test_render_refuses_an_incomplete_dashboard_document
 test_a_bare_output_filename_is_published_in_the_current_directory
+test_an_absolute_output_outside_the_home_is_refused
 test_a_symlinked_output_parent_is_refused
 test_a_symlinked_evidence_root_is_refused_before_reading_it
+test_a_symlinked_task_metadata_is_not_silently_dropped
 test_a_symlinked_watcher_heartbeat_is_not_reported_as_healthy
 test_a_herdr_backed_snapshot_times_out_its_local_probe
 test_initial_serve_build_is_bounded_before_binding
+test_direct_json_build_is_bounded

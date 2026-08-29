@@ -411,6 +411,18 @@ test_a_symlinked_state_boundary_is_refused_without_outside_writes() {
   pass "a symlinked startup state boundary is refused before outside writes"
 }
 
+test_a_symlinked_start_lock_is_refused() {
+  local home target out
+  home=$(make_home symlink-lock)
+  target="$home/state/lock-target"
+  mkdir -p "$target"
+  ln -s "$target" "$home/state/.dashboard-start.lock"
+  out=$(start "$home" "$(free_port)" ensure 2>&1) && fail "a symlinked startup lock was accepted: $out"
+  assert_contains "$out" "DASHBOARD_BLOCKED" "the symlinked startup lock refusal was unclear"
+  [ ! -e "$home/state/.dashboard-owner" ] || fail "a symlinked startup lock allowed owner publication"
+  pass "a symlinked startup lock is refused before lifecycle state is written"
+}
+
 test_failed_cleanup_is_quarantined_before_retry() {
   local home port out
   home=$(make_home cleanup-quarantine)
@@ -490,6 +502,7 @@ test_no_url_is_printed_when_readiness_cannot_be_proven
 test_a_missing_runtime_blocks_instead_of_guessing
 test_a_hung_herdr_call_is_bounded_and_blocks
 test_a_symlinked_state_boundary_is_refused_without_outside_writes
+test_a_symlinked_start_lock_is_refused
 test_failed_cleanup_is_quarantined_before_retry
 test_no_free_port_blocks_without_a_url
 test_status_reports_without_changing_anything

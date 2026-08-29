@@ -263,6 +263,48 @@ snapshot_local_file_safe() {  # <path>
   return 0
 }
 
+snapshot_local_root_safe() {  # <path>
+  local path=$1 anchor parent resolved
+  SNAPSHOT_FILE_REASON=
+  [ -L "$path" ] && {
+    SNAPSHOT_FILE_REASON='refused: the root is a symlink'
+    return 1
+  }
+  if [ -e "$path" ]; then
+    [ -d "$path" ] || {
+      SNAPSHOT_FILE_REASON='refused: the root is not a directory'
+      return 1
+    }
+    anchor=$path
+  else
+    anchor=$path
+    while [ ! -e "$anchor" ] && [ ! -L "$anchor" ]; do
+      case "$anchor" in
+        ''|/) SNAPSHOT_FILE_REASON='refused: the root could not be resolved'; return 1 ;;
+      esac
+      parent=${anchor%/*}
+      [ -n "$parent" ] || parent=/
+      anchor=$parent
+    done
+  fi
+  [ ! -L "$anchor" ] || {
+    SNAPSHOT_FILE_REASON='refused: an ancestor of the root is a symlink'
+    return 1
+  }
+  [ -d "$anchor" ] || {
+    SNAPSHOT_FILE_REASON='refused: the containing path is not a directory'
+    return 1
+  }
+  resolved=$(cd "$anchor" 2>/dev/null && pwd -P) || {
+    SNAPSHOT_FILE_REASON='refused: the root could not be resolved'
+    return 1
+  }
+  case "$resolved" in
+    "$SNAPSHOT_HOME_REAL"|"$SNAPSHOT_HOME_REAL"/*) return 0 ;;
+    *) SNAPSHOT_FILE_REASON='refused: the root resolves outside this home'; return 1 ;;
+  esac
+}
+
 path_present_json() {  # <path>
   local present=0
   if [ "$LOCAL_ONLY" -eq 1 ]; then
@@ -273,6 +315,15 @@ path_present_json() {  # <path>
   jq -n --arg path "$1" --argjson present "$(bool_json "$present")" \
     '{path:$path,present:$present}'
 }
+
+if [ "$LOCAL_ONLY" -eq 1 ]; then
+  for snapshot_root in "$STATE" "$DATA" "$CONFIG" "$PROJECTS"; do
+    snapshot_local_root_safe "$snapshot_root" || {
+      echo "fm-fleet-snapshot: unsafe local-only root $snapshot_root: $SNAPSHOT_FILE_REASON" >&2
+      exit 1
+    }
+  done
+fi
 
 meta_value() {  # <meta-file> <key>
   fm_meta_get "$1" "$2"
@@ -526,6 +577,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
 }
 
 task_json_lines() {
+  set -o pipefail
   local meta id kind harness model effort mode yolo project worktree home projects spawn_gen backend target status_log report_path
   local remote_host remote_root remote_state remote_rc remote_home_present remote_unavailable remote_reason
   local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
@@ -533,8 +585,11 @@ task_json_lines() {
   local open_decisions_tsv open_decisions_json
 
   for meta in "$STATE"/*.meta; do
-    [ -e "$meta" ] || continue
-    [ "$LOCAL_ONLY" -eq 0 ] || snapshot_local_file_safe "$meta" || continue
+    [ -e "$meta" ] || [ -L "$meta" ] || continue
+    if [ "$LOCAL_ONLY" -eq 1 ] && ! snapshot_local_file_safe "$meta"; then
+      echo "fm-fleet-snapshot: unsafe task metadata $meta: $SNAPSHOT_FILE_REASON" >&2
+      return 1
+    fi
     id=$(basename "$meta" .meta)
     kind=$(meta_value "$meta" kind)
     [ -n "$kind" ] || kind=ship

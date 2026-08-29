@@ -44,7 +44,10 @@ payload() {
                   available: true, reason: null, records: []},
         tasks: [],
         scout_reports: [],
-        main_inventory: {valid: true, reason: null, orphan_in_flight: []}
+        main_inventory: {valid: true, reason: null, orphan_in_flight: []},
+        secondmate_current: {records: [], total: 0, shown: 0, truncated: 0},
+        secondmate_landed: {records: [], truncated: [], unreadable: [], partial: []},
+        secondmate_guidance: {note: ""}
       },
       supervision: {
         model: "autoarm", healthy: true, reason: "ok",

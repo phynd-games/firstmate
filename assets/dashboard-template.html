@@ -453,7 +453,7 @@ __FM_DASHBOARD_DATA__
         && (o[k] === null || typeof o[k] === t);
     }
     function pathRef(v) {
-      return obj(v) && nullable(v, "path", "string") && field(v, "present", "boolean");
+      return obj(v) && nullable(v, "path", "string") && nullable(v, "present", "boolean");
     }
     function decision(v) {
       return field(v, "key", "string") && field(v, "verb", "string")
@@ -526,6 +526,31 @@ __FM_DASHBOARD_DATA__
         && nullable(v, "kind", "string") && nullable(v, "key", "string")
         && field(v, "payload", "string") && field(v, "malformed", "boolean");
     }
+    function evidence(v) { return obj(v); }
+    function secondmate(v) {
+      return field(v, "id", "string") && nullable(v, "home", "string")
+        && nullable(v, "host", "string") && field(v, "remote", "boolean")
+        && nullable(v, "spawn_gen", "string") && nullable(v, "registered", "boolean")
+        && obj(v.current) && field(v.current, "state", "string")
+        && nullable(v.current, "reason", "string") && obj(v.provenance)
+        && field(v.provenance, "selected", "string")
+        && field(v.provenance, "parent_event_role", "string") && obj(v.freshness)
+        && field(v.freshness, "status", "string")
+        && field(v.freshness, "observed_at", "string")
+        && nullable(v.freshness, "age_seconds", "number")
+        && Array.isArray(v.active_children) && v.active_children.every(evidence)
+        && Array.isArray(v.decisions_open) && v.decisions_open.every(evidence)
+        && Array.isArray(v.holds) && v.holds.every(evidence)
+        && Array.isArray(v.queued) && v.queued.every(evidence)
+        && Array.isArray(v.landed) && v.landed.every(evidence)
+        && Array.isArray(v.endpoints) && v.endpoints.every(evidence)
+        && obj(v.counts) && field(v.counts, "active_children", "number")
+        && field(v.counts, "decisions_open", "number") && field(v.counts, "holds", "number")
+        && field(v.counts, "queued", "number") && field(v.counts, "landed", "number")
+        && field(v.counts, "endpoints", "number") && Array.isArray(v.omitted)
+        && v.omitted.every(evidence) && obj(v.parent_event) && obj(v.terminal_evidence)
+        && field(v, "contradiction", "boolean");
+    }
     return field(d, "generated", "string") && field(d, "fm_home", "string")
       && obj(s) && s.schema === "fm-fleet-snapshot.v1" && field(s, "generated", "string")
       && obj(s.roots) && field(s.roots, "state", "string") && field(s.roots, "data", "string")
@@ -539,6 +564,20 @@ __FM_DASHBOARD_DATA__
       && field(s, "main_inventory", "object") && field(s.main_inventory, "valid", "boolean")
       && nullable(s.main_inventory, "reason", "string") && Array.isArray(s.main_inventory.orphan_in_flight)
       && s.main_inventory.orphan_in_flight.every(function (x) { return typeof x === "string"; })
+      && obj(s.secondmate_current) && typeof s.secondmate_current.total === "number"
+      && typeof s.secondmate_current.shown === "number"
+      && typeof s.secondmate_current.truncated === "number"
+      && Array.isArray(s.secondmate_current.records)
+      && s.secondmate_current.records.every(secondmate)
+      && obj(s.secondmate_landed) && Array.isArray(s.secondmate_landed.records)
+      && s.secondmate_landed.records.every(evidence)
+      && Array.isArray(s.secondmate_landed.truncated)
+      && s.secondmate_landed.truncated.every(function (x) { return typeof x === "string"; })
+      && Array.isArray(s.secondmate_landed.unreadable)
+      && s.secondmate_landed.unreadable.every(function (x) { return typeof x === "string"; })
+      && Array.isArray(s.secondmate_landed.partial)
+      && s.secondmate_landed.partial.every(function (x) { return typeof x === "string"; })
+      && obj(s.secondmate_guidance) && field(s.secondmate_guidance, "note", "string")
       && obj(sup) && field(sup, "model", "string") && field(sup, "healthy", "boolean")
       && field(sup, "reason", "string") && field(sup, "beacon_present", "boolean")
       && nullable(sup, "beacon_age_seconds", "number") && field(sup, "away_mode", "boolean")
@@ -574,6 +613,10 @@ __FM_DASHBOARD_DATA__
   var snapshot = data.snapshot;
   var tasks = arr(snapshot.tasks);
   var backlog = arr(snapshot.backlog && snapshot.backlog.records);
+  var secondmateCurrent = snapshot.secondmate_current || {};
+  var secondmateRecords = arr(secondmateCurrent.records);
+  var secondmateLanded = snapshot.secondmate_landed || {};
+  var secondmateGuidance = snapshot.secondmate_guidance || {};
   var events = arr(data.events);
   var reports = (data.reports && typeof data.reports === "object") ? data.reports : { records: [] };
   var supervision = (data.supervision && typeof data.supervision === "object") ? data.supervision : {};
@@ -882,6 +925,76 @@ __FM_DASHBOARD_DATA__
     emptyRow(emptyCard, "No worker is running in this home.");
   }
   tasks.forEach(function (t) { renderWorker(workerGrid, t); });
+
+  tab("secondmates", "Child activity", secondmateRecords.length);
+  var secSecondmates = section("secondmates", "Secondmate child activity",
+    "Current, queued, held, endpoint, and landed evidence from each registered home.");
+  var secondmateGrid = add(secSecondmates, el("div", "cp-grid"));
+  function renderEvidenceList(parent, label, records) {
+    var fold = add(parent, el("details", "cp-fold"));
+    txt(fold, "summary", "", label + " (" + records.length + ")");
+    var body = add(fold, el("div", "cp-events"));
+    if (!records.length) {
+      emptyRow(body, "None recorded.");
+      return;
+    }
+    records.forEach(function (record) {
+      txt(body, "div", "cp-event__note", JSON.stringify(record));
+    });
+  }
+  if (!secondmateRecords.length) {
+    var noSecondmates = add(secondmateGrid, el("div", "fm-card"));
+    emptyRow(noSecondmates, "No registered secondmate activity is recorded.");
+  }
+  secondmateRecords.forEach(function (mate) {
+    var card = add(secondmateGrid, el("div", "fm-card cp-worker"));
+    var pad = add(card, el("div", "cp-worker__pad"));
+    var top = add(pad, el("div", "cp-worker__top"));
+    var idBox = add(top, el("div"));
+    txt(idBox, "div", "cp-worker__id", dash(mate.id));
+    txt(idBox, "div", "cp-worker__repo", dash(mate.home));
+    var badges = add(top, el("div", "cp-worker__badges"));
+    badge(badges, dash(mate.current.state), stateTone(mate.current.state));
+    if (mate.contradiction) badge(badges, "contradiction", "danger");
+    var kv = add(pad, el("div", "cp-kv"));
+    kvRow(kv, "provenance", dash(mate.provenance.selected) + " / "
+      + dash(mate.provenance.trust || mate.provenance.parent_event_role), true);
+    kvRow(kv, "freshness", dash(mate.freshness.status) + " / "
+      + dash(mate.freshness.observed_at), true);
+    kvRow(kv, "current", dash(mate.current.state) + " - " + dash(mate.current.reason));
+    kvRow(kv, "counts", Object.keys(mate.counts).map(function (key) {
+      return key + " " + num(mate.counts[key]);
+    }).join(" - "));
+    renderEvidenceList(pad, "Active children", mate.active_children);
+    renderEvidenceList(pad, "Open decisions", mate.decisions_open);
+    renderEvidenceList(pad, "Holds", mate.holds);
+    renderEvidenceList(pad, "Queued", mate.queued);
+    renderEvidenceList(pad, "Landed", mate.landed);
+    renderEvidenceList(pad, "Endpoints", mate.endpoints);
+    if (mate.omitted.length) {
+      txt(pad, "div", "cp-event__note cp-event__note--empty",
+        "Omitted by source bounds: " + mate.omitted.map(function (item) {
+          return JSON.stringify(item);
+        }).join("; "));
+    }
+  });
+  var landedCard = add(secSecondmates, el("div", "fm-card"));
+  txt(landedCard, "div", "fm-sign", "Landed roll-up");
+  renderEvidenceList(landedCard, "All landed records", arr(secondmateLanded.records));
+  if (arr(secondmateLanded.truncated).length) {
+    txt(landedCard, "div", "cp-event__note", "Landed evidence truncated for: "
+      + arr(secondmateLanded.truncated).join(", "));
+  }
+  if (arr(secondmateLanded.unreadable).length) {
+    txt(landedCard, "div", "cp-event__note", "Unreadable homes: "
+      + arr(secondmateLanded.unreadable).join(", "));
+  }
+  if (arr(secondmateLanded.partial).length) {
+    txt(landedCard, "div", "cp-event__note", "Partial homes: "
+      + arr(secondmateLanded.partial).join(", "));
+  }
+  txt(secSecondmates, "div", "cp-event__note cp-event__note--empty",
+    "Guidance: " + dash(secondmateGuidance.note));
 
   function renderWorker(parent, t) {
     var card = add(parent, el("div", "fm-card cp-worker"));
@@ -1240,6 +1353,17 @@ __FM_DASHBOARD_DATA__
     ["startup memory captain-shared.md", (snapshot.roots && snapshot.roots.data) + "/captain-shared.md"],
     ["startup memory learnings.md", (snapshot.roots && snapshot.roots.data) + "/learnings.md"]
   ];
+  function usageSourcePath(path) {
+    var value = String(path || "");
+    if (value.charAt(0) === "/") return value;
+    return String(data.fm_home || "").replace(/\/$/, "") + "/" + value.replace(/^\.\//, "");
+  }
+  tasks.forEach(function (t) {
+    if (t.paths && t.paths.meta) sources.push(["metadata " + t.id, t.paths.meta.path]);
+  });
+  arr(budget.files).forEach(function (f) {
+    sources.push(["usage " + f.file, usageSourcePath(f.file)]);
+  });
   events.forEach(function (e) { sources.push(["events " + e.task_id, e.path]); });
   arr(reports.records).forEach(function (r) { sources.push(["report " + r.id, r.path]); });
   tab("sources", "Sources", sources.length);

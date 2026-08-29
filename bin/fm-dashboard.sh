@@ -161,7 +161,7 @@ payload_is_valid() {  # <payload-file>
     def has_nullable($o; $k; $t): ($o | has($k)) and (($o[$k] == null) or ($o[$k] | type == $t));
     def path_ref($v):
       ($v | type == "object" and has_nullable(.; "path"; "string")
-       and has_type(.; "present"; "boolean"));
+       and has_nullable(.; "present"; "boolean"));
     def decision:
       type == "object" and has_type(.; "key"; "string") and has_type(.; "verb"; "string")
       and has_type(.; "summary"; "string");
@@ -232,6 +232,32 @@ payload_is_valid() {  # <payload-file>
       type == "object" and has_nullable(.; "epoch"; "number") and has_nullable(.; "seq"; "string")
       and has_nullable(.; "kind"; "string") and has_nullable(.; "key"; "string")
       and has_type(.; "payload"; "string") and has_type(.; "malformed"; "boolean");
+    def evidence: type == "object";
+    def secondmate:
+      type == "object" and has_type(.; "id"; "string") and has_nullable(.; "home"; "string")
+      and has_nullable(.; "host"; "string") and has_type(.; "remote"; "boolean")
+      and has_nullable(.; "spawn_gen"; "string") and has_nullable(.; "registered"; "boolean")
+      and has_type(.; "current"; "object") and has_type(.current; "state"; "string")
+      and has_nullable(.current; "reason"; "string") and has_type(.; "provenance"; "object")
+      and has_type(.provenance; "selected"; "string")
+      and has_type(.provenance; "parent_event_role"; "string")
+      and has_type(.; "freshness"; "object") and has_type(.freshness; "status"; "string")
+      and has_type(.freshness; "observed_at"; "string")
+      and has_nullable(.freshness; "age_seconds"; "number")
+      and has_type(.; "active_children"; "array") and all(.active_children[]; evidence)
+      and has_type(.; "decisions_open"; "array") and all(.decisions_open[]; evidence)
+      and has_type(.; "holds"; "array") and all(.holds[]; evidence)
+      and has_type(.; "queued"; "array") and all(.queued[]; evidence)
+      and has_type(.; "landed"; "array") and all(.landed[]; evidence)
+      and has_type(.; "endpoints"; "array") and all(.endpoints[]; evidence)
+      and has_type(.; "counts"; "object")
+      and has_type(.counts; "active_children"; "number")
+      and has_type(.counts; "decisions_open"; "number")
+      and has_type(.counts; "holds"; "number") and has_type(.counts; "queued"; "number")
+      and has_type(.counts; "landed"; "number") and has_type(.counts; "endpoints"; "number")
+      and has_type(.; "omitted"; "array") and all(.omitted[]; evidence)
+      and has_type(.; "parent_event"; "object") and has_type(.; "terminal_evidence"; "object")
+      and has_type(.; "contradiction"; "boolean");
     def snapshot:
       type == "object" and .schema == "fm-fleet-snapshot.v1"
       and has_type(.; "generated"; "string") and has_type(.; "fm_home"; "string")
@@ -248,7 +274,24 @@ payload_is_valid() {  # <payload-file>
       and has_type(.; "main_inventory"; "object") and has_type(.main_inventory; "valid"; "boolean")
       and has_nullable(.main_inventory; "reason"; "string")
       and has_type(.main_inventory; "orphan_in_flight"; "array")
-      and all(.main_inventory.orphan_in_flight[]; type == "string");
+      and all(.main_inventory.orphan_in_flight[]; type == "string")
+      and has_type(.; "secondmate_current"; "object")
+      and has_type(.secondmate_current; "total"; "number")
+      and has_type(.secondmate_current; "shown"; "number")
+      and has_type(.secondmate_current; "truncated"; "number")
+      and has_type(.secondmate_current; "records"; "array")
+      and all(.secondmate_current.records[]; secondmate)
+      and has_type(.; "secondmate_landed"; "object")
+      and has_type(.secondmate_landed; "records"; "array")
+      and all(.secondmate_landed.records[]; evidence)
+      and has_type(.secondmate_landed; "truncated"; "array")
+      and all(.secondmate_landed.truncated[]; type == "string")
+      and has_type(.secondmate_landed; "unreadable"; "array")
+      and all(.secondmate_landed.unreadable[]; type == "string")
+      and has_type(.secondmate_landed; "partial"; "array")
+      and all(.secondmate_landed.partial[]; type == "string")
+      and has_type(.; "secondmate_guidance"; "object")
+      and has_type(.secondmate_guidance; "note"; "string");
     (.schema == "fm-dashboard.v1")
     and ((.generated | type) == "string")
     and ((.fm_home | type) == "string")
@@ -671,8 +714,16 @@ compose() {  # -> the fm-dashboard.v1 payload on stdout
 
 command_json() {
   [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  if [ "${FM_DASHBOARD_BUILD_INNER:-0}" != 1 ]; then
+    export FM_DASHBOARD_BUILD_INNER=1
+    fm_run_timed "$FM_DASHBOARD_BUILD_TIMEOUT" "$SCRIPT_DIR/fm-dashboard.sh" json
+    return $?
+  fi
   make_tmp
-  compose
+  compose > "$TMP/payload.json" || exit 1
+  payload_is_valid "$TMP/payload.json" \
+    || fail "the composed dashboard payload is incomplete or unusable"
+  cat "$TMP/payload.json"
 }
 
 build_html() {  # <out-file>
@@ -687,7 +738,12 @@ output_parent_safe() {  # <out-file>
   local out=$1 parent candidate anchor resolved home_real
   OUTPUT_PARENT_REASON=
   parent=${out%/*}
-  [ "$parent" = "$out" ] && parent=.
+  if [ "$parent" = "$out" ]; then
+    parent=.
+  elif [ -z "$parent" ]; then
+    OUTPUT_PARENT_REASON='the parent path could not be resolved'
+    return 1
+  fi
   case "$parent" in
     /*) candidate=$parent ;;
     *) candidate="$PWD/$parent" ;;
@@ -783,6 +839,11 @@ inject_payload() {  # <payload-file> <out-file>
 }
 
 command_build() {
+  if [ "${FM_DASHBOARD_BUILD_INNER:-0}" != 1 ]; then
+    export FM_DASHBOARD_BUILD_INNER=1
+    fm_run_timed "$FM_DASHBOARD_BUILD_TIMEOUT" "$SCRIPT_DIR/fm-dashboard.sh" build "$@"
+    return $?
+  fi
   local out
   out=$(dashboard_path)
   while [ "$#" -gt 0 ]; do
@@ -797,6 +858,11 @@ command_build() {
 }
 
 command_render() {
+  if [ "${FM_DASHBOARD_BUILD_INNER:-0}" != 1 ]; then
+    export FM_DASHBOARD_BUILD_INNER=1
+    fm_run_timed "$FM_DASHBOARD_BUILD_TIMEOUT" "$SCRIPT_DIR/fm-dashboard.sh" render "$@"
+    return $?
+  fi
   local data=${1-} out
   out=$(dashboard_path)
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
@@ -856,6 +922,7 @@ command_serve() {
   # Prove the page builds before binding a port, so serve fails closed at
   # startup rather than answering its first request with an error.
   export FM_DASHBOARD_BUILD_TIMEOUT
+  export FM_DASHBOARD_BUILD_INNER=1
   fm_run_timed "$FM_DASHBOARD_BUILD_TIMEOUT" "$SCRIPT_DIR/fm-dashboard.sh" \
     build --out - >/dev/null \
     || fail "the initial dashboard build exceeded its ${FM_DASHBOARD_BUILD_TIMEOUT}s bound"
@@ -874,7 +941,8 @@ from socketserver import ThreadingMixIn
 SELF = os.environ["FM_DASHBOARD_SELF"]
 PORT = int(os.environ["FM_DASHBOARD_BIND_PORT"])
 HTTP_IO_TIMEOUT = 5
-MAX_CLIENTS = 8
+MAX_CLIENTS = 9
+MAX_PAGE_BUILDS = 8
 # Only the DIGEST of the owner token reaches this process, and only the digest
 # is ever published. A caller proves it started this exact server for this
 # exact home by hashing the token it holds privately and comparing; the token
@@ -896,6 +964,18 @@ class Handler(BaseHTTPRequestHandler):
     def setup(self):
         super().setup()
         self.connection.settimeout(HTTP_IO_TIMEOUT)
+        self.client_slot_released = False
+
+    def release_client_slot(self):
+        if not self.client_slot_released:
+            self.server.client_slots.release()
+            self.client_slot_released = True
+
+    def finish(self):
+        try:
+            super().finish()
+        finally:
+            self.release_client_slot()
 
     def _send(self, code, body, ctype):
         self.send_response(code)
@@ -912,11 +992,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         # One page and one liveness probe. Every other path is refused: this
         # server never serves a file from disk and has no directory route.
+        self.release_client_slot()
         if self.path == "/healthz":
             self._send(200, HEALTH, "application/json; charset=utf-8")
             return
         if self.path not in ("/", "/index.html"):
             self._send(404, b"not found\n", "text/plain; charset=utf-8")
+            return
+        if not self.server.page_slots.acquire(False):
+            self._send(503, b"dashboard rebuild capacity is busy\n", "text/plain; charset=utf-8")
             return
         try:
             with self.server.build_lock:
@@ -924,11 +1008,14 @@ class Handler(BaseHTTPRequestHandler):
                     [SELF, "build", "--out", "-"],
                     capture_output=True,
                     timeout=int(os.environ["FM_DASHBOARD_BUILD_TIMEOUT"]),
+                    env=dict(os.environ, FM_DASHBOARD_BUILD_INNER="1"),
                 )
         except Exception as exc:  # noqa: BLE001 - reported, never swallowed
             self._send(500, ("the dashboard could not be rebuilt: %s\n" % exc).encode(),
                        "text/plain; charset=utf-8")
             return
+        finally:
+            self.server.page_slots.release()
         if done.returncode != 0 or not done.stdout:
             detail = done.stderr.decode("utf-8", "replace").strip() or "no detail"
             self._send(500, ("the dashboard could not be rebuilt: %s\n" % detail).encode(),
@@ -948,6 +1035,7 @@ class BoundedHTTPServer(ThreadingMixIn, HTTPServer):
         super().__init__(server_address, handler_class)
         self.build_lock = threading.Lock()
         self.client_slots = threading.BoundedSemaphore(MAX_CLIENTS)
+        self.page_slots = threading.BoundedSemaphore(MAX_PAGE_BUILDS)
 
     def process_request(self, request, client_address):
         if not self.client_slots.acquire(False):
@@ -960,10 +1048,7 @@ class BoundedHTTPServer(ThreadingMixIn, HTTPServer):
             raise
 
     def process_request_thread(self, request, client_address):
-        try:
-            super().process_request_thread(request, client_address)
-        finally:
-            self.client_slots.release()
+        super().process_request_thread(request, client_address)
 
 
 # Loopback only. Binding 127.0.0.1 rather than 0.0.0.0 is the whole

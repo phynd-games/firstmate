@@ -95,6 +95,11 @@ STARTUP_TRANSACTION_PORT=
 STARTUP_TRANSACTION_DIGEST=
 START_CLEANUP_STATUS=clean
 STARTED_LABEL=
+STARTED_WORKSPACE_LABEL=
+STARTED_TAB_LABEL=
+STARTED_PANE_PARENT_WORKSPACE=
+STARTED_PANE_PARENT_TAB=
+STARTED_STAGE=
 
 STARTUP_PATH_REASON=
 STARTUP_HOME_REAL=$(cd "$FM_HOME" 2>/dev/null && pwd -P || printf '%s' "$FM_HOME")
@@ -125,17 +130,42 @@ startup_path_safe() {  # <path>
 }
 
 startup_state_boundary_safe() {
+  local lock_target lock_pid lock_prefix
   startup_path_safe "$STATE" || return 1
   startup_path_safe "$RECORD" || return 1
   startup_path_safe "$LOG" || return 1
   if [ -L "$LOCK" ]; then
-    local lock_target
-    lock_target=$(readlink "$LOCK" 2>/dev/null) || return 1
+    lock_prefix=$(cd "${LOCK%/*}" 2>/dev/null && pwd -P)/${LOCK##*/} || {
+      STARTUP_PATH_REASON='the lock directory could not be resolved'
+      return 1
+    }
+    lock_target=$(readlink "$LOCK" 2>/dev/null) || {
+      STARTUP_PATH_REASON='the lock symlink could not be read'
+      return 1
+    }
     case "$lock_target" in
       /*) ;;
       *) lock_target="${LOCK%/*}/$lock_target" ;;
     esac
+    case "$lock_target" in
+      "$lock_prefix".owner.*) ;;
+      *)
+        STARTUP_PATH_REASON='the lock symlink targets an unexpected path'
+        return 1
+        ;;
+    esac
     startup_path_safe "$lock_target" || return 1
+    [ -d "$lock_target" ] && [ ! -L "$lock_target" ] && [ -f "$lock_target/pid" ] || {
+      STARTUP_PATH_REASON='the lock symlink does not name a lock owner'
+      return 1
+    }
+    lock_pid=$(cat "$lock_target/pid" 2>/dev/null || true)
+    case "$lock_pid" in
+      ''|*[!0-9]*)
+        STARTUP_PATH_REASON='the lock owner is invalid'
+        return 1
+        ;;
+    esac
   else
     startup_path_safe "$LOCK" || return 1
   fi
@@ -309,17 +339,23 @@ digest_of() {  # <token>
 # home answers", so it is the only thing allowed to authorize printing a URL.
 
 probe_health() {  # <port> -> health JSON on stdout
-  local port=$1
+  local port=$1 body
   if command -v curl >/dev/null 2>&1; then
-    curl --noproxy '*' -fsS --max-time 2 "http://127.0.0.1:$port/healthz" 2>/dev/null
-    return $?
+    body=$(set -o pipefail; curl --noproxy '*' -fsS --max-time 2 --max-filesize 8192 \
+      "http://127.0.0.1:$port/healthz" 2>/dev/null | head -c 8193) || return 1
+    [ "${#body}" -le 8192 ] || return 1
+    printf '%s' "$body"
+    return 0
   fi
   python3 - "$port" <<'PY' 2>/dev/null
 import sys, urllib.request
 try:
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open("http://127.0.0.1:%s/healthz" % sys.argv[1], timeout=2) as r:
-        sys.stdout.write(r.read(8192).decode("utf-8", "replace"))
+        body = r.read(8193)
+        if len(body) > 8192:
+            sys.exit(1)
+        sys.stdout.write(body.decode("utf-8", "replace"))
 except Exception:
     sys.exit(1)
 PY
@@ -394,10 +430,18 @@ startup_journal_write() {
   {
     printf 'schema=fm-dashboard-startup.v1\n'
     printf 'label=%s\n' "${STARTED_LABEL:-}"
+    printf 'workspace_label=%s\n' "${STARTED_WORKSPACE_LABEL:-}"
+    printf 'tab_label=%s\n' "${STARTED_TAB_LABEL:-}"
+    printf 'pane_parent_workspace=%s\n' "${STARTED_PANE_PARENT_WORKSPACE:-}"
+    printf 'pane_parent_tab=%s\n' "${STARTED_PANE_PARENT_TAB:-}"
+    printf 'stage=%s\n' "${STARTED_STAGE:-}"
     printf 'session=%s\n' "${STARTED_SESSION:-}"
     printf 'workspace=%s\n' "${STARTED_WORKSPACE:-}"
+    printf 'workspace_id_state=%s\n' "$( [ -n "${STARTED_WORKSPACE:-}" ] && printf known || printf unknown )"
     printf 'tab=%s\n' "${STARTED_TAB:-}"
+    printf 'tab_id_state=%s\n' "$( [ -n "${STARTED_TAB:-}" ] && printf known || printf unknown )"
     printf 'pane=%s\n' "${STARTED_PANE:-}"
+    printf 'pane_id_state=%s\n' "$( [ -n "${STARTED_PANE:-}" ] && printf known || printf unknown )"
     printf 'port=%s\n' "${STARTUP_TRANSACTION_PORT:-}"
     printf 'digest=%s\n' "${STARTUP_TRANSACTION_DIGEST:-}"
   } > "$tmp" || { rm -f -- "$tmp"; return 1; }
@@ -408,6 +452,11 @@ startup_journal_write() {
 startup_journal_load() {
   [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || return 0
   [ -n "${STARTED_LABEL:-}" ] || STARTED_LABEL=$(startup_journal_get label)
+  [ -n "${STARTED_WORKSPACE_LABEL:-}" ] || STARTED_WORKSPACE_LABEL=$(startup_journal_get workspace_label)
+  [ -n "${STARTED_TAB_LABEL:-}" ] || STARTED_TAB_LABEL=$(startup_journal_get tab_label)
+  [ -n "${STARTED_PANE_PARENT_WORKSPACE:-}" ] || STARTED_PANE_PARENT_WORKSPACE=$(startup_journal_get pane_parent_workspace)
+  [ -n "${STARTED_PANE_PARENT_TAB:-}" ] || STARTED_PANE_PARENT_TAB=$(startup_journal_get pane_parent_tab)
+  [ -n "${STARTED_STAGE:-}" ] || STARTED_STAGE=$(startup_journal_get stage)
   [ -n "${STARTED_SESSION:-}" ] || STARTED_SESSION=$(startup_journal_get session)
   [ -n "${STARTED_WORKSPACE:-}" ] || STARTED_WORKSPACE=$(startup_journal_get workspace)
   [ -n "${STARTED_TAB:-}" ] || STARTED_TAB=$(startup_journal_get tab)
@@ -424,10 +473,18 @@ quarantine_write() {  # <reason> <session> <workspace> <tab> <pane> <port> <dige
     printf 'schema=fm-dashboard-quarantine.v1\n'
     printf 'reason=%s\n' "$1"
     printf 'label=%s\n' "${STARTED_LABEL:-}"
+    printf 'workspace_label=%s\n' "${STARTED_WORKSPACE_LABEL:-}"
+    printf 'tab_label=%s\n' "${STARTED_TAB_LABEL:-}"
+    printf 'pane_parent_workspace=%s\n' "${STARTED_PANE_PARENT_WORKSPACE:-}"
+    printf 'pane_parent_tab=%s\n' "${STARTED_PANE_PARENT_TAB:-}"
+    printf 'stage=%s\n' "${STARTED_STAGE:-}"
     printf 'session=%s\n' "$2"
-    printf 'workspace=%s\n' "$3"
-    printf 'tab=%s\n' "$4"
-    printf 'pane=%s\n' "$5"
+    printf 'workspace=%s\n' "${3:-unknown}"
+    printf 'workspace_id_state=%s\n' "$( [ -n "$3" ] && printf known || printf unknown )"
+    printf 'tab=%s\n' "${4:-unknown}"
+    printf 'tab_id_state=%s\n' "$( [ -n "$4" ] && printf known || printf unknown )"
+    printf 'pane=%s\n' "${5:-unknown}"
+    printf 'pane_id_state=%s\n' "$( [ -n "$5" ] && printf known || printf unknown )"
     printf 'port=%s\n' "$6"
     printf 'digest=%s\n' "$7"
     printf 'created=%s\n' "$(now_epoch)"
@@ -611,6 +668,11 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
   label="firstmate-dashboard-$digest"
   STARTED_SESSION=$(herdr_session)
   STARTED_LABEL=$label
+  STARTED_WORKSPACE_LABEL=$label
+  STARTED_TAB_LABEL=$label
+  STARTED_PANE_PARENT_WORKSPACE=
+  STARTED_PANE_PARENT_TAB=
+  STARTED_STAGE=workspace-list
   STARTED_WORKSPACE=; STARTED_TAB=; STARTED_PANE=
   startup_journal_write || return 1
   # Reuse the session's first workspace when it has one, so a normal firstmate
@@ -619,20 +681,29 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
   out=$(herdr_cli workspace list 2>/dev/null) || return 1
   ws=$(printf '%s' "$out" | jq -r '.result.workspaces[0].workspace_id // empty' 2>/dev/null)
   if [ -z "$ws" ]; then
+    STARTED_STAGE=workspace-create
+    startup_journal_write || return 1
     out=$(herdr_cli workspace create --cwd "$FM_HOME" --label "$label" --no-focus 2>/dev/null) || :
     ws=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
     [ -n "$ws" ] || ws=$(recover_workspace "$label") || return 1
   fi
   STARTED_WORKSPACE=$ws
+  STARTED_STAGE=tab-create
+  STARTED_PANE_PARENT_WORKSPACE=$ws
   startup_journal_write || return 1
   out=$(herdr_cli tab create --workspace "$ws" --cwd "$FM_HOME" \
     --label "$label" --no-focus 2>/dev/null) || :
   STARTED_TAB=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   STARTED_PANE=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
+  STARTED_PANE_PARENT_TAB=${STARTED_TAB:-}
+  STARTED_STAGE=tab-response
   startup_journal_write || return 1
   [ -n "$STARTED_TAB" ] || STARTED_TAB=$(recover_tab "$ws" "$label") || return 1
+  STARTED_PANE_PARENT_TAB=$STARTED_TAB
+  STARTED_STAGE=pane-response
   startup_journal_write || return 1
   [ -n "$STARTED_PANE" ] || STARTED_PANE=$(recover_pane "$ws" "$STARTED_TAB") || return 1
+  STARTED_STAGE=pane-run
   startup_journal_write || return 1
   # `env` carries this home explicitly: the pane inherits the Herdr server's
   # environment, not this shell's, so an inherited FM_HOME cannot be assumed.
@@ -646,7 +717,8 @@ await_ready() {  # <port> <digest> <session> <workspace> <tab> <pane>
   local port=$1 digest=$2 session=$3 workspace=$4 tab=$5 pane=$6
   local tries=$FM_DASHBOARD_READY_TRIES health pane_status
   while [ "$tries" -gt 0 ]; do
-    if health=$(probe_health "$port") && health_is_ours "$health" "$digest"; then
+    if health=$(probe_health "$port") && health_is_ours "$health" "$digest" \
+      && [ "$(pane_state "$pane" "$session" "$workspace" "$tab")" = open ]; then
       return 0
     fi
     # A pane that has already gone means the server exited; stop polling a
@@ -692,7 +764,7 @@ command_ensure() {
   if ! fm_lock_try_acquire "$LOCK" >/dev/null 2>&1; then
     # Another start is already running. Wait for it, then report ITS result
     # rather than racing it into a second server.
-    local waited=0
+    local waited=0 lock_acquired=0
     while [ "$waited" -lt "$FM_DASHBOARD_LOCK_WAIT" ]; do
       sleep 1
       waited=$((waited + 1))
@@ -701,9 +773,12 @@ command_ensure() {
         report_url reused "$ADOPTED_PORT"
         return 0
       fi
-      fm_lock_try_acquire "$LOCK" >/dev/null 2>&1 && break
+      if fm_lock_try_acquire "$LOCK" >/dev/null 2>&1; then
+        lock_acquired=1
+        break
+      fi
     done
-    if [ "$waited" -ge "$FM_DASHBOARD_LOCK_WAIT" ]; then
+    if [ "$lock_acquired" -ne 1 ]; then
       blocked "another dashboard startup held the lock for ${FM_DASHBOARD_LOCK_WAIT}s without publishing a URL"
       return 1
     fi
