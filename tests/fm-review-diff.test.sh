@@ -131,6 +131,8 @@ test_pr_meta_fetches_pull_head_without_recorded_sha() {
     "pr-fetch: review evidence omitted exact base SHA"
   assert_contains "$out" "diff head: $PR_SHA ($PR_SHA)" \
     "pr-fetch: review evidence omitted exact fetched PR head SHA"
+  assert_contains "$out" "diff merge-base: $base_sha" \
+    "pr-fetch: review evidence omitted exact merge-base SHA"
   assert_contains "$out" '+pr-fixed' "pr-fetch: diff should use fetched PR head"
   assert_not_contains "$out" 'stale-local' "pr-fetch: diff must not use the stale local branch"
   assert_not_contains "$(cat "$case_dir/stderr")" 'warning: PR head unavailable' \

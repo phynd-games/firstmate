@@ -24,9 +24,9 @@ A structurally valid file, schema, prompt envelope, digest match, or clean self-
 Resolve target base independently for this task.
 Use the exact captain-approved or task-approved base when instructions name one, and otherwise use the freshly fetched remote default branch for a remote-backed project or the current local default branch for local-only work.
 Never replace an explicitly named base with an untouched default branch or an inferred merge base.
-Record target repository, base ref, full base SHA, full head SHA, and whether tracked or untracked changes remain.
+Record target repository, base ref, full base SHA, full head SHA, full merge-base SHA, and whether tracked or untracked changes remain.
 Use `bin/fm-review-diff.sh` from the Firstmate substrate root when its recorded task route represents the accepted target base.
-Its output identifies exact base and head SHAs and presents the complete target diff.
+Its output identifies exact base, head, and merge-base SHAs and presents the complete target diff.
 When task instructions name another base, fetch and pin that ref before editing, then review the complete diff from that pinned SHA through current head.
 Inspect every changed file, not only latest commit or files mentioned in task instructions.
 Repeat complete review after every self-review fix and record final head SHA.
@@ -55,7 +55,7 @@ Create parent directory if needed, but write no other file outside task worktree
 Use this section order:
 
 1. `Findings` with severity, `path:line`, evidence, consequence, and required fix for each issue.
-2. `Target-project diff evidence` with exact base/head refs, SHAs, changed-file inventory, and clean-tree status.
+2. `Target-project diff evidence` with exact base/head refs, base/head/merge-base SHAs, changed-file inventory, and clean-tree status.
 3. `Firstmate substrate diff evidence` with exact base/head SHAs, changed-file inventory, or explicit no-diff evidence.
 4. `Surface review` covering every required review surface and naming inspected files and consumers.
 5. `Verification` with exact commands and results.

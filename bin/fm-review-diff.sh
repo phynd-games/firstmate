@@ -10,8 +10,9 @@
 # only a fallback when fetch fails (stale recorded SHAs must never win over a
 # reachable remote PR head). If neither PR head can be resolved, fall back to
 # the local branch with a warning. Without pr=, compare the local branch.
-# Output always pins and prints full base and compare SHAs before diffing those
-# immutable commit identities, so a review report can retain exact evidence.
+# Output always pins and prints full base, compare, and merge-base SHAs before
+# diffing the immutable merge-base and compare identities, so a review report
+# can retain exact evidence for the complete PR-shaped diff.
 # Usage: fm-review-diff.sh <task-id> [--stat]
 #   --stat prints only the stat summary; default prints stat summary plus full diff.
 set -eu
@@ -146,16 +147,18 @@ fi
 
 BASE_SHA=$(git -C "$WT" rev-parse --verify "$BASE^{commit}" 2>/dev/null) || { echo "error: base $BASE does not exist in $WT" >&2; exit 1; }
 COMPARE_SHA=$(git -C "$WT" rev-parse --verify "$COMPARE_REF^{commit}" 2>/dev/null) || { echo "error: compare ref $COMPARE_REF does not resolve in $WT" >&2; exit 1; }
+MERGE_BASE_SHA=$(git -C "$WT" merge-base "$BASE_SHA" "$COMPARE_SHA" 2>/dev/null) || { echo "error: base $BASE_SHA and head $COMPARE_SHA have no merge base" >&2; exit 1; }
 
 echo "diff base: $BASE ($BASE_SHA)"
 echo "diff head: $COMPARE_REF ($COMPARE_SHA)"
-if git -C "$WT" diff --quiet "$BASE_SHA...$COMPARE_SHA" --; then
-  echo "no changes vs $BASE_SHA"
+echo "diff merge-base: $MERGE_BASE_SHA"
+if git -C "$WT" diff --quiet "$MERGE_BASE_SHA..$COMPARE_SHA" --; then
+  echo "no changes vs $MERGE_BASE_SHA"
   exit 0
 fi
 
-git -C "$WT" diff --stat "$BASE_SHA...$COMPARE_SHA" --
+git -C "$WT" diff --stat "$MERGE_BASE_SHA..$COMPARE_SHA" --
 if ! "$STAT_ONLY"; then
   echo
-  git -C "$WT" diff "$BASE_SHA...$COMPARE_SHA" --
+  git -C "$WT" diff "$MERGE_BASE_SHA..$COMPARE_SHA" --
 fi
