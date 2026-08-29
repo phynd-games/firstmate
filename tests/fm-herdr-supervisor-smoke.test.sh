@@ -17,36 +17,52 @@
 # the HOSTING and CONTINUITY contract, and driving a real watcher would mutate
 # a real home's supervision state.
 #
-# STATUS: NOT YET VERIFIED. This is committed as the intended live contract, but
-# it has not completed a green run, and it is gated OFF by default for two
-# reasons.
+# The lab contract owns every lifecycle action here: a named non-default
+# fm-lab-* session, provisioned and torn down only through bin/fm-herdr-lab.sh,
+# with its fleet-state tripwire proving the captain's default session never
+# changed.
 #
-# 1. It needs a Herdr-lab brief. Running it starts a real Herdr server, creates
-#    workspaces and panes, and stops and deletes a session. That is exactly the
-#    lifecycle class `bin/fm-brief.sh --herdr-lab` exists to authorize, and the
-#    brief this file was written under did not carry that guard.
-# 2. It has an unresolved hang. On herdr 0.8.2 the first `ensure` blocks with no
-#    output. Read-only session-scoped calls return promptly, so the block is in
-#    the shared server-start path (`fm_backend_herdr_server_ensure`, which
-#    backgrounds `herdr server` for a not-yet-running named session) when that
-#    call sits inside a caller's command substitution. That is pre-existing
-#    shared-adapter behavior, not something this task changed, and diagnosing it
-#    means driving more real Herdr lifecycle.
+# It PROVISIONS the lab server through fm_herdr_lab_provision before the
+# supervisor runs. That is deliberate and it is also what the supervisor
+# requires: bin/fm-herdr-supervisor.sh never starts a Herdr server, because
+# `ensure` is invoked inside a command substitution on the session-start path
+# and backgrounding a long-lived server from there wedges the caller. An earlier
+# version of this suite only called fm_herdr_lab_prepare, left the supervisor to
+# start its own server, and hung for exactly that reason.
 #
-# Set FM_HERDR_SUPERVISOR_SMOKE=1 to run it, and only from a brief that
-# authorizes Herdr lifecycle work. Its family is `real-herdr-gated`, so it is
-# already excluded from every portable CI lane.
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
+# A live failure is worth its evidence: this is the only suite that can show
+# what the real pane actually did, and reconstructing it by hand costs a full
+# provision cycle.
+dump_diagnostics() {
+  [ -n "${SCRATCH:-}" ] || return 0
+  printf -- '--- binding record ---\n' >&2
+  cat "$SCRATCH/home/state/.herdr-supervisor" 2>&1 >&2 || true
+  printf -- '--- live record ---\n' >&2
+  cat "$SCRATCH/home/state/.herdr-supervisor-live" 2>&1 >&2 || printf '(absent)\n' >&2
+  printf -- '--- ledger ---\n' >&2
+  tr '\t' ' ' < "$SCRATCH/home/state/.herdr-supervisor.log" >&2 2>/dev/null || true
+  printf -- '--- alarm ---\n' >&2
+  cat "$SCRATCH/home/state/.herdr-supervisor-alarm" 2>&1 >&2 || printf '(none)\n' >&2
+  printf -- '--- supervisor pane ---\n' >&2
+  local ws pane
+  ws=$(fm_herdr_lab_cli "$SESSION" workspace list 2>/dev/null \
+    | jq -r '.result.workspaces[]? | select(.label|test("supervisor")) | .workspace_id' | head -1)
+  if [ -n "$ws" ]; then
+    pane=$(fm_herdr_lab_cli "$SESSION" pane list --workspace "$ws" 2>/dev/null \
+      | jq -r '.result.panes[]?.pane_id' | head -1)
+    [ -z "$pane" ] || fm_herdr_lab_cli "$SESSION" pane read "$pane" >&2 2>&1 || true
+  else
+    printf '(no supervisor workspace)\n' >&2
+  fi
+}
+
+fail() { printf 'not ok - %s\n' "$1" >&2; dump_diagnostics; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 
-[ "${FM_HERDR_SUPERVISOR_SMOKE:-0}" = 1 ] || {
-  echo "skip: set FM_HERDR_SUPERVISOR_SMOKE=1 to run this real-Herdr smoke (see the header: it needs a --herdr-lab brief and has an unresolved server-start hang)"
-  exit 0
-}
 command -v herdr >/dev/null 2>&1 || { echo "skip: herdr not found"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; exit 0; }
 
@@ -57,18 +73,28 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the her
 # from the terminal that launched this suite must not follow it into the lab.
 herdr_forget_inherited_pane
 
-SESSION="fm-lab-supervisor-smoke-$$"
+SESSION=$(fm_herdr_lab_name supsmoke)
 export HERDR_SESSION="$SESSION"
 SCRATCH=
 cleanup_all() {
+  local loop_pid
   if [ -n "$SCRATCH" ] && [ -f "$SCRATCH/home/state/.herdr-supervisor" ]; then
     run_supervisor retire --reason "smoke cleanup" >/dev/null 2>&1 || true
   fi
-  [ -n "$SCRATCH" ] && rm -rf "$SCRATCH"
-  herdr_safe_stop_and_delete "$SESSION"
+  # Retire clears the record, which the loop notices on its next pass, but it
+  # may still be mid-cycle; wait it out before deleting the tree it writes into.
+  if [ -n "$SCRATCH" ] && [ -f "$SCRATCH/home/state/.herdr-supervisor-live" ]; then
+    loop_pid=$(grep -m1 '^loop_pid=' "$SCRATCH/home/state/.herdr-supervisor-live" 2>/dev/null | sed 's/^loop_pid=//')
+    if [ -n "$loop_pid" ]; then
+      kill -TERM "$loop_pid" 2>/dev/null || true
+      wait_until 5 sh -c "! kill -0 $loop_pid 2>/dev/null" || true
+    fi
+  fi
+  [ -n "$SCRATCH" ] && rm -rf "$SCRATCH" 2>/dev/null
+  fm_herdr_lab_teardown "$SESSION" >/dev/null 2>&1 || true
 }
 trap cleanup_all EXIT
-fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
+fm_herdr_lab_provision "$SESSION" || fail "could not provision the isolated Herdr lab session"
 
 SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/fm-herdr-supervisor-smoke.XXXXXX") || exit 1
 HOME_DIR="$SCRATCH/home"
@@ -79,11 +105,16 @@ printf 'window=%s:fm-smoke\n' "$SESSION" > "$HOME_DIR/state/smoke.meta"
 
 # A scripted arm that counts invocations and returns one actionable reason,
 # exactly like a real watcher cycle closing on a wake.
-cat > "$SCRATCH/arm.sh" <<'ARM'
+# The counter path is baked in, not read from the environment: `herdr pane run`
+# starts the loop in a pane shell whose environment comes from Herdr, so an
+# env-var dependency here would silently break the arm inside the pane while
+# working perfectly when run by hand.
+cat > "$SCRATCH/arm.sh" <<ARM
 #!/usr/bin/env bash
 set -u
-C="${FM_TEST_ARM_COUNT:?}"
-printf '%s\n' "$(( $(cat "$C" 2>/dev/null || echo 0) + 1 ))" > "$C"
+C="$SCRATCH/arm.count"
+printf '%s\n' "\$(( \$(cat "\$C" 2>/dev/null || echo 0) + 1 ))" > "\$C"
+sleep 0.3
 echo "signal: smoke"
 exit 0
 ARM
@@ -95,7 +126,6 @@ run_supervisor() {
   FM_STATE_OVERRIDE="$HOME_DIR/state" \
   FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
   FM_WATCH_ARM_SCRIPT="$SCRATCH/arm.sh" \
-  FM_TEST_ARM_COUNT="$SCRATCH/arm.count" \
   FM_SUPERVISION_MODEL=extension \
   FM_HERDR_SUPERVISOR_IDLE_INTERVAL=2 \
   FM_HERDR_SUPERVISOR_RETRY_BASE=1 \
@@ -106,6 +136,7 @@ run_supervisor() {
 record_field() { grep -m1 "^$1=" "$HOME_DIR/state/.herdr-supervisor" 2>/dev/null | sed "s/^$1=//"; }
 live_field() { grep -m1 "^$1=" "$HOME_DIR/state/.herdr-supervisor-live" 2>/dev/null | sed "s/^$1=//"; }
 arm_count() { cat "$SCRATCH/arm.count" 2>/dev/null || echo 0; }
+arm_count_at_least() { [ "$(arm_count)" -ge "$1" ]; }
 
 wait_until() {  # <seconds> <cmd...>
   local budget=$1 i=0
@@ -134,7 +165,7 @@ pass "the supervisor establishes in a real Herdr session"
 # --- 2. Herdr really tracks the supervisor process ---------------------------
 LOOP_PID=$(live_field loop_pid)
 [ -n "$LOOP_PID" ] || fail "no supervisor pid was published"
-TRACKED=$(herdr pane process-info --pane "$PANE" --session "$SESSION" 2>/dev/null \
+TRACKED=$(fm_herdr_lab_cli "$SESSION" pane process-info --pane "$PANE" 2>/dev/null \
   | jq -r '.result.process_info.shell_pid // empty')
 [ "$TRACKED" = "$LOOP_PID" ] \
   || fail "Herdr tracks pid '$TRACKED' in $PANE but the supervisor published $LOOP_PID"
@@ -143,7 +174,7 @@ pass "Herdr's own process tracking names the live supervisor in its pane"
 
 # --- 3. continuity: one establish keeps re-arming -----------------------------
 # The incident's signature was one cycle per hand-start with successor=none.
-wait_until 40 test "$(arm_count)" -ge 3 \
+wait_until 40 arm_count_at_least 3 \
   || fail "one establish produced only $(arm_count) arm cycles in a real pane; continuity is not restored"
 pass "one establish keeps re-arming the watcher inside its Herdr pane"
 
@@ -154,7 +185,7 @@ case "$out" in
   *) fail "a repeat ensure was not a no-op: $out" ;;
 esac
 [ "$(record_field generation)" = "$GEN" ] || fail "a repeat ensure minted a new generation"
-SUPERVISOR_PANES=$(herdr pane list --workspace "$WS" --session "$SESSION" 2>/dev/null \
+SUPERVISOR_PANES=$(fm_herdr_lab_cli "$SESSION" pane list --workspace "$WS" 2>/dev/null \
   | jq -r '[.result.panes[]?] | length')
 [ "$SUPERVISOR_PANES" = 1 ] \
   || fail "the supervisor workspace holds $SUPERVISOR_PANES panes; exactly one host is allowed"
@@ -177,7 +208,7 @@ case "$out" in
   *) fail "re-establish did not start a replacement: $out" ;;
 esac
 [ "$(record_field generation)" != "$GEN" ] || fail "re-establish reused the dead generation"
-wait_until 40 test "$(arm_count)" -gt "$((BEFORE + 1))" \
+wait_until 40 arm_count_at_least "$((BEFORE + 2))" \
   || fail "the replacement supervisor never resumed arming"
 pass "a killed supervisor is detected as unhealthy and a new generation takes over"
 
@@ -185,9 +216,11 @@ pass "a killed supervisor is detected as unhealthy and a new generation takes ov
 RETIRE_WS=$(record_field workspace)
 out=$(run_supervisor retire --reason "smoke" 2>&1) || fail "retire failed: $out"
 [ ! -e "$HOME_DIR/state/.herdr-supervisor" ] || fail "retire left the ownership record behind"
-wait_until 20 sh -c \
-  "! herdr workspace list --session '$SESSION' 2>/dev/null | jq -e --arg w '$RETIRE_WS' '[.result.workspaces[]? | select(.workspace_id == \$w)] | length == 1' >/dev/null" \
-  || fail "retire left its workspace $RETIRE_WS behind"
+workspace_gone() {
+  ! fm_herdr_lab_cli "$SESSION" workspace list 2>/dev/null \
+    | jq -e --arg w "$RETIRE_WS" '[.result.workspaces[]? | select(.workspace_id == $w)] | length == 1' >/dev/null 2>&1
+}
+wait_until 20 workspace_gone || fail "retire left its workspace $RETIRE_WS behind"
 pass "retire releases the record and its own Herdr workspace"
 
 echo "all fm-herdr-supervisor smoke checks passed"

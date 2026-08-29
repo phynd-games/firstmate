@@ -61,18 +61,12 @@ set -- "${args[@]:-}"
 
 sock=$(cat "$S/socket" 2>/dev/null || echo "$S/herdr.sock")
 
-case "${1:-}${2:+ $2}" in
-  "status --json")
-    printf '{"client":{"version":"0.8.2","protocol":16},"server":{"running":true}}\n'
-    exit 0
-    ;;
-  "session list")
-    ;;
-esac
-
 case "${1:-}" in
   status)
-    printf '{"client":{"version":"0.8.2","protocol":16},"server":{"running":true}}\n'
+    if [ -f "$S/hang" ]; then sleep 300; exit 0; fi
+    running=true
+    [ ! -f "$S/server-stopped" ] || running=false
+    printf '{"client":{"version":"0.8.2","protocol":16},"server":{"running":%s}}\n' "$running"
     exit 0
     ;;
   session)
@@ -506,6 +500,82 @@ assert_grep "wPART" "$HOME13B/state/.herdr-supervisor-alarm" \
 pass "a partial Herdr create response is refused and names its possible orphan"
 
 # =============================================================================
+# 13c. A Herdr session with no running server is refused loudly. The supervisor
+#      must never try to START one: `ensure` runs inside a command substitution
+#      on the session-start path, and backgrounding a long-lived server from
+#      there is what wedged the first live smoke. A dead server is also the one
+#      boundary this design says it cannot recover across, so it belongs in the
+#      alarm, not in a retry.
+# =============================================================================
+HOME13C=$(new_home no-server)
+make_arm_stub "$HOME13C/arm.sh" ok
+fm_write_meta "$HOME13C/state/noserver-task.meta" "window=firstmate:fm-noserver-task"
+: > "$HOME13C/fakestate/server-stopped"
+out=$(run_supervisor "$HOME13C" "$FAKEBIN" ensure 2>&1) && fail "a stopped Herdr server reported success"
+assert_contains "$out" "no running server" "the refusal names the missing Herdr server"
+assert_absent "$HOME13C/state/.herdr-supervisor" "a stopped server leaves no supervisor record"
+assert_present "$HOME13C/state/.herdr-supervisor-alarm" "a stopped server leaves a durable alarm"
+assert_no_grep "server" "$HOME13C/fakestate/calls.log" "the supervisor must never invoke a Herdr server command"
+pass "a Herdr session with no running server is refused loudly and starts no server"
+
+# =============================================================================
+# 13d. A Herdr CLI that never returns cannot wedge the caller. `ensure` is
+#      invoked inside a command substitution by bootstrap, so an unbounded
+#      adapter call would hang session start itself - strictly worse than the
+#      supervision lapse this exists to fix.
+# =============================================================================
+HOME13D=$(new_home hanging-cli)
+make_arm_stub "$HOME13D/arm.sh" ok
+fm_write_meta "$HOME13D/state/hang-task.meta" "window=firstmate:fm-hang-task"
+: > "$HOME13D/fakestate/hang"
+HANG_START=$(date +%s)
+out=$(FM_HERDR_SUPERVISOR_HERDR_TIMEOUT=3 run_supervisor "$HOME13D" "$FAKEBIN" ensure 2>&1) \
+  && fail "a hanging Herdr CLI reported success"
+HANG_ELAPSED=$(( $(date +%s) - HANG_START ))
+[ "$HANG_ELAPSED" -lt 30 ] \
+  || fail "a hanging Herdr CLI blocked ensure for ${HANG_ELAPSED}s; the bound did not hold"
+assert_contains "$out" "could not read herdr status" "the bound is reported as a status read failure"
+assert_present "$HOME13D/state/.herdr-supervisor-alarm" "a hanging Herdr CLI leaves a durable alarm"
+pass "a hanging Herdr CLI is bounded and can never wedge the caller"
+
+# =============================================================================
+# 13e. The pane command must stay SHORT and constant, with everything the loop
+#      needs in a launcher script.
+#
+#      `herdr pane run` types its command into the pane's shell, so it is bound
+#      by that terminal's line-length limit. A long FM_HOME pushed the inlined
+#      form past it: Herdr reported success, the pane silently ran a command
+#      truncated mid-argument, and the only symptom was a loop that never
+#      confirmed. Caught on the real-Herdr smoke, pinned here.
+# =============================================================================
+HOME13E=$(new_home "launcher-$(printf 'x%.0s' $(seq 1 60))")
+make_arm_stub "$HOME13E/arm.sh" ok
+fm_write_meta "$HOME13E/state/launch-task.meta" "window=firstmate:fm-launch-task"
+out=$(run_supervisor "$HOME13E" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "herdr-supervisor: started" "a long home path still establishes"
+PANE_CMD=$(tr '\037' ' ' < "$HOME13E/fakestate/calls.log" | grep 'pane run' | head -1)
+[ -n "$PANE_CMD" ] || fail "no pane run call was recorded"
+# The invariant is that the command carries ONE path and nothing else. The
+# inlined form repeated the home path four times and added every tuning value,
+# which is what pushed it past the limit; this must stay flat as tuning grows.
+[ "${#PANE_CMD}" -lt 400 ] \
+  || fail "the pane command is ${#PANE_CMD} chars; it must stay short enough to survive a terminal line limit"
+case "$PANE_CMD" in
+  *FM_HERDR_SUPERVISOR_RETRY_LIMIT*|*FM_CONFIG_OVERRIDE*|*FM_WATCH_ARM_SCRIPT*)
+    fail "the pane command inlines the loop environment; that is what got truncated in a real pane" ;;
+  *.herdr-supervisor-launch.sh*) ;;
+  *) fail "the pane command does not reference the launcher script" ;;
+esac
+assert_present "$HOME13E/state/.herdr-supervisor-launch.sh" "a launcher script carries the loop's environment"
+assert_grep "FM_STATE_OVERRIDE" "$HOME13E/state/.herdr-supervisor-launch.sh" \
+  "the launcher exports the state directory the pane shell cannot inherit"
+assert_grep "FM_WATCH_ARM_SCRIPT" "$HOME13E/state/.herdr-supervisor-launch.sh" \
+  "the launcher exports the arm script the pane shell cannot inherit"
+[ -x "$HOME13E/state/.herdr-supervisor-launch.sh" ] || fail "the launcher script is not executable"
+pass "the pane command stays short and the loop's environment travels in a launcher script"
+stop_loop "$HOME13E"
+
+# =============================================================================
 # 14. retire clears the record and closes exactly the workspace it created.
 # =============================================================================
 HOME14=$(new_home retire)
@@ -516,6 +586,7 @@ out=$(run_supervisor "$HOME14" "$FAKEBIN" retire --reason "test" 2>&1)
 assert_contains "$out" "retired" "retire reports the stand-down"
 assert_absent "$HOME14/state/.herdr-supervisor" "retire clears the ownership record"
 assert_absent "$HOME14/state/.herdr-supervisor-live" "retire clears the live record"
+assert_absent "$HOME14/state/.herdr-supervisor-launch.sh" "retire clears the launcher script"
 assert_grep 'wZ' "$HOME14/fakestate/closed-workspaces" "retire closed exactly its own workspace"
 [ "$(grep -c . "$HOME14/fakestate/closed-workspaces")" = 1 ] \
   || fail "retire closed more than the one workspace it owns"
