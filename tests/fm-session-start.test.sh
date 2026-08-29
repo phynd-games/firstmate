@@ -680,15 +680,17 @@ install_pi_watch_extension_fixture() {
 }
 
 write_pi_watch_loaded_marker() {
-  local home=$1 root=$2 pid=$3 version
+  local home=$1 root=$2 pid=$3 version identity
   version=$(hash_file_for_test "$root/.pi/extensions/fm-primary-pi-watch.ts")
-  printf '%s\n%s\n' "$version" "$pid" > "$home/state/.pi-watch-extension-loaded"
+  identity=$(fm_test_pid_identity "$pid") || return 1
+  printf '%s\n%s\n%s\n' "$version" "$pid" "$identity" > "$home/state/.pi-watch-extension-loaded"
 }
 
 write_pi_turnend_loaded_marker() {
-  local home=$1 root=$2 pid=$3 version
+  local home=$1 root=$2 pid=$3 version identity
   version=$(hash_file_for_test "$root/.pi/extensions/fm-primary-turnend-guard.ts")
-  printf '%s\n%s\n' "$version" "$pid" > "$home/state/.pi-turnend-extension-loaded"
+  identity=$(fm_test_pid_identity "$pid") || return 1
+  printf '%s\n%s\n%s\n' "$version" "$pid" "$identity" > "$home/state/.pi-turnend-extension-loaded"
 }
 
 write_pi_loaded_markers() {

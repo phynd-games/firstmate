@@ -97,7 +97,7 @@ run_guard_case_extension() {
 #   drift        "" | watch | turnend - write a marker whose version is not the
 #                current build, i.e. the session loaded an older extension
 record_pi_extension_session() {
-  local dir=$1 session_pid=${2:-} omit=${3:-} drift=${4:-} home root pair source marker version
+  local dir=$1 session_pid=${2:-} omit=${3:-} drift=${4:-} home root pair source marker version identity
   home=$(case_home "$dir")
   root=$(case_root "$dir")
   mkdir -p "$root/.pi/extensions"
@@ -114,9 +114,17 @@ record_pi_extension_session() {
       version=$(FM_STATE_OVERRIDE="$home/state" bash -c '. "$1"; fm_pi_extension_version "$2"' \
         _ "$ROOT/bin/fm-wake-lib.sh" "$root/.pi/extensions/$source") || return 1
     fi
-    printf '%s\n%s\n' "$version" "$session_pid" > "$home/state/$marker"
+    if [ -n "$session_pid" ]; then
+      identity=$(fm_test_pid_identity "$session_pid") || return 1
+    else
+      identity=
+    fi
+    printf '%s\n%s\n%s\n' "$version" "$session_pid" "$identity" > "$home/state/$marker"
   done
-  [ -n "$session_pid" ] && printf '%s\n' "$session_pid" > "$home/state/.lock"
+  if [ -n "$session_pid" ]; then
+    printf '%s\n' "$session_pid" > "$home/state/.lock"
+    fm_test_pid_identity "$session_pid" > "$home/state/.lock-pid-identity" || return 1
+  fi
   return 0
 }
 

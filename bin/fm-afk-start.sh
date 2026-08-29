@@ -82,18 +82,11 @@ daemon_lock_owner() {
 }
 
 daemon_pid_matches() {
-  local pid=$1 owner=$2 identity current command
+  local pid=$1 owner=$2 identity current
   identity=$(cat "$owner/pid-identity" 2>/dev/null || true)
-  if [ -n "$identity" ]; then
-    current=$(fm_pid_identity "$pid") || return 1
-    [ "$current" = "$identity" ]
-    return
-  fi
-  command=$(ps -p "$pid" -o command= 2>/dev/null || true)
-  case "$command" in
-    *"$FM_AFK_DAEMON"*|*"fm-supervise-daemon.sh"*) return 0 ;;
-  esac
-  return 1
+  [ -n "$identity" ] || return 1
+  current=$(fm_pid_identity "$pid") || return 1
+  [ "$current" = "$identity" ]
 }
 
 daemon_lock_pid() {

@@ -60,6 +60,8 @@ fi
 set -- "${args[@]:-}"
 
 sock=$(cat "$S/socket" 2>/dev/null || echo "$S/herdr.sock")
+mkdir -p "$(dirname "$sock")"
+[ -e "$sock" ] || : > "$sock"
 
 case "${1:-}" in
   status)
@@ -247,6 +249,20 @@ assert_absent "$HOME1/state/.herdr-supervisor" "non-herdr home writes no supervi
 pass "a non-herdr home is not eligible and creates nothing"
 
 # =============================================================================
+# 1b. Herdr calls reject an unbounded timeout before creating any ownership.
+# =============================================================================
+HOME1B=$(new_home invalid-timeout)
+make_arm_stub "$HOME1B/arm.sh" ok
+fm_write_meta "$HOME1B/state/timeout-task.meta" "window=firstmate:fm-timeout-task"
+out=$(FM_HERDR_SUPERVISOR_HERDR_TIMEOUT=0 run_supervisor "$HOME1B" "$FAKEBIN" ensure 2>&1) \
+  && fail "zero Herdr timeout was accepted"
+assert_contains "$out" "must be a positive integer" \
+  "zero Herdr timeout names the validation failure"
+assert_absent "$HOME1B/state/.herdr-supervisor" \
+  "zero Herdr timeout creates no supervisor record"
+pass "zero Herdr timeout is rejected before ownership"
+
+# =============================================================================
 # 2. A stale away marker alone does not own supervision.
 # =============================================================================
 HOME2=$(new_home afk)
@@ -299,6 +315,8 @@ for pair in "fm-primary-pi-watch.ts:.pi-watch-extension-loaded" \
   marker=${pair#*:}
   version=$(shasum -a 256 "$ROOT/.pi/extensions/$src" | awk '{print "sha256:" $1}')
   printf '%s\n%s\n' "$version" "$PI_OWNER_PID" > "$HOME3/state/$marker"
+  fm_test_pid_identity "$PI_OWNER_PID" >> "$HOME3/state/$marker" \
+    || fail "could not record the Pi extension marker identity"
 done
 out=$(run_supervisor "$HOME3" "$FAKEBIN" ensure 2>&1)
 kill "$PI_OWNER_PID" 2>/dev/null || true
@@ -309,8 +327,7 @@ assert_absent "$HOME3/state/.herdr-supervisor" "an extension-owned home hosts no
 pass "a loaded Pi extension is a provable owner and the supervisor stands down"
 
 # =============================================================================
-# 3b. A live process with a non-harness identity never proves Pi ownership,
-#     even when both markers and the session lock name its pid.
+# 3b. A marker without process-instance identity never proves Pi ownership.
 # =============================================================================
 HOME3B=$(new_home pi-reused-pid)
 make_arm_stub "$HOME3B/arm.sh" ok
@@ -471,9 +488,8 @@ pass "an unknown or contradictory Herdr pane is never healthy"
 stop_loop "$HOME9"
 
 # =============================================================================
-# 10. A Herdr server restart changes the session socket, and that is unhealthy.
-#     This is the boundary the docs promise no recovery across - it must be
-#     detected and reported, never silently treated as fine.
+# 10. A Herdr server restart changes the session socket and invalidates the
+#     old binding without authorizing close through the replacement server.
 # =============================================================================
 HOME10=$(new_home server-restart)
 make_arm_stub "$HOME10/arm.sh" ok
@@ -486,6 +502,21 @@ out=$(run_supervisor "$HOME10" "$FAKEBIN" status 2>&1)
 assert_contains "$out" "supervisor: unhealthy" "a replaced Herdr server is unhealthy"
 assert_contains "$out" "socket changed" "the unhealthy reason names the lost server"
 pass "a Herdr server restart is detected as a lost supervisor, not as healthy"
+old_socket_workspace_count=$(grep -c . "$HOME10/fakestate/closed-workspaces" 2>/dev/null || true)
+out=$(run_supervisor "$HOME10" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "started" "a changed Herdr server permits a fresh supervisor generation"
+quarantine_record=
+for candidate in "$HOME10"/state/.herdr-supervisor-quarantine.*; do
+  if [ -e "$candidate" ]; then
+    quarantine_record=$candidate
+    break
+  fi
+done
+[ -n "$quarantine_record" ] || fail "the replaced server left no quarantine evidence"
+new_socket_workspace_count=$(grep -c . "$HOME10/fakestate/closed-workspaces" 2>/dev/null || true)
+[ "$new_socket_workspace_count" = "$old_socket_workspace_count" ] \
+  || fail "server replacement closed a workspace through the new server"
+pass "server replacement quarantines old ownership before fresh establishment"
 stop_loop "$HOME10"
 
 # =============================================================================

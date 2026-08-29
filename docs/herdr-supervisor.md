@@ -76,7 +76,7 @@ Health is never inferred from a beacon alone, and never from a name.
 - The supervisor's own heartbeat is fresh within its grace, default 120 seconds.
   This beacon is separate from the watcher's and answers a different question: is the continuity owner alive.
 - The recorded process is alive, and its current `fm_pid_identity` equals the recorded one, so a recycled pid cannot pass.
-- The named Herdr session and its canonical socket still match the recorded ones.
+- The named Herdr session, canonical socket, and socket-instance identity still match the recorded ones.
 - `herdr pane get` returns the exact recorded pane in the exact recorded tab and workspace.
 - `herdr pane process-info` reports the recorded supervisor as the pane's tracked foreground process.
 
@@ -100,6 +100,7 @@ Recovery is bounded, idempotent, and generation-safe.
 | Supervisor wedged but alive | Its heartbeat goes stale and it reads unhealthy, even though the process and pane still check out |
 | Herdr pane closed or moved | The pane binding stops matching and it reads unhealthy |
 | Primary harness session replaced | Nothing happens; the supervisor is not bound to that process |
+| Herdr server or session replaced | The old binding is retained as generation-named quarantine evidence without closing through the new server; once the named server is available again, `ensure` can establish a fresh generation |
 | Duplicate arm | Only the generation the binding record names may arm; every other generation stands down |
 | Rapid repeated cycles | A floor delay plus one durable diagnostic, never a stop, because a busy fleet does produce fast cycles |
 | Herdr server not running | Refused with a durable diagnostic naming the missing server; no server is ever started from here |
@@ -144,7 +145,7 @@ Tuning environment variables, all optional, are named in the script header: hear
 
 All under `state/`, all private to the home.
 
-- `.herdr-supervisor` - the binding: generation, home, Herdr session and socket, workspace, tab, pane, and active or quarantine mode.
+- `.herdr-supervisor` - the binding: generation, home, Herdr session, canonical socket and socket-instance identity, workspace, tab, pane, and active or quarantine mode.
   Written only by `ensure` and `retire`.
 - `.herdr-supervisor-live` - the loop's own generation, pid, and process identity.
   Written only by the loop.
@@ -153,6 +154,7 @@ All under `state/`, all private to the home.
   It exists so the pane command can stay short; it is rewritten on every establish and removed on retire, and is never edited by hand.
 - `.herdr-supervisor-heartbeat` - the supervisor's liveness beacon, refreshed every pass and while the arm child is waiting.
 - `.herdr-supervisor-pending-cleanup` - an exact session, socket, workspace, tab, and pane receipt retained across uncertain establish or retirement cleanup.
+- `.herdr-supervisor-quarantine.<generation>` - an exact old binding retained when the recorded Herdr server or pane identity can no longer be proven safe to close.
 - `.herdr-supervisor-alarm` - the durable actionable diagnostic; present means an escalation is outstanding.
 - `.herdr-supervisor-emergency` - fallback evidence when alarm or queue persistence fails.
 - `.herdr-supervisor.log` - a bounded lifecycle ledger.
