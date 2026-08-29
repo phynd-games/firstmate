@@ -454,6 +454,16 @@ PY
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "arbitrary surface evidence left a runnable poll"
 
   write_self_review_report "$dir/home" task-a
+  sed -i.bak 's/^Authority: .*/Authority: reviewed; files=bin\/fm-pr-lib.sh; evidence=abcdefghijkl; consequence=abcdefghijkl; fix=abcdefghijkl/' "$report"
+  rm -f "$report.bak"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted filler surface evidence"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "filler surface evidence left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
   chmod 0600 "$report"
   run_check_entry "$dir" task-a https://github.com/o/r/pull/103 >/dev/null \
     || fail "PR-ready path rejected a valid durable self-review report"
@@ -490,6 +500,8 @@ test_direct_pr_creation_requires_self_review() {
   fm_write_meta "$dir/home/state/task-a.meta" \
     'window=firstmate:fm-task-a' "worktree=$dir/wt" 'review_base_ref=main' \
     "review_base_sha=$(git -C "$dir/wt" rev-parse HEAD)" 'kind=ship' 'mode=direct-PR'
+  git -C "$dir/wt" branch fm/task-a
+  git -C "$dir/wt" checkout -q fm/task-a
   report="$dir/home/data/task-a/pr-self-review.md"
   rm -f "$report"
   set +e
@@ -503,6 +515,13 @@ test_direct_pr_creation_requires_self_review() {
     || fail "direct PR creation rejected a valid self-review report"
   grep -qxF 'pr create --title accepted' "$dir/gh-axi.log" \
     || fail "direct PR creation did not forward arguments after validation"
+  set +e
+  run_create_entry "$dir" task-a --repo attacker/repo --title rejected > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "direct PR creation accepted a repository override"
+  [ "$(wc -l < "$dir/gh-axi.log" | tr -d '[:space:]')" = 1 ] \
+    || fail "direct PR creation invoked gh-axi after rejecting a repository override"
   pass "direct PR creation enforces self-review before gh-axi"
 }
 

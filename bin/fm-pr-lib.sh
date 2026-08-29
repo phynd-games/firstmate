@@ -506,6 +506,7 @@ fm_pr_self_review_report_valid() {
       if (parts[2] !~ /^files=[^;[:space:]][^;]*$/ || parts[2] !~ /[\/.]/) return 0
       for (i = 3; i <= 5; i++) {
         if (parts[i] !~ /^(evidence|consequence|fix)=[^;[:space:]][^;]*$/) return 0
+        if (parts[i] !~ /=[^;[:space:]][^;]*[[:space:]][^;[:space:]]/) return 0
         if (length(parts[i]) < 12 || parts[i] ~ /=(none|n\/a|x|todo|tbd)$/) return 0
       }
       return 1

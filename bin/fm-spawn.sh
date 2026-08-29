@@ -2389,7 +2389,7 @@ if [ "$KIND" = ship ]; then
 $REVIEW_BASE
 EOF
   fi
-  if [ "$REVIEW_BASE_DEFAULT" -eq 0 ]; then
+  if [ "$REVIEW_BASE_DEFAULT" -eq 0 ] && [ "$RELAUNCH" -eq 1 ]; then
     RESOLVED_REVIEW_BASE=$(git -C "$WT" rev-parse --verify "$REVIEW_BASE_REF^{commit}" 2>/dev/null) || {
       echo "error: task's approved target base is unavailable" >&2
       exit 1
