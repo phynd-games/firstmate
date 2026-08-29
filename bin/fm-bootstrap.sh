@@ -781,7 +781,13 @@ secondmate_liveness_one() {  # <meta> <id>
   fi
   target=$(fm_backend_target_of_meta "$meta")
   [ -n "$target" ] || target="$window"
-  agent_state=$(fm_backend_agent_state "$backend" "$target" 2>/dev/null) || agent_state=unreadable
+  agent_state=$(fm_backend_agent_state "$backend" "$target")
+  local agent_state_rc=$?
+  if [ "$agent_state_rc" -eq 2 ]; then
+    echo "SECONDMATE_LIVENESS: secondmate $id: skipped: Herdr capability is unavailable; respawn refused until Herdr passes its native capability check" >&2
+    return 0
+  fi
+  [ "$agent_state_rc" -eq 0 ] || agent_state=unreadable
   case "$harness" in
     claude|codex|opencode|pi|pi-signed|grok|kimi) ;;
     *)

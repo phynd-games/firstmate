@@ -824,7 +824,12 @@ for meta in "$STATE"/*.meta; do
       if fm_backend_target_exists "$backend" "${target:-$window}" "fm-$id"; then
         printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"
       else
-        printf 'endpoint: dead (backend=%s window=%s)\n' "$backend" "$window"
+        endpoint_rc=$?
+        if [ "$endpoint_rc" -eq 2 ]; then
+          printf 'endpoint: capability failure (backend=%s window=%s); repair Herdr and verify with herdr status --json\n' "$backend" "$window"
+        else
+          printf 'endpoint: dead (backend=%s window=%s)\n' "$backend" "$window"
+        fi
       fi
     else
       printf 'endpoint: legacy record, read-only (backend=%s window=%s); Herdr is the sole supported runtime backend - see docs/configuration.md "Legacy task records"\n' "${backend:-absent}" "$window"

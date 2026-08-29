@@ -414,7 +414,13 @@ fm_meta_get() {  # <meta-file> <key>
 # status and present the record as legacy instead of dispatching on it.
 # Regression lane only: absent means `tmux` (the pre-invariant contract).
 fm_backend_of_meta() {  # <meta-file>
-  local v
+  local v backend_count
+  backend_count=$(grep -c '^backend=' "$1" 2>/dev/null || true)
+  if ! fm_backend_policy_legacy_lane && [ "$backend_count" -gt 1 ]; then
+    fm_backend_policy_refuse "task record $1 (ambiguous duplicate backend identity)" "" \
+      "Retire or explicitly migrate this pre-invariant task record through docs/configuration.md \"Legacy task records\"."
+    return 1
+  fi
   v=$(fm_meta_get "$1" backend)
   if fm_backend_policy_legacy_lane; then
     printf '%s' "${v:-tmux}"
@@ -487,7 +493,7 @@ fm_backend_herdr_capability_check() {  # <origin>
   detail=$(printf '%s\n' "$detail" | sed -n '1p')
   fm_backend_policy_refuse "$origin" herdr \
     "The native Herdr capability check failed${detail:+: $detail} Upgrade or repair Herdr, then verify with 'herdr status --json'."
-  return 1
+  return 2
 }
 
 fm_backend_herdr_capability_preflight() {  # <origin>
@@ -710,22 +716,31 @@ fm_backend_of_selector() {  # <raw-target> <resolved-target> <state-dir>
   local raw=$1 resolved=$2 state=$3 meta
   meta=$(fm_backend_meta_for_selector "$raw" "$state" 2>/dev/null || true)
   if [ -n "$meta" ]; then
-    fm_backend_of_meta "$meta"
+    local backend
+    backend=$(fm_backend_of_meta "$meta") || return 1
+    [ "$backend" = "$FM_BACKEND_ACTIVE" ] || return 1
+    fm_backend_herdr_capability_preflight "selector backend for $raw" || return 2
+    printf '%s' "$backend"
     return $?
   fi
   if [ -n "$resolved" ]; then
     meta=$(fm_backend_meta_for_window "$resolved" "$state" 2>/dev/null || true)
     if [ -n "$meta" ]; then
-      fm_backend_of_meta "$meta"
+      local backend
+      backend=$(fm_backend_of_meta "$meta") || return 1
+      [ "$backend" = "$FM_BACKEND_ACTIVE" ] || return 1
+      fm_backend_herdr_capability_preflight "selector backend for $raw" || return 2
+      printf '%s' "$backend"
       return $?
     fi
   fi
   # An explicit target with no matching record is a Herdr "<session>:<pane-id>"
-  # endpoint in the active runtime; the adapter's own pane read proves it on
-  # use. The bare tmux assumption survives only in the regression lane.
+  # endpoint in the active runtime; the adapter's capability proof is required
+  # before the backend identity is returned.
   if fm_backend_policy_legacy_lane; then
     printf 'tmux'
   else
+    fm_backend_herdr_capability_preflight "selector backend for $raw" || return 2
     printf '%s' "$FM_BACKEND_ACTIVE"
   fi
 }
@@ -782,7 +797,7 @@ fm_backend_source() {  # <name> [origin]
       ;;
   esac
   if [ "$name" = herdr ]; then
-    fm_backend_herdr_capability_check "$origin" || return 1
+    fm_backend_herdr_capability_check "$origin" || return 2
   fi
 }
 
@@ -791,11 +806,8 @@ fm_backend_source() {  # <name> [origin]
 #   target with ":"   used as-is (the escape hatch for a window/pane outside
 #                      this firstmate home) - backend-independent, a literal string.
 #   exact task id      routed through <state-dir>/<id>.meta's backend target
-#                      (`window=` normally, `terminal=` for Orca) -
-#                      backend-independent, a stored value, NOT re-verified
-#                      against a live backend inventory (matches today's
-#                      behavior: tmux window names can be trusted from meta
-#                      without a live re-check).
+#                      (`window=` normally, `terminal=` for Orca), after the
+#                      active backend's native capability proof.
 #   "fm-<id>"          legacy task window label fallback routed through
 #                      <state-dir>/<id>.meta when no exact
 #                      <state-dir>/fm-<id>.meta exists.
@@ -804,8 +816,12 @@ fm_backend_source() {  # <name> [origin]
 #                      resolved by searching the legacy tmux live inventory.
 fm_backend_resolve_selector() {  # <raw-target> <state-dir>
   local raw=$1 state=$2 meta window id
+  local backend
   case "$raw" in
     *:*)
+      if ! fm_backend_policy_legacy_lane; then
+        fm_backend_herdr_capability_preflight "explicit endpoint resolution" || return 2
+      fi
       printf '%s' "$raw"
       return 0
       ;;
@@ -817,7 +833,9 @@ fm_backend_resolve_selector() {  # <raw-target> <state-dir>
     if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
       fm_backend_validate_remote_meta "$meta" "$id" || return 1
     else
-      fm_backend_of_meta "$meta" >/dev/null || return 1
+      backend=$(fm_backend_of_meta "$meta") || return 1
+      [ "$backend" = "$FM_BACKEND_ACTIVE" ] || return 1
+      fm_backend_herdr_capability_preflight "selector resolution for task $id" || return 2
     fi
     window=$(fm_backend_target_of_meta "$meta")
     [ -n "$window" ] || { echo "error: no backend target recorded in $meta" >&2; return 1; }
@@ -832,6 +850,9 @@ fm_backend_resolve_selector() {  # <raw-target> <state-dir>
     *)
       meta=$(fm_backend_meta_for_window "$raw" "$state" 2>/dev/null || true)
       if [ -n "$meta" ]; then
+        backend=$(fm_backend_of_meta "$meta") || return 1
+        [ "$backend" = "$FM_BACKEND_ACTIVE" ] || return 1
+        fm_backend_herdr_capability_preflight "selector resolution for task ${meta##*/}" || return 2
         window=$(fm_backend_target_of_meta "$meta")
         [ -n "$window" ] || { echo "error: no backend target recorded in $meta" >&2; return 1; }
         printf '%s' "$window"
@@ -952,9 +973,11 @@ fm_backend_worktree_path() {  # <backend> <worktree-id>
 fm_backend_busy_state() {  # <backend> <target>
   local backend=$1
   shift
-  if ! fm_backend_source "$backend"; then
+  fm_backend_source "$backend"
+  local source_rc=$?
+  if [ "$source_rc" -ne 0 ]; then
     fm_backend_policy_legacy_lane && { printf 'unknown'; return 0; }
-    return 1
+    return "$source_rc"
   fi
   case "$backend" in
     herdr) fm_backend_herdr_busy_state "$@" ;;
@@ -977,9 +1000,11 @@ fm_backend_busy_state() {  # <backend> <target>
 fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pending|pending-unproven|unknown
   local backend=$1
   shift
-  if ! fm_backend_source "$backend"; then
+  fm_backend_source "$backend"
+  local source_rc=$?
+  if [ "$source_rc" -ne 0 ]; then
     fm_backend_policy_legacy_lane && { printf 'unknown'; return 0; }
-    return 1
+    return "$source_rc"
   fi
   case "$backend" in
     tmux) fm_tmux_composer_state "$@" ;;
@@ -1014,7 +1039,7 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
       tmux display-message -p -t "$target" '#{pane_id}' >/dev/null 2>&1
       ;;
     herdr)
-      fm_backend_herdr_capability_preflight "target existence check" || return 1
+      fm_backend_herdr_capability_preflight "target existence check" || return 2
       session=${target%%:*}
       pane=${target#*:}
       [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
@@ -1063,9 +1088,11 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
 # do not support secondmate spawns.
 fm_backend_agent_state() {  # <backend> <target>
   local backend=$1 target=$2
-  if ! fm_backend_source "$backend"; then
+  fm_backend_source "$backend"
+  local source_rc=$?
+  if [ "$source_rc" -ne 0 ]; then
     fm_backend_policy_legacy_lane && { printf 'unverified'; return 0; }
-    return 1
+    return "$source_rc"
   fi
   case "$backend" in
     tmux) fm_backend_tmux_agent_state "$target" ;;
@@ -1078,8 +1105,10 @@ fm_backend_agent_state() {  # <backend> <target>
 # authoritatively missing endpoint is confidently not a live agent, while every
 # ambiguous, unreadable, or unverified result stays unknown.
 fm_backend_agent_alive() {  # <backend> <target>
-  local state
-  state=$(fm_backend_agent_state "$1" "$2") || return 1
+  local state state_rc
+  state=$(fm_backend_agent_state "$1" "$2")
+  state_rc=$?
+  [ "$state_rc" -eq 0 ] || return "$state_rc"
   case "$state" in
     alive) printf 'alive' ;;
     dead|missing) printf 'dead' ;;

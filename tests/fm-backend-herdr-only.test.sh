@@ -40,7 +40,8 @@ TMP_ROOT=$(fm_test_tmproot fm-backend-herdr-only)
 
 # Every marker the environment could contribute, stripped for every case.
 STRIP=(-u FM_BACKEND_LEGACY_TEST_LANE -u FM_BACKEND -u FM_BACKEND_TEST_HARNESS
-  -u FM_BACKEND_TEST_ROOT -u TMUX -u TMUX_PANE
+  -u FM_BACKEND_TEST_ROOT -u FM_BACKEND_TEST_OWNER_PID -u FM_BACKEND_TEST_OWNER_IDENTITY
+  -u TMUX -u TMUX_PANE
   -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID
   -u HERDR_SOCKET_PATH -u HERDR_SESSION -u CMUX_WORKSPACE_ID -u CMUX_SURFACE_ID
   -u __CFBundleIdentifier -u FM_SUPERVISOR_BACKEND -u FM_SUPERVISOR_TARGET)
@@ -104,7 +105,8 @@ test_known_sets_are_herdr_only() {
   run_capture active-tmux lib_probe -- 'fm_backend_validate_spawn tmux'
   assert_refusal "active public spawn validation for tmux" "resolves 'tmux'"
   out=$(env "${STRIP[@]}" FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_HARNESS=1 \
-    FM_BACKEND_TEST_ROOT="$ROOT" FM_CONFIG_OVERRIDE="$lane_config" \
+    FM_BACKEND_TEST_ROOT="$ROOT" FM_BACKEND_TEST_OWNER_PID="$$" \
+    FM_BACKEND_TEST_OWNER_IDENTITY="$FM_TEST_OWNER_IDENTITY" FM_CONFIG_OVERRIDE="$lane_config" \
     bash -c '. "$1/bin/fm-backend.sh"; fm_backend_name' _ "$ROOT")
   [ "$out" = tmux ] || fail "repository test process must retain the legacy public selection behavior, got $out"
   pass "public backend selection accepts Herdr and refuses retained adapters outside the regression lane"
@@ -248,7 +250,7 @@ test_selector_resolution_has_no_tmux_fallback() {
   [ "$RC" -ne 0 ] && [ -z "$OUT" ] || fail "a bare window name must not resolve: rc=$RC out=$OUT"
   assert_contains "$ERR" "bare window names are not resolvable because Herdr is the sole supported runtime backend" "bare selector diagnostic"
   [ ! -s "$log" ] || fail "bare selector resolution must not search a tmux inventory"
-  run_capture explicit lib_probe -- "fm_backend_of_selector 'default:w9:p9' 'default:w9:p9' '$state'"
+  run_capture explicit lib_probe -- "fm_backend_herdr_version_check() { return 0; }; fm_backend_of_selector 'default:w9:p9' 'default:w9:p9' '$state'"
   [ "$RC" -eq 0 ] && [ "$OUT" = herdr ] || fail "an explicit unmatched target is a herdr endpoint, got rc=$RC out=$OUT"
   pass "selector resolution: bare names refuse without a tmux inventory search, explicit targets are herdr"
 }
@@ -539,6 +541,9 @@ test_legacy_metadata_is_refused_read_only() {
   done
   run_capture resolve-tmux lib_probe -- "fm_backend_resolve_selector 'legacytmux' '$state'"
   assert_refusal "fm_backend_resolve_selector backend=tmux" "backend=tmux" 'docs/configuration.md "Legacy task records"'
+  fm_write_meta "$state/legacyduplicate.meta" "window=firstmate:fm-legacyduplicate" "worktree=$wt" "project=$wt" "backend=tmux" "backend=herdr"
+  run_capture duplicate-backend lib_probe -- "fm_backend_of_meta '$state/legacyduplicate.meta'"
+  assert_refusal "fm_backend_of_meta duplicate backend identity" "ambiguous duplicate backend identity" 'docs/configuration.md "Legacy task records"'
   # 3. The operating scripts refuse the legacy record and leave it untouched.
   : > "$log"
   run_capture crew-state policy_env "PATH=$fb:$PATH" "FM_ROOT_OVERRIDE=$ROOT" "FM_STATE_OVERRIDE=$state" "FM_HOME=$TMP_ROOT/legacy-home" -- \
@@ -577,11 +582,11 @@ test_herdr_record_and_endpoint_pass_every_boundary() {
   [ "$RC" -eq 0 ] && [ "$OUT" = herdr ] && [ -z "$ERR" ] || fail "herdr record must resolve silently: rc=$RC out=$OUT err=$ERR"
   run_capture herdr-endpoint lib_probe -- "fm_backend_validate_task_endpoint '$state/$id.meta' '$id' && printf '%s|%s' \"\$FM_BACKEND_VALIDATED_BACKEND\" \"\$FM_BACKEND_VALIDATED_TARGET\""
   [ "$RC" -eq 0 ] && [ "$OUT" = "herdr|default:w2:p3" ] || fail "herdr endpoint validation failed: rc=$RC out=$OUT err=$ERR"
-  out=$(lib_probe -- "fm_backend_resolve_selector '$id' '$state'")
+  out=$(lib_probe -- "fm_backend_herdr_version_check() { return 0; }; fm_backend_resolve_selector '$id' '$state'")
   [ "$out" = default:w2:p3 ] || fail "task-id selector must resolve the herdr window, got $out"
-  out=$(lib_probe -- "fm_backend_of_selector '$id' 'default:w2:p3' '$state'")
+  out=$(lib_probe -- "fm_backend_herdr_version_check() { return 0; }; fm_backend_of_selector '$id' 'default:w2:p3' '$state'")
   [ "$out" = herdr ] || fail "task-id selector backend must be herdr, got $out"
-  out=$(lib_probe -- 'fm_backend_validate herdr && fm_backend_validate_spawn herdr && fm_backend_source herdr && printf ok')
+  out=$(lib_probe -- 'fm_backend_herdr_version_check() { return 0; }; fm_backend_validate herdr && fm_backend_validate_spawn herdr && fm_backend_source herdr && printf ok')
   [ "$out" = ok ] || fail "herdr must pass validate, validate_spawn, and source: $out"
   out=$(lib_probe -- 'fm_backend_required_tools herdr')
   [ "$out" = "herdr jq treehouse" ] || fail "herdr required tools unchanged, got $out"
