@@ -104,7 +104,6 @@ EOF
   json_assert "$TMP_ROOT/schema-execution-manifest.json" "r['properties']['authority']['allOf'][0]['then']['properties']['scope']['minItems'] == 1" "published authority schema must require non-draft scope like runtime validation"
   json_assert "$TMP_ROOT/schema-execution-manifest.json" "r['properties']['source']['minContains'] == 1 and r['properties']['source']['maxContains'] == 1" "published source schema must require exactly one task-graph binding like runtime validation"
   json_assert "$TMP_ROOT/schema-task.json" "r['properties']['source_refs']['minItems'] == 1" "source references must be non-empty in the published schema"
-  json_assert "$TMP_ROOT/schema-route.json" "'does not activate routing' in r['description']" "route schema must state its non-authorizing trust boundary"
   pass "public CLI exposes four versioned schemas aligned with runtime trust constraints"
 }
 

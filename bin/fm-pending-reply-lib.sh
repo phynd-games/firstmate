@@ -222,7 +222,7 @@ fm_pending_reply_embed_corr() {  # <message> <corr_id> <result-var>
   local message=$1 corr=$2 result_var=$3 body token marked existing
   [ -n "$result_var" ] || return 2
   token=$(fm_pending_reply_corr_token "$corr")
-  fm_message_mark_from_firstmate "$message" marked
+  fm_message_mark_from_firstmate "$message" marked || return 2
   body=${marked#"$FM_FROMFIRST_MARK"}
   # Strip a leading corr=<16hex> plus following blanks (space/tab only).
   existing=${body:0:21}
