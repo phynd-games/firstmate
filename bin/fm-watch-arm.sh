@@ -223,7 +223,7 @@ cycle_mark_predecessor_successor() {
 }
 
 restart_recorded_watcher_lock() {
-  local lock_home lock_path lock_pid lock_identity current_identity expected_pid expected_identity reclaim rc=0
+  local lock_home lock_path lock_pid lock_identity current_identity expected_pid expected_identity reclaim final_pid final_identity final_current_identity rc=0
   expected_pid=${FM_WATCH_RESTART_EXPECTED_PID:-}
   expected_identity=${FM_WATCH_RESTART_EXPECTED_IDENTITY:-}
   reclaim=${FM_WATCH_RESTART_RECLAIM:-0}
@@ -267,13 +267,19 @@ restart_recorded_watcher_lock() {
         rc=1
       fi
     fi
-    if [ "$rc" -eq 0 ] && ! fm_pid_alive "$lock_pid"; then
-      if ! fm_recovery_transition "$STATE/.watcher-down" clear-stale-lock "$WATCH_LOCK" downtime; then
-        rc=1
-      elif ! fm_lock_remove_path "$WATCH_LOCK"; then
-        rc=1
+    if [ "$rc" -eq 0 ] && [ -e "$WATCH_LOCK" ] && [ -L "$WATCH_LOCK" ]; then
+      final_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
+      final_identity=$(cat "$WATCH_LOCK/pid-identity" 2>/dev/null || true)
+      final_current_identity=$(fm_pid_identity "$final_pid" 2>/dev/null || printf '')
+      [ "$final_pid" = "$lock_pid" ] || rc=3
+      [ "$final_identity" = "$lock_identity" ] || rc=3
+      if [ "$reclaim" = 1 ]; then
+        [ -n "$final_current_identity" ] && [ "$final_current_identity" != "$final_identity" ] || rc=1
+      else
+        fm_pid_alive "$final_pid" && rc=1
       fi
-    elif [ "$rc" -eq 0 ] && [ "$reclaim" = 1 ]; then
+    fi
+    if [ "$rc" -eq 0 ] && [ -e "$WATCH_LOCK" ] && [ -L "$WATCH_LOCK" ]; then
       if ! fm_recovery_transition "$STATE/.watcher-down" clear-stale-lock "$WATCH_LOCK" downtime; then
         rc=1
       elif ! fm_lock_remove_path "$WATCH_LOCK"; then

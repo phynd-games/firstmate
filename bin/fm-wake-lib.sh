@@ -531,9 +531,9 @@ _fm_recovery_marker_write_locked() {
 }
 
 _fm_recovery_marker_lock_acquire() {
-  local lock=$1 tries=${FM_RECOVERY_MARKER_LOCK_TRIES:-${FM_WAKE_APPEND_LOCK_TRIES:-0}} attempt=0
+  local lock=$1 tries=${FM_RECOVERY_MARKER_LOCK_TRIES:-${FM_WAKE_APPEND_LOCK_TRIES:-100}} attempt=0
   case "$tries" in
-    ''|*[!0-9]*) tries=0 ;;
+    ''|*[!0-9]*|0) tries=100 ;;
   esac
   if [ "$tries" -gt 0 ]; then
     while ! fm_lock_try_acquire "$lock"; do
