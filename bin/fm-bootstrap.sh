@@ -18,6 +18,7 @@
 #                 "BOOTSTRAP_INFO: nudged fm-<id> with '<message>'",
 #                 "SECONDMATE_LIVENESS: secondmate <id>: skipped: <reason>|respawn failed after <cause>: <reason>",
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
+#                 "HERDR_SUPERVISOR: <why watcher continuity could not be hosted>",
 #                 "FMX: X mode on ..." or "FMX: X mode off ...".
 #          When a RUNNING local secondmate worktree is fast-forwarded to
 #          firstmate's own current default-branch commit, that update is a
@@ -79,17 +80,19 @@
 #          refresh relays any completed fm-fleet-sync.sh output before the
 #          aggregate timeout skip line with timeout and elapsed seconds.
 #          Set FM_FLEET_PRUNE=0 to skip branch pruning during that refresh.
-#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the six MUTATING sweeps
+#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the seven MUTATING sweeps
 #          (PR-check migration, secondmate_sync, secondmate_liveness_sweep,
-#          secondmate_handoff_resume, x_mode_setup, fleet_sync) while still
+#          secondmate_handoff_resume, x_mode_setup, herdr_supervisor_sweep,
+#          fleet_sync) while still
 #          printing every read-only detect line
 #          above; the TANGLE line switches to advisory-only wording with no
 #          checkout command. Used by
 #          fm-session-start.sh's read-only path when another live session holds
 #          the fleet lock, so a second concurrent session never race-mutates
 #          PR-check artifacts, secondmate homes, pending handoff outboxes,
-#          X-mode artifacts, project clones, or repair instructions.
-#          Unset/0 (the default) runs all six sweeps - this flag is purely
+#          X-mode artifacts, watcher continuity, project clones, or repair
+#          instructions.
+#          Unset/0 (the default) runs all seven sweeps - this flag is purely
 #          additive.
 #          Set FM_BOOTSTRAP_NETWORK to split this run by whether a step talks to
 #          the network, so a session start can print its digest from local reads
@@ -978,6 +981,39 @@ x_mode_remove_artifact() {
 # only when it actually removed artifacts. It never touches the watcher itself;
 # applying a cadence transition to a running watcher is the caller's job via
 # the emitted harness-aware supervision repair instruction.
+# herdr_supervisor_sweep: keep this home's Herdr-hosted watcher continuity owner
+# established whenever supervision is needed and nothing else provably owns it.
+#
+# This is the automatic half of the fix for the 2026-08-29 supervision lapse: a
+# home whose primary harness never loaded its continuity owner had NOBODY to
+# start the next watcher cycle, and no session-start check repaired it - the Pi
+# extension diagnostic only advises restarting Pi. bin/fm-herdr-supervisor.sh
+# owns every decision here (eligibility, deference to a provable owner,
+# idempotence, identity, and bounded retry); this sweep only calls it and
+# surfaces what it says.
+#
+# Local, never network. It runs only on the locked mutating path, alongside the
+# other local sweep, so a read-only session neither establishes nor disturbs a
+# supervisor. Silent on the ordinary outcomes - already healthy, deliberately
+# deferred, not eligible, nothing in flight - because a routine confirmation is
+# not a diagnostic.
+herdr_supervisor_sweep() {
+  local out status
+  out=$("$SCRIPT_DIR/fm-herdr-supervisor.sh" ensure --reason 'session start' 2>&1)
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    printf 'HERDR_SUPERVISOR: %s\n' "$(printf '%s' "$out" | tr '\n' ' ')"
+    return 0
+  fi
+  case "$out" in
+    *'herdr-supervisor: started'*)
+      [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" != 1 ] \
+        || printf 'BOOTSTRAP_INFO: %s\n' "$(printf '%s' "$out" | tr '\n' ' ')"
+      ;;
+  esac
+  return 0
+}
+
 x_mode_setup() {
   local env_file token shim cadence shim_body cadence_body tool missing shim_home
   env_file="$FM_HOME/.env"
@@ -1334,6 +1370,8 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
   fi
   # x_mode_setup writes local Relay artifacts only and never leaves the machine.
   local_phase && x_mode_setup
+  # Watcher continuity for a Herdr home, also local and also never on the wire.
+  local_phase && herdr_supervisor_sweep
   if [ -n "$fleet_sync_pid" ]; then
     wait "$fleet_sync_pid" || true
     cat "$fleet_sync_out"
