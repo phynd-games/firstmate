@@ -24,6 +24,11 @@ Nothing armed a watcher in the meantime and nothing rechecked.
 
 A continuity owner hosted in a Herdr pane.
 `ensure` creates one workspace for the home, runs the loop in that workspace's pane through `herdr pane run`, and records the exact binding.
+
+Two mechanics there are load-bearing, and both were learned from the real-Herdr smoke rather than from reading the API.
+`herdr pane run` types its command into the pane's shell, so the command is subject to that terminal's line-length limit; an inlined environment made it long enough that a home with an ordinary temp-directory path silently ran a command truncated mid-argument while the CLI still reported success.
+The command is therefore kept short and constant, and everything the loop needs travels in `state/.herdr-supervisor-launch.sh`.
+The pane shell's environment comes from Herdr rather than from the calling process, so that launcher must carry every value explicitly, including the tuning this home resolved.
 The loop calls `bin/fm-watch-arm.sh` and calls it again after every close, which is precisely what a harness-native owner does.
 
 Because its host is a Herdr pane rather than the harness process, it survives every harness session transition - startup, new, resume, fork, compaction, reload, and session idle - and every watcher-cycle close, without depending on the model remembering a re-arm step.
@@ -47,6 +52,9 @@ It is not a second lifecycle authority.
 `ensure` establishes only when every one of these holds.
 
 - The home's runtime backend is `herdr`.
+- The named Herdr session already has a running server.
+  The supervisor never starts one: `ensure` runs inside a command substitution on the session-start path, and backgrounding a long-lived server from there wedges the caller, which would take bootstrap down with it.
+  A home whose server is down has already lost the host this supervisor would live in, so it refuses with a durable diagnostic instead.
 - `config/herdr-supervisor` is not `off`.
 - Supervision is genuinely needed - in-flight work, a registered event source, or a Relay poll.
 - No other owner is provable.
@@ -75,6 +83,9 @@ Health is never inferred from a beacon alone, and never from a name.
 Anything unreadable, contradictory, or unknown is unhealthy.
 An ambiguous answer is never resolved in favour of healthy.
 
+Every Herdr call the supervisor makes is hard-bounded, default 15 seconds, through the shared `bin/fm-timeout-lib.sh` runner that kills the whole process group.
+A vendor CLI that never returns is a real hazard here rather than a theoretical one, because `ensure` runs inside a command substitution during session start; an unbounded call would wedge bootstrap itself, which is strictly worse than the supervision lapse this exists to fix.
+
 ## Recovery
 
 Recovery is bounded, idempotent, and generation-safe.
@@ -91,6 +102,8 @@ Recovery is bounded, idempotent, and generation-safe.
 | Primary harness session replaced | Nothing happens; the supervisor is not bound to that process |
 | Duplicate arm | Only the generation the binding record names may arm; every other generation stands down |
 | Rapid repeated cycles | A floor delay plus one durable diagnostic, never a stop, because a busy fleet does produce fast cycles |
+| Herdr server not running | Refused with a durable diagnostic naming the missing server; no server is ever started from here |
+| Herdr CLI hangs | Bounded and treated as a failed read, so no caller can be wedged |
 
 Every failed or ambiguous establish and every exhausted retry writes `state/.herdr-supervisor-alarm` and appends one `check: herdr-supervisor` record to the durable wake queue.
 That reuses the channels that already exist rather than inventing one, so the lapse reaches the captain through the normal drain.
@@ -135,6 +148,8 @@ All under `state/`, all private to the home.
 - `.herdr-supervisor-live` - the loop's own generation, pid, and process identity.
   Written only by the loop.
   It is a separate file on purpose: `ensure` holds the establish lock across the wait for the loop to come up, so a single shared record would deadlock the loop that has to publish into it.
+- `.herdr-supervisor-launch.sh` - the generated launcher the pane executes, mode 0700.
+  It exists so the pane command can stay short; it is rewritten on every establish and removed on retire, and is never edited by hand.
 - `.herdr-supervisor-heartbeat` - the supervisor's liveness beacon, refreshed every pass.
 - `.herdr-supervisor-alarm` - the durable actionable diagnostic; present means an escalation is outstanding.
 - `.herdr-supervisor.log` - a bounded lifecycle ledger.
@@ -147,6 +162,9 @@ It proves the central claim by counting arm invocations - one establish must pro
 
 Every gate in that list is mutation-tested: reverting the guard in the script makes its case fail.
 
-`tests/fm-herdr-supervisor-smoke.test.sh` is the real-Herdr contract.
-It is in the `real-herdr-gated` family, excluded from every portable CI lane, and additionally gated behind `FM_HERDR_SUPERVISOR_SMOKE=1`.
-Its header records that it has not completed a green run yet and why: running it drives real Herdr lifecycle and needs a brief scaffolded with `--herdr-lab`, and it currently blocks in the shared `fm_backend_herdr_server_ensure` path when that call sits inside a caller's command substitution.
+`tests/fm-herdr-supervisor-smoke.test.sh` is the real-Herdr contract, and it passes.
+It runs entirely inside a named non-default `fm-lab-*` session provisioned and torn down through `bin/fm-herdr-lab.sh`, whose fleet-state tripwire proves the default session never changed.
+It establishes against a real server, checks that Herdr's own process tracking names the live supervisor in its pane, proves continuity by counting real arm cycles, proves a repeat `ensure` adds no second pane or owner, kills the supervisor and proves a new generation takes over, and proves `retire` releases both the record and its own workspace.
+
+That suite is in the `real-herdr-gated` family, so it never runs in a portable CI lane.
+It is where the two mechanics above were found: the pane-command truncation, and the server-start hang that a fake CLI cannot reproduce.

@@ -77,6 +77,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-supervision-lib.sh
 . "$SCRIPT_DIR/fm-supervision-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 RECORD="$STATE/.herdr-supervisor"
 # The loop publishes its own process identity to a SEPARATE file. Two writers
@@ -87,6 +89,7 @@ RECORD="$STATE/.herdr-supervisor"
 # the live record, and both are stamped with the same generation so a stale
 # pairing can never be read as healthy.
 LIVE="$STATE/.herdr-supervisor-live"
+LAUNCHER="$STATE/.herdr-supervisor-launch.sh"
 RECORD_LOCK="$STATE/.herdr-supervisor.lock"
 HEARTBEAT="$STATE/.herdr-supervisor-heartbeat"
 ALARM="$STATE/.herdr-supervisor-alarm"
@@ -115,12 +118,18 @@ IDLE_INTERVAL=${FM_HERDR_SUPERVISOR_IDLE_INTERVAL:-30}
 RAPID_CYCLE_SECONDS=${FM_HERDR_SUPERVISOR_RAPID_CYCLE_SECONDS:-1}
 RAPID_CYCLE_LIMIT=${FM_HERDR_SUPERVISOR_RAPID_CYCLE_LIMIT:-20}
 RAPID_CYCLE_FLOOR=${FM_HERDR_SUPERVISOR_RAPID_CYCLE_FLOOR:-5}
+# Every Herdr call this script makes is hard-bounded. `ensure` runs inside a
+# command substitution on the session-start path, so an adapter call that never
+# returns would wedge bootstrap itself - a strictly worse failure than the
+# supervision lapse this exists to fix. fm_run_timed kills the whole process
+# group, so a hung vendor CLI cannot outlive the bound either.
+HERDR_CALL_TIMEOUT=${FM_HERDR_SUPERVISOR_HERDR_TIMEOUT:-15}
 LEDGER_MAX_BYTES=${FM_HERDR_SUPERVISOR_LEDGER_MAX_BYTES:-262144}
 LEDGER_KEEP_LINES=${FM_HERDR_SUPERVISOR_LEDGER_KEEP_LINES:-1000}
 
 for _fm_hs_int in HEARTBEAT_GRACE READY_TIMEOUT RETRY_LIMIT RETRY_BASE RETRY_MAX \
   IDLE_INTERVAL RAPID_CYCLE_SECONDS RAPID_CYCLE_LIMIT RAPID_CYCLE_FLOOR \
-  LEDGER_MAX_BYTES LEDGER_KEEP_LINES; do
+  HERDR_CALL_TIMEOUT LEDGER_MAX_BYTES LEDGER_KEEP_LINES; do
   case "${!_fm_hs_int}" in
     ''|*[!0-9]*) fail_msg="error: $_fm_hs_int must be a non-negative integer" ;;
     *) continue ;;
@@ -217,6 +226,10 @@ record_clear() {
   rm -f "$RECORD" "$LIVE" 2>/dev/null || true
 }
 
+launcher_clear() {
+  rm -f "$LAUNCHER" 2>/dev/null || true
+}
+
 mint_generation() {
   local rand
   rand=$(dd if=/dev/urandom bs=8 count=1 2>/dev/null | od -An -tx1 | tr -d '[:space:]') || rand=
@@ -271,29 +284,82 @@ herdr_load() {
   HERDR_LOADED=1
 }
 
+# hs_herdr: one bounded Herdr call, session-scoped exactly the way
+# fm_backend_herdr_cli scopes one (HERDR_SESSION plus a trailing --session), but
+# invoked as a real executable so the bound can apply. Never used for anything
+# that starts or stops a server.
+hs_herdr() {  # <session> <herdr-args...>
+  local session=$1
+  shift
+  fm_run_timed "$HERDR_CALL_TIMEOUT" \
+    env "HERDR_SESSION=$session" herdr "$@" --session "$session"
+}
+
 # herdr_identity: resolve the named session and its canonical socket, and prove
-# they are the same server this process can address. Sets HS_SESSION and
-# HS_SOCKET. Any ambiguity fails - a supervisor bound to an unidentifiable
-# server could never be verified again.
+# they are the same ALREADY-RUNNING server this process can address. Sets
+# HS_SESSION and HS_SOCKET. Any ambiguity fails - a supervisor bound to an
+# unidentifiable server could never be verified again.
+#
+# This deliberately never STARTS a server. Two reasons, one safety and one
+# honesty. Starting one means backgrounding a long-lived process from inside the
+# caller's command substitution, which is exactly what wedged the first version
+# of the live smoke; `ensure` runs inside such a substitution on the session-start
+# path, so that hazard belongs nowhere near bootstrap. And a home whose Herdr
+# server is down has already lost the host this supervisor would live in - a dead
+# server is the one boundary this design states it cannot recover across, so the
+# right move is a loud, actionable refusal rather than an attempt that can hang.
 HS_SESSION=
 HS_SOCKET=
 herdr_identity() {
+  local protocol status sessions
   HS_SESSION=
   HS_SOCKET=
   herdr_load || { echo "herdr backend adapter could not be loaded" >&2; return 1; }
-  fm_backend_herdr_version_check >/dev/null 2>&1 || {
-    echo "herdr client is missing, unreadable, or older than the verified protocol floor" >&2
-    return 1
-  }
+  command -v herdr >/dev/null 2>&1 || { echo "the herdr CLI is not installed" >&2; return 1; }
+  command -v jq >/dev/null 2>&1 || { echo "jq is not installed and the herdr adapter requires it" >&2; return 1; }
   HS_SESSION=$(fm_backend_herdr_session)
   [ -n "$HS_SESSION" ] || { echo "herdr session identity is empty" >&2; return 1; }
-  fm_backend_herdr_server_ensure "$HS_SESSION" >/dev/null 2>&1 || {
-    echo "herdr session '$HS_SESSION' has no reachable server" >&2
+
+  status=$(hs_herdr "$HS_SESSION" status --json 2>/dev/null) || status=
+  [ -n "$status" ] || {
+    echo "could not read herdr status for session '$HS_SESSION' within ${HERDR_CALL_TIMEOUT}s" >&2
     return 1
   }
-  HS_SOCKET=$(fm_backend_herdr_presentation_session_socket_path "$HS_SESSION" 2>/dev/null) || HS_SOCKET=
+  protocol=$(printf '%s' "$status" | jq -r '.client.protocol // empty' 2>/dev/null)
+  case "$protocol" in
+    ''|*[!0-9]*)
+      echo "could not read the herdr client protocol; refusing to use an unverified herdr build" >&2
+      return 1
+      ;;
+  esac
+  if [ "$protocol" -lt "$FM_BACKEND_HERDR_MIN_PROTOCOL" ]; then
+    echo "herdr protocol $protocol is older than the verified minimum $FM_BACKEND_HERDR_MIN_PROTOCOL" >&2
+    return 1
+  fi
+  if [ "$(printf '%s' "$status" | jq -r '.server.running // false' 2>/dev/null)" != true ]; then
+    echo "herdr session '$HS_SESSION' has no running server, so there is no pane to host watcher continuity in; start it and rerun" >&2
+    return 1
+  fi
+
+  sessions=$(hs_herdr "$HS_SESSION" session list --json 2>/dev/null) || sessions=
+  [ -n "$sessions" ] || {
+    echo "could not list herdr sessions to resolve the socket for '$HS_SESSION' within ${HERDR_CALL_TIMEOUT}s" >&2
+    return 1
+  }
+  HS_SOCKET=$(printf '%s' "$sessions" | jq -er --arg want "$HS_SESSION" '
+    [.sessions[]?
+      | select(.name == $want and .running == true)
+      | select((.socket_path | type) == "string")
+      | select((.socket_path | length) > 0)
+      | .socket_path]
+    | if length == 1 then .[0] else empty end
+  ' 2>/dev/null) || HS_SOCKET=
   [ -n "$HS_SOCKET" ] || {
-    echo "herdr session '$HS_SESSION' has no unambiguous socket identity" >&2
+    echo "herdr session '$HS_SESSION' has no unambiguous running socket identity" >&2
+    return 1
+  }
+  HS_SOCKET=$(fm_backend_herdr_canonical_socket_path "$HS_SOCKET") || {
+    echo "herdr session '$HS_SESSION' reports an unusable socket path" >&2
     return 1
   }
   return 0
@@ -305,7 +371,7 @@ herdr_identity() {
 # would also match a sibling home.
 pane_tracked_pid() {  # <session> <pane>
   local session=$1 pane=$2 info pid
-  info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
+  info=$(hs_herdr "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
   pid=$(printf '%s' "$info" | jq -r --arg p "$pane" '
     select(.result.process_info.pane_id == $p)
     | .result.process_info.shell_pid // empty
@@ -321,7 +387,7 @@ pane_tracked_pid() {  # <session> <pane>
 # unknown is never treated as present.
 pane_binding_intact() {  # <session> <workspace> <tab> <pane>
   local session=$1 workspace=$2 tab=$3 pane=$4 out
-  out=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>/dev/null) || return 1
+  out=$(hs_herdr "$session" pane get "$pane" 2>/dev/null) || return 1
   printf '%s' "$out" | jq -e \
     --arg pane "$pane" --arg tab "$tab" --arg ws "$workspace" '
       .result.pane.pane_id == $pane
@@ -468,7 +534,7 @@ supervisor_eligible() {
 rollback_workspace() {  # <session> <workspace>
   local session=$1 workspace=$2
   [ -n "$workspace" ] || return 0
-  fm_backend_herdr_cli "$session" workspace close "$workspace" >/dev/null 2>&1 || true
+  hs_herdr "$session" workspace close "$workspace" >/dev/null 2>&1 || true
   ledger_append rollback "closed workspace $workspace after a failed establish"
 }
 
@@ -512,7 +578,7 @@ establish() {  # <reason>
   }
   ledger_append establish-begin "$reason"
 
-  out=$(fm_backend_herdr_cli "$HS_SESSION" workspace create \
+  out=$(hs_herdr "$HS_SESSION" workspace create \
     --cwd "$FM_ROOT" --label "$(supervisor_label)" --no-focus 2>/dev/null) || out=
   workspace=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
   tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
@@ -557,25 +623,48 @@ establish() {  # <reason>
   # process-info then answers "is the supervisor alive" directly, and the pane
   # dies with the loop instead of lingering as a bare shell that would look
   # like a healthy host.
-  # `herdr pane run` starts the command in a pane shell whose environment comes
-  # from Herdr, not from this process, so every value the loop needs must be
-  # passed explicitly - including the tuning this home resolved, or the loop
-  # would silently run on defaults while `ensure` used the configured values.
-  cmd="exec env FM_HOME=$(shell_quote "$FM_HOME") FM_ROOT_OVERRIDE=$(shell_quote "$FM_ROOT")"
-  cmd="$cmd FM_STATE_OVERRIDE=$(shell_quote "$STATE") FM_CONFIG_OVERRIDE=$(shell_quote "$CONFIG")"
-  cmd="$cmd FM_HERDR_SUPERVISOR_HEARTBEAT_GRACE=$HEARTBEAT_GRACE"
-  cmd="$cmd FM_HERDR_SUPERVISOR_RETRY_LIMIT=$RETRY_LIMIT"
-  cmd="$cmd FM_HERDR_SUPERVISOR_RETRY_BASE=$RETRY_BASE"
-  cmd="$cmd FM_HERDR_SUPERVISOR_RETRY_MAX=$RETRY_MAX"
-  cmd="$cmd FM_HERDR_SUPERVISOR_IDLE_INTERVAL=$IDLE_INTERVAL"
-  cmd="$cmd FM_HERDR_SUPERVISOR_RAPID_CYCLE_SECONDS=$RAPID_CYCLE_SECONDS"
-  cmd="$cmd FM_HERDR_SUPERVISOR_RAPID_CYCLE_LIMIT=$RAPID_CYCLE_LIMIT"
-  cmd="$cmd FM_HERDR_SUPERVISOR_RAPID_CYCLE_FLOOR=$RAPID_CYCLE_FLOOR"
-  cmd="$cmd FM_HERDR_SUPERVISOR_LEDGER_MAX_BYTES=$LEDGER_MAX_BYTES"
-  cmd="$cmd FM_HERDR_SUPERVISOR_LEDGER_KEEP_LINES=$LEDGER_KEEP_LINES"
-  cmd="$cmd FM_WATCH_ARM_SCRIPT=$(shell_quote "$ARM")"
-  cmd="$cmd bash $(shell_quote "$SCRIPT_DIR/fm-herdr-supervisor.sh") run --generation $(shell_quote "$generation")"
-  if ! fm_backend_herdr_cli "$HS_SESSION" pane run "$pane" "$cmd" >/dev/null 2>&1; then
+  # `herdr pane run` types the command into the pane's shell, so it is subject to
+  # that terminal's line-length limit - a limit a long FM_HOME easily exceeds. A
+  # truncated command line is the worst kind of failure here: the CLI reports
+  # success, the pane silently runs a mangled command, and the only symptom is a
+  # loop that never confirms. So the command stays SHORT and constant, and
+  # everything it needs goes into a launcher script instead.
+  #
+  # The pane shell's environment comes from Herdr rather than from this process,
+  # so the launcher must carry every value the loop needs explicitly, including
+  # the tuning this home resolved - otherwise the loop would silently run on
+  # defaults while `ensure` used the configured values.
+  if ! {
+    printf '#!/usr/bin/env bash\n'
+    printf '# Generated by bin/fm-herdr-supervisor.sh for generation %s.\n' "$generation"
+    printf '# Rewritten on every establish and removed on retire; never edit by hand.\n'
+    printf 'export FM_HOME=%s\n' "$(shell_quote "$FM_HOME")"
+    printf 'export FM_ROOT_OVERRIDE=%s\n' "$(shell_quote "$FM_ROOT")"
+    printf 'export FM_STATE_OVERRIDE=%s\n' "$(shell_quote "$STATE")"
+    printf 'export FM_CONFIG_OVERRIDE=%s\n' "$(shell_quote "$CONFIG")"
+    printf 'export FM_WATCH_ARM_SCRIPT=%s\n' "$(shell_quote "$ARM")"
+    printf 'export FM_HERDR_SUPERVISOR_HEARTBEAT_GRACE=%s\n' "$HEARTBEAT_GRACE"
+    printf 'export FM_HERDR_SUPERVISOR_RETRY_LIMIT=%s\n' "$RETRY_LIMIT"
+    printf 'export FM_HERDR_SUPERVISOR_RETRY_BASE=%s\n' "$RETRY_BASE"
+    printf 'export FM_HERDR_SUPERVISOR_RETRY_MAX=%s\n' "$RETRY_MAX"
+    printf 'export FM_HERDR_SUPERVISOR_IDLE_INTERVAL=%s\n' "$IDLE_INTERVAL"
+    printf 'export FM_HERDR_SUPERVISOR_RAPID_CYCLE_SECONDS=%s\n' "$RAPID_CYCLE_SECONDS"
+    printf 'export FM_HERDR_SUPERVISOR_RAPID_CYCLE_LIMIT=%s\n' "$RAPID_CYCLE_LIMIT"
+    printf 'export FM_HERDR_SUPERVISOR_RAPID_CYCLE_FLOOR=%s\n' "$RAPID_CYCLE_FLOOR"
+    printf 'export FM_HERDR_SUPERVISOR_HERDR_TIMEOUT=%s\n' "$HERDR_CALL_TIMEOUT"
+    printf 'export FM_HERDR_SUPERVISOR_LEDGER_MAX_BYTES=%s\n' "$LEDGER_MAX_BYTES"
+    printf 'export FM_HERDR_SUPERVISOR_LEDGER_KEEP_LINES=%s\n' "$LEDGER_KEEP_LINES"
+    printf 'exec bash %s run --generation %s\n' \
+      "$(shell_quote "$SCRIPT_DIR/fm-herdr-supervisor.sh")" "$(shell_quote "$generation")"
+  } > "$LAUNCHER" 2>/dev/null || ! chmod 700 "$LAUNCHER" 2>/dev/null; then
+    rollback_workspace "$HS_SESSION" "$workspace"
+    record_clear
+    escalate "the supervisor launcher script could not be written to $LAUNCHER"
+    echo "herdr-supervisor: FAILED - the supervisor launcher script could not be written" >&2
+    return 1
+  fi
+  cmd="exec bash $(shell_quote "$LAUNCHER")"
+  if ! hs_herdr "$HS_SESSION" pane run "$pane" "$cmd" >/dev/null 2>&1; then
     rollback_workspace "$HS_SESSION" "$workspace"
     record_clear
     escalate "the supervisor loop could not be started in Herdr pane $pane"
@@ -668,9 +757,10 @@ cmd_retire() {  # <reason>
   fi
   if [ -n "$session" ] && [ -n "$workspace" ] && [ -n "$pane" ]; then
     herdr_load >/dev/null 2>&1 \
-      && fm_backend_herdr_cli "$session" workspace close "$workspace" >/dev/null 2>&1 || true
+      && hs_herdr "$session" workspace close "$workspace" >/dev/null 2>&1 || true
   fi
   rm -f "$HEARTBEAT" 2>/dev/null || true
+  launcher_clear
   fm_lock_release "$RECORD_LOCK"
   echo "herdr-supervisor: retired - $reason"
   return 0
