@@ -721,7 +721,7 @@ secondmate_liveness_one() {  # <meta> <id>
       echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote readiness failed on $remote_host: $readiness_reason"
       return 0
     fi
-    if out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null 2>/dev/null); then
+    if out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null); then
       remote_rc=0
     else
       remote_rc=$?
@@ -768,6 +768,12 @@ secondmate_liveness_one() {  # <meta> <id>
         ;;
       ambiguous|unreadable|unverified)
         echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote endpoint state is $agent_state on $remote_host"
+        ;;
+      capability-failure)
+        echo "SECONDMATE_LIVENESS: secondmate $id: skipped: Herdr capability is unavailable on $remote_host; repair Herdr and verify with herdr status --json"
+        ;;
+      legacy-record|endpoint-refused)
+        echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote endpoint metadata was refused as read-only on $remote_host; migrate or retire it explicitly"
         ;;
       *) echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote endpoint returned an invalid state" ;;
     esac

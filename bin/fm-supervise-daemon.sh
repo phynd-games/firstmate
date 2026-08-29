@@ -1379,6 +1379,14 @@ trim_log() {
 fm_super_main() {
   local STATE
   STATE="$(_state_root)"
+  if ! fm_backend_policy_legacy_lane; then
+    local preflight_backend preflight_target
+    preflight_backend=$(discover_supervisor_backend) || exit 1
+    preflight_target=$(discover_supervisor_target) || exit 1
+    FM_SUPERVISOR_BACKEND="$preflight_backend"
+    FM_SUPERVISOR_TARGET="$preflight_target"
+    fm_backend_target_exists "$preflight_backend" "$preflight_target" || exit 1
+  fi
   mkdir -p "$STATE"
 
   # Source the portable lock helpers (works on macOS where flock is absent).

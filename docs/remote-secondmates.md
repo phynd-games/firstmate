@@ -8,7 +8,7 @@ The remote second-mate agent itself always runs on the [Herdr backend](herdr-bac
 `fm-remote` is reserved for remote fleet work and must not be used for personal work.
 The user's interactive Herdr session remains `default` and is not a remote-secondmate prerequisite.
 Herdr's remote-session server belongs to the host's own GUI login session rather than to the SSH connection, so the agent's endpoint survives every disconnection the primary's supervision depends on.
-Local second mates are unaffected and keep their ordinary backend and session selection, as do the workers a remote second mate supervises inside its own home.
+Local second mates also use Herdr exclusively, as do the workers a remote second mate supervises inside its own home; missing, invalid, or unhealthy Herdr refuses the operation.
 
 ## Prerequisites
 

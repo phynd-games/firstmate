@@ -97,12 +97,10 @@ fm_backend_policy_test_capability() {
   local owner_target current_target
   case "$fd" in ''|*[!0-9]*) return 1 ;; esac
   [ -n "$owner_pid" ] || return 1
-  [ -p "/dev/fd/$fd" ] || return 1
-  if owner_target=$(fm_backend_policy_fd_target "$owner_pid" "$fd") \
-    && current_target=$(fm_backend_policy_fd_target "${BASHPID:-$$}" "$fd"); then
-    [ "$owner_target" = "$current_target" ] || return 1
-  fi
-  return 0
+  [ -f "/dev/fd/$fd" ] || return 1
+  owner_target=$(fm_backend_policy_fd_target "$owner_pid" "$fd") || return 1
+  current_target=$(fm_backend_policy_fd_target "${BASHPID:-$$}" "$fd") || return 1
+  [ "$owner_target" = "$current_target" ] || return 1
 }
 
 fm_backend_policy_test_process() {

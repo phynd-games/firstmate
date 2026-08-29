@@ -69,14 +69,20 @@ meta_path() { printf '%s/%s.meta\n' "$CONTROL_STATE" "$1"; }
 remote_endpoint_load() {
   local id=$1 herdr_session capability_error
   REMOTE_ENDPOINT_ERROR=
+  REMOTE_ENDPOINT_FAILURE=endpoint-refused
   REMOTE_ENDPOINT_META=$(meta_path "$id")
   if ! fm_backend_validate_task_endpoint "$REMOTE_ENDPOINT_META" "$id" 2>/dev/null; then
+    case "$(fm_backend_meta_recorded_backend "$REMOTE_ENDPOINT_META" 2>/dev/null || true)" in
+      ''|absent|ambiguous|herdr) ;;
+      *) REMOTE_ENDPOINT_FAILURE=legacy-record ;;
+    esac
     REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint metadata is invalid; refusing access until it is explicitly migrated"
     return 1
   fi
   REMOTE_ENDPOINT_BACKEND=$FM_BACKEND_VALIDATED_BACKEND
   REMOTE_ENDPOINT_TARGET=$FM_BACKEND_VALIDATED_TARGET
   if [ "$REMOTE_ENDPOINT_BACKEND" != herdr ]; then
+    REMOTE_ENDPOINT_FAILURE=legacy-record
     REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint is recorded on backend '$REMOTE_ENDPOINT_BACKEND', expected 'herdr'; refusing access until it is explicitly migrated"
     return 1
   fi
@@ -93,6 +99,7 @@ remote_endpoint_load() {
       ;;
   esac
   if ! capability_error=$(fm_backend_herdr_capability_preflight "remote endpoint route for $id" 2>&1); then
+    REMOTE_ENDPOINT_FAILURE=capability-failure
     REMOTE_ENDPOINT_ERROR=$(printf '%s\n' "$capability_error" | sed -n '1p')
     [ -n "$REMOTE_ENDPOINT_ERROR" ] || REMOTE_ENDPOINT_ERROR="REFUSED: Herdr capability is unavailable; repair Herdr and verify with herdr status --json"
     return 1
@@ -109,7 +116,7 @@ state_value() { # <id>; prints recovery-grade state
   [ -f "$meta" ] && [ ! -L "$meta" ] || { printf 'missing\n'; return 0; }
   if ! remote_endpoint_load "$id"; then
     printf 'error: %s\n' "$REMOTE_ENDPOINT_ERROR" >&2
-    printf 'capability-failure\n'
+    printf '%s\n' "$REMOTE_ENDPOINT_FAILURE"
     return 0
   fi
   fm_backend_agent_state "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null || printf 'unreadable\n'

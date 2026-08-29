@@ -430,7 +430,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
 }
 
 task_json_lines() {
-  local meta id kind harness mode yolo project worktree home projects spawn_gen backend target status_log report_path
+  local meta id kind harness mode yolo project worktree home projects spawn_gen backend recorded_backend target status_log report_path
   local remote_host remote_root remote_state remote_rc remote_home_present remote_identity_valid
   local pr pr_source event_json current_json endpoint_exists endpoint_status agent_alive meta_json status_json report_json worktree_json home_json
   local endpoint_rc
@@ -464,9 +464,13 @@ task_json_lines() {
     else
       # A legacy (absent or non-herdr) backend identity is displayed as recorded
       # with a marker, never dispatched on (hard rule 6); the snapshot is a view.
-      backend=$(fm_backend_of_meta "$meta" 2>/dev/null) \
-        || backend="legacy:${backend:-unrecorded}"
-      target=$(fm_backend_target_of_meta "$meta")
+      recorded_backend=$(fm_backend_meta_recorded_backend "$meta" 2>/dev/null || true)
+      if backend=$(fm_backend_of_meta "$meta" 2>/dev/null); then
+        target=$(fm_backend_target_of_meta "$meta")
+      else
+        backend="legacy:${recorded_backend:-absent}"
+        target=
+      fi
     fi
     status_log="$STATE/$id.status"
     report_path="$DATA/$id/report.md"
@@ -527,7 +531,7 @@ task_json_lines() {
     agent_alive=not_checked
     if [ -n "$remote_host" ] && [ "$remote_identity_valid" -eq 1 ]; then
       if remote_state=$(fm_run_timed "$FM_SNAPSHOT_SECONDMATE_TIMEOUT" \
-        "$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null 2>/dev/null); then
+        "$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null); then
         remote_rc=0
       else
         remote_rc=$?
@@ -539,6 +543,16 @@ task_json_lines() {
           alive) endpoint_exists=true; agent_alive=alive ;;
           dead) endpoint_exists=true; agent_alive=dead ;;
           missing) endpoint_exists=false; agent_alive=dead ;;
+          capability-failure)
+            endpoint_exists=null
+            endpoint_status=capability-failure
+            agent_alive=capability-failure
+            ;;
+          legacy-record|endpoint-refused)
+            endpoint_exists=null
+            endpoint_status=refused
+            agent_alive=not_checked
+            ;;
           *) endpoint_exists=null; agent_alive=unknown ;;
         esac
       else

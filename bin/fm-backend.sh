@@ -454,6 +454,16 @@ fm_backend_target_of_meta() {  # <meta-file>
   [ -n "$window" ] && printf '%s' "$window"
 }
 
+fm_backend_meta_recorded_backend() {  # <meta-file>; passive display accessor
+  local meta=$1 count
+  count=$(grep -c '^backend=' "$meta" 2>/dev/null || true)
+  case "$count" in
+    0) printf 'absent' ;;
+    1) fm_meta_get "$meta" backend ;;
+    *) printf 'ambiguous' ;;
+  esac
+}
+
 # fm_backend_validate_task_endpoint: validate a task cleanup record entirely
 # from its durable metadata before any runtime command or cleanup mutation.
 # The validation binds the exact task id, selected backend, target, project,
