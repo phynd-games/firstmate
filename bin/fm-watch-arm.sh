@@ -222,15 +222,68 @@ cycle_mark_predecessor_successor() {
   fm_lock_release "$CYCLE_LOG_LOCK"
 }
 
-clear_stale_recorded_watcher_lock() {
-  local lock_home lock_path lock_identity
+restart_recorded_watcher_lock() {
+  local lock_home lock_path lock_pid lock_identity current_identity expected_pid expected_identity reclaim rc=0
+  expected_pid=${FM_WATCH_RESTART_EXPECTED_PID:-}
+  expected_identity=${FM_WATCH_RESTART_EXPECTED_IDENTITY:-}
+  reclaim=${FM_WATCH_RESTART_RECLAIM:-0}
+  fm_lock_try_acquire "$WATCH_LOCK.steal" || return 1
   lock_home=$(cat "$WATCH_LOCK/fm-home" 2>/dev/null || true)
   lock_path=$(cat "$WATCH_LOCK/watcher-path" 2>/dev/null || true)
+  lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
   lock_identity=$(cat "$WATCH_LOCK/pid-identity" 2>/dev/null || true)
-  [ "$lock_home" = "$FM_HOME" ] || return 0
-  [ "$lock_path" = "$WATCH" ] || return 0
-  [ -n "$lock_identity" ] || return 0
-  fm_recovery_transition "$STATE/.watcher-down" clear-stale-lock "$WATCH_LOCK" downtime
+  if [ ! -e "$WATCH_LOCK" ] && [ ! -L "$WATCH_LOCK" ]; then
+    rc=0
+  elif [ "$lock_home" != "$FM_HOME" ] || [ "$lock_path" != "$WATCH" ] || [ -z "$lock_identity" ]; then
+    rc=1
+  elif [ -n "$expected_pid" ] && {
+    [ "$lock_pid" != "$expected_pid" ] || [ "$lock_identity" != "$expected_identity" ];
+  }; then
+    rc=3
+  else
+    current_identity=$(fm_pid_identity "$lock_pid" 2>/dev/null || printf '')
+    if [ -n "$expected_pid" ] && [ "$lock_pid" != "$expected_pid" ]; then
+      rc=3
+    elif [ -n "$expected_pid" ] && [ "$lock_identity" != "$expected_identity" ]; then
+      rc=3
+    elif [ -n "$expected_pid" ] && [ "$reclaim" = 1 ]; then
+      if fm_pid_alive "$lock_pid" \
+        && { [ -z "$current_identity" ] || [ "$current_identity" = "$lock_identity" ]; }; then
+        rc=1
+      fi
+    elif [ -n "$expected_pid" ] && [ -n "$current_identity" ] && [ "$current_identity" != "$lock_identity" ]; then
+      rc=3
+    elif [ -n "$expected_pid" ] && [ -z "$current_identity" ] && fm_pid_alive "$lock_pid"; then
+      rc=1
+    elif fm_pid_alive "$lock_pid"; then
+      if [ "$current_identity" = "$lock_identity" ]; then
+        kill -TERM "$lock_pid" 2>/dev/null || true
+        i=0
+        while [ "$i" -lt 50 ] && fm_pid_alive "$lock_pid"; do
+          sleep 0.1
+          i=$((i + 1))
+        done
+      else
+        rc=1
+      fi
+    fi
+    if [ "$rc" -eq 0 ] && ! fm_pid_alive "$lock_pid"; then
+      if ! fm_recovery_transition "$STATE/.watcher-down" clear-stale-lock "$WATCH_LOCK" downtime; then
+        rc=1
+      elif ! fm_lock_remove_path "$WATCH_LOCK"; then
+        rc=1
+      fi
+    elif [ "$rc" -eq 0 ] && [ "$reclaim" = 1 ]; then
+      if ! fm_recovery_transition "$STATE/.watcher-down" clear-stale-lock "$WATCH_LOCK" downtime; then
+        rc=1
+      elif ! fm_lock_remove_path "$WATCH_LOCK"; then
+        rc=1
+      fi
+    fi
+  fi
+  fm_lock_release "$WATCH_LOCK.steal"
+  [ "$rc" -eq 0 ] || return "$rc"
+  [ ! -e "$WATCH_LOCK" ] && [ ! -L "$WATCH_LOCK" ]
 }
 
 # A watcher is "healthy" iff the lock names a live process that is genuinely THIS
@@ -385,8 +438,6 @@ handling_successor_generation() {
 mode=arm
 handling_generation=
 handling_watcher_pid=
-restart_expected_pid=${FM_WATCH_RESTART_EXPECTED_PID:-}
-restart_expected_identity=${FM_WATCH_RESTART_EXPECTED_IDENTITY:-}
 case "${1:-}" in
   ''|arm|--arm) mode=arm ;;
   --restart) mode=restart ;;
@@ -410,35 +461,15 @@ if [ "$mode" = handling-delivered ]; then
 fi
 
 if [ "$mode" = restart ]; then
-  # Home-scoped stop: only the watcher pid recorded in THIS home's lock.
-  lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
-  if [ -n "$restart_expected_pid" ]; then
-    lock_identity=$(cat "$WATCH_LOCK/pid-identity" 2>/dev/null || true)
-    current_identity=$(fm_pid_identity "$lock_pid" 2>/dev/null || true)
-    if [ "$lock_pid" != "$restart_expected_pid" ] \
-      || [ "$lock_identity" != "$restart_expected_identity" ] \
-      || [ "$current_identity" != "$restart_expected_identity" ]; then
-      echo "watcher: FAILED - the stale watcher changed before its identity-verified restart" >&2
-      exit 1
-    fi
+  restart_recorded_watcher_lock
+  clear_rc=$?
+  if [ "$clear_rc" -eq 3 ]; then
+    echo "watcher: FAILED - a successor watcher won the stale-lock handoff" >&2
+    exit 1
   fi
-  if fm_pid_alive "$lock_pid"; then
-    if fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$lock_pid" "$FM_HOME"; then
-      kill -TERM "$lock_pid" 2>/dev/null || true
-      # Wait for it to actually exit before relaunching, so the fresh watcher
-      # either takes a released lock or reclaims a now-dead-pid stale lock instead
-      # of seeing the dying one as a live holder and no-opping.
-      i=0
-      while [ "$i" -lt 50 ] && fm_pid_alive "$lock_pid"; do
-        sleep 0.1
-        i=$((i + 1))
-      done
-    else
-      if ! clear_stale_recorded_watcher_lock; then
-        echo "watcher: FAILED - stale watcher recovery state could not be persisted" >&2
-        exit 1
-      fi
-    fi
+  if [ "$clear_rc" -ne 0 ]; then
+    echo "watcher: FAILED - stale watcher recovery state could not be persisted" >&2
+    exit 1
   fi
 fi
 

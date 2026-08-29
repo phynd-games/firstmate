@@ -1000,7 +1000,14 @@ x_mode_remove_artifact() {
 # deferred, not eligible, nothing in flight - because a routine confirmation is
 # not a diagnostic.
 herdr_supervisor_sweep() {
-  local out status
+  local out status lock_pid lock_identity current_identity
+  . "$SCRIPT_DIR/fm-wake-lib.sh"
+  lock_pid=$(cat "$STATE/.lock" 2>/dev/null || true)
+  lock_identity=$(cat "$STATE/.lock-pid-identity" 2>/dev/null || true)
+  current_identity=$(fm_pid_identity "$lock_pid" 2>/dev/null || true)
+  [ -n "$lock_identity" ] && [ -n "$current_identity" ] \
+    && [ "$current_identity" = "$lock_identity" ] \
+    && fm_session_lock_owned_by_self "$STATE" || return 0
   out=$("$SCRIPT_DIR/fm-herdr-supervisor.sh" ensure --reason 'session start' 2>&1)
   status=$?
   if [ "$status" -ne 0 ]; then

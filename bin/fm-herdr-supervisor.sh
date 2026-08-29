@@ -1354,16 +1354,30 @@ loop_publish_live() {  # <pane-pid>
 }
 
 loop_arm_matches() {
-  local pid=${LOOP_ARM_PID:-} current parent process_state
+  local pid=${LOOP_ARM_PID:-} current process_state
   [ -n "$pid" ] && fm_pid_alive "$pid" || return 1
   process_state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
   case "$process_state" in Z*) return 1 ;; esac
   current=$(fm_pid_identity "$pid" 2>/dev/null || printf '')
-  if [ -n "$LOOP_ARM_IDENTITY" ]; then
-    [ "$current" = "$LOOP_ARM_IDENTITY" ] && return 0
-  fi
-  parent=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
-  [ -n "$parent" ] && [ "$parent" = "$LOOP_OWNER_PID" ]
+  [ -n "$LOOP_ARM_IDENTITY" ] || return 2
+  [ -n "$current" ] && [ "$current" = "$LOOP_ARM_IDENTITY" ] || return 2
+  return 0
+}
+
+loop_capture_arm_identity() {
+  local pid=${LOOP_ARM_PID:-} i=0 candidate previous=
+  LOOP_ARM_IDENTITY=
+  while [ "$i" -lt 20 ] && fm_pid_alive "$pid"; do
+    candidate=$(fm_pid_identity "$pid" 2>/dev/null || printf '')
+    if [ -n "$candidate" ] && [ "$candidate" = "$previous" ]; then
+      LOOP_ARM_IDENTITY=$candidate
+      return 0
+    fi
+    previous=$candidate
+    sleep 0.05
+    i=$((i + 1))
+  done
+  return 1
 }
 
 loop_stop_arm() {
@@ -1382,7 +1396,12 @@ loop_stop_arm() {
       fi
     fi
   fi
-  wait "$pid" 2>/dev/null || true
+  current=$(fm_pid_identity "$pid" 2>/dev/null || printf '')
+  if [ -n "$LOOP_ARM_IDENTITY" ] && [ "$current" = "$LOOP_ARM_IDENTITY" ]; then
+    wait "$pid" 2>/dev/null || true
+  elif ! fm_pid_alive "$pid"; then
+    wait "$pid" 2>/dev/null || true
+  fi
   LOOP_ARM_PID=
   LOOP_ARM_IDENTITY=
 }
@@ -1402,17 +1421,29 @@ arm_output_reason() {  # <file>
 }
 
 watcher_stale_lock_verified() {
-  local lockdir pid age beat
+  local lockdir pid age beat lock_home lock_path lock_identity current_identity
   STALE_WATCHER_PID=
   STALE_WATCHER_IDENTITY=
+  STALE_WATCHER_RECLAIM=0
   lockdir="$STATE/.watch.lock"
   beat="$STATE/.last-watcher-beat"
   [ -e "$lockdir" ] || return 1
   pid=$(cat "$lockdir/pid" 2>/dev/null || printf '')
   fm_pid_alive "$pid" || return 1
-  fm_watcher_lock_matches_pid "$STATE" "$SCRIPT_DIR/fm-watch.sh" "$pid" "$FM_HOME" || return 1
+  lock_home=$(cat "$lockdir/fm-home" 2>/dev/null || printf '')
+  lock_path=$(cat "$lockdir/watcher-path" 2>/dev/null || printf '')
+  lock_identity=$(cat "$lockdir/pid-identity" 2>/dev/null || printf '')
+  [ "$lock_home" = "$FM_HOME" ] && [ "$lock_path" = "$SCRIPT_DIR/fm-watch.sh" ] || return 1
+  [ -n "$lock_identity" ] || return 1
+  current_identity=$(fm_pid_identity "$pid" 2>/dev/null || printf '')
+  if [ "$current_identity" != "$lock_identity" ]; then
+    [ -n "$current_identity" ] || return 1
+    STALE_WATCHER_RECLAIM=1
+  else
+    fm_watcher_lock_matches_pid "$STATE" "$SCRIPT_DIR/fm-watch.sh" "$pid" "$FM_HOME" || return 1
+  fi
   STALE_WATCHER_PID=$pid
-  STALE_WATCHER_IDENTITY=$FM_WATCHER_MATCHED_IDENTITY
+  STALE_WATCHER_IDENTITY=$lock_identity
   [ -e "$beat" ] || return 0
   age=$(fm_path_age "$beat")
   case "$age" in
@@ -1535,29 +1566,40 @@ cmd_run() {
       ledger_append watcher-restart "replacing identity-verified watcher with stale beacon"
       FM_WATCH_RESTART_EXPECTED_PID="$STALE_WATCHER_PID" \
       FM_WATCH_RESTART_EXPECTED_IDENTITY="$STALE_WATCHER_IDENTITY" \
+      FM_WATCH_RESTART_RECLAIM="$STALE_WATCHER_RECLAIM" \
         "$ARM" --restart >"$out" 2>&1 &
     else
       "$ARM" >"$out" 2>&1 &
     fi
     LOOP_ARM_PID=$!
-    LOOP_ARM_IDENTITY=$(fm_pid_identity "$LOOP_ARM_PID" 2>/dev/null || printf '')
-    while loop_arm_matches; do
-      : > "$HEARTBEAT" 2>/dev/null || true
-      if [ "$(hs_config_preference)" = off ]; then
-        loop_stop_arm
-        rm -f "$out" 2>/dev/null || true
-        LOOP_ARM_OUT=
-        if cmd_retire "config/herdr-supervisor changed to off while arming"; then
-          loop_release_live
-          exit 0
+    if loop_capture_arm_identity; then
+      arm_match=0
+      while loop_arm_matches; do
+        : > "$HEARTBEAT" 2>/dev/null || true
+        if [ "$(hs_config_preference)" = off ]; then
+          loop_stop_arm
+          rm -f "$out" 2>/dev/null || true
+          LOOP_ARM_OUT=
+          if cmd_retire "config/herdr-supervisor changed to off while arming"; then
+            loop_release_live
+            exit 0
+          fi
+          sleep "$IDLE_INTERVAL"
+          continue 2
         fi
-        sleep "$IDLE_INTERVAL"
-        continue 2
-      fi
-      sleep 0.5
-    done
-    wait "$LOOP_ARM_PID" 2>/dev/null
-    rc=$?
+        sleep 0.5
+      done
+      arm_match=$?
+    else
+      arm_match=2
+    fi
+    if [ "$arm_match" -eq 2 ]; then
+      rc=125
+      escalate "the foreground watcher arm process identity became unknown or changed; refusing to wait on or signal a recycled pid"
+    else
+      wait "$LOOP_ARM_PID" 2>/dev/null
+      rc=$?
+    fi
     LOOP_ARM_PID=
     LOOP_ARM_IDENTITY=
     : > "$HEARTBEAT" 2>/dev/null || true
