@@ -162,16 +162,41 @@ test_status_lines_keep_their_recorded_verb_and_note() {
 test_a_symlinked_status_log_is_refused_and_disclosed() {
   local home payload
   home=$(make_home symlink-status)
-  printf 'working: elsewhere\n' > "$TMP_ROOT/outside-status"
+  printf 'working: sentinel-outside-status\n' > "$TMP_ROOT/outside-status"
   ln -s "$TMP_ROOT/outside-status" "$home/state/worker-one.status"
   payload=$(run_dash "$home" json) || fail "the dashboard payload could not be composed"
   printf '%s' "$payload" | jq -e '
     .events[0].readable == false
     and (.events[0].reason | test("symlink"))
+    and .snapshot.tasks[0].paths.status_log.last_event.raw == ""
     and (.events[0].lines | length) == 0
     and (.degraded | map(select(.source | test("status log"))) | length) == 1' >/dev/null \
     || fail "a symlinked status log was not refused and disclosed"
   pass "a symlinked event log is refused and the gap is disclosed"
+}
+
+test_the_dashboard_skips_remote_evidence_in_local_only_mode() {
+  local home payload
+  home=$(make_home local-only-remote)
+  printf '#!/usr/bin/env bash\nprintf remote-call >> "$FM_HOME/remote-call.log"\nexit 1\n' \
+    > "$home/fakebin/ssh"
+  chmod +x "$home/fakebin/ssh"
+  fm_write_meta "$home/state/remote-one.meta" \
+    "kind=secondmate" "remote_host=remote.example" "remote_root=/srv/firstmate" \
+    "home=/srv/firstmate" "remote_backend=herdr" "remote_target=default:w1:p1" \
+    "harness=claude" "mode=no-mistakes" "yolo=off"
+  printf '%s\n' '- remote-one (host: remote.example; root: /srv/firstmate; home: /srv/firstmate; scope: all; projects: none; added 2026-08-01)' \
+    > "$home/data/secondmates.md"
+  payload=$(run_dash "$home" json) || fail "the local-only dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '
+    .snapshot.tasks[0].remote.evidence == "unavailable"
+    and (.snapshot.tasks[0].remote.reason | test("local-only"))
+    and .snapshot.tasks[0].endpoint.exists == null
+    and (.snapshot.tasks[0].current_state.detail | test("unavailable"))
+    and (.snapshot.secondmate_current.records[0].current.reason | test("unavailable"))' >/dev/null \
+    || fail "remote task evidence was not marked unavailable"
+  [ ! -e "$home/remote-call.log" ] || fail "local-only dashboard evidence contacted a remote host"
+  pass "the dashboard marks remote evidence unavailable without contacting its host"
 }
 
 # The guarantee under test is end to end - nothing outside this home's own
@@ -379,6 +404,40 @@ test_the_dashboard_refuses_an_invalid_bound_or_port() {
   pass "the dashboard refuses an invalid bound or an out-of-range port"
 }
 
+test_render_refuses_an_incomplete_dashboard_document() {
+  local home out status=0
+  home=$(make_home incomplete-payload)
+  printf '{"schema":"fm-dashboard.v1"}\n' > "$home/incomplete.json"
+  out=$(FM_HOME="$home" "$DASH" render "$home/incomplete.json" --out "$home/page.html" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "render accepted an incomplete dashboard document"
+  assert_contains "$out" "incomplete" "the refusal did not identify the incomplete payload"
+  [ ! -e "$home/page.html" ] || fail "an incomplete render still published a page"
+  pass "render refuses an incomplete dashboard document"
+}
+
+test_a_bare_output_filename_is_published_in_the_current_directory() {
+  local home
+  home=$(make_home bare-output)
+  (cd "$home" && run_dash "$home" build --out page.html) >/dev/null \
+    || fail "the dashboard could not publish a bare output filename"
+  [ -f "$home/page.html" ] || fail "the bare output filename became a directory"
+  pass "a bare output filename is published in the current directory"
+}
+
+test_a_symlinked_output_parent_is_refused() {
+  local home out status=0
+  home=$(make_home symlink-output)
+  run_dash "$home" json > "$home/payload.json" \
+    || fail "the valid payload fixture could not be composed"
+  mkdir -p "$TMP_ROOT/outside-output"
+  ln -s "$TMP_ROOT/outside-output" "$home/publish"
+  out=$(run_dash "$home" render "$home/payload.json" --out "$home/publish/page.html" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "render published through a symlinked output parent"
+  assert_contains "$out" "safe directory" "the symlinked output parent refusal was unclear"
+  [ ! -e "$TMP_ROOT/outside-output/page.html" ] || fail "the page escaped through a symlinked output parent"
+  pass "a symlinked output parent is refused before publication"
+}
+
 test_path_is_stable_and_inside_the_home
 test_the_payload_embeds_the_canonical_snapshot_unchanged
 test_a_worker_carries_its_recorded_model_and_effort
@@ -386,6 +445,7 @@ test_a_missing_status_log_is_reported_not_degraded
 test_event_history_is_bounded_and_discloses_what_it_dropped
 test_status_lines_keep_their_recorded_verb_and_note
 test_a_symlinked_status_log_is_refused_and_disclosed
+test_the_dashboard_skips_remote_evidence_in_local_only_mode
 test_a_report_symlinked_out_of_the_home_never_reaches_the_page
 test_a_large_report_is_truncated_and_says_so
 test_a_report_holding_binary_bytes_still_produces_valid_output
@@ -398,3 +458,6 @@ test_a_payload_string_cannot_close_the_data_block_early
 test_the_build_refuses_a_template_without_a_data_slot
 test_the_dashboard_refuses_when_the_fleet_snapshot_fails
 test_the_dashboard_refuses_an_invalid_bound_or_port
+test_render_refuses_an_incomplete_dashboard_document
+test_a_bare_output_filename_is_published_in_the_current_directory
+test_a_symlinked_output_parent_is_refused

@@ -58,6 +58,7 @@
 #   FM_DASHBOARD_READY_TRIES      readiness polls before giving up (default 30)
 #   FM_DASHBOARD_READY_DELAY_MS   delay between readiness polls (default 200)
 #   FM_DASHBOARD_LOCK_WAIT        seconds to wait for the startup lock (default 15)
+#   FM_DASHBOARD_HERDR_TIMEOUT    seconds allowed for each Herdr call (default 2)
 #   FM_DASHBOARD_HERDR_CLI        command prefix replacing the Herdr call (tests
 #                                 and the guarded lab smoke only; it is how the
 #                                 smoke routes every call through
@@ -81,6 +82,7 @@ FM_DASHBOARD_PORT_TRIES=${FM_DASHBOARD_PORT_TRIES:-10}
 FM_DASHBOARD_READY_TRIES=${FM_DASHBOARD_READY_TRIES:-30}
 FM_DASHBOARD_READY_DELAY_MS=${FM_DASHBOARD_READY_DELAY_MS:-200}
 FM_DASHBOARD_LOCK_WAIT=${FM_DASHBOARD_LOCK_WAIT:-15}
+FM_DASHBOARD_HERDR_TIMEOUT=${FM_DASHBOARD_HERDR_TIMEOUT:-2}
 FM_DASHBOARD_HERDR_CLI=${FM_DASHBOARD_HERDR_CLI:-}
 
 validate_bound() {  # <name> <value>
@@ -93,6 +95,7 @@ validate_bound FM_DASHBOARD_PORT_TRIES "$FM_DASHBOARD_PORT_TRIES"
 validate_bound FM_DASHBOARD_READY_TRIES "$FM_DASHBOARD_READY_TRIES"
 validate_bound FM_DASHBOARD_READY_DELAY_MS "$FM_DASHBOARD_READY_DELAY_MS"
 validate_bound FM_DASHBOARD_LOCK_WAIT "$FM_DASHBOARD_LOCK_WAIT"
+validate_bound FM_DASHBOARD_HERDR_TIMEOUT "$FM_DASHBOARD_HERDR_TIMEOUT"
 
 # shellcheck source=bin/fm-wake-lib.sh
 # shellcheck disable=SC1091
@@ -100,6 +103,9 @@ validate_bound FM_DASHBOARD_LOCK_WAIT "$FM_DASHBOARD_LOCK_WAIT"
 # shellcheck source=bin/fm-backend.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-backend.sh"   # fm_backend_herdr_cli, via fm_backend_source
+# shellcheck source=bin/fm-timeout-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 usage() {
   awk '
@@ -143,10 +149,19 @@ herdr_cli() {  # <herdr-args...>
     # Deliberate word splitting: this is a configured command prefix, which is
     # how the guarded lab smoke routes every call through fm-herdr-lab.sh.
     # shellcheck disable=SC2086
-    $FM_DASHBOARD_HERDR_CLI "$@"
+    fm_run_timed "$FM_DASHBOARD_HERDR_TIMEOUT" $FM_DASHBOARD_HERDR_CLI "$@"
   else
     herdr_ready || return 1
-    fm_backend_herdr_cli "$(herdr_session)" "$@"
+    fm_run_timed "$FM_DASHBOARD_HERDR_TIMEOUT" env \
+      FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="${FM_ROOT_OVERRIDE:-$FM_ROOT}" \
+      bash -c '
+        . "$1"
+        fm_backend_source herdr || exit 1
+        shift
+        session=$1
+        shift
+        fm_backend_herdr_cli "$session" "$@"
+      ' dashboard-herdr-call "$SCRIPT_DIR/fm-backend.sh" "$(herdr_session)" "$@"
   fi
 }
 
@@ -218,14 +233,15 @@ digest_of() {  # <token>
 probe_health() {  # <port> -> health JSON on stdout
   local port=$1
   if command -v curl >/dev/null 2>&1; then
-    curl -fsS --max-time 2 "http://127.0.0.1:$port/healthz" 2>/dev/null
+    curl --noproxy '*' -fsS --max-time 2 "http://127.0.0.1:$port/healthz" 2>/dev/null
     return $?
   fi
   python3 - "$port" <<'PY' 2>/dev/null
 import sys, urllib.request
 try:
-    with urllib.request.urlopen("http://127.0.0.1:%s/healthz" % sys.argv[1], timeout=2) as r:
-        sys.stdout.write(r.read().decode("utf-8", "replace"))
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open("http://127.0.0.1:%s/healthz" % sys.argv[1], timeout=2) as r:
+        sys.stdout.write(r.read(8192).decode("utf-8", "replace"))
 except Exception:
     sys.exit(1)
 PY
@@ -363,14 +379,19 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
 }
 
 await_ready() {  # <port> <digest> <pane>
-  local port=$1 digest=$2 pane=$3 tries=$FM_DASHBOARD_READY_TRIES health
+  local port=$1 digest=$2 pane=$3 tries=$FM_DASHBOARD_READY_TRIES health pane_status
   while [ "$tries" -gt 0 ]; do
     if health=$(probe_health "$port") && health_is_ours "$health" "$digest"; then
       return 0
     fi
     # A pane that has already gone means the server exited; stop polling a
     # process that can never answer instead of burning the whole budget.
-    pane_exists "$pane" || return 1
+    pane_status=$(pane_state "$pane")
+    case "$pane_status" in
+      open) ;;
+      gone) return 1 ;;
+      *) return 2 ;;
+    esac
     sleep_ms "$FM_DASHBOARD_READY_DELAY_MS"
     tries=$((tries - 1))
   done
@@ -491,9 +512,27 @@ command_ensure() {
     return 1
   fi
 
-  if ! await_ready "$port" "$digest" "$STARTED_PANE"; then
-    pane_close "$STARTED_PANE"
-    record_drop
+  await_ready "$port" "$digest" "$STARTED_PANE"
+  local ready_rc=$?
+  if [ "$ready_rc" -ne 0 ]; then
+    case "$(pane_state "$STARTED_PANE")" in
+      open)
+        if ! pane_close "$STARTED_PANE"; then
+          fm_lock_release "$LOCK" >/dev/null 2>&1
+          blocked "the dashboard was not ready and its pane could not be closed; the owner record was kept"
+          return 1
+        fi
+        record_drop
+        ;;
+      gone)
+        record_drop
+        ;;
+      *)
+        fm_lock_release "$LOCK" >/dev/null 2>&1
+        blocked "herdr could not confirm the dashboard pane state after readiness failed; the owner record was kept"
+        return 1
+        ;;
+    esac
     fm_lock_release "$LOCK" >/dev/null 2>&1
     blocked "the dashboard did not become ready on port $port within the readiness budget"
     return 1
@@ -507,6 +546,10 @@ command_ensure() {
 
 command_status() {
   [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  if [ -L "$RECORD" ]; then
+    printf 'DASHBOARD_BLOCKED: the dashboard owner record is a symlink and was not read\n'
+    return 1
+  fi
   if [ ! -f "$RECORD" ]; then
     printf 'dashboard: no owner recorded for this home\n'
     return 0

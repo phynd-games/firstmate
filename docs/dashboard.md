@@ -101,12 +101,13 @@ The dashboard is a renderer over existing read-only owners and never becomes a s
 
 | Surface | Owner |
 | ------- | ----- |
-| Fleet, backlog, tasks, endpoints, decisions, reports | `bin/fm-fleet-snapshot.sh --json`, embedded verbatim |
+| Fleet, backlog, tasks, endpoints, decisions, reports | `bin/fm-fleet-snapshot.sh --local-only --json`, embedded verbatim |
 | Supervision health and the monitoring model | `bin/fm-wake-lib.sh` |
 | Status-line verbs and notes | `bin/fm-classify-lib.sh` |
 | The local token estimate | `bin/fm-startup-memory-budget.sh report` |
 
 What the dashboard adds is only bounded presentation evidence the canonical snapshot deliberately does not project: status-log tails, queued wake records, and report bodies, each read from a path the snapshot itself supplies.
+Remote task and secondmate evidence is explicitly marked unavailable in this local-only snapshot and never triggers an SSH or other remote call.
 If the fleet snapshot fails, the dashboard refuses to render rather than showing a page that reads as an idle fleet.
 
 ## Safety boundaries

@@ -166,6 +166,7 @@ validate_positive_bound FM_SNAPSHOT_REGISTRY_TIMEOUT "$FM_SNAPSHOT_REGISTRY_TIME
 usage() {
   cat <<'EOF'
 usage: fm-fleet-snapshot.sh --json
+       fm-fleet-snapshot.sh --local-only --json
        fm-fleet-snapshot.sh --secondmate-home-summary
 
 Print a read-only structured snapshot of the firstmate fleet.
@@ -194,17 +195,54 @@ EOF
 }
 
 OUTPUT_MODE=json
-case "${1:---json}" in
-  --json) ;;
-  --secondmate-home-summary) OUTPUT_MODE=secondmate-home-summary ;;
-  -h|--help) usage; exit 0 ;;
-  *) usage >&2; exit 2 ;;
-esac
+LOCAL_ONLY=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) ;;
+    --local-only) LOCAL_ONLY=1 ;;
+    --secondmate-home-summary) OUTPUT_MODE=secondmate-home-summary ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  shift
+done
 
 command -v jq >/dev/null 2>&1 || { echo "fm-fleet-snapshot: jq not found" >&2; exit 1; }
 
 bool_json() {
   if [ "$1" = 1 ]; then printf 'true'; else printf 'false'; fi
+}
+
+SNAPSHOT_HOME_REAL=$(cd "$FM_HOME" 2>/dev/null && pwd -P || printf '%s' "$FM_HOME")
+SNAPSHOT_FILE_REASON=
+snapshot_local_file_safe() {  # <path>
+  local path=$1 dir base real
+  SNAPSHOT_FILE_REASON=
+  if [ -L "$path" ]; then
+    SNAPSHOT_FILE_REASON='refused: the path is a symlink'
+    return 1
+  fi
+  if [ ! -f "$path" ]; then
+    SNAPSHOT_FILE_REASON='not present'
+    return 1
+  fi
+  dir=${path%/*}
+  [ "$dir" = "$path" ] && dir=.
+  base=${path##*/}
+  real=$(cd "$dir" 2>/dev/null && pwd -P) || {
+    SNAPSHOT_FILE_REASON='refused: the directory could not be resolved'
+    return 1
+  }
+  real="$real/$base"
+  case "$real" in
+    "$SNAPSHOT_HOME_REAL"/*) ;;
+    *) SNAPSHOT_FILE_REASON='refused: resolves outside this home'; return 1 ;;
+  esac
+  [ -r "$real" ] || {
+    SNAPSHOT_FILE_REASON='not readable'
+    return 1
+  }
+  return 0
 }
 
 path_present_json() {  # <path>
@@ -255,8 +293,12 @@ crew_state_json() {  # <id>
 }
 
 status_event_json() {  # <status-log>
-  local log=$1 present=0 raw='' verb='' note=''
-  if [ -f "$log" ]; then
+  local log=$1 present=0 available=true reason='' raw='' verb='' note=''
+  if [ "$LOCAL_ONLY" -eq 1 ] && { [ -e "$log" ] || [ -L "$log" ]; } \
+    && ! snapshot_local_file_safe "$log"; then
+    available=false
+    reason=$SNAPSHOT_FILE_REASON
+  elif [ -f "$log" ]; then
     present=1
     raw=$(last_nonempty_line "$log" || true)
     verb=$(status_line_verb "$raw")
@@ -267,19 +309,28 @@ status_event_json() {  # <status-log>
     --arg raw "$raw" \
     --arg verb "$verb" \
     --arg note "$note" \
+    --arg reason "$reason" \
     --argjson present "$(bool_json "$present")" \
-    '{path:$path,present:$present,kind:"event_history",last_event:{state:$verb,note:$note,raw:$raw}}'
+    --argjson available "$(bool_json "$available")" \
+    '{path:$path,present:$present,available:$available,reason:(if $reason == "" then null else $reason end),kind:"event_history",last_event:{state:$verb,note:$note,raw:$raw}}'
 }
 
 first_pr_url_in_file() {  # <file>
+  [ "$LOCAL_ONLY" -eq 0 ] || snapshot_local_file_safe "$1" || return 1
   [ -f "$1" ] || return 1
   grep -Eo 'https?://[^[:space:])"]+/pull/[0-9]+' "$1" 2>/dev/null | head -1
 }
 
 backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
   local backlog=${1:-$BACKLOG}
+  if [ "$LOCAL_ONLY" -eq 1 ] && { [ -e "$backlog" ] || [ -L "$backlog" ]; } \
+    && ! snapshot_local_file_safe "$backlog"; then
+    jq -n --arg path "$backlog" --arg reason "$SNAPSHOT_FILE_REASON" \
+      '{path:$path,present:false,available:false,reason:$reason,records:[]}'
+    return 0
+  fi
   if [ ! -f "$backlog" ]; then
-    jq -n --arg path "$backlog" '{path:$path,present:false,records:[]}'
+    jq -n --arg path "$backlog" '{path:$path,present:false,available:true,reason:"not present",records:[]}'
     return 0
   fi
 
@@ -433,13 +484,14 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
 
 task_json_lines() {
   local meta id kind harness model effort mode yolo project worktree home projects spawn_gen backend target status_log report_path
-  local remote_host remote_root remote_state remote_rc remote_home_present
+  local remote_host remote_root remote_state remote_rc remote_home_present remote_unavailable remote_reason
   local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
   local open_decisions_tsv open_decisions_json
 
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
+    [ "$LOCAL_ONLY" -eq 0 ] || snapshot_local_file_safe "$meta" || continue
     id=$(basename "$meta" .meta)
     kind=$(meta_value "$meta" kind)
     [ -n "$kind" ] || kind=ship
@@ -477,7 +529,17 @@ task_json_lines() {
       pr_source=absent
     fi
 
-    current_json=$(crew_state_json "$id")
+    if [ "$LOCAL_ONLY" -eq 1 ] && { [ -e "$status_log" ] || [ -L "$status_log" ]; } \
+      && ! snapshot_local_file_safe "$status_log"; then
+      current_json=$(jq -n --arg reason "$SNAPSHOT_FILE_REASON" \
+        '{state:"unknown",source:"status-log",detail:("status log unavailable: " + $reason),raw:""}')
+    elif [ "$LOCAL_ONLY" -eq 1 ] && [ -n "$remote_host" ]; then
+      current_json=$(jq -n \
+        --arg detail "remote current state is unavailable in the local-only snapshot" \
+        '{state:"unknown",source:"remote-endpoint",detail:$detail,raw:""}')
+    else
+      current_json=$(crew_state_json "$id")
+    fi
     event_json=$(status_event_json "$status_log")
     last_event_raw=$(printf '%s' "$event_json" | jq -r '.last_event.raw // ""')
     current_state=$(printf '%s' "$current_json" | jq -r '.state // ""')
@@ -500,7 +562,11 @@ task_json_lines() {
     # never clear another concern's keyed decision. A parked/blocked state, or a
     # non-authoritative status-log/none read on a still-live task, keeps the fold's
     # open decision surfacing.
-    open_decisions_tsv=$(status_open_decisions "$status_log")
+    if [ "$LOCAL_ONLY" -eq 1 ] && ! snapshot_local_file_safe "$status_log"; then
+      open_decisions_tsv=""
+    else
+      open_decisions_tsv=$(status_open_decisions "$status_log")
+    fi
     if [ "$kind" != secondmate ] && \
        { { { [ "$current_source" = run-step ] || [ "$current_source" = pane ]; } \
            && [ "$current_state" != parked ] && [ "$current_state" != blocked ]; } \
@@ -516,25 +582,32 @@ task_json_lines() {
 
     endpoint_exists=null
     agent_alive=not_checked
+    remote_unavailable=false
+    remote_reason=
     if [ -n "$remote_host" ]; then
-      if remote_state=$(fm_run_timed "$FM_SNAPSHOT_SECONDMATE_TIMEOUT" \
-        "$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null 2>/dev/null); then
-        remote_rc=0
+      if [ "$LOCAL_ONLY" -eq 1 ]; then
+        remote_unavailable=true
+        remote_reason='remote evidence is unavailable in local-only mode'
       else
-        remote_rc=$?
-      fi
-      if [ "$remote_rc" -eq 0 ]; then
-        remote_home_present=true
-        remote_state=$(printf '%s\n' "$remote_state" | tail -1)
-        case "$remote_state" in
-          alive) endpoint_exists=true; agent_alive=alive ;;
-          dead) endpoint_exists=true; agent_alive=dead ;;
-          missing) endpoint_exists=false; agent_alive=dead ;;
-          *) endpoint_exists=null; agent_alive=unknown ;;
-        esac
-      else
-        endpoint_exists=null
-        agent_alive=unknown
+        if remote_state=$(fm_run_timed "$FM_SNAPSHOT_SECONDMATE_TIMEOUT" \
+          "$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null 2>/dev/null); then
+          remote_rc=0
+        else
+          remote_rc=$?
+        fi
+        if [ "$remote_rc" -eq 0 ]; then
+          remote_home_present=true
+          remote_state=$(printf '%s\n' "$remote_state" | tail -1)
+          case "$remote_state" in
+            alive) endpoint_exists=true; agent_alive=alive ;;
+            dead) endpoint_exists=true; agent_alive=dead ;;
+            missing) endpoint_exists=false; agent_alive=dead ;;
+            *) endpoint_exists=null; agent_alive=unknown ;;
+          esac
+        else
+          endpoint_exists=null
+          agent_alive=unknown
+        fi
       fi
     else
       if [ -n "$target" ]; then
@@ -579,6 +652,7 @@ task_json_lines() {
       --arg target "$target" \
       --arg remote_host "$remote_host" \
       --arg remote_root "$remote_root" \
+      --arg remote_reason "$remote_reason" \
       --arg pr "$pr" \
       --arg pr_source "$pr_source" \
       --arg agent_alive "$agent_alive" \
@@ -591,6 +665,7 @@ task_json_lines() {
       --argjson worktree_path "$worktree_json" \
       --argjson home_path "$home_json" \
       --argjson endpoint_exists "$endpoint_exists" \
+      --argjson remote_unavailable "$remote_unavailable" \
       --argjson open_decisions "$open_decisions_json" \
       --argjson pending_decision "$(bool_json "$pending_decision")" \
       --argjson blocked_event "$(bool_json "$blocked_event")" \
@@ -606,7 +681,8 @@ task_json_lines() {
         project:($project // ""),
         spawn_gen:($spawn_gen | if . == "" then null else . end),
         backend:$backend,
-        remote:(if $remote_host == "" then null else {host:$remote_host,root:$remote_root} end),
+        remote:(if $remote_host == "" then null else {host:$remote_host,root:$remote_root} +
+          (if $remote_unavailable then {evidence:"unavailable",reason:$remote_reason} else {} end) end),
         paths:{
           meta:$meta_path,
           status_log:$status_log,
@@ -855,6 +931,11 @@ registry_secondmates_json() {
       '{present:false,available:true,complete:true,reason:null,provenance:"registered-table",path:$path,freshness:{status:"fresh",observed_at:$observed},records:[],input_truncated:false,records_truncated:false,reasons:[],lines_in_window:0,records_in_window:0}'
     return 0
   fi
+  if [ "$LOCAL_ONLY" -eq 1 ] && ! snapshot_local_file_safe "$reg"; then
+    jq -n --arg path "$reg" --arg observed "$SNAPSHOT_NOW" --arg reason "$SNAPSHOT_FILE_REASON" \
+      '{present:true,available:false,complete:false,reason:$reason,provenance:"registered-table",path:$path,freshness:{status:"unavailable",observed_at:$observed},records:[],input_truncated:false,records_truncated:false,reasons:[$reason],lines_in_window:0,records_in_window:0}'
+    return 0
+  fi
   mode=$(file_mode_octal "$reg")
   if [ -z "$mode" ] || [ $((8#$mode & 0444)) -eq 0 ]; then
     jq -n --arg path "$reg" --arg observed "$SNAPSHOT_NOW" \
@@ -960,6 +1041,11 @@ JQ
 
 bounded_parent_activities_json() {  # <status-file>
   local f=$1 out rc reason script
+  if [ "$LOCAL_ONLY" -eq 1 ] && ! snapshot_local_file_safe "$f"; then
+    jq -n --arg reason "$SNAPSHOT_FILE_REASON" \
+      '{records:[],available:false,input_truncated:false,retained_truncated:false,reasons:[$reason],lines_in_window:0,records_in_window:0}'
+    return 0
+  fi
   if [ ! -f "$f" ]; then
     jq -n '{records:[],available:true,input_truncated:false,retained_truncated:false,reasons:[],lines_in_window:0,records_in_window:0}'
     return 0
@@ -1201,7 +1287,11 @@ secondmate_current_json() {  # <parent-tasks-json>
     activity_scan=$(bounded_parent_activities_json "$status_file")
     activities=$(printf '%s' "$activity_scan" | jq -c '.records')
     decisions=$(printf '%s' "$task" | jq -c '.hints.open_decisions // []')
-    event_epoch=$(file_mtime_epoch "$status_file")
+    if [ "$LOCAL_ONLY" -eq 1 ] && ! snapshot_local_file_safe "$status_file"; then
+      event_epoch=
+    else
+      event_epoch=$(file_mtime_epoch "$status_file")
+    fi
     event_age=null
     if [ -n "$event_epoch" ]; then
       event_age=$((SNAPSHOT_EPOCH - event_epoch))
@@ -1212,7 +1302,11 @@ secondmate_current_json() {  # <parent-tasks-json>
     summary='{}'
     summary_sampled=false
     summary_valid=false
-    if [ -z "$reason" ] && [ -z "$home" ]; then reason="no recorded secondmate home"; fi
+    if [ "$LOCAL_ONLY" -eq 1 ] && [ "$remote" = true ]; then
+      reason="remote evidence unavailable in local-only snapshot"
+    elif [ -z "$reason" ] && [ -z "$home" ]; then
+      reason="no recorded secondmate home"
+    fi
     if [ -z "$reason" ]; then
       case "$home" in
         /*) : ;;
@@ -1220,7 +1314,7 @@ secondmate_current_json() {  # <parent-tasks-json>
       esac
     fi
     if [ -z "$reason" ]; then
-      if [ "$remote" = true ]; then
+      if [ "$remote" = true ] && [ "$LOCAL_ONLY" -eq 0 ]; then
         [ -n "$host" ] || reason="invalid remote route: missing SSH host"
         case " $seen_homes " in
           *" $host:$home "*) reason="invalid home: duplicate resolved remote route" ;;
@@ -1391,7 +1485,7 @@ secondmate_landed_from_current_json() {  # <secondmate-current-json>
 
 scout_report_lines() {
   local report id
-  if [ ! -d "$DATA" ]; then
+  if [ ! -d "$DATA" ] || { [ "$LOCAL_ONLY" -eq 1 ] && [ -L "$DATA" ]; }; then
     jq -n '[]'
     return 0
   fi

@@ -437,7 +437,38 @@ __FM_DASHBOARD_DATA__
     return;
   }
 
-  var snapshot = (data.snapshot && typeof data.snapshot === "object") ? data.snapshot : {};
+  function usableDashboardData(d) {
+    var s = d.snapshot;
+    var b = s && s.backlog;
+    var sup = d.supervision;
+    var wakes = sup && sup.wakes;
+    var reports = d.reports;
+    var usage = d.usage;
+    return typeof d.generated === "string"
+      && typeof d.fm_home === "string"
+      && s && typeof s === "object" && !Array.isArray(s)
+      && s.schema === "fm-fleet-snapshot.v1"
+      && typeof s.generated === "string"
+      && s.roots && typeof s.roots === "object" && !Array.isArray(s.roots)
+      && b && typeof b === "object" && !Array.isArray(b)
+      && typeof b.path === "string" && typeof b.present === "boolean"
+      && Array.isArray(b.records) && Array.isArray(s.tasks)
+      && Array.isArray(s.scout_reports)
+      && s.main_inventory && typeof s.main_inventory === "object"
+      && sup && typeof sup === "object" && typeof sup.healthy === "boolean"
+      && wakes && typeof wakes === "object" && Array.isArray(wakes.records)
+      && Array.isArray(d.events)
+      && reports && typeof reports === "object" && Array.isArray(reports.records)
+      && usage && typeof usage === "object" && usage.budget
+      && typeof usage.budget === "object" && Array.isArray(usage.agents)
+      && Array.isArray(d.degraded);
+  }
+  if (!usableDashboardData(data)) {
+    renderError("Its embedded data is incomplete or unusable.");
+    return;
+  }
+
+  var snapshot = data.snapshot;
   var tasks = arr(snapshot.tasks);
   var backlog = arr(snapshot.backlog && snapshot.backlog.records);
   var events = arr(data.events);
@@ -717,6 +748,10 @@ __FM_DASHBOARD_DATA__
       dash(inventory.reason) + (arr(inventory.orphan_in_flight).length
         ? " Affected: " + arr(inventory.orphan_in_flight).join(", ") : ""));
   }
+  if (snapshot.backlog && snapshot.backlog.available === false) {
+    notice("warn", "Backlog evidence could not be read",
+      dash(snapshot.backlog.reason) + " - " + dash(snapshot.backlog.path));
+  }
   if (!wakes.available) {
     notice("warn", "Queued notifications could not be read", dash(wakes.reason));
   }
@@ -900,6 +935,10 @@ __FM_DASHBOARD_DATA__
         bits.push(r.completion.verb + " " + dash(r.completion.date));
       }
       txt(main, "div", "cp-row__sub", bits.filter(Boolean).join(" - ") || "-");
+      if (r.body_excerpt) {
+        txt(main, "div", "cp-row__sub",
+          "note: " + r.body_excerpt + " (source: " + dash(snapshot.backlog.path) + ")");
+      }
       var side = add(row, el("div", "cp-row__side"));
       if (!r.structured) badge(side, "free-form", "warn");
       if (r.pr_url) externalLink(side, r.pr_url, "PR");
@@ -1087,10 +1126,19 @@ __FM_DASHBOARD_DATA__
     ["state", snapshot.roots && snapshot.roots.state],
     ["data", snapshot.roots && snapshot.roots.data],
     ["projects", snapshot.roots && snapshot.roots.projects],
-    ["backlog", snapshot.backlog && snapshot.backlog.path]
+    ["backlog", snapshot.backlog && snapshot.backlog.path],
+    ["wake queue", (snapshot.roots && snapshot.roots.state) + "/.wake-queue"],
+    ["watch lock", (snapshot.roots && snapshot.roots.state) + "/.watch.lock"],
+    ["watcher heartbeat", (snapshot.roots && snapshot.roots.state) + "/.last-watcher-beat"],
+    ["away marker", (snapshot.roots && snapshot.roots.state) + "/.afk"],
+    ["recovery marker", (snapshot.roots && snapshot.roots.state) + "/.watcher-down"],
+    ["startup memory budget", (snapshot.roots && snapshot.roots.config) + "/startup-memory-budget"],
+    ["startup memory captain.md", (snapshot.roots && snapshot.roots.data) + "/captain.md"],
+    ["startup memory captain-shared.md", (snapshot.roots && snapshot.roots.data) + "/captain-shared.md"],
+    ["startup memory learnings.md", (snapshot.roots && snapshot.roots.data) + "/learnings.md"]
   ];
-  events.forEach(function (e) { if (e.readable) sources.push(["events " + e.task_id, e.path]); });
-  arr(reports.records).forEach(function (r) { if (r.readable) sources.push(["report " + r.id, r.path]); });
+  events.forEach(function (e) { sources.push(["events " + e.task_id, e.path]); });
+  arr(reports.records).forEach(function (r) { sources.push(["report " + r.id, r.path]); });
   tab("sources", "Sources", sources.length);
   var secSources = section("sources", "Exact sources",
     "Every path this page read, unaltered, so any claim here can be checked at its source.");

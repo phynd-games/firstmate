@@ -247,6 +247,21 @@ test_a_missing_runtime_blocks_instead_of_guessing() {
   pass "a missing runtime blocks with a named reason instead of guessing"
 }
 
+test_a_hung_herdr_call_is_bounded_and_blocks() {
+  local home port out
+  home=$(make_home hung-herdr)
+  port=$(free_port)
+  printf '#!/usr/bin/env bash\nsleep 10\n' > "$home/fakebin/hanging-herdr"
+  chmod +x "$home/fakebin/hanging-herdr"
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" \
+    FM_DASHBOARD_PORT="$port" FM_DASHBOARD_HERDR_CLI="$home/fakebin/hanging-herdr" \
+    FM_DASHBOARD_HERDR_TIMEOUT=1 "$START" ensure 2>&1) && :
+  printf '%s' "$out" | grep -q '^FIRSTMATE_DASHBOARD_URL=' \
+    && fail "a URL was printed after a Herdr call hung: $out"
+  assert_contains "$out" "DASHBOARD_BLOCKED" "a hung Herdr call did not produce a blocker"
+  pass "a hung Herdr call is bounded and produces a durable startup blocker"
+}
+
 test_no_free_port_blocks_without_a_url() {
   local home port out
   home=$(make_home no-port)
@@ -302,6 +317,7 @@ test_a_foreign_listener_is_a_collision_not_an_adoption
 test_a_dashboard_for_another_home_is_not_adopted
 test_no_url_is_printed_when_readiness_cannot_be_proven
 test_a_missing_runtime_blocks_instead_of_guessing
+test_a_hung_herdr_call_is_bounded_and_blocks
 test_no_free_port_blocks_without_a_url
 test_status_reports_without_changing_anything
 test_stop_closes_the_pane_and_releases_the_port

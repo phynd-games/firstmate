@@ -13,7 +13,7 @@
 # a human to run, never wired to a control.
 #
 # Authority. This command is a RENDERER, not a second parser of fleet state.
-# Fleet truth comes verbatim from `bin/fm-fleet-snapshot.sh --json`
+# Fleet truth comes verbatim from `bin/fm-fleet-snapshot.sh --local-only --json`
 # (schema `fm-fleet-snapshot.v1`) and is embedded unchanged. Supervision health
 # comes from `fm-wake-lib.sh`'s `fm_watcher_supervision_verdict`, status-line
 # verbs and notes from `fm-classify-lib.sh`, and the token estimate from
@@ -114,6 +114,50 @@ validate_bound FM_DASHBOARD_EVENT_LINES "$FM_DASHBOARD_EVENT_LINES"
 validate_bound FM_DASHBOARD_WAKES "$FM_DASHBOARD_WAKES"
 validate_bound FM_DASHBOARD_REPORTS "$FM_DASHBOARD_REPORTS"
 validate_bound FM_DASHBOARD_REPORT_BYTES "$FM_DASHBOARD_REPORT_BYTES"
+
+payload_is_valid() {  # <payload-file>
+  jq -e '
+    (.schema == "fm-dashboard.v1")
+    and ((.generated | type) == "string")
+    and ((.fm_home | type) == "string")
+    and ((.snapshot | type) == "object")
+    and (.snapshot.schema == "fm-fleet-snapshot.v1")
+    and ((.snapshot.generated | type) == "string")
+    and ((.snapshot.roots | type) == "object")
+    and ((.snapshot.backlog | type) == "object")
+    and ((.snapshot.backlog.path | type) == "string")
+    and ((.snapshot.backlog.present | type) == "boolean")
+    and ((.snapshot.backlog.records | type) == "array")
+    and ((.snapshot.tasks | type) == "array")
+    and ((.snapshot.scout_reports | type) == "array")
+    and ((.snapshot.main_inventory | type) == "object")
+    and ((.supervision | type) == "object")
+    and ((.supervision.healthy | type) == "boolean")
+    and ((.supervision.wakes | type) == "object")
+    and ((.supervision.wakes.records | type) == "array")
+    and ((.events | type) == "array")
+    and ((.reports | type) == "object")
+    and ((.reports.records | type) == "array")
+    and ((.usage | type) == "object")
+    and ((.usage.budget | type) == "object")
+    and ((.usage.agents | type) == "array")
+    and ((.degraded | type) == "array")
+  ' "$1" >/dev/null 2>&1
+}
+
+snapshot_is_valid() {  # <snapshot-file>
+  jq -e '
+    (.schema == "fm-fleet-snapshot.v1")
+    and ((.generated | type) == "string")
+    and ((.fm_home | type) == "string")
+    and ((.roots | type) == "object")
+    and ((.backlog | type) == "object")
+    and ((.backlog.records | type) == "array")
+    and ((.tasks | type) == "array")
+    and ((.scout_reports | type) == "array")
+    and ((.main_inventory | type) == "object")
+  ' "$1" >/dev/null 2>&1
+}
 
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
@@ -393,9 +437,9 @@ compose() {  # -> the fm-dashboard.v1 payload on stdout
   [ -x "$SCRIPT_DIR/fm-fleet-snapshot.sh" ] || fail "bin/fm-fleet-snapshot.sh is missing"
   DEGRADED="$TMP/degraded.jsonl"
   : > "$DEGRADED"
-  "$SCRIPT_DIR/fm-fleet-snapshot.sh" --json > "$snapshot" \
+  "$SCRIPT_DIR/fm-fleet-snapshot.sh" --local-only --json > "$snapshot" \
     || fail "the fleet snapshot failed, so there is nothing trustworthy to render"
-  jq -e --arg schema "$SNAPSHOT_SCHEMA" '.schema == $schema' "$snapshot" >/dev/null 2>&1 \
+  snapshot_is_valid "$snapshot" \
     || fail "the fleet snapshot did not return a $SNAPSHOT_SCHEMA document"
   generated=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   jq -n \
@@ -424,11 +468,69 @@ command_json() {
 build_html() {  # <out-file>
   local out=$1 data="$TMP/payload.json"
   compose > "$data" || exit 1
+  payload_is_valid "$data" || fail "the composed dashboard payload is incomplete or unusable"
   inject_payload "$data" "$out"
+}
+
+OUTPUT_PARENT_REASON=
+output_parent_safe() {  # <out-file>
+  local out=$1 parent candidate anchor resolved home_real
+  OUTPUT_PARENT_REASON=
+  parent=${out%/*}
+  [ "$parent" = "$out" ] && parent=.
+  case "$parent" in
+    /*) candidate=$parent ;;
+    *) candidate="$PWD/$parent" ;;
+  esac
+  anchor=$candidate
+  while [ ! -e "$anchor" ] && [ ! -L "$anchor" ]; do
+    case "$anchor" in
+      ''|/) OUTPUT_PARENT_REASON='the parent path could not be resolved'; return 1 ;;
+    esac
+    anchor=${anchor%/*}
+    [ -n "$anchor" ] || anchor=/
+  done
+  [ ! -L "$anchor" ] || {
+    OUTPUT_PARENT_REASON='an existing parent component is a symlink'
+    return 1
+  }
+  [ -d "$anchor" ] || {
+    OUTPUT_PARENT_REASON='an existing parent component is not a directory'
+    return 1
+  }
+  resolved=$(cd "$anchor" 2>/dev/null && pwd -P) || {
+    OUTPUT_PARENT_REASON='the parent could not be resolved'
+    return 1
+  }
+  home_real=$(cd "$FM_HOME" 2>/dev/null && pwd -P) || {
+    OUTPUT_PARENT_REASON='this home could not be resolved'
+    return 1
+  }
+  case "$resolved" in
+    "$home_real"|"$home_real"/*) ;;
+    *) OUTPUT_PARENT_REASON='the parent resolves outside this home'; return 1 ;;
+  esac
+  mkdir -p "$candidate" || {
+    OUTPUT_PARENT_REASON='the parent could not be created'
+    return 1
+  }
+  [ ! -L "$candidate" ] && [ -d "$candidate" ] || {
+    OUTPUT_PARENT_REASON='the output parent is not a directory'
+    return 1
+  }
+  resolved=$(cd "$candidate" 2>/dev/null && pwd -P) || {
+    OUTPUT_PARENT_REASON='the created parent could not be resolved'
+    return 1
+  }
+  case "$resolved" in
+    "$home_real"|"$home_real"/*) return 0 ;;
+    *) OUTPUT_PARENT_REASON='the parent resolves outside this home'; return 1 ;;
+  esac
 }
 
 inject_payload() {  # <payload-file> <out-file>
   local data=$1 out=$2 json="$TMP/payload.slot" tmp extracted slot
+  payload_is_valid "$data" || fail "the payload is incomplete or unusable: $data"
   [ -f "$TEMPLATE" ] && [ ! -L "$TEMPLATE" ] || fail "the page template is missing: $TEMPLATE"
   slot=$(grep -nxF "$PLACEHOLDER" "$TEMPLATE" | cut -d: -f1)
   case "$slot" in
@@ -453,13 +555,14 @@ inject_payload() {  # <payload-file> <out-file>
   # would fail to parse in the browser fails here instead.
   extracted=$(sed -n '/<script id="fm-dashboard-data" type="application\/json">/,/<\/script>/p' "$tmp" \
     | sed '1d;$d')
-  printf '%s\n' "$extracted" | jq -e --arg schema "$DASH_SCHEMA" '.schema == $schema' >/dev/null 2>&1 \
-    || fail "the built page does not carry a readable $DASH_SCHEMA payload"
+  printf '%s\n' "$extracted" > "$TMP/extracted.json"
+  payload_is_valid "$TMP/extracted.json" \
+    || fail "the built page does not carry a complete readable $DASH_SCHEMA payload"
   if [ "$out" = "-" ]; then
     cat "$tmp"
     return 0
   fi
-  (umask 077; mkdir -p "${out%/*}") || fail "cannot create ${out%/*}"
+  output_parent_safe "$out" || fail "the output parent is not a safe directory inside this home: $OUTPUT_PARENT_REASON"
   if ! chmod 0600 "$tmp"; then
     fail "cannot make the page private before publishing it"
   fi
@@ -496,8 +599,8 @@ command_render() {
   done
   command -v jq >/dev/null 2>&1 || fail "jq is required"
   [ -f "$data" ] && [ ! -L "$data" ] || fail "the payload file does not exist: $data"
-  jq -e --arg schema "$DASH_SCHEMA" '.schema == $schema' "$data" >/dev/null 2>&1 \
-    || fail "the payload is not a readable $DASH_SCHEMA document: $data"
+  payload_is_valid "$data" \
+    || fail "the payload is not a complete readable $DASH_SCHEMA document: $data"
   make_tmp
   inject_payload "$data" "$out"
   [ "$out" = "-" ] || printf 'dashboard: %s\n' "$out"
@@ -542,7 +645,7 @@ command_serve() {
   export FM_DASHBOARD_REPORTS FM_DASHBOARD_REPORT_BYTES
   # Prove the page builds before binding a port, so serve fails closed at
   # startup rather than answering its first request with an error.
-  build_html "$TMP/preflight.html" || exit 1
+  build_html - >/dev/null || exit 1
   printf 'serving: http://127.0.0.1:%s/ (local only; Ctrl-C to stop)\n' "$port"
   FM_DASHBOARD_SELF="$SCRIPT_DIR/fm-dashboard.sh" FM_DASHBOARD_BIND_PORT="$port" \
     FM_DASHBOARD_OWNER_DIGEST="$digest" FM_DASHBOARD_HEALTH_HOME="$FM_HOME" \
