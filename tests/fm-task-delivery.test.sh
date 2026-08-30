@@ -290,6 +290,9 @@ test_promote_requires_and_records_the_delivery_contract() {
   assert_grep 'kind=ship' "$home/state/promote-fetch.meta" "fetched-base promotion did not complete"
   assert_grep 'review_base_ref=origin/approved-base' "$home/state/promote-fetch.meta" \
     "fetched-base promotion changed the approved ref"
+  assert_grep 'Target-project approved base: ref=origin/approved-base;' \
+    "$home/data/promote-fetch/brief.md" \
+    "fetched-base promotion did not persist the resolved approved ref"
 
   local_proj="$TMP_ROOT/promote/local-proj"
   local_wt="$TMP_ROOT/promote/local-wt"
@@ -307,6 +310,37 @@ test_promote_requires_and_records_the_delivery_contract() {
   expect_code 0 "$status" "promotion should accept a matching local approved base without origin"
   assert_grep 'kind=ship' "$home/state/promote-local.meta" "local-base promotion did not complete"
   pass "fm-promote: promotion requires the delivery contract and records it exactly once"
+}
+
+test_promote_strips_base_metadata_from_preserved_task() {
+  local home meta brief out status proj wt base_sha
+  home="$TMP_ROOT/promote-task-base/home"
+  proj="$TMP_ROOT/promote-task-base/proj"
+  wt="$TMP_ROOT/promote-task-base/wt"
+  mkdir -p "$home/state" "$home/data/promote-task-base"
+  fm_git_worktree "$proj" "$wt" "task-promote-task-base"
+  base_sha=$(git -C "$wt" rev-parse HEAD)
+  brief="$home/data/promote-task-base/brief.md"
+  meta="$home/state/promote-task-base.meta"
+  {
+    printf 'You are a crewmate.\n\n# Task\nPreserve this task context.\n'
+    printf 'Target-project approved base: ref=main; sha=%s\n\n# Setup\n' "$base_sha"
+  } > "$brief"
+  printf 'window=fm-promote-task-base\nkind=scout\nworktree=%s\n' "$wt" > "$meta"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" \
+    promote-task-base --mode local-only --yolo off 2>&1)
+  status=$?
+  expect_code 0 "$status" "promotion with task-local base metadata should succeed"
+  assert_contains "$out" "promoted promote-task-base to ship" \
+    "task-local base promotion did not complete"
+  assert_contains "$(cat "$brief")" "Preserve this task context." \
+    "task-local base promotion lost task context"
+  [ "$(grep -c '^Target-project approved base:' "$brief")" = 1 ] \
+    || fail "task-local base promotion emitted duplicate approved-base metadata"
+  assert_grep "Target-project approved base: ref=main; sha=$base_sha" "$brief" \
+    "task-local base promotion did not emit the canonical approved base"
+  pass "fm-promote: preserved task content excludes duplicate base metadata"
 }
 
 test_promote_rejects_unfilled_scout_without_mutation() {
@@ -425,6 +459,7 @@ test_spawn_refuses_a_brief_mode_mismatch
 test_spawn_notices_a_rigor_downgrade_against_the_registry
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
+test_promote_strips_base_metadata_from_preserved_task
 test_promote_rejects_unfilled_scout_without_mutation
 test_promote_restores_scout_when_metadata_publication_fails
 test_project_mode_maps_the_conditional_policy

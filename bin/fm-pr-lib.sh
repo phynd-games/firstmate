@@ -629,24 +629,16 @@ fm_pr_self_review_report_valid() {
       }
       exit 1
     }
-    function substantive(value, surface,    n, parts, i, signal) {
+    function substantive(value, surface,    n, parts, i) {
       n = split(value, parts, "; ")
-      if (n != 5 || parts[1] != "reviewed") return 0
-      if (parts[2] !~ /^files=[^;[:space:]][^;]*$/) return 0
-      if (parts[3] !~ /^evidence=[^;[:space:]][^;]*:[1-9][0-9]* sha256=[0-9a-f]+ [^;[:space:]][^;]*$/) return 0
-      for (i = 4; i <= 5; i++) {
-        if (parts[i] !~ /^(evidence|consequence|fix)=[^;[:space:]][^;]*$/) return 0
+      if (n != 6 || parts[1] != "reviewed" || parts[2] != "surface=" surface) return 0
+      if (parts[3] !~ /^files=[^;[:space:]][^;]*$/) return 0
+      if (parts[4] !~ /^evidence=[^;[:space:]][^;]*:[1-9][0-9]* sha256=[0-9a-f]+ [^;[:space:]][^;]*$/) return 0
+      for (i = 5; i <= 6; i++) {
+        if (parts[i] !~ /^(consequence|fix)=[^;[:space:]][^;]*$/) return 0
         if (parts[i] !~ /=[^;[:space:]][^;]*[[:space:]][^;[:space:]]/) return 0
         if (length(parts[i]) < 12 || parts[i] ~ /=(none|n\/a|x|todo|tbd)$/) return 0
       }
-      signal = tolower(parts[3] " " parts[4] " " parts[5])
-      if (surface == "authority" && signal !~ /(authorit|owner|delivery|merge|no-mistakes)/) return 0
-      if (surface == "security" && signal !~ /(security|trust|private|provenance|tamper|secret|credential|reject|refus|identity)/) return 0
-      if (surface == "path" && signal !~ /(path|worktree|directory|task|travers|symlink|boundary)/) return 0
-      if (surface == "failure" && signal !~ /(fail|error|refus|retry|invalid|malform|fallback|bound)/) return 0
-      if (surface == "tests" && signal !~ /(test|verify|validat|assert|coverage|execute|command|regression)/) return 0
-      if (surface == "documentation" && signal !~ /(doc|brief|skill|contract|agents|generated|record)/) return 0
-      if (surface == "delivery" && signal !~ /(delivery|pr|merge|branch|push|no-mistakes|readiness)/) return 0
       return 1
     }
   ' "$report") || return 1

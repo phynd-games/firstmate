@@ -71,6 +71,11 @@ elif mode == "empty-graph":
     doc["tasks"] = []
 elif mode == "empty-epic":
     doc["epics"][0]["tasks"] = []
+elif mode == "without-default-acceptance":
+    for epic in doc["epics"]:
+        epic["tasks"] = [item for item in epic["tasks"] if item[0] != "E7.14"]
+    doc["tasks"] = [task for task in doc["tasks"] if task["id"] != "E7.14"]
+    doc["task_count"] = len(doc["tasks"])
 else:
     raise SystemExit(f"unknown mutation: {mode}")
 pathlib.Path(output).write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
@@ -279,6 +284,35 @@ test_normalized_manifest() {
   pass "normalized manifest validates hashes, routes, DAG waves, roots, and acceptance reachability"
 }
 
+test_manifest_does_not_impose_source_acceptance_default() {
+  local source="$TMP_ROOT/source-without-default-acceptance.json"
+  local manifest="$TMP_ROOT/manifest-without-default-acceptance.json"
+  local report="$TMP_ROOT/manifest-without-default-acceptance-report.json"
+  mutate_source without-default-acceptance "$source"
+  write_manifest valid "$manifest"
+  python3 - "$manifest" "$source" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+manifest_path, source_path = map(pathlib.Path, sys.argv[1:])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+source_sha = hashlib.sha256(source_path.read_bytes()).hexdigest()
+manifest["source"][0]["sha256"] = source_sha
+manifest_without_hash = dict(manifest)
+manifest_without_hash.pop("manifest_hash", None)
+canonical = (json.dumps(manifest_without_hash, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
+manifest["manifest_hash"] = hashlib.sha256(canonical).hexdigest()
+manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+PY
+  "$CLI" validate-manifest --manifest "$manifest" --source "$source" >"$report" \
+    || fail "manifest validation imposed the undeclared E7.14 source target"
+  json_assert "$report" "r['valid'] is True and r['source_provenance']['source_valid'] is True and r['source_provenance']['validation_errors'] == []" \
+    "manifest validation should accept a source graph without its standalone default acceptance target"
+  pass "manifest validation does not impose an undeclared source acceptance target"
+}
+
 run_invalid_manifest() {
   local mode=$1 expected_code=$2 manifest report rc
   manifest="$TMP_ROOT/manifest-$mode.json"
@@ -436,6 +470,7 @@ test_provenance_rejection
 test_public_api_rejects_malformed_arguments
 test_malformed_source_fixtures
 test_normalized_manifest
+test_manifest_does_not_impose_source_acceptance_default
 test_malformed_manifest_fixtures
 test_malformed_json_limits
 test_long_chain_and_surrogate_inputs

@@ -176,6 +176,7 @@ PROMOTE_RESOLVED_BASE=$(fm_pr_review_base_resolve "$PROMOTE_WT" "$PROMOTE_BASE_R
   exit 1
 }
 [ -n "$PROMOTE_RESOLVED_BASE" ] || { echo "error: scout $ID's approved target base is unavailable" >&2; exit 1; }
+PROMOTE_BASE_REF=$PROMOTE_RESOLVED_BASE
 
 if [ -e "$PROMOTE_BRIEF" ]; then
   [ -f "$PROMOTE_BRIEF" ] || {
@@ -186,6 +187,7 @@ if [ -e "$PROMOTE_BRIEF" ]; then
   if ! awk '
     $0 == "# Task" { in_task = 1; next }
     in_task && ($0 == "# Setup" || $0 == "# Herdr isolation") { exit }
+    in_task && $0 ~ /^Target-project approved base:/ { next }
     in_task { print }
   ' "$PROMOTE_BRIEF" > "$PROMOTE_TASK_TMP"; then
     rm -f -- "$PROMOTE_TASK_TMP"

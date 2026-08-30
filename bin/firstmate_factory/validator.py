@@ -30,6 +30,7 @@ SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 MANIFEST_ID = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+_NO_ACCEPTANCE_TASK = object()
 
 SOURCE_KEYS = {"schema", "title", "generated", "task_count", "epics", "tasks"}
 EPIC_KEYS = {"id", "title", "goal", "phase", "tasks"}
@@ -461,7 +462,7 @@ def validate_source_bytes(
         errors.add("provenance.mismatch", "$", "source bytes do not match the expected SHA-256")
 
     acceptance_targets: list[str] = []
-    if _string(
+    if acceptance_task is not _NO_ACCEPTANCE_TASK and _string(
         acceptance_task, "$.acceptance_task", errors, SOURCE_ID
     ):
         acceptance_targets.append(acceptance_task)
@@ -726,7 +727,9 @@ def validate_execution_manifest_bytes(
         source_provenance["bound_sha256"] = bound_sha256
         source_provenance["matches"] = bound_sha256 == source_sha256
         if isinstance(bound_sha256, str):
-            source_report = validate_source_bytes(source_data, bound_sha256)
+            source_report = validate_source_bytes(
+                source_data, bound_sha256, _NO_ACCEPTANCE_TASK
+            )
             source_provenance["source_valid"] = source_report["valid"]
             source_provenance["validation_errors"] = source_report["errors"]
             source_graph = source_report.get("graph", {})

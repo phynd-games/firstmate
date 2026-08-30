@@ -117,13 +117,13 @@ test_fm_home_parameterization() {
     "Substrate changed files: $empty_digest" \
     'Substrate diff: no substrate diff' \
     '# Surface review' \
-    "Authority: reviewed; files=README.md; evidence=README.md:2 sha256=$surface_digest no-mistakes owns delivery; consequence=readiness is non-authorizing; fix=retain one delivery owner." \
-    "Security: reviewed; files=README.md; evidence=README.md:2 sha256=$surface_digest private report is validated; consequence=tampering is refused; fix=retain identity checks." \
-    "Path: reviewed; files=README.md; evidence=README.md:2 sha256=$surface_digest task path is bound; consequence=wrong worktrees refuse; fix=retain path validation." \
-    "Failure: reviewed; files=README.md; evidence=README.md:2 sha256=$surface_digest unknown versions refuse; consequence=legacy downgrade is blocked; fix=retain fail-closed parsing." \
-    "Tests: reviewed; files=README.md; evidence=README.md:2 sha256=$surface_digest public interface executes; consequence=fixture drift is visible; fix=retain focused coverage." \
-    "Documentation: reviewed; files=README.md; evidence=README.md:2 sha256=$surface_digest brief records launch SHA; consequence=substrate scope is durable; fix=retain generated contract." \
-    "Delivery: reviewed; files=README.md; evidence=README.md:2 sha256=$surface_digest PR creation checks reports; consequence=direct bypasses refuse; fix=retain shared boundary." \
+    "Authority: reviewed; surface=authority; files=README.md; evidence=README.md:2 sha256=$surface_digest changed hunk evidence; consequence=readiness is non-authorizing; fix=retain one delivery owner." \
+    "Security: reviewed; surface=security; files=README.md; evidence=README.md:2 sha256=$surface_digest changed hunk evidence; consequence=tampering is refused; fix=retain identity checks." \
+    "Path: reviewed; surface=path; files=README.md; evidence=README.md:2 sha256=$surface_digest changed hunk evidence; consequence=wrong worktrees refuse; fix=retain path validation." \
+    "Failure: reviewed; surface=failure; files=README.md; evidence=README.md:2 sha256=$surface_digest changed hunk evidence; consequence=legacy downgrade is blocked; fix=retain fail-closed parsing." \
+    "Tests: reviewed; surface=tests; files=README.md; evidence=README.md:2 sha256=$surface_digest changed hunk evidence; consequence=fixture drift is visible; fix=retain focused coverage." \
+    "Documentation: reviewed; surface=documentation; files=README.md; evidence=README.md:2 sha256=$surface_digest changed hunk evidence; consequence=substrate scope is durable; fix=retain generated contract." \
+    "Delivery: reviewed; surface=delivery; files=README.md; evidence=README.md:2 sha256=$surface_digest changed hunk evidence; consequence=direct bypasses refuse; fix=retain shared boundary." \
     '# Verification' \
     'Command: fm-pr-check.sh task-a https://github.com/example/repo/pull/1' \
     'Result: passed' \
