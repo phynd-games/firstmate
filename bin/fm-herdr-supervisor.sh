@@ -119,6 +119,7 @@ RETRY_BASE=${FM_HERDR_SUPERVISOR_RETRY_BASE:-2}
 RETRY_MAX=${FM_HERDR_SUPERVISOR_RETRY_MAX:-60}
 IDLE_INTERVAL=${FM_HERDR_SUPERVISOR_IDLE_INTERVAL:-30}
 UNKNOWN_ARM_TIMEOUT=${FM_HERDR_SUPERVISOR_UNKNOWN_ARM_TIMEOUT:-20}
+UNKNOWN_ARM_RETRY_LIMIT=${FM_HERDR_SUPERVISOR_UNKNOWN_ARM_RETRY_LIMIT:-3}
 # A cycle that closes faster than this is "rapid"; a long consecutive run of
 # them is thrash, not progress. The response is a floor delay plus one durable
 # diagnostic, never stopping supervision - a genuinely busy fleet does produce
@@ -161,6 +162,9 @@ for _fm_hs_int in HEARTBEAT_GRACE READY_TIMEOUT RETRY_LIMIT RETRY_BASE RETRY_MAX
   exit 2
 done
 unset _fm_hs_int
+case "$UNKNOWN_ARM_RETRY_LIMIT" in
+  ''|*[!0-9]*|0) UNKNOWN_ARM_RETRY_LIMIT=3 ;;
+esac
 
 usage() {
   cat <<'EOF'
@@ -1416,6 +1420,19 @@ cmd_ensure() {  # <reason>
   local reason=$1 rc preference
   preference=$(hs_config_preference)
   if ! supervisor_eligible; then
+    if [ "$preference" = off ] && [ -f "$PENDING" ]; then
+      if ! supervisor_lock_acquire "$RECORD_LOCK"; then
+        escalate "config/herdr-supervisor is off, but the pending Herdr cleanup record lock could not be acquired"
+        return 1
+      fi
+      reconcile_pending_locked
+      rc=$?
+      fm_lock_release "$RECORD_LOCK"
+      if [ "$rc" -ne 0 ]; then
+        escalate "config/herdr-supervisor is off, but the pending Herdr cleanup record could not be reconciled"
+        return "$rc"
+      fi
+    fi
     if [ "$preference" = off ] && [ -f "$RECORD" ]; then
       if ! supervisor_lock_acquire "$RECORD_LOCK"; then
         escalate "the supervisor record lock could not be acquired within its bounded retry window"
@@ -1811,9 +1828,10 @@ loop_launch_wait() {  # <pid>
 }
 
 cmd_run() {
-  local self out rc reason failures=0 rapid=0 started ended elapsed delay process_state
+  local self out rc reason failures=0 rapid=0 started ended elapsed delay process_state arm_match
   local LOOP_ARM_OUT
   local LOOP_ARM_UNRESOLVED=0 LOOP_ARM_UNRESOLVED_NEXT=0 LOOP_ARM_UNRESOLVED_REPORTED=0
+  local LOOP_ARM_UNRESOLVED_ATTEMPTS=0 LOOP_ARM_UNRESOLVED_BLOCKED=0
 
   self=${BASHPID:-$$}
   LOOP_OWNER_PID=$self
@@ -1853,13 +1871,29 @@ cmd_run() {
         LOOP_ARM_PID=
         LOOP_ARM_IDENTITY=
         LOOP_ARM_UNRESOLVED=0
+        LOOP_ARM_UNRESOLVED_ATTEMPTS=0
+        LOOP_ARM_UNRESOLVED_BLOCKED=0
         LOOP_ARM_UNRESOLVED_REPORTED=0
         [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT" 2>/dev/null || true
         LOOP_ARM_OUT=
         LOOP_ARM_UNRESOLVED_NEXT=0
         loop_release_claim || true
       else
+        if [ "$LOOP_ARM_UNRESOLVED_BLOCKED" -eq 1 ]; then
+          : > "$HEARTBEAT" 2>/dev/null || true
+          sleep 0.5
+          continue
+        fi
         if [ "$(date +%s)" -ge "$LOOP_ARM_UNRESOLVED_NEXT" ]; then
+          LOOP_ARM_UNRESOLVED_ATTEMPTS=$((LOOP_ARM_UNRESOLVED_ATTEMPTS + 1))
+          if [ "$LOOP_ARM_UNRESOLVED_ATTEMPTS" -ge "$UNKNOWN_ARM_RETRY_LIMIT" ]; then
+            escalate "the arm identity remained unknown after $UNKNOWN_ARM_RETRY_LIMIT bounded termination attempts; retaining the tracked child and supervisor binding"
+            LOOP_ARM_UNRESOLVED_BLOCKED=1
+            LOOP_ARM_UNRESOLVED_REPORTED=1
+            : > "$HEARTBEAT" 2>/dev/null || true
+            sleep 0.5
+            continue
+          fi
           if [ "$(hs_config_preference)" = off ]; then
             escalate "config/herdr-supervisor is off but the arm identity remains unknown; retaining the child and supervisor binding"
           elif harness_owner_provable; then
@@ -1871,6 +1905,8 @@ cmd_run() {
           if loop_stop_arm; then
             [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT" 2>/dev/null || true
             LOOP_ARM_OUT=
+            LOOP_ARM_UNRESOLVED_ATTEMPTS=0
+            LOOP_ARM_UNRESOLVED_BLOCKED=0
             LOOP_ARM_UNRESOLVED_REPORTED=0
             loop_release_claim || true
           else
@@ -1943,6 +1979,8 @@ cmd_run() {
       "$ARM" >"$out" 2>&1 &
     fi
     LOOP_ARM_PID=$!
+    LOOP_ARM_UNRESOLVED_ATTEMPTS=0
+    LOOP_ARM_UNRESOLVED_BLOCKED=0
     if loop_capture_arm_identity; then
       arm_match=0
       while loop_arm_matches; do
@@ -1980,6 +2018,11 @@ cmd_run() {
     if [ "$arm_match" -eq 2 ]; then
       if ! loop_stop_arm; then
         LOOP_ARM_UNRESOLVED=1
+        LOOP_ARM_UNRESOLVED_ATTEMPTS=1
+        if [ "$LOOP_ARM_UNRESOLVED_ATTEMPTS" -ge "$UNKNOWN_ARM_RETRY_LIMIT" ]; then
+          escalate "the arm identity remained unknown after $UNKNOWN_ARM_RETRY_LIMIT bounded termination attempts; retaining the tracked child and supervisor binding"
+          LOOP_ARM_UNRESOLVED_BLOCKED=1
+        fi
         LOOP_ARM_UNRESOLVED_NEXT=$(( $(date +%s) + UNKNOWN_ARM_TIMEOUT + 1 ))
         continue
       fi

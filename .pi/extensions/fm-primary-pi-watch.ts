@@ -58,6 +58,7 @@ type SessionGeneration = {
   child: ChildProcess | null;
   retryTimer: ReturnType<typeof setTimeout> | null;
   retryFailures: number;
+  relinquished: boolean;
   restoring: boolean;
   seq: number;
 };
@@ -186,6 +187,10 @@ function retryMarkLoaded(): void {
 }
 
 function markLoaded(): boolean {
+  if (activeGeneration?.relinquished) {
+    clearMarkerRetry();
+    return false;
+  }
   try {
     lstatSync(blockedMarker);
     return false;
@@ -296,6 +301,7 @@ function createGeneration(): SessionGeneration {
     child: null,
     retryTimer: null,
     retryFailures: 0,
+    relinquished: false,
     restoring: false,
     seq: 0,
   };
@@ -593,7 +599,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   function scheduleRetry(owner: SessionGeneration, message: string, predecessorArmPid: string): void {
-    if (!generationIsLive(owner) || owner.child || owner.retryTimer) return;
+    if (!generationIsLive(owner) || owner.relinquished || owner.child || owner.retryTimer) return;
     const ownership = lockOwnership();
     if (ownership === "other") {
       surfaceFailure(owner, `watcher: FAILED - Pi extension cannot restore continuity because this session no longer owns the lock\n${message}`);
@@ -602,6 +608,14 @@ export default function (pi: ExtensionAPI) {
     owner.retryFailures += 1;
     if (owner.retryFailures > retryLimit) {
       surfaceFailure(owner, `watcher: FAILED - Pi extension could not restore watcher continuity after ${retryLimit} retries\n${message}`);
+      owner.relinquished = true;
+      clearMarkerRetry();
+      if (lockOwnership() === "owned") {
+        try {
+          unlinkSync(marker);
+        } catch {
+        }
+      }
       return;
     }
     const timer = setTimeout(() => {
@@ -631,6 +645,9 @@ export default function (pi: ExtensionAPI) {
 
   function startArm(owner: SessionGeneration, predecessorArmPid = ""): ArmResult {
     if (!generationIsLive(owner)) return { ok: false, message: shuttingDownMessage };
+    if (owner.relinquished) {
+      return { ok: false, message: "watcher: deferred - Pi extension relinquished continuity ownership to the Herdr fallback" };
+    }
     const ownership = lockOwnership();
     if (ownership === "other") return { ok: false, message: "watcher: read-only - session lock is held by another firstmate session" };
     if (ownership === "missing") {
