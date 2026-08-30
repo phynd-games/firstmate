@@ -808,12 +808,22 @@ secondmate_liveness_one() {  # <meta> <id>
     esac
     return 0
   fi
-  if ! backend=$(fm_backend_of_meta "$meta" 2>/dev/null); then
-    # A pre-invariant or non-Herdr record is read-only (hard rule 6): never
-    # relaunch or probe it; the captain retires it through the documented path.
-    echo "SECONDMATE_LIVENESS: secondmate $id: skipped: legacy backend record (backend=${backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
-    return 0
-  fi
+  backend=$(fm_backend_meta_recorded_backend "$meta" 2>/dev/null || true)
+  case "$backend" in
+    herdr) ;;
+    absent|tmux|zellij|orca|cmux)
+      echo "SECONDMATE_LIVENESS: secondmate $id: skipped: legacy backend record (backend=${backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
+      return 0
+      ;;
+    ambiguous|'')
+      echo "SECONDMATE_LIVENESS: secondmate $id: blocked: backend identity is ambiguous or missing; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\""
+      return 0
+      ;;
+    *)
+      echo "SECONDMATE_LIVENESS: secondmate $id: blocked: backend=${backend} is not herdr; declare Herdr and verify with herdr status --json"
+      return 0
+      ;;
+  esac
   target=$(fm_backend_target_of_meta "$meta")
   [ -n "$target" ] || target="$window"
   agent_state=$(fm_backend_agent_state "$backend" "$target")

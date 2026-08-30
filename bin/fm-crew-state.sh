@@ -113,11 +113,21 @@ TASK_TARGET=$(fm_backend_target_of_meta "$META")
 [ -n "$KIND" ] || KIND=ship
 
 if [ -z "$REMOTE_HOST" ]; then
-  TASK_BACKEND=$(fm_backend_of_meta "$META" 2>/dev/null) \
-    || emit unknown legacy-backend "legacy-record: backend=${TASK_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
-  if [ "$TASK_BACKEND" = herdr ]; then
-    fm_backend_herdr_capability_preflight "crew state task $ID" "${TASK_TARGET%%:*}" || exit $?
-  fi
+  TASK_BACKEND=$(fm_backend_meta_recorded_backend "$META" 2>/dev/null || true)
+  case "$TASK_BACKEND" in
+    herdr)
+      fm_backend_herdr_capability_preflight "crew state task $ID" "${TASK_TARGET%%:*}" || exit $?
+      ;;
+    absent|tmux|zellij|orca|cmux)
+      emit unknown legacy-backend "legacy-record: backend=${TASK_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
+      ;;
+    ambiguous|'')
+      emit unknown backend-identity "task backend identity is ambiguous or missing; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\""
+      ;;
+    *)
+      emit unknown backend-identity "task backend=${TASK_BACKEND} is not herdr; declare Herdr and verify with herdr status --json"
+      ;;
+  esac
 fi
 
 # A torn-down (or never-created) worktree has no current state to read. A
@@ -226,11 +236,6 @@ fi
 # herdr task is read through fm_backend_capture. A record whose backend
 # identity is absent or not herdr is a legacy record (AGENTS.md hard rule 6):
 # it is reported as such and never probed, since no read path exists for it.
-TASK_BACKEND=$(fm_backend_of_meta "$META" 2>/dev/null) \
-  || emit unknown legacy-backend "legacy-record: backend=${TASK_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
-if [ "$TASK_BACKEND" = herdr ]; then
-  fm_backend_herdr_capability_preflight "crew state task $ID" "${TASK_TARGET%%:*}" || exit $?
-fi
 BACKEND_TARGET=$TASK_TARGET
 EXPECTED_LABEL="fm-$ID"
 pane_readable() {  # <target>

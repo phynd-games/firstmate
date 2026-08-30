@@ -416,17 +416,21 @@ fm_backend_herdr_session_capability_check() {  # <session>
   local session=$1 status sessions
   fm_backend_herdr_tool_check || return 1
   status=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null) || return 1
-  printf '%s' "$status" | jq -e --argjson minimum "$FM_BACKEND_HERDR_MIN_PROTOCOL" '
+  fm_backend_herdr_server_status_healthy "$status" || return 1
+  sessions=$(fm_backend_herdr_cli "$session" session list --json 2>/dev/null) || return 1
+  printf '%s' "$sessions" | jq -e --arg want "$session" '
+    [.sessions[]? | select(.name == $want and .running == true)] | length == 1
+  ' >/dev/null 2>&1
+}
+
+fm_backend_herdr_server_status_healthy() {  # <status-json>
+  printf '%s' "$1" | jq -e --argjson minimum "$FM_BACKEND_HERDR_MIN_PROTOCOL" '
     (.client.protocol | type == "number")
     and (.server.running == true)
     and (.server.status == "running")
     and (.server.compatible == true)
     and (.server.protocol | type == "number")
     and (.server.protocol >= $minimum)
-  ' >/dev/null 2>&1 || return 1
-  sessions=$(fm_backend_herdr_cli "$session" session list --json 2>/dev/null) || return 1
-  printf '%s' "$sessions" | jq -e --arg want "$session" '
-    [.sessions[]? | select(.name == $want and .running == true)] | length == 1
   ' >/dev/null 2>&1
 }
 
@@ -1466,13 +1470,30 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
 # NOT auto-start the server, so this must run before any workspace/tab/pane
 # call. Bounded poll for the server to report running.
 fm_backend_herdr_server_ensure() {  # <session>
-  local session=$1 running out i
-  running=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null)
-  [ "$running" = "true" ] && return 0
+  local session=$1 running out status i
+  status=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null) || {
+    echo "error: could not read herdr server status for session '$session'; refusing to start or use an unverified server" >&2
+    return 1
+  }
+  running=$(printf '%s' "$status" | jq -r '.server.running // empty' 2>/dev/null) || running=
+  case "$running" in
+    true)
+      fm_backend_herdr_server_status_healthy "$status" || {
+        echo "error: herdr server for session '$session' is unhealthy or below the verified protocol floor; refusing to use it" >&2
+        return 1
+      }
+      return 0
+      ;;
+    false) ;;
+    *)
+      echo "error: herdr server status for session '$session' is unreadable; refusing to start or use an unverified server" >&2
+      return 1
+      ;;
+  esac
   ( fm_backend_herdr_cli "$session" server >/dev/null 2>&1 & ) || return 1
   for i in $(seq 1 20); do
-    running=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null)
-    [ "$running" = "true" ] && return 0
+    status=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null) || status=
+    fm_backend_herdr_server_status_healthy "$status" && return 0
     sleep 0.5
   done
   echo "error: herdr server for session '$session' did not report running within 10s" >&2
@@ -1824,6 +1845,15 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace> [<launcher-
   fm_backend_herdr_version_check || return 1
   session=$(fm_backend_herdr_session)
   fm_backend_herdr_server_ensure "$session" || return 1
+  if ! fm_backend_herdr_session_capability_check "$session" >/dev/null 2>&1; then
+    if declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
+      fm_backend_policy_refuse "Herdr container session $session" herdr \
+        "The native Herdr named-session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'."
+    else
+      echo "error: Herdr named session '$session' failed its native capability check; repair Herdr and verify with 'herdr status --json'." >&2
+    fi
+    return 1
+  fi
   fm_backend_herdr_workspace_ensure "$session" "$cwd" "$relationship" >/dev/null && status=0 || status=$?
   # A 3 already reported the exact placement it refused to guess at; adding the
   # generic message here would bury it.

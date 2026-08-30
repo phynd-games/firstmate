@@ -1358,41 +1358,22 @@ fm_pending_reply_tick() {  # <state-dir>
       awaiting_report|recovery_sent) ;;
       *) continue ;;
     esac
-    backend=tmux
+    backend=
     target=
     busy=unknown
     sm_home=
     harness=
     if [ -f "$meta" ]; then
       remote_host=$(fm_meta_get "$meta" remote_host)
-      recorded_backend=$(fm_backend_meta_recorded_backend "$meta" 2>/dev/null || true)
-      case "$recorded_backend" in
-        absent|tmux|zellij|orca|cmux) continue ;;
-        herdr)
-          if ! fm_backend_validate_task_endpoint "$meta" "$task_id"; then
-            return 2
-          fi
-          backend=herdr
-          ;;
-        ambiguous|'')
-          fm_backend_policy_refuse "pending reply task record $meta" "$recorded_backend" \
-            "Repair or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
-          return 2
-          ;;
-        *)
-          fm_backend_policy_refuse "pending reply task record $meta" "$recorded_backend" \
-            "Declare Herdr in the task record or explicitly migrate it through docs/configuration.md \"Legacy task records\". Task state is preserved."
-          return 2
-          ;;
-      esac
-      target=$(fm_backend_target_of_meta "$meta")
       sm_home=$(fm_meta_get "$meta" home)
       harness=$(fm_meta_get "$meta" harness)
       if [ -n "$remote_host" ]; then
         remote_backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
         case "$remote_backend" in
           absent|tmux|zellij|orca|cmux) continue ;;
-          herdr) ;;
+          herdr)
+            backend=herdr
+            ;;
           ambiguous|'')
             fm_backend_policy_refuse "pending reply remote record $meta" "$remote_backend" \
               "Repair or explicitly migrate this remote task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
@@ -1407,6 +1388,28 @@ fm_pending_reply_tick() {  # <state-dir>
         fm_backend_validate_remote_meta "$meta" "$task_id" >/dev/null 2>&1 || return 2
         target="remote:$task_id"
         sm_home=
+      else
+        recorded_backend=$(fm_backend_meta_recorded_backend "$meta" 2>/dev/null || true)
+        case "$recorded_backend" in
+          absent|tmux|zellij|orca|cmux) continue ;;
+          herdr)
+            if ! fm_backend_validate_task_endpoint "$meta" "$task_id"; then
+              return 2
+            fi
+            backend=herdr
+            ;;
+          ambiguous|'')
+            fm_backend_policy_refuse "pending reply task record $meta" "$recorded_backend" \
+              "Repair or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+            return 2
+            ;;
+          *)
+            fm_backend_policy_refuse "pending reply task record $meta" "$recorded_backend" \
+              "Declare Herdr in the task record or explicitly migrate it through docs/configuration.md \"Legacy task records\". Task state is preserved."
+            return 2
+            ;;
+        esac
+        target=$(fm_backend_target_of_meta "$meta")
       fi
       if [ -n "$target" ]; then
         label="fm-$task_id"
