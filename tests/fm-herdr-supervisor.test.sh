@@ -382,7 +382,7 @@ assert_absent "$HOME3/state/.herdr-supervisor" "an extension-owned home hosts no
 pass "a loaded Pi extension is a provable owner and the supervisor stands down"
 
 # =============================================================================
-# 3a. Either loaded Pi continuity extension is enough to defer takeover.
+# 3a. The loaded Pi watcher extension defers takeover.
 # =============================================================================
 HOME3A=$(new_home pi-watch-extension-only)
 make_arm_stub "$HOME3A/arm.sh" ok
@@ -401,7 +401,31 @@ kill "$PI_WATCH_OWNER_PID" 2>/dev/null || true
 wait "$PI_WATCH_OWNER_PID" 2>/dev/null || true
 assert_contains "$out" "deferred" "one loaded Pi extension defers the supervisor"
 assert_absent "$HOME3A/state/.herdr-supervisor" "one loaded Pi extension hosts no supervisor"
-pass "either individually loaded Pi extension defers takeover"
+pass "the individually loaded Pi watcher extension defers takeover"
+
+# =============================================================================
+# 3aa. The turn-end guard marker alone is not an ownership proof; its fallback
+#      delegates arm and re-arm to Herdr instead of suppressing takeover.
+# =============================================================================
+HOME3AA=$(new_home turnend-extension-only)
+make_arm_stub "$HOME3AA/arm.sh" ok
+fm_write_meta "$HOME3AA/state/turnend-only-task.meta" "window=firstmate:fm-turnend-only-task"
+bash -c 'exec -a pi bash -c "sleep 300 & wait"' &
+PI_TURNEND_OWNER_PID=$!
+printf '%s\n' "$PI_TURNEND_OWNER_PID" > "$HOME3AA/state/.lock"
+fm_test_pid_identity "$PI_TURNEND_OWNER_PID" > "$HOME3AA/state/.lock-pid-identity" \
+  || fail "could not record the turn-end-only Pi session identity"
+version=$(shasum -a 256 "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" | awk '{print "sha256:" $1}')
+printf '%s\n%s\n' "$version" "$PI_TURNEND_OWNER_PID" > "$HOME3AA/state/.pi-turnend-extension-loaded"
+fm_test_pid_identity "$PI_TURNEND_OWNER_PID" >> "$HOME3AA/state/.pi-turnend-extension-loaded" \
+  || fail "could not record the turn-end-only extension marker identity"
+out=$(run_supervisor "$HOME3AA" "$FAKEBIN" ensure 2>&1)
+kill "$PI_TURNEND_OWNER_PID" 2>/dev/null || true
+wait "$PI_TURNEND_OWNER_PID" 2>/dev/null || true
+assert_not_contains "$out" "deferred" "the turn-end marker alone does not defer the supervisor"
+assert_present "$HOME3AA/state/.herdr-supervisor" "the turn-end-only fallback leaves Herdr continuity active"
+pass "the turn-end marker alone does not suppress Herdr takeover"
+stop_loop "$HOME3AA"
 
 # =============================================================================
 # 3b. A marker without process-instance identity never proves Pi ownership.

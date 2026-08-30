@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.js";
 
@@ -13,6 +13,7 @@ const ARM_RETIRE_TIMEOUT_MS = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 
 const REARM_RETRY_BASE_MS = positiveInteger("FM_WATCH_REARM_RETRY_BASE_MS", 250);
 const REARM_RETRY_MAX_MS = positiveInteger("FM_WATCH_REARM_RETRY_MAX_MS", 4000);
 const REARM_RETRY_LIMIT = positiveInteger("FM_WATCH_REARM_RETRY_LIMIT", 5);
+const FAILURE_PERSIST_TIMEOUT_MS = positiveInteger("FM_WATCH_FAILURE_PERSIST_TIMEOUT_MS", 1000);
 
 let child = null;
 let armStatus = "idle";
@@ -263,8 +264,58 @@ function wakePrompt(reason) {
   return `WATCHER FIRED - drain queued wakes with bin/fm-wake-drain.sh and handle the reported wake. Watcher continuity is plugin-owned.\n\n${reason}`;
 }
 
+function persistFailure(paths, reason) {
+  const emergency = `${paths.state}/.watch-arm-emergency`;
+  const temporary = `${emergency}.opencode-${process.pid}-${Date.now()}`;
+  let durableStatus = 1;
+  try {
+    durableStatus = spawnSync(
+      "bash",
+      ["-c", ". \"$FM_ROOT_OVERRIDE/bin/fm-wake-lib.sh\" && fm_recovery_transition \"$FM_STATE_OVERRIDE/.watcher-down\" publish downtime >/dev/null 2>&1 || true; . \"$FM_ROOT_OVERRIDE/bin/fm-wake-lib.sh\" && fm_wake_append check opencode-watch-arm \"$1\"", "fm-opencode-watch-failure", reason],
+      {
+        cwd: paths.root,
+        encoding: "utf8",
+        timeout: FAILURE_PERSIST_TIMEOUT_MS,
+        env: {
+          ...process.env,
+          FM_HOME: paths.home,
+          FM_ROOT_OVERRIDE: paths.root,
+          FM_STATE_OVERRIDE: paths.state,
+          FM_RECOVERY_MARKER_LOCK_TRIES: process.env.FM_RECOVERY_MARKER_LOCK_TRIES || "100",
+          FM_WAKE_APPEND_LOCK_TRIES: process.env.FM_WAKE_APPEND_LOCK_TRIES || "100",
+        },
+      },
+    ).status ?? 1;
+  } catch {
+  }
+  if (durableStatus === 0) return true;
+  let previous = "";
+  try {
+    if (!lstatSync(emergency).isSymbolicLink()) previous = readFileSync(emergency, "utf8");
+  } catch {
+  }
+  try {
+    mkdirSync(paths.state, { recursive: true });
+    writeFileSync(
+      temporary,
+      `${previous}${previous && !previous.endsWith("\n") ? "\n" : ""}at=${Date.now()}\nreason=${reason}\n`,
+    );
+    chmodSync(temporary, 0o600);
+    renameSync(temporary, emergency);
+    return true;
+  } catch {
+    try {
+      unlinkSync(temporary);
+    } catch {
+    }
+    return false;
+  }
+}
+
 function surfaceFailure(paths, client, sessionID, reason) {
-  void sendPrompt(paths, client, sessionID, wakePrompt(reason)).catch(() => {
+  const durable = persistFailure(paths, reason);
+  const message = durable ? reason : `${reason}\nwatcher: FAILED - OpenCode could not persist the recovery alarm or wake escalation`;
+  void sendPrompt(paths, client, sessionID, wakePrompt(message)).catch(() => {
     // OpenCode owns delivery errors; continuity restoration never waits on prompting.
   });
 }

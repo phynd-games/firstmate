@@ -448,7 +448,7 @@ export default function (pi: ExtensionAPI) {
         );
         chmodSync(temporary, 0o600);
         renameSync(temporary, emergency);
-        durable = { status: 0 } as typeof durable;
+        durableStatus = 0;
       } catch {
         try {
           unlinkSync(temporary);

@@ -4,7 +4,8 @@ When this session owns supervision and away mode is not active:
 1. Drain first with `bin/fm-wake-drain.sh`.
    After handling all emitted wakes and reconciling open decisions and unread status lines, run the exact `--ack-through` command printed as `WAKE_ACK_REQUIRED`; until then the work remains durable for idempotent re-handling after interruption.
 2. Confirm the Pi primary auto-loaded both project extensions (plain `pi` or `pi-signed`, after approving project trust once per clone); if not, restart the selected executable with `-e __FM_PI_TURNEND_EXT__ -e __FM_PI_EXT__` as a trust-free fallback.
-3. The extension automatically starts the first cycle on `session_start`, including startup, `/new`, `/resume`, `/fork`, and reload, and rechecks the cycle on compaction and session idle.
+3. The watcher extension automatically starts the first cycle on `session_start`, including startup, `/new`, `/resume`, `/fork`, and reload, and rechecks the cycle on compaction and session idle.
+   If only the turn-end guard is loaded, it delegates the same arm and re-arm checks to the Herdr continuity owner instead of suppressing takeover.
    Use `fm_watch_arm_pi` or `/fm-watch-arm-pi` only as a human-entered fallback after a notification reports missing, failed, or unhealthy continuity.
    Never run `bin/fm-watch-arm.sh` through Pi's bash tool because that foreground arm can wedge the agent and bypasses extension-owned cleanup.
 4. If the extension says no live session holds the lock, run `bin/fm-session-start.sh` to reclaim the session lock, then call `fm_watch_arm_pi` again.

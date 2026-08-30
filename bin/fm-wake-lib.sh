@@ -212,21 +212,16 @@ fm_pi_extension_loaded() {
 }
 
 # fm_pi_extension_owns_supervision <state> <root>
-# True when a LIVE Pi session owns supervision continuity for this home: any
-# primary extension loaded at its current on-disk build by the process recorded
-# in this home's session lock, with that process still alive.
+# True when a LIVE Pi session owns supervision continuity for this home: the
+# primary watcher extension loaded at its current on-disk build by the process
+# recorded in this home's session lock, with that process still alive.
 fm_pi_extension_owns_supervision() {
-  local state=$1 root=$2 lock pair source marker version
+  local state=$1 root=$2 lock source marker version
   lock="$state/.lock"
-  for pair in \
-    "fm-primary-pi-watch.ts:.pi-watch-extension-loaded" \
-    "fm-primary-turnend-guard.ts:.pi-turnend-extension-loaded"; do
-    source=${pair%%:*}
-    marker=${pair#*:}
-    version=$(fm_pi_extension_version "$root/.pi/extensions/$source") || continue
-    fm_pi_extension_loaded "$state/$marker" "$version" "$lock" && return 0
-  done
-  return 1
+  source=fm-primary-pi-watch.ts
+  marker=.pi-watch-extension-loaded
+  version=$(fm_pi_extension_version "$root/.pi/extensions/$source") || return 1
+  fm_pi_extension_loaded "$state/$marker" "$version" "$lock"
 }
 
 # fm_watcher_supervision_verdict <state> <watch-path> [grace] [home] [root]
