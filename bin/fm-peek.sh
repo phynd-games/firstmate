@@ -30,13 +30,25 @@ if [ -n "$REMOTE_META" ] && [ -n "$(fm_meta_get "$REMOTE_META" remote_host)" ]; 
     fm_backend_refuse_remote_task_endpoint "$REMOTE_META" "$REMOTE_ID"
     exit 1
   }
-  "$SCRIPT_DIR/fm-guard.sh" || true
+  remote_guard_output=$("$SCRIPT_DIR/fm-guard.sh" 2>&1 || true)
   case "$N" in ''|*[!0-9]*|0) N=40 ;; esac
   [ "$N" -le 100 ] || N=100
-  if ! FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-on.sh" "$REMOTE_ID" \
-    fm-remote-secondmate-control.sh capture "$REMOTE_ID" "$N" < /dev/null; then
-    echo "error: could not read the remote pane of $REMOTE_ID on $REMOTE_HOST (host unreachable or endpoint unreadable; the mate is not thereby dead)" >&2
-    exit 1
+  remote_output= remote_rc=0
+  if remote_output=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-on.sh" "$REMOTE_ID" \
+    fm-remote-secondmate-control.sh capture "$REMOTE_ID" "$N" < /dev/null 2>&1); then
+    [ -z "$remote_guard_output" ] || printf '%s\n' "$remote_guard_output" >&2
+    [ -z "$remote_output" ] || printf '%s\n' "$remote_output"
+  else
+    remote_rc=$?
+    remote_refusal=$(printf '%s\n' "$remote_output" | sed -n '/^REFUSED: /{p;q;}')
+    if [ -n "$remote_refusal" ]; then
+      printf '%s\n' "$remote_refusal" >&2
+    else
+      [ -z "$remote_guard_output" ] || printf '%s\n' "$remote_guard_output" >&2
+      [ -z "$remote_output" ] || printf '%s\n' "$remote_output" >&2
+      echo "error: could not read the remote pane of $REMOTE_ID on $REMOTE_HOST (host unreachable or endpoint unreadable; the mate is not thereby dead)" >&2
+    fi
+    exit "$remote_rc"
   fi
   exit 0
 fi

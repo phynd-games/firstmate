@@ -104,7 +104,39 @@ test_remote_peek_unreachable_fails_loudly_without_death_claim() {
   pass "fm-peek remote: an unreachable host fails loudly without a false death claim"
 }
 
+test_remote_peek_forwards_single_refusal() {
+  local dir fb home touched rc out err lines
+  dir="$TMP_ROOT/peek-refused"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir")
+  home=$(setup_remote_home peek-refused)
+  touched="$dir/tmux-touched"; : > "$touched"
+
+  set +e
+  out=$(env PATH="$fb:$PATH" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_SSH_BIN="$fb/fake-ssh" FM_FAKE_SSH_RC=2 \
+    FM_FAKE_REMOTE_CAPTURE='REFUSED: remote Herdr capability is unavailable; repair Herdr and verify with herdr status --json' \
+    FM_FAKE_TMUX_TOUCHED="$touched" \
+    "$PEEK" rsm 20 2>"$dir/err")
+  rc=$?
+  set -e
+  err=$(cat "$dir/err")
+  lines=$(printf '%s\n' "$err" | wc -l | tr -d ' ')
+  [ "$rc" -ne 0 ] || fail "a refused remote peek must exit nonzero"
+  [ -z "$out" ] || fail "a refused remote peek must not emit stdout"
+  [ "$lines" -eq 1 ] || fail "a refused remote peek must emit exactly one diagnostic: $err"
+  case "$err" in
+    "REFUSED: remote Herdr capability is unavailable;"*) : ;;
+    *) fail "a refused remote peek did not forward the Herdr refusal: $err" ;;
+  esac
+  assert_not_contains "$err" "could not read" \
+    "a policy refusal must not gain a generic peek error"
+  [ ! -s "$touched" ] || fail "the local tmux adapter was consulted after remote refusal"
+  pass "fm-peek remote: capability refusals stay single-line and stderr-only"
+}
+
 test_remote_peek_reads_remote_pane
 test_remote_peek_unreachable_fails_loudly_without_death_claim
+test_remote_peek_forwards_single_refusal
 
 echo "all fm-peek-remote tests passed"
