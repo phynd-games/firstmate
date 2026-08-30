@@ -1634,7 +1634,7 @@ const startup = makePi();
 mod.default(startup.pi);
 await startup.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
 const first = await startup.getTool().execute("startup", {}, undefined, undefined, {});
-if (!first.details?.ok || !String(first.details.message).includes("started Pi extension arm child")) {
+if (!first.details?.ok || !String(first.details.message).includes("already owns an arm child")) {
   throw new Error(`startup arm failed: ${JSON.stringify(first.details)}`);
 }
 await waitFor(() => {

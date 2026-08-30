@@ -427,8 +427,11 @@ pending_resolve_creation() {
     && [ "$HS_SOCKET_IDENTITY" = "$socket_identity" ] || return 1
   list=$(herdr_workspace_control "$socket" "$socket_identity" list 2>/dev/null) || return 1
   matches=$(printf '%s' "$list" | jq -r --arg label "$label" \
-    '.result.workspaces[]? | select(.label == $label) | .workspace_id' 2>/dev/null)
+    'if (.result.workspaces | type) != "array" then error("workspace list is not an array") else .result.workspaces[] | select(.label == $label) | .workspace_id end' 2>/dev/null) || return 1
   count=$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d '[:space:]')
+  if [ "$count" = 0 ]; then
+    return 2
+  fi
   [ "$count" = 1 ] || return 1
   workspace=$(printf '%s\n' "$matches" | sed -n '1p')
   tab=$(pending_get tab || printf unknown)
@@ -743,7 +746,7 @@ hs_config_preference() {
 # this home right now. Only positive, durable evidence counts; the absence of
 # evidence is never read as the presence of an owner.
 harness_owner_provable() {
-  local away_state away_pid away_owner away_recorded away_current away_key
+  local read_only=${1:-0} away_state away_pid away_owner away_recorded away_current away_key
   HS_DEFER_REASON=
   if fm_supervision_claim_held_by_other "$SUPERVISION_CLAIM"; then
     HS_DEFER_REASON="another continuity owner is completing its ownership claim"
@@ -760,7 +763,7 @@ harness_owner_provable() {
     )
     case "$away_state" in
       live)
-        rm -f "$AWAY_AMBIGUOUS" 2>/dev/null || true
+        [ "$read_only" = 1 ] || rm -f "$AWAY_AMBIGUOUS" 2>/dev/null || true
         HS_DEFER_REASON="away mode is active and its daemon owns supervision"
         return 0
         ;;
@@ -773,14 +776,14 @@ harness_owner_provable() {
         away_recorded=$(cat "$away_owner/pid-identity" 2>/dev/null || printf '')
         away_current=$(fm_pid_identity "$away_pid" 2>/dev/null || printf '')
         away_key="${away_pid:-unknown}:${away_recorded:-missing}:${away_current:-unknown}"
-        if [ "$(cat "$AWAY_AMBIGUOUS" 2>/dev/null || printf '')" != "$away_key" ]; then
+        if [ "$read_only" = 0 ] && [ "$(cat "$AWAY_AMBIGUOUS" 2>/dev/null || printf '')" != "$away_key" ]; then
           printf '%s\n' "$away_key" > "$AWAY_AMBIGUOUS" 2>/dev/null || true
           escalate "away mode has an ambiguous live daemon lock; refusing a second continuity owner"
         fi
         HS_DEFER_REASON="away mode has an ambiguous live daemon lock; continuity is quarantined"
         return 0
         ;;
-      *) rm -f "$AWAY_AMBIGUOUS" 2>/dev/null || true ;;
+      *) [ "$read_only" = 1 ] || rm -f "$AWAY_AMBIGUOUS" 2>/dev/null || true ;;
     esac
   fi
   if fm_pi_extension_owns_supervision "$STATE" "$FM_ROOT" 2>/dev/null; then
@@ -1322,7 +1325,12 @@ reconcile_pending_locked() {
   record_workspace=$(record_get workspace || printf '')
   record_cleanup_state=$(record_get cleanup_state || printf open)
   if [ "$create_state" = creating ] && [ -z "$workspace" ]; then
-    pending_resolve_creation || return 1
+    pending_resolve_creation
+    case "$?" in
+      0) ;;
+      2) pending_clear || return 1; return 0 ;;
+      *) pending_restore_record quarantine || true; return 1 ;;
+    esac
     workspace=$(pending_get workspace || printf '')
   fi
   if [ "$record_mode" = active ] \
@@ -1478,7 +1486,7 @@ cmd_status() {  # <verbose>
   else
     printf 'eligible: no (%s)\n' "$HS_INELIGIBLE_REASON"
   fi
-  if harness_owner_provable; then
+  if harness_owner_provable 1; then
     printf 'other-owner: yes (%s)\n' "$HS_DEFER_REASON"
   else
     printf 'other-owner: no\n'
@@ -1613,9 +1621,62 @@ loop_wait_unknown_arm() {
   wait "$pid" 2>/dev/null || true
 }
 
+loop_arm_parent_matches() {
+  local pid=${LOOP_ARM_PID:-} parent
+  [ -n "$pid" ] || return 1
+  parent=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  [ "$parent" = "$LOOP_OWNER_PID" ]
+}
+
+loop_stop_unknown_arm() {
+  local pid=${LOOP_ARM_PID:-} process_state parent i=0
+  [ -n "$pid" ] && loop_arm_parent_matches || return 1
+  kill -TERM "$pid" 2>/dev/null || return 1
+  while [ "$i" -lt 20 ]; do
+    process_state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    if [ -z "$process_state" ] || [[ "$process_state" == Z* ]]; then
+      break
+    fi
+    sleep 0.05
+    i=$((i + 1))
+  done
+  process_state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  if [ -n "$process_state" ] && [[ "$process_state" != Z* ]]; then
+    parent=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    [ "$parent" = "$LOOP_OWNER_PID" ] || return 1
+    kill -KILL "$pid" 2>/dev/null || return 1
+    i=0
+    while [ "$i" -lt 20 ]; do
+      process_state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+      if [ -z "$process_state" ] || [[ "$process_state" == Z* ]]; then
+        break
+      fi
+      sleep 0.05
+      i=$((i + 1))
+    done
+  fi
+  process_state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  [ -z "$process_state" ] || [[ "$process_state" == Z* ]] || return 1
+  wait "$pid" 2>/dev/null || true
+  LOOP_ARM_PID=
+  LOOP_ARM_IDENTITY=
+  LOOP_ARM_UNRESOLVED=0
+  LOOP_ARM_UNRESOLVED_NEXT=0
+  return 0
+}
+
 loop_stop_arm() {
   local pid=${LOOP_ARM_PID:-} current process_state i=0
   [ -n "$pid" ] || return 0
+  if [ -n "$LOOP_ARM_IDENTITY" ] && ! loop_arm_matches; then
+    i=0
+    while [ "$i" -lt 20 ] && fm_pid_alive "$pid"; do
+      current=$(fm_pid_identity "$pid" 2>/dev/null || printf '')
+      [ -n "$current" ] && break
+      sleep 0.05
+      i=$((i + 1))
+    done
+  fi
   if loop_arm_matches; then
     kill -TERM "$pid" 2>/dev/null || true
     while loop_arm_matches && [ "$i" -lt 20 ]; do
@@ -1657,7 +1718,7 @@ loop_stop_arm() {
     fi
     wait "$pid" 2>/dev/null || true
   else
-    if ! loop_wait_unknown_arm; then
+    if ! loop_stop_unknown_arm && ! loop_wait_unknown_arm; then
       LOOP_ARM_UNRESOLVED=1
       LOOP_ARM_UNRESOLVED_NEXT=$(( $(date +%s) + UNKNOWN_ARM_TIMEOUT + 1 ))
       return 1
@@ -1758,7 +1819,7 @@ loop_launch_wait() {  # <pid>
 cmd_run() {
   local self out rc reason failures=0 rapid=0 started ended elapsed delay process_state
   local LOOP_ARM_OUT
-  local LOOP_ARM_UNRESOLVED=0 LOOP_ARM_UNRESOLVED_NEXT=0
+  local LOOP_ARM_UNRESOLVED=0 LOOP_ARM_UNRESOLVED_NEXT=0 LOOP_ARM_UNRESOLVED_REPORTED=0
 
   self=${BASHPID:-$$}
   LOOP_OWNER_PID=$self
@@ -1798,12 +1859,13 @@ cmd_run() {
         LOOP_ARM_PID=
         LOOP_ARM_IDENTITY=
         LOOP_ARM_UNRESOLVED=0
+        LOOP_ARM_UNRESOLVED_REPORTED=0
         [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT" 2>/dev/null || true
         LOOP_ARM_OUT=
         LOOP_ARM_UNRESOLVED_NEXT=0
         loop_release_claim || true
       else
-        if [ "$(date +%s)" -ge "$LOOP_ARM_UNRESOLVED_NEXT" ]; then
+        if [ "$LOOP_ARM_UNRESOLVED_REPORTED" -eq 0 ] && [ "$(date +%s)" -ge "$LOOP_ARM_UNRESOLVED_NEXT" ]; then
           if [ "$(hs_config_preference)" = off ]; then
             escalate "config/herdr-supervisor is off but the arm identity remains unknown; retaining the child and supervisor binding"
           elif harness_owner_provable; then
@@ -1812,6 +1874,7 @@ cmd_run() {
             escalate "the arm identity remains unknown after its bounded wait; retaining the tracked child and supervisor binding"
           fi
           LOOP_ARM_UNRESOLVED_NEXT=$(( $(date +%s) + UNKNOWN_ARM_TIMEOUT + 1 ))
+          LOOP_ARM_UNRESOLVED_REPORTED=1
         fi
         : > "$HEARTBEAT" 2>/dev/null || true
         sleep 0.5
@@ -1910,9 +1973,10 @@ cmd_run() {
     else
       arm_match=2
       escalate "the foreground watcher arm process identity became unknown or changed; retaining the child without signaling a recycled pid"
+      LOOP_ARM_UNRESOLVED_REPORTED=1
     fi
     if [ "$arm_match" -eq 2 ]; then
-      if ! loop_wait_unknown_arm; then
+      if ! loop_stop_arm; then
         LOOP_ARM_UNRESOLVED=1
         LOOP_ARM_UNRESOLVED_NEXT=$(( $(date +%s) + UNKNOWN_ARM_TIMEOUT + 1 ))
         continue

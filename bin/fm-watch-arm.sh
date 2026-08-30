@@ -514,42 +514,64 @@ child_status() {
   return 1
 }
 stop_child_bounded() {
-  local current i=0 status
+  local current child_parent i=0 status
   [ -n "$child" ] || return 0
   child_status
   status=$?
   case "$status" in
     0) wait "$child" 2>/dev/null || true; return 0 ;;
-    2) return 1 ;;
+    2) : ;;
   esac
   current=$(fm_pid_identity "$child" 2>/dev/null || true)
-  if [ -z "$child_identity" ]; then
-    [ -n "$current" ] || return 1
-    child_identity=$current
+  if [ -n "$child_identity" ]; then
+    [ "$current" = "$child_identity" ] || return 1
+  else
+    child_parent=$(ps -o ppid= -p "$child" 2>/dev/null | tr -d '[:space:]')
+    [ "$child_parent" = "${BASHPID:-$$}" ] || return 1
   fi
-  [ "$current" = "$child_identity" ] || return 1
   kill -TERM "$child" 2>/dev/null || true
   while [ "$i" -lt 20 ]; do
     child_status
     status=$?
     [ "$status" -eq 0 ] && break
-    [ "$status" -eq 2 ] && return 1
+    if [ "$status" -eq 2 ]; then
+      sleep 0.05
+      i=$((i + 1))
+      continue
+    fi
     sleep 0.05
     i=$((i + 1))
   done
   child_status
   status=$?
-  [ "$status" -eq 2 ] && return 1
-  if [ "$status" -eq 1 ]; then
+  if [ "$status" -eq 2 ]; then
     current=$(fm_pid_identity "$child" 2>/dev/null || true)
-    [ -n "$current" ] && [ "$current" = "$child_identity" ] || return 1
+    if [ -n "$child_identity" ]; then
+      [ "$current" = "$child_identity" ] || return 1
+    else
+      child_parent=$(ps -o ppid= -p "$child" 2>/dev/null | tr -d '[:space:]')
+      [ "$child_parent" = "${BASHPID:-$$}" ] || return 1
+    fi
+  fi
+  if [ "$status" -eq 1 ] || [ "$status" -eq 2 ]; then
+    if [ -n "$child_identity" ]; then
+      current=$(fm_pid_identity "$child" 2>/dev/null || true)
+      [ "$current" = "$child_identity" ] || return 1
+    else
+      child_parent=$(ps -o ppid= -p "$child" 2>/dev/null | tr -d '[:space:]')
+      [ "$child_parent" = "${BASHPID:-$$}" ] || return 1
+    fi
     kill -KILL "$child" 2>/dev/null || true
     i=0
     while [ "$i" -lt 20 ]; do
       child_status
       status=$?
       [ "$status" -eq 0 ] && break
-      [ "$status" -eq 2 ] && return 1
+      if [ "$status" -eq 2 ]; then
+        sleep 0.05
+        i=$((i + 1))
+        continue
+      fi
       sleep 0.05
       i=$((i + 1))
     done
@@ -560,8 +582,9 @@ stop_child_bounded() {
   wait "$child" 2>/dev/null || true
 }
 cleanup_child() {
-  local status
-  while :; do
+  local status attempts=0 max_attempts=${FM_WATCH_ARM_CLEANUP_TRIES:-40}
+  case "$max_attempts" in ''|*[!0-9]*|0) max_attempts=40 ;; esac
+  while [ "$attempts" -lt "$max_attempts" ]; do
     if stop_child_bounded; then
       break
     fi
@@ -571,11 +594,39 @@ cleanup_child() {
       0) wait "$child" 2>/dev/null || true; break ;;
       1|2) sleep 0.05 ;;
     esac
+    attempts=$((attempts + 1))
   done
+  if [ "$attempts" -ge "$max_attempts" ]; then
+    fm_recovery_transition "$STATE/.watcher-down" publish arm-child-termination-unconfirmed >/dev/null 2>&1 || true
+    return 1
+  fi
   if [ -n "$child_out" ]; then
     rm -f "$child_out" 2>/dev/null || true
   fi
   return 0
+}
+
+hold_child_tracked() {
+  local status current child_parent
+  while [ -n "$child" ]; do
+    if stop_child_bounded; then
+      child=
+      break
+    fi
+    if [ -n "$child_identity" ]; then
+      current=$(fm_pid_identity "$child" 2>/dev/null || true)
+      [ "$current" = "$child_identity" ] && kill -KILL "$child" 2>/dev/null || true
+    else
+      child_parent=$(ps -o ppid= -p "$child" 2>/dev/null | tr -d '[:space:]')
+      [ "$child_parent" = "${BASHPID:-$$}" ] && kill -KILL "$child" 2>/dev/null || true
+    fi
+    child_status
+    status=$?
+    case "$status" in
+      0) wait "$child" 2>/dev/null || true; child=; break ;;
+      1|2) sleep 1 ;;
+    esac
+  done
 }
 
 # shellcheck disable=SC2329 # Invoked indirectly by the signal traps below.
@@ -584,6 +635,7 @@ handle_arm_signal() {
   trap - HUP TERM INT
   if ! cleanup_child; then
     cycle_log_append "$rc" "$signal" arm-interrupted-unconfirmed none
+    hold_child_tracked
     exit "$rc"
   fi
   cycle_log_append "$rc" "$signal" arm-interrupted none
@@ -675,6 +727,7 @@ while :; do
         if ! cleanup_child; then
           cycle_log_append 1 none handling-handoff-termination-unconfirmed none
           echo "watcher: FAILED - watcher termination could not be confirmed" >&2
+          hold_child_tracked
           exit 1
         fi
         cycle_log_append 1 none handling-handoff-failed none
@@ -714,6 +767,7 @@ print_watch_output "$child_out"
 if ! cleanup_child; then
   cycle_log_append 1 none confirmation-timeout-termination-unconfirmed none
   echo "watcher: FAILED - watcher termination could not be confirmed" >&2
+  hold_child_tracked
   exit 1
 fi
 rc=1
