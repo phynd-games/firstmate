@@ -674,6 +674,7 @@ SPAWN_META_LOCK_HELD=0
 SPAWN_META_PUBLISH_STARTED=0
 SPAWN_TASK_SET_LOCK=
 SPAWN_TASK_SET_LOCK_HELD=0
+SPAWN_FRESHEN_APPROVED_REF=
 RELAUNCH_REPLACEMENT_PENDING=0
 RELAUNCH_REPLACEMENT_BUSY_GEN=
 RELAUNCH_REPLACEMENT_HARNESS=
@@ -1794,6 +1795,7 @@ EOF
 
 freshen_spawn_worktree_base() {  # <worktree> [<approved-ref> <approved-sha>]
   local worktree=$1 approved_ref=${2-} approved_sha=${3-} default target expected actual status resolved remote_ref
+  SPAWN_FRESHEN_APPROVED_REF=$approved_ref
   if ! git -C "$worktree" fetch --quiet origin; then
     echo "error: could not fetch origin for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
     return 1
@@ -1819,10 +1821,12 @@ freshen_spawn_worktree_base() {  # <worktree> [<approved-ref> <approved-sha>]
           }
           ;;
         *)
-          git -C "$worktree" fetch --quiet origin "+refs/heads/$target:refs/heads/$target" || {
+          remote_ref=$target
+          git -C "$worktree" fetch --quiet origin "+refs/heads/$remote_ref:refs/remotes/origin/$remote_ref" || {
             echo "error: could not fetch approved base '$target' for pooled worktree '$worktree'" >&2
             return 1
           }
+          target="origin/$remote_ref"
           ;;
       esac
       resolved=$(git -C "$worktree" rev-parse --verify --quiet "$target^{commit}" 2>/dev/null || true)
@@ -1850,6 +1854,7 @@ freshen_spawn_worktree_base() {  # <worktree> [<approved-ref> <approved-sha>]
       return 1
     }
   fi
+  SPAWN_FRESHEN_APPROVED_REF=$target
   status=$(git -C "$worktree" -c core.quotePath=false status --porcelain) || {
     echo "error: could not inspect pooled worktree '$worktree' before refreshing its base" >&2
     return 1
@@ -2402,6 +2407,9 @@ EOF
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" "$REVIEW_BASE_REF" "$REVIEW_BASE_SHA" || exit 1
+  if [ "$REVIEW_BASE_DEFAULT" -eq 0 ] && [ -n "$SPAWN_FRESHEN_APPROVED_REF" ]; then
+    REVIEW_BASE_REF=$SPAWN_FRESHEN_APPROVED_REF
+  fi
   if [ "$KIND" = ship ] && [ "$REVIEW_BASE_DEFAULT" -eq 1 ]; then
     REVIEW_BASE_REF=$(fm_pr_default_branch "$WT") || {
       echo "error: could not resolve the task's approved target base" >&2

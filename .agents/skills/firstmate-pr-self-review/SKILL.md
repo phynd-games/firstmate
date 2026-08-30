@@ -61,7 +61,7 @@ The required headings below must appear exactly once and in the listed order, wi
 The target-project section must contain a canonical `Target repository:` worktree path, non-empty `Base ref:` and `Tree status: clean` fields, full lowercase-hex `Base SHA:`, `Head SHA:`, and `Merge-base SHA:` fields, and a 64-character lowercase-hex `Changed files:` digest of the exact name-status inventory.
 The substrate section must contain full lowercase-hex `Substrate base SHA:` and `Substrate head SHA:` fields plus a 64-character lowercase-hex `Substrate changed files:` digest of the exact name-status inventory.
 The findings section must contain `Review status: complete`, a non-negative `Finding count:`, and either `Finding summary: none` for zero findings or one `Finding:` record per finding with severity, path, evidence, consequence, and required fix.
-The surface section must contain `Authority:`, `Security:`, `Path:`, `Failure:`, `Tests:`, `Documentation:`, and `Delivery:` fields in the form `reviewed; files=<...>; evidence=<...>; consequence=<...>; fix=<...>`.
+The surface section must contain `Authority:`, `Security:`, `Path:`, `Failure:`, `Tests:`, `Documentation:`, and `Delivery:` fields in the form `reviewed; files=<...>; evidence=<...>; consequence=<...>; fix=<...>`, with each line naming a signal specific to that review surface.
 The verification section must contain at least one non-empty `Command:` field and one non-empty `Result:` field.
 
 1. `Findings` with severity, `path:line`, evidence, consequence, and required fix for each issue.

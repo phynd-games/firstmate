@@ -3,8 +3,8 @@
 # worktree, and loaded context; only the contract changes. Flips kind= to ship in
 # state/<task-id>.meta so fm-teardown.sh applies the full ship-task teardown protection
 # again. After promoting, send the crewmate its ship instructions via fm-send.sh
-# (inventory scratch state, reset to a clean default-branch base, carry over only
-# intended fix changes, create branch fm/<task-id>, implement, then report done
+# (inventory scratch state, preserve only intended changes on the approved target
+# base, create branch fm/<task-id>, implement, then report done
 # according to this task's delivery mode).
 # A scout records no delivery posture, so promotion is where this task's delivery
 # contract is decided: --mode and --yolo are REQUIRED and written into the meta
@@ -120,6 +120,15 @@ PROMOTE_WT=$(fmx_meta_get "$META" worktree || true)
   echo "error: scout $ID has no valid worktree for its approved target base" >&2
   exit 1
 }
+PROMOTE_PROJECT=$(fmx_meta_get "$META" project || true)
+[ -n "$PROMOTE_PROJECT" ] || PROMOTE_PROJECT=$(basename "$PROMOTE_WT")
+PROMOTE_BRIEF="$DATA/$ID/brief.md"
+PROMOTE_BRIEF_BACKUP="$DATA/$ID/.scout-brief.promote.$$"
+PROMOTE_BRIEF_BACKED_UP=0
+if [ -L "$PROMOTE_BRIEF" ]; then
+  echo "error: scout $ID has an unsafe brief symlink" >&2
+  exit 1
+fi
 PROMOTE_BASE_REF_COUNT=$(grep -c '^review_base_ref=' "$META" || true)
 PROMOTE_BASE_SHA_COUNT=$(grep -c '^review_base_sha=' "$META" || true)
 if [ "$PROMOTE_BASE_REF_COUNT" -ne 0 ] || [ "$PROMOTE_BASE_SHA_COUNT" -ne 0 ]; then
@@ -164,6 +173,40 @@ PROMOTE_RESOLVED_BASE=$(git -C "$PROMOTE_WT" rev-parse --verify "$PROMOTE_BASE_R
   exit 1
 }
 
+if [ -e "$PROMOTE_BRIEF" ]; then
+  [ -f "$PROMOTE_BRIEF" ] || {
+    echo "error: scout $ID's brief is not a regular file" >&2
+    exit 1
+  }
+  mv -- "$PROMOTE_BRIEF" "$PROMOTE_BRIEF_BACKUP"
+  PROMOTE_BRIEF_BACKED_UP=1
+fi
+if ! FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" \
+  FM_STATE_OVERRIDE="$STATE" "$FM_ROOT/bin/fm-brief.sh" "$ID" "$PROMOTE_PROJECT" \
+  --mode "$MODE" >/dev/null; then
+  rm -f -- "$PROMOTE_BRIEF"
+  if [ "$PROMOTE_BRIEF_BACKED_UP" -eq 1 ]; then
+    mv -- "$PROMOTE_BRIEF_BACKUP" "$PROMOTE_BRIEF"
+    PROMOTE_BRIEF_BACKED_UP=0
+  fi
+  echo "error: could not install the ship brief for promoted scout $ID" >&2
+  exit 1
+fi
+if ! printf 'Target-project approved base: ref=%s; sha=%s\n' \
+  "$PROMOTE_BASE_REF" "$PROMOTE_BASE_SHA" >> "$PROMOTE_BRIEF"; then
+  rm -f -- "$PROMOTE_BRIEF"
+  if [ "$PROMOTE_BRIEF_BACKED_UP" -eq 1 ]; then
+    mv -- "$PROMOTE_BRIEF_BACKUP" "$PROMOTE_BRIEF"
+    PROMOTE_BRIEF_BACKED_UP=0
+  fi
+  echo "error: could not record the approved target base in promoted scout $ID's brief" >&2
+  exit 1
+fi
+if [ "$PROMOTE_BRIEF_BACKED_UP" -eq 1 ]; then
+  rm -f -- "$PROMOTE_BRIEF_BACKUP"
+  PROMOTE_BRIEF_BACKED_UP=0
+fi
+
 TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
 grep -v -e '^kind=' -e '^review_base_ref=' -e '^review_base_sha=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"
 {
@@ -180,7 +223,7 @@ META_LOCK_HELD=0
 
 HOME_Q=$(printf '%q' "$FM_HOME")
 echo "promoted $ID to ship mode=$MODE yolo=$YOLO (teardown protection restored)"
-echo "next: FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID '<ship instructions for mode=$MODE: review scratch state with git status and git log; reset to a clean default-branch base; carry over only intended fix changes; create branch fm/$ID; implement; report done>'"
+echo "next: FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID '<ship instructions for mode=$MODE: review scratch state with git status and git log; preserve only intended changes on approved base $PROMOTE_BASE_SHA; do not reset to a moving default branch; create branch fm/$ID; implement; report done>'"
 
 promote_print_rechain_hint() {
   local consent_home=$1 work_home=$2 task_id=$3 id prefix

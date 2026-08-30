@@ -472,13 +472,13 @@ fm_pr_self_review_report_valid() {
         if ($0 == "Substrate diff: no substrate diff") substrate_no_diff = 1
       }
       if (expected == 5) {
-        if (index($0, "Authority: ") == 1 && substantive(field("Authority: "))) authority = 1
-        if (index($0, "Security: ") == 1 && substantive(field("Security: "))) security = 1
-        if (index($0, "Path: ") == 1 && substantive(field("Path: "))) path = 1
-        if (index($0, "Failure: ") == 1 && substantive(field("Failure: "))) failure = 1
-        if (index($0, "Tests: ") == 1 && substantive(field("Tests: "))) tests = 1
-        if (index($0, "Documentation: ") == 1 && substantive(field("Documentation: "))) documentation = 1
-        if (index($0, "Delivery: ") == 1 && substantive(field("Delivery: "))) delivery = 1
+        if (index($0, "Authority: ") == 1 && substantive(field("Authority: "), "authority")) authority = 1
+        if (index($0, "Security: ") == 1 && substantive(field("Security: "), "security")) security = 1
+        if (index($0, "Path: ") == 1 && substantive(field("Path: "), "path")) path = 1
+        if (index($0, "Failure: ") == 1 && substantive(field("Failure: "), "failure")) failure = 1
+        if (index($0, "Tests: ") == 1 && substantive(field("Tests: "), "tests")) tests = 1
+        if (index($0, "Documentation: ") == 1 && substantive(field("Documentation: "), "documentation")) documentation = 1
+        if (index($0, "Delivery: ") == 1 && substantive(field("Delivery: "), "delivery")) delivery = 1
       }
       if (expected == 6) {
         if (index($0, "Command: ") == 1 && length(field("Command: ")) > 0) command = 1
@@ -500,7 +500,7 @@ fm_pr_self_review_report_valid() {
       }
       exit 1
     }
-    function substantive(value,    n, parts, i) {
+    function substantive(value, surface,    n, parts, i, signal) {
       n = split(value, parts, "; ")
       if (n != 5 || parts[1] != "reviewed") return 0
       if (parts[2] !~ /^files=[^;[:space:]][^;]*$/ || parts[2] !~ /[\/.]/) return 0
@@ -509,6 +509,14 @@ fm_pr_self_review_report_valid() {
         if (parts[i] !~ /=[^;[:space:]][^;]*[[:space:]][^;[:space:]]/) return 0
         if (length(parts[i]) < 12 || parts[i] ~ /=(none|n\/a|x|todo|tbd)$/) return 0
       }
+      signal = tolower(parts[3] " " parts[4] " " parts[5])
+      if (surface == "authority" && signal !~ /(authorit|owner|delivery|merge|no-mistakes)/) return 0
+      if (surface == "security" && signal !~ /(security|trust|private|provenance|tamper|secret|credential|reject|refus|identity)/) return 0
+      if (surface == "path" && signal !~ /(path|worktree|directory|task|travers|symlink|boundary)/) return 0
+      if (surface == "failure" && signal !~ /(fail|error|refus|retry|invalid|malform|fallback|bound)/) return 0
+      if (surface == "tests" && signal !~ /(test|verify|validat|assert|coverage|execute|command|regression)/) return 0
+      if (surface == "documentation" && signal !~ /(doc|brief|skill|contract|agents|generated|record)/) return 0
+      if (surface == "delivery" && signal !~ /(delivery|pr|merge|branch|push|no-mistakes|readiness)/) return 0
       return 1
     }
   ' "$report") || return 1

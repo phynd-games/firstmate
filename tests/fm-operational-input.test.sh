@@ -65,7 +65,7 @@ test_current_from_firstmate_carrier() {
 }
 
 test_landed_untyped_prefix_is_explicitly_legacy() {
-  local untyped parsed
+  local untyped legacy_v parsed
   untyped="${FM_OPERATIONAL_PREFIX}body whose historical subtype is unknowable"
   fm_legacy_operational_input_kind "$untyped" parsed \
     || fail "landed untyped FIRSTMATE_OP input was not retained"
@@ -75,6 +75,11 @@ test_landed_untyped_prefix_is_explicitly_legacy() {
     || fail "untyped FIRSTMATE_OP input passed the current typed parser"
   [ "$(classify_cli "$untyped")" = legacy-operational ] \
     || fail "CLI did not expose the untyped prefix as legacy-operational"
+  legacy_v="${FM_OPERATIONAL_PREFIX}vintage body from a legacy transcript"
+  [ "$(classify_cli "$legacy_v")" = legacy-operational ] \
+    || fail "legacy FIRSTMATE_OP body beginning with v was not retained"
+  ! fm_operational_input_classify "${FM_OPERATIONAL_PREFIX}v2 watcher: unknown" parsed \
+    || fail "unknown versioned FIRSTMATE_OP envelope downgraded to legacy"
   pass "operational input: untyped landed FIRSTMATE_OP transcripts are explicit legacy-operational input"
 }
 
