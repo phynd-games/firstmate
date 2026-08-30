@@ -149,13 +149,13 @@ make_case() {
     "Substrate changed files: $empty_digest" \
     'Substrate diff: no substrate diff' \
     '# Surface review' \
-    "Authority: reviewed; surface=authority; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=reference=fixture.txt:2 review cannot authorize delivery; fix=reference=fixture.txt:2 keep this boundary non-authorizing." \
-    "Security: reviewed; surface=security; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=reference=fixture.txt:2 tampering is refused; fix=reference=fixture.txt:2 preserve single-link mode checks." \
-    "Path: reviewed; surface=path; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=reference=fixture.txt:2 path traversal is rejected; fix=reference=fixture.txt:2 retain canonical task boundaries." \
-    "Failure: reviewed; surface=failure; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=reference=fixture.txt:2 no fallback authority is granted; fix=reference=fixture.txt:2 keep deterministic refusal." \
-    "Tests: reviewed; surface=tests; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=reference=fixture.txt:2 regressions are visible; fix=reference=fixture.txt:2 retain negative coverage." \
-    "Documentation: reviewed; surface=documentation; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=reference=fixture.txt:2 workers have durable requirements; fix=reference=fixture.txt:2 keep docs aligned." \
-    "Delivery: reviewed; surface=delivery; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=reference=fixture.txt:2 direct bypasses refuse; fix=reference=fixture.txt:2 preserve no-mistakes authority." \
+    "Authority: reviewed; surface=authority; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=non-authorizing; fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-owner" \
+    "Security: reviewed; surface=security; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=provenance-bound; fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-boundary" \
+    "Path: reviewed; surface=path; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=path-safe; fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-validation" \
+    "Failure: reviewed; surface=failure; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=fail-closed; fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-refusal" \
+    "Tests: reviewed; surface=tests; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=behavioral; fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-regression" \
+    "Documentation: reviewed; surface=documentation; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=contract-aligned; fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-contract" \
+    "Delivery: reviewed; surface=delivery; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=no-mistakes-owned; fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-no-mistakes" \
     '# Verification' \
     'Command: focused PR-ready boundary test' \
     'Result: passed' \

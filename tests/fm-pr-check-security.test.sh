@@ -258,13 +258,13 @@ write_self_review_report() {
     "Substrate changed files: $empty_digest" \
     'Substrate diff: no substrate diff' \
     '# Surface review' \
-    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:2 sha256=$authority_digest hunk=bin/fm-pr-check.sh:2; consequence=reference=bin/fm-pr-check.sh:2 review cannot authorize delivery; fix=reference=bin/fm-pr-check.sh:2 keep this boundary non-authorizing." \
-    "Security: reviewed; surface=security; files=bin/fm-pr-lib.sh; evidence=bin/fm-pr-lib.sh:2 sha256=$security_digest hunk=bin/fm-pr-lib.sh:2; consequence=reference=bin/fm-pr-lib.sh:2 tampering is refused; fix=reference=bin/fm-pr-lib.sh:2 preserve single-link mode checks." \
-    "Path: reviewed; surface=path; files=bin/fm-pr-self-review-check.sh; evidence=bin/fm-pr-self-review-check.sh:2 sha256=$path_digest hunk=bin/fm-pr-self-review-check.sh:2; consequence=reference=bin/fm-pr-self-review-check.sh:2 path traversal is rejected; fix=reference=bin/fm-pr-self-review-check.sh:2 retain canonical task boundaries." \
-    "Failure: reviewed; surface=failure; files=bin/fm-operational-input.sh; evidence=bin/fm-operational-input.sh:2 sha256=$failure_digest hunk=bin/fm-operational-input.sh:2; consequence=reference=bin/fm-operational-input.sh:2 no fallback authority is granted; fix=reference=bin/fm-operational-input.sh:2 keep deterministic refusal." \
-    "Tests: reviewed; surface=tests; files=tests/fm-pr-check-security.test.sh; evidence=tests/fm-pr-check-security.test.sh:2 sha256=$tests_digest hunk=tests/fm-pr-check-security.test.sh:2; consequence=reference=tests/fm-pr-check-security.test.sh:2 regressions are visible; fix=reference=tests/fm-pr-check-security.test.sh:2 retain negative coverage." \
-    "Documentation: reviewed; surface=documentation; files=.agents/skills/firstmate-pr-self-review/SKILL.md; evidence=.agents/skills/firstmate-pr-self-review/SKILL.md:2 sha256=$documentation_digest hunk=.agents/skills/firstmate-pr-self-review/SKILL.md:2; consequence=reference=.agents/skills/firstmate-pr-self-review/SKILL.md:2 workers have durable requirements; fix=reference=.agents/skills/firstmate-pr-self-review/SKILL.md:2 keep docs aligned." \
-    "Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:2 sha256=$delivery_digest hunk=bin/fm-pr-create.sh:2; consequence=reference=bin/fm-pr-create.sh:2 direct bypasses refuse; fix=reference=bin/fm-pr-create.sh:2 preserve no-mistakes authority." \
+    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:2 sha256=$authority_digest hunk=bin/fm-pr-check.sh:2; consequence=anchor=bin/fm-pr-check.sh:2 sha256=$authority_digest behavior=non-authorizing; fix=anchor=bin/fm-pr-check.sh:2 sha256=$authority_digest action=retain-owner" \
+    "Security: reviewed; surface=security; files=bin/fm-pr-lib.sh; evidence=bin/fm-pr-lib.sh:2 sha256=$security_digest hunk=bin/fm-pr-lib.sh:2; consequence=anchor=bin/fm-pr-lib.sh:2 sha256=$security_digest behavior=provenance-bound; fix=anchor=bin/fm-pr-lib.sh:2 sha256=$security_digest action=retain-boundary" \
+    "Path: reviewed; surface=path; files=bin/fm-pr-self-review-check.sh; evidence=bin/fm-pr-self-review-check.sh:2 sha256=$path_digest hunk=bin/fm-pr-self-review-check.sh:2; consequence=anchor=bin/fm-pr-self-review-check.sh:2 sha256=$path_digest behavior=path-safe; fix=anchor=bin/fm-pr-self-review-check.sh:2 sha256=$path_digest action=retain-validation" \
+    "Failure: reviewed; surface=failure; files=bin/fm-operational-input.sh; evidence=bin/fm-operational-input.sh:2 sha256=$failure_digest hunk=bin/fm-operational-input.sh:2; consequence=anchor=bin/fm-operational-input.sh:2 sha256=$failure_digest behavior=fail-closed; fix=anchor=bin/fm-operational-input.sh:2 sha256=$failure_digest action=retain-refusal" \
+    "Tests: reviewed; surface=tests; files=tests/fm-pr-check-security.test.sh; evidence=tests/fm-pr-check-security.test.sh:2 sha256=$tests_digest hunk=tests/fm-pr-check-security.test.sh:2; consequence=anchor=tests/fm-pr-check-security.test.sh:2 sha256=$tests_digest behavior=behavioral; fix=anchor=tests/fm-pr-check-security.test.sh:2 sha256=$tests_digest action=retain-regression" \
+    "Documentation: reviewed; surface=documentation; files=.agents/skills/firstmate-pr-self-review/SKILL.md; evidence=.agents/skills/firstmate-pr-self-review/SKILL.md:2 sha256=$documentation_digest hunk=.agents/skills/firstmate-pr-self-review/SKILL.md:2; consequence=anchor=.agents/skills/firstmate-pr-self-review/SKILL.md:2 sha256=$documentation_digest behavior=contract-aligned; fix=anchor=.agents/skills/firstmate-pr-self-review/SKILL.md:2 sha256=$documentation_digest action=retain-contract" \
+    "Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:2 sha256=$delivery_digest hunk=bin/fm-pr-create.sh:2; consequence=anchor=bin/fm-pr-create.sh:2 sha256=$delivery_digest behavior=no-mistakes-owned; fix=anchor=bin/fm-pr-create.sh:2 sha256=$delivery_digest action=retain-no-mistakes" \
     '# Verification' \
     'Command: focused PR-ready boundary test' \
     'Result: passed' \
@@ -563,7 +563,7 @@ PY
 
   write_self_review_report "$dir/home" task-a
   fixture_digest=$(printf 'fixture\n' | fm_pr_sha256_stream)
-  sed -i.bak "s#^Authority: .*#Authority: reviewed; surface=authority; files=fixture.txt; evidence=fixture.txt:1 sha256=$fixture_digest hunk=fixture.txt:1; consequence=reference=fixture.txt:1 review cannot authorize delivery; fix=reference=fixture.txt:1 keep this boundary non-authorizing.#" "$report"
+  sed -i.bak "s#^Authority: .*#Authority: reviewed; surface=authority; files=fixture.txt; evidence=fixture.txt:1 sha256=$fixture_digest hunk=fixture.txt:1; consequence=anchor=fixture.txt:1 sha256=$fixture_digest behavior=non-authorizing; fix=anchor=fixture.txt:1 sha256=$fixture_digest action=retain-owner#" "$report"
   rm -f "$report.bak"
   set +e
   run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
@@ -586,7 +586,7 @@ digest = hashlib.sha256(line).hexdigest()
 text = report.read_text(encoding="utf-8")
 text = re.sub(
     r"(?m)^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): (.*?; evidence=)[^;]+;",
-    lambda match: match.group(1) + ": " + match.group(2) + "bin/fm-pr-check.sh:2 sha256=" + digest + " hunk=bin/fm-pr-check.sh:2; consequence=reference=bin/fm-pr-check.sh:2 shared changed-file evidence; fix=reference=bin/fm-pr-check.sh:2 retain the exact surface binding.",
+    lambda match: match.group(1) + ": " + match.group(2) + "bin/fm-pr-check.sh:2 sha256=" + digest + " hunk=bin/fm-pr-check.sh:2; consequence=anchor=bin/fm-pr-check.sh:2 sha256=" + digest + " behavior=non-authorizing; fix=anchor=bin/fm-pr-check.sh:2 sha256=" + digest + " action=retain-owner",
     text,
 )
 report.write_text(text, encoding="utf-8")
@@ -610,7 +610,7 @@ security_digest = sys.argv[2]
 text = report.read_text(encoding="utf-8")
 text = re.sub(
     r"(?m)^Authority: .*",
-    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-lib.sh:2 sha256=" + security_digest + " hunk=bin/fm-pr-lib.sh:2; consequence=reference=bin/fm-pr-lib.sh:2 surface evidence must stay associated; fix=reference=bin/fm-pr-lib.sh:2 reject cross-surface substitution.",
+    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-lib.sh:2 sha256=" + security_digest + " hunk=bin/fm-pr-lib.sh:2; consequence=anchor=bin/fm-pr-lib.sh:2 sha256=" + security_digest + " behavior=non-authorizing; fix=anchor=bin/fm-pr-lib.sh:2 sha256=" + security_digest + " action=retain-owner",
     text,
     count=1,
 )
@@ -641,13 +641,31 @@ paths = {
     "Documentation": "bin/fm-pr-lib.sh",
     "Delivery": "bin/fm-pr-self-review-check.sh",
 }
+behaviors = {
+    "Authority": "non-authorizing",
+    "Security": "provenance-bound",
+    "Path": "path-safe",
+    "Failure": "fail-closed",
+    "Tests": "behavioral",
+    "Documentation": "contract-aligned",
+    "Delivery": "no-mistakes-owned",
+}
+actions = {
+    "Authority": "retain-owner",
+    "Security": "retain-boundary",
+    "Path": "retain-validation",
+    "Failure": "retain-refusal",
+    "Tests": "retain-regression",
+    "Documentation": "retain-contract",
+    "Delivery": "retain-no-mistakes",
+}
 text = report.read_text(encoding="utf-8")
 for surface, relative in paths.items():
     line = (root / relative).read_bytes().splitlines(keepends=True)[1]
     digest = hashlib.sha256(line).hexdigest()
     text = re.sub(
         rf"(?m)^{surface}: reviewed; surface=[^;]+; files=[^;]+; evidence=[^;]+;",
-        f"{surface}: reviewed; surface={surface.lower()}; files={relative}; evidence={relative}:2 sha256={digest} hunk={relative}:2;",
+        f"{surface}: reviewed; surface={surface.lower()}; files={relative}; evidence={relative}:2 sha256={digest} hunk={relative}:2; consequence=anchor={relative}:2 sha256={digest} behavior={behaviors[surface]}; fix=anchor={relative}:2 sha256={digest} action={actions[surface]}",
         text,
         count=1,
     )
@@ -662,7 +680,7 @@ PY
 
   write_self_review_report "$dir/home" task-a
   authority_digest=$(self_review_line_digest "$dir" bin/fm-pr-check.sh)
-  sed -i.bak "s#^Authority: .*#Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:2 sha256=$authority_digest hunk=bin/fm-pr-check.sh:2; consequence=reference=fixture.txt:1 arbitrary filler; fix=reference=fixture.txt:1 arbitrary filler#" "$report"
+  sed -i.bak "s#^Authority: .*#Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:2 sha256=$authority_digest hunk=bin/fm-pr-check.sh:2; consequence=anchor=fixture.txt:1 sha256=$authority_digest behavior=non-authorizing; fix=anchor=fixture.txt:1 sha256=$authority_digest action=retain-owner#" "$report"
   rm -f "$report.bak"
   set +e
   run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
@@ -672,7 +690,7 @@ PY
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "filler surface evidence left a runnable poll"
 
   write_self_review_report "$dir/home" task-a
-  sed -i.bak 's/^Authority: .*/Authority: reviewed; surface=authority; files=bin\/fm-pr-lib.sh; evidence=bin\/fm-pr-lib.sh:2 sha256=0000000000000000000000000000000000000000000000000000000000000000 hunk=bin\/fm-pr-lib.sh:2; consequence=reference=bin\/fm-pr-lib.sh:2 review cannot authorize delivery; fix=reference=bin\/fm-pr-lib.sh:2 keep this boundary non-authorizing./' "$report"
+  sed -i.bak 's/^Authority: .*/Authority: reviewed; surface=authority; files=bin\/fm-pr-lib.sh; evidence=bin\/fm-pr-lib.sh:2 sha256=0000000000000000000000000000000000000000000000000000000000000000 hunk=bin\/fm-pr-lib.sh:2; consequence=anchor=bin\/fm-pr-lib.sh:2 sha256=0000000000000000000000000000000000000000000000000000000000000000 behavior=non-authorizing; fix=anchor=bin\/fm-pr-lib.sh:2 sha256=0000000000000000000000000000000000000000000000000000000000000000 action=retain-owner/' "$report"
   rm -f "$report.bak"
   set +e
   run_check_entry "$dir" task-a https://github.com/o/r/pull/109 > "$dir/stdout" 2> "$dir/stderr"
@@ -702,7 +720,7 @@ PY
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm delete-surface
   write_self_review_report "$dir/home" task-a
   delivery_digest=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '1p' | fm_pr_sha256_stream)
-  sed -i.bak "s#evidence=bin/fm-pr-create.sh:2 sha256=[0-9a-f]*#evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest#" "$report"
+  sed -i.bak "s#^Delivery: .*#Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest hunk=bin/fm-pr-create.sh:1; consequence=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest behavior=no-mistakes-owned; fix=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest action=retain-no-mistakes#" "$report"
   rm -f "$report.bak"
   run_check_entry "$dir" task-a https://github.com/o/r/pull/105 >/dev/null \
     || fail "PR-ready path rejected a deleted changed-file evidence reference"
@@ -723,7 +741,7 @@ PY
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm spaced-path
   write_self_review_report "$dir/home" task-a
   delivery_digest=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '1p' | fm_pr_sha256_stream)
-  sed -i.bak "s#evidence=bin/fm-pr-create.sh:2 sha256=[0-9a-f]*#evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest#" "$report"
+  sed -i.bak "s#^Delivery: .*#Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest hunk=bin/fm-pr-create.sh:1; consequence=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest behavior=no-mistakes-owned; fix=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest action=retain-no-mistakes#" "$report"
   rm -f "$report.bak"
   spaced_digest=$(sed -n '2p' "$dir/wt/bin/fm-pr spaced.sh" | fm_pr_sha256_stream)
   spaced_path=$(fm_pr_review_path_encode 'bin/fm-pr spaced.sh')
@@ -737,7 +755,7 @@ spaced_path, spaced_digest = sys.argv[2:4]
 text = report.read_text(encoding="utf-8")
 text = re.sub(
     r"(?m)^Authority: .*",
-    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh," + spaced_path + "; evidence=" + spaced_path + ":2 sha256=" + spaced_digest + " hunk=" + spaced_path + ":2; consequence=reference=" + spaced_path + ":2 review cannot authorize delivery; fix=reference=" + spaced_path + ":2 keep this boundary non-authorizing.",
+    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh," + spaced_path + "; evidence=" + spaced_path + ":2 sha256=" + spaced_digest + " hunk=" + spaced_path + ":2; consequence=anchor=" + spaced_path + ":2 sha256=" + spaced_digest + " behavior=non-authorizing; fix=anchor=" + spaced_path + ":2 sha256=" + spaced_digest + " action=retain-owner",
     text,
     count=1,
 )
@@ -754,7 +772,7 @@ PY
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm delimiter-paths
   write_self_review_report "$dir/home" task-a
   delivery_digest=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '1p' | fm_pr_sha256_stream)
-  sed -i.bak "s#evidence=bin/fm-pr-create.sh:2 sha256=[0-9a-f]*#evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest#" "$report"
+  sed -i.bak "s#^Delivery: .*#Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest hunk=bin/fm-pr-create.sh:1; consequence=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest behavior=no-mistakes-owned; fix=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest action=retain-no-mistakes#" "$report"
   rm -f "$report.bak"
   spaced_path=$(fm_pr_review_path_encode 'bin/fm-pr spaced.sh')
   comma_path=$(fm_pr_review_path_encode 'bin/fm-pr,comma.sh')
@@ -776,10 +794,12 @@ replacements = {
     "Security": ("bin/fm-pr-lib.sh," + comma, comma, comma_digest, "private report identity is checked", "tampering is refused", "preserve single-link mode checks"),
     "Path": ("bin/fm-pr-self-review-check.sh," + semi, semi, semi_digest, "task paths are validated", "path traversal is rejected", "retain canonical task boundaries"),
 }
+behaviors = {"Authority": "non-authorizing", "Security": "provenance-bound", "Path": "path-safe"}
+actions = {"Authority": "retain-owner", "Security": "retain-boundary", "Path": "retain-validation"}
 for surface, (files, evidence, digest, signal, consequence, fix) in replacements.items():
     text = re.sub(
         rf"(?m)^{surface}: .*",
-        f"{surface}: reviewed; surface={surface.lower()}; files={files}; evidence={evidence}:2 sha256={digest} hunk={evidence}:2; consequence=reference={evidence}:2 {consequence}; fix=reference={evidence}:2 {fix}.",
+        f"{surface}: reviewed; surface={surface.lower()}; files={files}; evidence={evidence}:2 sha256={digest} hunk={evidence}:2; consequence=anchor={evidence}:2 sha256={digest} behavior={behaviors[surface]}; fix=anchor={evidence}:2 sha256={digest} action={actions[surface]}",
         text,
         count=1,
     )
@@ -793,7 +813,7 @@ PY
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm control-path
   write_self_review_report "$dir/home" task-a
   delivery_digest=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '1p' | fm_pr_sha256_stream)
-  sed -i.bak "s#evidence=bin/fm-pr-create.sh:2 sha256=[0-9a-f]*#evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest#" "$report"
+  sed -i.bak "s#^Delivery: .*#Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest hunk=bin/fm-pr-create.sh:1; consequence=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest behavior=no-mistakes-owned; fix=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest action=retain-no-mistakes#" "$report"
   rm -f "$report.bak"
   control_path=$(fm_pr_review_path_encode "$control_path")
   control_digest=$(printf '%s\n' 'control evidence' | fm_pr_sha256_stream)
@@ -808,7 +828,7 @@ control_surface_files, control_path, control_digest = sys.argv[2:5]
 text = report.read_text(encoding="utf-8")
 text = re.sub(
     r"(?m)^Authority: .*",
-    "Authority: reviewed; surface=authority; files=" + control_surface_files + "; evidence=" + control_path + ":1 sha256=" + control_digest + " hunk=" + control_path + ":1; consequence=reference=" + control_path + ":1 control-character paths remain exact; fix=reference=" + control_path + ":1 keep NUL-delimited inventory handling.",
+    "Authority: reviewed; surface=authority; files=" + control_surface_files + "; evidence=" + control_path + ":1 sha256=" + control_digest + " hunk=" + control_path + ":1; consequence=anchor=" + control_path + ":1 sha256=" + control_digest + " behavior=non-authorizing; fix=anchor=" + control_path + ":1 sha256=" + control_digest + " action=retain-owner",
     text,
     count=1,
 )

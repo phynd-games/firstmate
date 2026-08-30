@@ -629,13 +629,16 @@ fm_pr_self_review_report_valid() {
       }
       exit 1
     }
-    function substantive(value, surface,    n, parts, i, reference, hunk, file, line, prefix) {
+    function substantive(value, surface,    n, parts, i, reference, hunk, evidence_hash, file, line, prefix, behavior, action) {
       n = split(value, parts, "; ")
       if (n != 6 || parts[1] != "reviewed" || parts[2] != "surface=" surface) return 0
       if (parts[3] !~ /^files=[^;[:space:]][^;]*$/) return 0
       if (parts[4] !~ /^evidence=[^;[:space:]][^;]*:[1-9][0-9]* sha256=[0-9a-f]+ hunk=[^;[:space:]][^;]*$/) return 0
       reference = parts[4]
       sub(/^evidence=/, "", reference)
+      evidence_hash = reference
+      sub(/^.* sha256=/, "", evidence_hash)
+      sub(/ hunk=.*/, "", evidence_hash)
       sub(/ sha256=.*/, "", reference)
       hunk = parts[4]
       sub(/^.* hunk=/, "", hunk)
@@ -644,13 +647,18 @@ fm_pr_self_review_report_valid() {
       sub(/:[1-9][0-9]*$/, "", file)
       line = reference
       sub(/^.*:/, "", line)
-      for (i = 5; i <= 6; i++) {
-        if (parts[i] !~ /^(consequence|fix)=reference=[^;[:space:]][^;]*:[1-9][0-9]* [^;[:space:]][^;]*$/) return 0
-        prefix = (i == 5 ? "consequence" : "fix") "=reference=" file ":" line " "
-        if (index(parts[i], prefix) != 1) return 0
-        if (parts[i] !~ /=[^;[:space:]][^;]*[[:space:]][^;[:space:]]/) return 0
-        if (length(parts[i]) < 12 || parts[i] ~ /=(none|n\/a|x|todo|tbd)$/) return 0
-      }
+      if (surface == "authority") { behavior = "non-authorizing"; action = "retain-owner" }
+      else if (surface == "security") { behavior = "provenance-bound"; action = "retain-boundary" }
+      else if (surface == "path") { behavior = "path-safe"; action = "retain-validation" }
+      else if (surface == "failure") { behavior = "fail-closed"; action = "retain-refusal" }
+      else if (surface == "tests") { behavior = "behavioral"; action = "retain-regression" }
+      else if (surface == "documentation") { behavior = "contract-aligned"; action = "retain-contract" }
+      else if (surface == "delivery") { behavior = "no-mistakes-owned"; action = "retain-no-mistakes" }
+      else return 0
+      prefix = "consequence=anchor=" file ":" line " sha256=" evidence_hash " behavior=" behavior
+      if (parts[5] != prefix) return 0
+      prefix = "fix=anchor=" file ":" line " sha256=" evidence_hash " action=" action
+      if (parts[6] != prefix) return 0
       return 1
     }
   ' "$report") || return 1

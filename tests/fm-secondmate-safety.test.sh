@@ -117,13 +117,13 @@ test_fm_home_parameterization() {
     "Substrate changed files: $empty_digest" \
     'Substrate diff: no substrate diff' \
     '# Surface review' \
-    "Authority: reviewed; surface=authority; files=README.md; evidence=README.md:2 sha256=$surface_digest hunk=README.md:2; consequence=reference=README.md:2 readiness is non-authorizing; fix=reference=README.md:2 retain one delivery owner." \
-    "Security: reviewed; surface=security; files=README.md; evidence=README.md:2 sha256=$surface_digest hunk=README.md:2; consequence=reference=README.md:2 tampering is refused; fix=reference=README.md:2 retain identity checks." \
-    "Path: reviewed; surface=path; files=README.md; evidence=README.md:2 sha256=$surface_digest hunk=README.md:2; consequence=reference=README.md:2 wrong worktrees refuse; fix=reference=README.md:2 retain path validation." \
-    "Failure: reviewed; surface=failure; files=README.md; evidence=README.md:2 sha256=$surface_digest hunk=README.md:2; consequence=reference=README.md:2 legacy downgrade is blocked; fix=reference=README.md:2 retain fail-closed parsing." \
-    "Tests: reviewed; surface=tests; files=README.md; evidence=README.md:2 sha256=$surface_digest hunk=README.md:2; consequence=reference=README.md:2 fixture drift is visible; fix=reference=README.md:2 retain focused coverage." \
-    "Documentation: reviewed; surface=documentation; files=README.md; evidence=README.md:2 sha256=$surface_digest hunk=README.md:2; consequence=reference=README.md:2 substrate scope is durable; fix=reference=README.md:2 retain generated contract." \
-    "Delivery: reviewed; surface=delivery; files=README.md; evidence=README.md:2 sha256=$surface_digest hunk=README.md:2; consequence=reference=README.md:2 direct bypasses refuse; fix=reference=README.md:2 retain shared boundary." \
+    "Authority: reviewed; surface=authority; files=README.md; evidence=README.md:2 sha256=$surface_digest hunk=README.md:2; consequence=anchor=README.md:2 sha256=$surface_digest behavior=non-authorizing; fix=anchor=README.md:2 sha256=$surface_digest action=retain-owner" \
+    "Security: reviewed; surface=security; files=README.md; evidence=README.md:2 sha256=$surface_digest hunk=README.md:2; consequence=anchor=README.md:2 sha256=$surface_digest behavior=provenance-bound; fix=anchor=README.md:2 sha256=$surface_digest action=retain-boundary" \
+    "Path: reviewed; surface=path; files=README.md; evidence=README.md:2 sha256=$surface_digest hunk=README.md:2; consequence=anchor=README.md:2 sha256=$surface_digest behavior=path-safe; fix=anchor=README.md:2 sha256=$surface_digest action=retain-validation" \
+    "Failure: reviewed; surface=failure; files=README.md; evidence=README.md:2 sha256=$surface_digest hunk=README.md:2; consequence=anchor=README.md:2 sha256=$surface_digest behavior=fail-closed; fix=anchor=README.md:2 sha256=$surface_digest action=retain-refusal" \
+    "Tests: reviewed; surface=tests; files=README.md; evidence=README.md:2 sha256=$surface_digest hunk=README.md:2; consequence=anchor=README.md:2 sha256=$surface_digest behavior=behavioral; fix=anchor=README.md:2 sha256=$surface_digest action=retain-regression" \
+    "Documentation: reviewed; surface=documentation; files=README.md; evidence=README.md:2 sha256=$surface_digest hunk=README.md:2; consequence=anchor=README.md:2 sha256=$surface_digest behavior=contract-aligned; fix=anchor=README.md:2 sha256=$surface_digest action=retain-contract" \
+    "Delivery: reviewed; surface=delivery; files=README.md; evidence=README.md:2 sha256=$surface_digest hunk=README.md:2; consequence=anchor=README.md:2 sha256=$surface_digest behavior=no-mistakes-owned; fix=anchor=README.md:2 sha256=$surface_digest action=retain-no-mistakes" \
     '# Verification' \
     'Command: fm-pr-check.sh task-a https://github.com/example/repo/pull/1' \
     'Result: passed' \
