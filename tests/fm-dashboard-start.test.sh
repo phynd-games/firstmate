@@ -399,6 +399,32 @@ SH
   pass "a timed-out build kills its complete descendant process group"
 }
 
+test_a_proven_timeout_cleanup_keeps_health_available() {
+  local home port out code health
+  [ "$(uname -s)" = Linux ] || {
+    pass "skip: Linux child containment is unavailable on this platform"
+    return 0
+  }
+  home=$(make_home proven-build-cleanup)
+  port=$(free_port)
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FAKE_HERDR_STATE="$home/herdr" \
+    FM_DASHBOARD_BUILD_TIMEOUT=1 FM_DASHBOARD_PORT="$port" "$START" ensure 2>&1) \
+    || fail "ensure failed: $out"
+  cat > "$home/fakebin/jq" <<'SH'
+#!/usr/bin/env bash
+sleep 30
+SH
+  chmod +x "$home/fakebin/jq"
+  code=$(curl -sS --max-time 6 -o "$home/timeout-response" \
+    -w '%{http_code}' "http://127.0.0.1:$port/" 2>/dev/null || true)
+  [ "$code" = 500 ] || fail "a timed-out rebuild returned HTTP $code instead of 500"
+  health=$(curl -fsS --max-time 3 "http://127.0.0.1:$port/healthz") \
+    || fail "proven cleanup made health unavailable"
+  printf '%s' "$health" | jq -e '.ready == true' >/dev/null \
+    || fail "proven cleanup incorrectly blocked health: $health"
+  pass "a proven timeout cleanup keeps the dashboard healthy"
+}
+
 test_an_unprovable_build_cleanup_fails_closed() {
   local home port out child code health
   home=$(make_home unprovable-build-cleanup)
@@ -733,6 +759,7 @@ test_health_remains_responsive_while_a_client_stalls
 test_health_remains_admissible_behind_incomplete_clients
 test_a_drip_request_hits_an_absolute_http_deadline
 test_a_timed_out_build_kills_its_descendant_group
+test_a_proven_timeout_cleanup_keeps_health_available
 test_an_unprovable_build_cleanup_fails_closed
 test_stop_preserves_an_owner_without_complete_proof
 test_owner_lifecycle_uses_the_recorded_herdr_session
