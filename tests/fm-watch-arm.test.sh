@@ -807,6 +807,35 @@ test_downtime_marker_does_not_follow_symlink() {
   pass "watch-arm: downtime marker publication does not follow symlinks"
 }
 
+test_arm_queue_lock_acquisition_is_bounded() {
+  local dir state holder started status elapsed
+  dir=$(make_case bounded-queue-lock)
+  state="$dir/state"
+  (
+    sleep 30
+  ) &
+  holder=$!
+  mkdir -p "$state/.wake-queue.lock"
+  printf '%s\n' "$holder" > "$state/.wake-queue.lock/pid"
+  FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$holder" > "$state/.wake-queue.lock/pid-identity"
+  started=$(date +%s)
+  if FM_STATE_OVERRIDE="$state" FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES=1 bash -c '
+    . "$1"
+    ! _fm_recovery_marker_arm_check "$2"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$state/.watcher-down"; then
+    status=0
+  else
+    status=1
+  fi
+  elapsed=$(( $(date +%s) - started ))
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  [ "$status" -eq 0 ] || fail "watch-arm: wedged wake-queue lock did not fail boundedly"
+  [ "$elapsed" -lt 5 ] || fail "watch-arm: wake-queue lock acquisition exceeded its bound"
+  pass "watch-arm: wake-queue lock acquisition is bounded before watcher health"
+}
+
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
@@ -821,3 +850,4 @@ test_markerless_legacy_queue_is_recovered_on_arm
 test_handling_window_close_keeps_the_acknowledgement_valid
 test_moved_generation_acknowledgement_is_self_healing
 test_downtime_marker_does_not_follow_symlink
+test_arm_queue_lock_acquisition_is_bounded
