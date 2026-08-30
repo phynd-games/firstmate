@@ -433,7 +433,7 @@ task_json_lines() {
   local meta id kind harness mode yolo project worktree home projects spawn_gen backend recorded_backend target status_log report_path
   local remote_host remote_root remote_state remote_rc remote_home_present remote_identity_valid
   local pr pr_source event_json current_json endpoint_exists endpoint_status agent_alive meta_json status_json report_json worktree_json home_json
-  local endpoint_rc agent_alive_rc
+  local endpoint_rc agent_alive_rc local_identity_valid
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
   local open_decisions_tsv open_decisions_json
 
@@ -453,6 +453,7 @@ task_json_lines() {
     remote_host=$(meta_value "$meta" remote_host)
     remote_root=$(meta_value "$meta" remote_root)
     remote_home_present=null
+    local_identity_valid=1
     remote_identity_valid=1
     if [ -n "$remote_host" ]; then
       backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
@@ -481,10 +482,20 @@ task_json_lines() {
       # A legacy (absent or non-herdr) backend identity is displayed as recorded
       # with a marker, never dispatched on (hard rule 6); the snapshot is a view.
       recorded_backend=$(fm_backend_meta_recorded_backend "$meta" 2>/dev/null || true)
-      if backend=$(fm_backend_of_meta "$meta" 2>/dev/null); then
-        target=$(fm_backend_target_of_meta "$meta")
+      if [ "$recorded_backend" = herdr ] && fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1; then
+        backend=$FM_BACKEND_VALIDATED_BACKEND
+        target=$FM_BACKEND_VALIDATED_TARGET
       else
-        backend="legacy:${recorded_backend:-absent}"
+        if [ "$recorded_backend" = herdr ]; then
+          local_identity_valid=2
+          backend="invalid:$recorded_backend"
+        elif [ "$recorded_backend" = ambiguous ]; then
+          local_identity_valid=2
+          backend="ambiguous:$recorded_backend"
+        else
+          local_identity_valid=0
+          backend="legacy:${recorded_backend:-absent}"
+        fi
         target=
       fi
     fi
@@ -501,9 +512,9 @@ task_json_lines() {
       pr_source=absent
     fi
 
-    if [ "$remote_identity_valid" -eq 0 ]; then
+    if [ "$remote_identity_valid" -eq 0 ] || [ "$local_identity_valid" -eq 0 ]; then
       current_json=$(jq -n --arg detail "legacy-record: remote backend=$(meta_value "$meta" remote_backend) is not herdr; record is read-only" '{state:"unknown",source:"legacy-backend",detail:$detail,raw:""}')
-    elif [ "$remote_identity_valid" -eq 2 ]; then
+    elif [ "$remote_identity_valid" -eq 2 ] || [ "$local_identity_valid" -eq 2 ]; then
       current_json=$(jq -n --arg detail "remote backend identity is ambiguous or invalid; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\"" '{state:"unknown",source:"backend-identity",detail:$detail,raw:""}')
     else
       current_json=$(crew_state_json "$id")
@@ -597,7 +608,7 @@ task_json_lines() {
       else
         agent_alive=unknown
       fi
-    else
+    elif [ "$local_identity_valid" -eq 1 ]; then
       if [ -n "$target" ]; then
         if fm_backend_target_exists "$backend" "$target" "fm-$id"; then
           endpoint_exists=true
@@ -629,6 +640,15 @@ task_json_lines() {
         if [ "$endpoint_status" = capability-failure ]; then
           agent_alive=capability-failure
         fi
+      fi
+    else
+      endpoint_exists=null
+      if [ "$local_identity_valid" -eq 0 ]; then
+        endpoint_status=refused
+        agent_alive=not_checked
+      else
+        endpoint_status=identity-failure
+        agent_alive=identity-failure
       fi
     fi
 

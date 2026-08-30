@@ -78,34 +78,17 @@ SECONDMATES_MD="$DATA/secondmates.md"
 . "$SCRIPT_DIR/fm-secondmate-nudge-lib.sh"
 
 config_push_validate_primary_backend() {
-  local line value selected session filtered item
+  local selected session
   selected=$(fm_backend_name) || return 1
   [ "$selected" = "$FM_BACKEND_ACTIVE" ] || return 1
   session=${HERDR_SESSION:-default}
   fm_backend_source herdr "config push primary" "$session" || return 1
-  if [ -f "$CONFIG/backend" ]; then
-    line=
-    while IFS= read -r value || [ -n "$value" ]; do
-      value=$(printf '%s' "$value" | tr -d '[:space:]')
-      if [ -n "$value" ]; then
-        line=$value
-        break
-      fi
-    done < "$CONFIG/backend"
-    if [ "${FM_BACKEND:-}" = "$FM_BACKEND_ACTIVE" ] && [ "$line" != "$FM_BACKEND_ACTIVE" ]; then
-      filtered=
-      for item in $FM_INHERITABLE_CONFIG; do
-        [ "$item" = backend ] && continue
-        if [ -n "$filtered" ]; then
-          filtered="$filtered $item"
-        else
-          filtered=$item
-        fi
-      done
-      FM_INHERITABLE_CONFIG=$filtered
-      export FM_INHERITABLE_CONFIG
-    fi
-  fi
+  case " $FM_INHERITABLE_CONFIG " in
+    *" backend ") ;;
+    *) FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG% } backend"; export FM_INHERITABLE_CONFIG ;;
+  esac
+  FM_CONFIG_INHERIT_BACKEND_OVERRIDE=$FM_BACKEND_ACTIVE
+  export FM_CONFIG_INHERIT_BACKEND_OVERRIDE
 }
 
 config_push_validate_primary_backend || exit 1
@@ -150,6 +133,13 @@ config_push_validate_remote_record() { # <task-id> <meta-file>; 10 means legacy 
     return 11
   fi
   return 0
+}
+
+config_push_validate_local_record() { # <task-id> <meta-file>
+  local id=$1 meta=$2 target
+  fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null || return 1
+  target=$FM_BACKEND_VALIDATED_TARGET
+  fm_backend_source herdr "config push secondmate $id" "${target%%:*}" || return 1
 }
 
 config_push_remote_preflight() { # <task-id> <remote-host>
@@ -293,6 +283,11 @@ while IFS='|' read -r id home _window meta; do
   esac
   seen_homes="$seen_homes $home_real"
 
+  if ! config_push_validate_local_record "$id" "$meta"; then
+    errors=1
+    continue
+  fi
+
   printf 'secondmate %s (%s):\n' "$id" "$home_real"
   dirty=$(dirty_status "$home_real" yes || true)
   if [ -n "$dirty" ]; then
@@ -314,6 +309,11 @@ while IFS='|' read -r id home _window meta; do
     errors=1
     continue
   }
+  if ! config_push_validate_local_record "$id" "$meta"; then
+    errors=1
+    fm_lock_release "$home_lock" || true
+    continue
+  fi
   if fm_config_reread_retry_queue_is_full "$FM_HOME" "$id"; then
     fm_config_reread_retry_pending "$id" "$home_real" || true
     if fm_config_reread_retry_queue_is_full "$FM_HOME" "$id"; then

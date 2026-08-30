@@ -673,6 +673,65 @@ secondmate_sync() {
   return 0
 }
 
+bootstrap_secondmate_runtime_preflight() {
+  [ -d "$STATE" ] || return 0
+  local meta id remote_host backend target output
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] || continue
+    [ "$(fm_meta_get "$meta" kind)" = secondmate ] || continue
+    id=$(basename "$meta" .meta)
+    remote_host=$(fm_meta_get "$meta" remote_host)
+    if [ -n "$remote_host" ]; then
+      backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
+      case "$backend" in
+        absent|tmux|zellij|orca|cmux)
+          echo "SECONDMATE_SYNC: secondmate $id: skipped: legacy remote backend record (backend=${backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
+          continue
+          ;;
+        ambiguous|'')
+          fm_backend_refuse_remote_task_endpoint "$meta" "$id"
+          return 1
+          ;;
+        herdr) ;;
+        *)
+          fm_backend_refuse_remote_task_endpoint "$meta" "$id"
+          return 1
+          ;;
+      esac
+      if ! fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote; then
+        fm_backend_refuse_remote_task_endpoint "$meta" "$id"
+        return 1
+      fi
+      if ! output=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh route "$id" < /dev/null 2>&1); then
+        [ -z "$output" ] || printf '%s\n' "$output" >&2
+        return 1
+      fi
+      continue
+    fi
+    backend=$(fm_backend_meta_recorded_backend "$meta" 2>/dev/null || true)
+    case "$backend" in
+      absent|tmux|zellij|orca|cmux)
+        echo "SECONDMATE_SYNC: secondmate $id: skipped: legacy backend record (backend=${backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
+        continue
+        ;;
+      ambiguous|'')
+        fm_backend_policy_refuse "secondmate $id endpoint record (ambiguous or empty backend identity)" "$backend" \
+          "Repair or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+        return 1
+        ;;
+      herdr) ;;
+      *)
+        fm_backend_policy_refuse "secondmate $id endpoint record (backend=$backend)" "$backend" \
+          "Declare Herdr or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+        return 1
+        ;;
+    esac
+    fm_backend_validate_task_endpoint "$meta" "$id" || return 1
+    target=$FM_BACKEND_VALIDATED_TARGET
+    fm_backend_source herdr "bootstrap secondmate $id" "${target%%:*}" || return 1
+  done
+}
+
 # A relaunch replaces the endpoint record a digest may already have printed. On
 # the local pass that digest has not been composed yet, so the fact stays behind
 # FM_BOOTSTRAP_VERBOSE_FACTS as before; on the deferred network pass the digest
@@ -976,6 +1035,10 @@ if [ "$BACKEND_VALID" -eq 1 ] && ! BACKEND_TOOLS=$(fm_backend_required_tools "$B
 fi
 [ "$BACKEND_VALID" -eq 1 ] || BACKEND_TOOLS=""
 TOOLS="$BACKEND_TOOLS $COMMON_TOOLS"
+SECONDMATE_RUNTIME_VALID=0
+if [ "$BACKEND_VALID" -eq 1 ] && bootstrap_secondmate_runtime_preflight; then
+  SECONDMATE_RUNTIME_VALID=1
+fi
 NO_MISTAKES_MIN=1.46.0
 # AXI-FAMILY FLOOR POLICY. Every axi-family floor is the CURRENT LATEST published
 # version of that tool, captain-bumped periodically to keep the whole fleet on the
@@ -1410,7 +1473,7 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
   # depend on them, so it starts in the background and overlaps their wall clock.
   fleet_sync_pid=
   fleet_sync_out=
-  if network_phase && network_sweep_authorized 'project clone refresh'; then
+  if [ "$BACKEND_VALID" -eq 1 ] && network_phase && network_sweep_authorized 'project clone refresh'; then
     fleet_sync_out=$(mktemp "${TMPDIR:-/tmp}/fm-bootstrap-fleet.XXXXXX") || fleet_sync_out=
     if [ -n "$fleet_sync_out" ]; then
       (
@@ -1425,7 +1488,7 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
       fm_timing_record phase fleet-sync "$__fm_timing_stamp"
     fi
   fi
-  if network_phase; then
+  if [ "$BACKEND_VALID" -eq 1 ] && [ "$SECONDMATE_RUNTIME_VALID" -eq 1 ] && network_phase; then
     if network_sweep_authorized 'dead-secondmate relaunch'; then
       __fm_timing_stamp=$(fm_timing_now_ms)
       secondmate_liveness_sweep

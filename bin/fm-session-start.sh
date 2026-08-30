@@ -810,13 +810,14 @@ for meta in "$STATE"/*.meta; do
   cat "$meta"
 
   backend=
+  local_identity_valid=1
   if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
     backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
   else
     backend=$(fm_backend_meta_recorded_backend "$meta" 2>/dev/null || true)
   fi
   window=$(fm_meta_get "$meta" window)
-  target=$(fm_backend_target_of_meta "$meta")
+  target=
   if [ -z "$window" ] && [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
     remote_backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
     case "$remote_backend" in
@@ -853,8 +854,27 @@ for meta in "$STATE"/*.meta; do
           ;;
       esac
     else
-      case "$backend" in
-        herdr)
+      recorded_backend=$backend
+      if [ "$recorded_backend" = herdr ]; then
+        if fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1; then
+          backend=$FM_BACKEND_VALIDATED_BACKEND
+          target=$FM_BACKEND_VALIDATED_TARGET
+        else
+          local_identity_valid=2
+        fi
+      else
+        case "$recorded_backend" in
+          absent|tmux|zellij|orca|cmux) local_identity_valid=0 ;;
+          *) local_identity_valid=2 ;;
+        esac
+      fi
+      if [ "$local_identity_valid" -eq 0 ]; then
+        printf 'endpoint: legacy record, read-only (backend=%s window=%s); Herdr is the sole supported runtime - see docs/configuration.md "Legacy task records"\n' "${recorded_backend:-absent}" "$window"
+      elif [ "$local_identity_valid" -eq 2 ]; then
+        printf 'endpoint: invalid Herdr record, read-only (backend=%s window=%s); repair the endpoint metadata and verify the named Herdr session\n' "$recorded_backend" "$window"
+      else
+        case "$backend" in
+          herdr)
           if fm_backend_target_exists "$backend" "${target:-$window}" "fm-$id"; then
             printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"
           else
@@ -864,28 +884,29 @@ for meta in "$STATE"/*.meta; do
             else
               printf 'endpoint: dead (backend=%s window=%s)\n' "$backend" "$window"
             fi
-          fi
-          ;;
-        ambiguous|'')
-          printf 'endpoint: ambiguous backend record, read-only (backend=%s window=%s); repair or explicitly migrate it through docs/configuration.md "Legacy task records"\n' "${backend:-absent}" "$window"
-          ;;
+            fi
+            ;;
+          *)
+            printf 'endpoint: ambiguous backend record, read-only (backend=%s window=%s); repair or explicitly migrate it through docs/configuration.md "Legacy task records"\n' "${backend:-absent}" "$window"
+            ;;
+        esac
+      fi
+    fi
+  else
+    if [ "$local_identity_valid" -eq 2 ]; then
+      printf 'endpoint: invalid Herdr record, read-only (backend=%s; no window recorded); repair the endpoint metadata and verify the named Herdr session\n' "$backend"
+    elif [ "$local_identity_valid" -eq 0 ]; then
+      printf 'endpoint: legacy record, read-only (backend=%s; no window recorded); Herdr is the sole supported runtime backend - see docs/configuration.md "Legacy task records"\n' "${backend:-absent}"
+    else
+      case "$backend" in
+        ambiguous)
+        printf 'endpoint: ambiguous backend record, read-only (backend=%s; no window recorded); repair or explicitly migrate it through docs/configuration.md "Legacy task records"\n' "$backend"
+        ;;
         *)
-          printf 'endpoint: legacy record, read-only (backend=%s window=%s); Herdr is the sole supported runtime - see docs/configuration.md "Legacy task records"\n' "$backend" "$window"
+          printf 'endpoint: unknown (no window recorded)\n'
           ;;
       esac
     fi
-  else
-    case "$backend" in
-      ambiguous)
-        printf 'endpoint: ambiguous backend record, read-only (backend=%s; no window recorded); repair or explicitly migrate it through docs/configuration.md "Legacy task records"\n' "$backend"
-        ;;
-      legacy|tmux|zellij|orca|cmux|'')
-        printf 'endpoint: legacy record, read-only (backend=%s; no window recorded); Herdr is the sole supported runtime backend - see docs/configuration.md "Legacy task records"\n' "${backend:-absent}"
-        ;;
-      *)
-        printf 'endpoint: unknown (no window recorded)\n'
-        ;;
-    esac
   fi
 
   status="$STATE/$id.status"
