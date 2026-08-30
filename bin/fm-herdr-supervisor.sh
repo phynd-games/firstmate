@@ -1546,16 +1546,44 @@ loop_stop_arm() {
       fi
     fi
   fi
-  current=$(fm_pid_identity "$pid" 2>/dev/null || printf '')
-  if [ -n "$LOOP_ARM_IDENTITY" ] && [ "$current" = "$LOOP_ARM_IDENTITY" ]; then
+  if ! fm_pid_alive "$pid"; then
     wait "$pid" 2>/dev/null || true
-  elif ! fm_pid_alive "$pid"; then
+  elif [ -n "$LOOP_ARM_IDENTITY" ]; then
+    current=$(fm_pid_identity "$pid" 2>/dev/null || printf '')
+    if [ "$current" != "$LOOP_ARM_IDENTITY" ]; then
+      LOOP_ARM_UNRESOLVED=1
+      LOOP_ARM_UNRESOLVED_NEXT=$(( $(date +%s) + UNKNOWN_ARM_TIMEOUT + 1 ))
+      return 1
+    fi
+    i=0
+    while [ "$i" -lt 20 ] && fm_pid_alive "$pid"; do
+      current=$(fm_pid_identity "$pid" 2>/dev/null || printf '')
+      if [ "$current" != "$LOOP_ARM_IDENTITY" ]; then
+        LOOP_ARM_UNRESOLVED=1
+        LOOP_ARM_UNRESOLVED_NEXT=$(( $(date +%s) + UNKNOWN_ARM_TIMEOUT + 1 ))
+        return 1
+      fi
+      sleep 0.05
+      i=$((i + 1))
+    done
+    if fm_pid_alive "$pid"; then
+      LOOP_ARM_UNRESOLVED=1
+      LOOP_ARM_UNRESOLVED_NEXT=$(( $(date +%s) + UNKNOWN_ARM_TIMEOUT + 1 ))
+      return 1
+    fi
     wait "$pid" 2>/dev/null || true
-  elif fm_pid_alive "$pid"; then
-    loop_wait_unknown_arm
+  else
+    if ! loop_wait_unknown_arm; then
+      LOOP_ARM_UNRESOLVED=1
+      LOOP_ARM_UNRESOLVED_NEXT=$(( $(date +%s) + UNKNOWN_ARM_TIMEOUT + 1 ))
+      return 1
+    fi
   fi
   LOOP_ARM_PID=
   LOOP_ARM_IDENTITY=
+  LOOP_ARM_UNRESOLVED=0
+  LOOP_ARM_UNRESOLVED_NEXT=0
+  return 0
 }
 
 backoff_delay() {  # <attempt>
@@ -1646,7 +1674,7 @@ loop_launch_wait() {  # <pid>
 cmd_run() {
   local self out rc reason failures=0 rapid=0 started ended elapsed delay process_state
   local LOOP_ARM_OUT
-  local LOOP_ARM_UNRESOLVED=0
+  local LOOP_ARM_UNRESOLVED=0 LOOP_ARM_UNRESOLVED_NEXT=0
 
   self=${BASHPID:-$$}
   LOOP_OWNER_PID=$self
@@ -1670,7 +1698,7 @@ cmd_run() {
   # A retire, a supersession, or an operator closing the pane must end this
   # cleanly rather than leaving a record claiming a process that is going away.
   LOOP_ARM_OUT=
-  trap 'loop_stop_arm; ledger_append loop-signal "terminated"; [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT"; loop_release_live; exit 0' HUP TERM INT
+  trap 'if loop_stop_arm; then ledger_append loop-signal "terminated"; [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT"; loop_release_live; exit 0; else escalate "the arm child could not be terminated with a verified identity; retaining supervisor ownership"; fi' HUP TERM INT
 
   while :; do
     if ! loop_owns_generation; then
@@ -1687,7 +1715,18 @@ cmd_run() {
         LOOP_ARM_UNRESOLVED=0
         [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT" 2>/dev/null || true
         LOOP_ARM_OUT=
+        LOOP_ARM_UNRESOLVED_NEXT=0
       else
+        if [ "$(date +%s)" -ge "$LOOP_ARM_UNRESOLVED_NEXT" ]; then
+          if [ "$(hs_config_preference)" = off ]; then
+            escalate "config/herdr-supervisor is off but the arm identity remains unknown; retaining the child and supervisor binding"
+          elif harness_owner_provable; then
+            ledger_append handoff "another continuity owner is provable while the arm identity remains unknown; retaining the child and supervisor binding"
+          else
+            escalate "the arm identity remains unknown after its bounded wait; retaining the tracked child and supervisor binding"
+          fi
+          LOOP_ARM_UNRESOLVED_NEXT=$(( $(date +%s) + UNKNOWN_ARM_TIMEOUT + 1 ))
+        fi
         : > "$HEARTBEAT" 2>/dev/null || true
         sleep 0.5
       fi
@@ -1750,7 +1789,7 @@ cmd_run() {
       while loop_arm_matches; do
         : > "$HEARTBEAT" 2>/dev/null || true
         if [ "$(hs_config_preference)" = off ]; then
-          loop_stop_arm
+          loop_stop_arm || continue 2
           rm -f "$out" 2>/dev/null || true
           LOOP_ARM_OUT=
           if cmd_retire "config/herdr-supervisor changed to off while arming"; then
@@ -1761,7 +1800,7 @@ cmd_run() {
           continue 2
         fi
         if harness_owner_provable; then
-          loop_stop_arm
+          loop_stop_arm || continue 2
           rm -f "$out" 2>/dev/null || true
           LOOP_ARM_OUT=
           ledger_append handoff "another continuity owner became provable while arming; retaining standby supervisor binding"
@@ -1779,6 +1818,7 @@ cmd_run() {
     if [ "$arm_match" -eq 2 ]; then
       if ! loop_wait_unknown_arm; then
         LOOP_ARM_UNRESOLVED=1
+        LOOP_ARM_UNRESOLVED_NEXT=$(( $(date +%s) + UNKNOWN_ARM_TIMEOUT + 1 ))
         continue
       fi
       rc=125

@@ -472,7 +472,7 @@ fm_lock_mid_acquire_is_fresh() {
 }
 
 fm_lock_recheck_stale_owner() {
-  local lockdir=$1 expected_owner=$2 expected_pid=$3 actual_pid
+  local lockdir=$1 expected_owner=$2 expected_pid=$3 actual_pid recorded_identity current_identity
   if [ -n "$expected_owner" ]; then
     fm_lock_points_to_owner "$lockdir" "$expected_owner" || return 1
   elif [ -e "$lockdir" ] || [ -L "$lockdir" ]; then
@@ -481,7 +481,12 @@ fm_lock_recheck_stale_owner() {
   actual_pid=$(cat "$lockdir/pid" 2>/dev/null || true)
   [ "$actual_pid" = "$expected_pid" ] || return 1
   if fm_pid_alive "$actual_pid"; then
-    return 1
+    recorded_identity=$(cat "$lockdir/pid-identity" 2>/dev/null || true)
+    current_identity=$(fm_pid_identity "$actual_pid" 2>/dev/null || true)
+    [ -n "$recorded_identity" ] && [ -n "$current_identity" ] \
+      && [ "$current_identity" != "$recorded_identity" ] || return 1
+  else
+    current_identity=
   fi
   if fm_lock_mid_acquire_is_fresh "$lockdir" "$actual_pid"; then
     return 1
@@ -815,7 +820,7 @@ fm_recovery_marker_reopen_announced() {
 }
 
 fm_lock_try_acquire() {
-  local lockdir=$1 pid steal cur rc steal_owner primary_owner
+  local lockdir=$1 pid steal cur rc steal_owner primary_owner lock_identity current_identity
   FM_LOCK_HELD_PID=
   FM_LOCK_OWNER_DIR=
   FM_LOCK_RECOVERED_PID=
@@ -828,6 +833,18 @@ fm_lock_try_acquire() {
   # $() forks a subshell whose BASHPID is not this frame's pid.
   pid=$(cat "$lockdir/pid" 2>/dev/null || true)
   if [ -n "$pid" ] && [ "$pid" = "${BASHPID:-$$}" ]; then
+    lock_identity=$(cat "$lockdir/pid-identity" 2>/dev/null || true)
+    current_identity=$(fm_pid_identity "$pid" 2>/dev/null || true)
+    if [ -z "$lock_identity" ] || [ -z "$current_identity" ]; then
+      FM_LOCK_HELD_PID=$pid
+      return 1
+    fi
+    if [ "$current_identity" != "$lock_identity" ]; then
+      :
+    elif [ "${BASH_SUBSHELL:-0}" -ne 0 ]; then
+      FM_LOCK_HELD_PID=$pid
+      return 1
+    else
     # The recorded holder is THIS very process. Single-threaded bash can only
     # observe that when an interrupting trap abandoned the frame that held the
     # lock mid-critical-section (e.g. TERM inside a recovery-marker section,
@@ -842,10 +859,16 @@ fm_lock_try_acquire() {
     fi
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
     return 1
+    fi
   fi
   if fm_pid_alive "$pid"; then
-    FM_LOCK_HELD_PID=$pid
-    return 1
+    lock_identity=$(cat "$lockdir/pid-identity" 2>/dev/null || true)
+    current_identity=$(fm_pid_identity "$pid" 2>/dev/null || true)
+    if [ -z "$lock_identity" ] || [ -z "$current_identity" ] \
+      || [ "$current_identity" = "$lock_identity" ]; then
+      FM_LOCK_HELD_PID=$pid
+      return 1
+    fi
   fi
   if fm_lock_mid_acquire_is_fresh "$lockdir" "$pid"; then
     FM_LOCK_HELD_PID=$pid
@@ -862,10 +885,15 @@ fm_lock_try_acquire() {
 
   cur=$(cat "$lockdir/pid" 2>/dev/null || true)
   if fm_pid_alive "$cur"; then
-    fm_lock_release "$steal"
-    FM_LOCK_HELD_PID=$cur
-    FM_LOCK_OWNER_DIR=
-    return 1
+    lock_identity=$(cat "$lockdir/pid-identity" 2>/dev/null || true)
+    current_identity=$(fm_pid_identity "$cur" 2>/dev/null || true)
+    if [ -z "$lock_identity" ] || [ -z "$current_identity" ] \
+      || [ "$current_identity" = "$lock_identity" ]; then
+      fm_lock_release "$steal"
+      FM_LOCK_HELD_PID=$cur
+      FM_LOCK_OWNER_DIR=
+      return 1
+    fi
   fi
   if fm_lock_mid_acquire_is_fresh "$lockdir" "$cur"; then
     fm_lock_release "$steal"
@@ -899,7 +927,18 @@ fm_lock_try_acquire() {
     FM_LOCK_OWNER_DIR=
     return 1
   fi
-  fm_lock_remove_path "$lockdir" || true
+  if ! fm_lock_recheck_stale_owner "$lockdir" "$primary_owner" "$cur"; then
+    fm_lock_release "$steal"
+    FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
+    FM_LOCK_OWNER_DIR=
+    return 1
+  fi
+  fm_lock_remove_path "$lockdir" || {
+    fm_lock_release "$steal"
+    FM_LOCK_HELD_PID=$cur
+    FM_LOCK_OWNER_DIR=
+    return 1
+  }
   rc=1
   if fm_lock_try_create "$lockdir" "$steal_owner"; then
     rc=0
