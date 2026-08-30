@@ -80,6 +80,8 @@ assert_refusal() {
   local label=$1; shift
   [ "$RC" -ne 0 ] || fail "$label: expected a refusal exit, got 0"$'\n'"stdout: $OUT"$'\n'"stderr: $ERR"
   [ -z "$OUT" ] || fail "$label: a refusal must print nothing on stdout, got: $OUT"
+  [ "$(printf '%s\n' "$ERR" | wc -l | tr -d ' ')" -eq 1 ] \
+    || fail "$label: refusal must contain exactly one stderr line"$'\n'"$ERR"
   [ "$(printf '%s\n' "$ERR" | grep -c '^REFUSED: ')" -eq 1 ] \
     || fail "$label: expected exactly one REFUSED line"$'\n'"$ERR"
   assert_contains "$ERR" "Herdr is the sole supported Firstmate runtime backend" "$label: refusal must name Herdr"

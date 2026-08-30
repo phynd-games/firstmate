@@ -18,8 +18,6 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
 
-"$SCRIPT_DIR/fm-guard.sh" || true
-
 RAW_TARGET=$1
 N=${2:-40}
 
@@ -29,6 +27,7 @@ if [ -n "$REMOTE_META" ] && [ -n "$(fm_meta_get "$REMOTE_META" remote_host)" ]; 
   REMOTE_ID=${REMOTE_ID%.meta}
   REMOTE_HOST=$(fm_meta_get "$REMOTE_META" remote_host)
   fm_backend_validate_remote_meta "$REMOTE_META" "$REMOTE_ID" || exit 1
+  "$SCRIPT_DIR/fm-guard.sh" || true
   case "$N" in ''|*[!0-9]*|0) N=40 ;; esac
   [ "$N" -le 100 ] || N=100
   if ! FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-on.sh" "$REMOTE_ID" \
@@ -44,5 +43,7 @@ T=$(fm_backend_resolve_selector "$RAW_TARGET" "$STATE")
 # A legacy (absent or non-herdr) record is refused here by name and never read.
 BACKEND=$(fm_backend_of_selector "$RAW_TARGET" "$T" "$STATE") || exit 1
 EXPECTED_LABEL=$(fm_backend_expected_label_of_selector "$RAW_TARGET" "$STATE")
+
+"$SCRIPT_DIR/fm-guard.sh" || true
 
 fm_backend_capture "$BACKEND" "$T" "$N" "$EXPECTED_LABEL"
