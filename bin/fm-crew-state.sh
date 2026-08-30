@@ -109,13 +109,14 @@ WT=$(meta_value worktree)
 KIND=$(meta_value kind)
 HARNESS=$(meta_value harness)
 REMOTE_HOST=$(meta_value remote_host)
-TASK_TARGET=$(fm_backend_target_of_meta "$META")
 [ -n "$KIND" ] || KIND=ship
 
 if [ -z "$REMOTE_HOST" ]; then
   TASK_BACKEND=$(fm_backend_meta_recorded_backend "$META" 2>/dev/null || true)
   case "$TASK_BACKEND" in
     herdr)
+      fm_backend_validate_task_endpoint "$META" "$ID" || exit $?
+      TASK_TARGET=$FM_BACKEND_VALIDATED_TARGET
       fm_backend_herdr_capability_preflight "crew state task $ID" "${TASK_TARGET%%:*}" || exit $?
       ;;
     absent|tmux|zellij|orca|cmux)
@@ -195,7 +196,7 @@ if [ -n "$REMOTE_HOST" ]; then
       exit 0
       ;;
   esac
-  if ! fm_backend_validate_remote_meta "$META" "$ID" >/dev/null 2>&1; then
+  if ! fm_backend_validate_remote_task_endpoint "$META" "$ID" fm-remote >/dev/null 2>&1; then
     emit unknown backend-identity "remote Herdr metadata is invalid; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\""
     exit 0
   fi

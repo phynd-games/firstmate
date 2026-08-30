@@ -744,8 +744,13 @@ fm_pending_reply_backend_observation() {  # <backend> <target> [expected-label] 
   case "$native" in
     busy|idle) printf '%s' "$native"; return 0 ;;
   esac
-  tail40=$(fm_backend_capture "$backend" "$target" 40 "$expected_label" 2>/dev/null) \
-    || { printf 'unknown'; return 0; }
+  if tail40=$(fm_backend_capture "$backend" "$target" 40 "$expected_label" 2>/dev/null); then
+    :
+  else
+    [ "$backend" = herdr ] && return 2
+    printf 'unknown'
+    return 0
+  fi
   if printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -6 \
     | fm_busy_lines_match "$harness"; then
     printf 'busy'

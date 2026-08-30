@@ -748,14 +748,22 @@ fm_backend_meta_for_selector() {  # <raw-target> <state-dir>
 }
 
 fm_backend_of_selector() {  # <raw-target> <resolved-target> <state-dir>
-  local raw=$1 resolved=$2 state=$3 meta target
+  local raw=$1 resolved=$2 state=$3 meta target id
   meta=$(fm_backend_meta_for_selector "$raw" "$state" 2>/dev/null || true)
   if [ -n "$meta" ]; then
-    local backend
-    backend=$(fm_backend_of_meta "$meta") || return 1
-    [ "$backend" = "$FM_BACKEND_ACTIVE" ] || return 1
-    target=$resolved
-    [ -n "$target" ] || target=$(fm_backend_target_of_meta "$meta")
+    id=${meta##*/}
+    id=${id%.meta}
+    if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
+      fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote || {
+        fm_backend_policy_refuse "task $id remote endpoint record" herdr \
+          "Repair or explicitly migrate this remote task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+        return 1
+      }
+    else
+      fm_backend_validate_task_endpoint "$meta" "$id" || return 1
+    fi
+    local backend=$FM_BACKEND_VALIDATED_BACKEND
+    target=$FM_BACKEND_VALIDATED_TARGET
     fm_backend_herdr_capability_preflight "selector backend for $raw" "${target%%:*}" || return 2
     printf '%s' "$backend"
     return $?
@@ -763,11 +771,19 @@ fm_backend_of_selector() {  # <raw-target> <resolved-target> <state-dir>
   if [ -n "$resolved" ]; then
     meta=$(fm_backend_meta_for_window "$resolved" "$state" 2>/dev/null || true)
     if [ -n "$meta" ]; then
-      local backend
-      backend=$(fm_backend_of_meta "$meta") || return 1
-      [ "$backend" = "$FM_BACKEND_ACTIVE" ] || return 1
-      target=$resolved
-      [ -n "$target" ] || target=$(fm_backend_target_of_meta "$meta")
+      id=${meta##*/}
+      id=${id%.meta}
+      if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
+        fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote || {
+          fm_backend_policy_refuse "task $id remote endpoint record" herdr \
+            "Repair or explicitly migrate this remote task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+          return 1
+        }
+      else
+        fm_backend_validate_task_endpoint "$meta" "$id" || return 1
+      fi
+      local backend=$FM_BACKEND_VALIDATED_BACKEND
+      target=$FM_BACKEND_VALIDATED_TARGET
       fm_backend_herdr_capability_preflight "selector backend for $raw" "${target%%:*}" || return 2
       printf '%s' "$backend"
       return $?
@@ -838,6 +854,17 @@ fm_backend_source() {  # <name> [origin] [session] [spawn]
   if [ "$name" = herdr ]; then
     fm_backend_herdr_capability_check "$origin" || return 2
     if [ "$mode" = spawn ] || [ "$mode" = setup ]; then
+      [ -n "$session" ] || session=$(fm_backend_herdr_session)
+      if ! fm_backend_herdr_server_ensure "$session" >/dev/null 2>&1; then
+        fm_backend_policy_refuse "$origin" herdr \
+          "The native Herdr named-session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'."
+        return 2
+      fi
+      if ! fm_backend_herdr_session_capability_check "$session" >/dev/null 2>&1; then
+        fm_backend_policy_refuse "$origin" herdr \
+          "The native Herdr named-session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'."
+        return 2
+      fi
       return 0
     fi
     [ -n "$session" ] || session=$(fm_backend_herdr_session)
@@ -877,12 +904,18 @@ fm_backend_resolve_selector() {  # <raw-target> <state-dir>
     id=${meta##*/}
     id=${id%.meta}
     if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
-      fm_backend_validate_remote_meta "$meta" "$id" || return 1
+      fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote || {
+        fm_backend_policy_refuse "task $id remote endpoint record" herdr \
+          "Repair or explicitly migrate this remote task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+        return 1
+      }
+      backend=$FM_BACKEND_VALIDATED_BACKEND
+      window=$FM_BACKEND_VALIDATED_TARGET
     else
-      backend=$(fm_backend_of_meta "$meta") || return 1
-      [ "$backend" = "$FM_BACKEND_ACTIVE" ] || return 1
+      fm_backend_validate_task_endpoint "$meta" "$id" || return 1
+      backend=$FM_BACKEND_VALIDATED_BACKEND
+      window=$FM_BACKEND_VALIDATED_TARGET
     fi
-    window=$(fm_backend_target_of_meta "$meta")
     [ -n "$window" ] || { echo "error: no backend target recorded in $meta" >&2; return 1; }
     [ "$backend" != "$FM_BACKEND_ACTIVE" ] || \
       fm_backend_herdr_capability_preflight "selector resolution for task $id" "${window%%:*}" || return 2
@@ -1082,7 +1115,7 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # primitive so callers that only need a fast alive/dead read (recovery
 # digests, the session-start fleet digest) do not re-derive it inline.
 fm_backend_target_exists() {  # <backend> <target> [expected-label]
-  local backend=$1 target=$2 expected_label=${3:-} session pane pane_out pane_rc pane_error_code
+  local backend=$1 target=$2 expected_label=${3:-} session pane pane_out pane_rc
   # The tmux arm below calls the tmux CLI directly rather than through
   # fm_backend_source, so the invariant is enforced here explicitly: a retained
   # legacy backend is refused before any runtime command runs.
@@ -1104,16 +1137,13 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
       # flag on top, so this check is correctly scoped even when the caller's
       # own ambient session (e.g. the primary firstmate's default session) is
       # a DIFFERENT one than the target's.
-      if pane_out=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>&1); then
-        pane_rc=0
+      if pane_out=$(fm_backend_herdr_pane_presence_state "$session" "$pane"); then
+        [ "$pane_out" = present ] && return 0
+        [ "$pane_out" = dead ] && return 1
       else
         pane_rc=$?
+        [ "$pane_rc" -eq 2 ] || return 1
       fi
-      pane_error_code=$(printf '%s' "$pane_out" | jq -r '.error.code // empty' 2>/dev/null || true)
-      if [ "$pane_rc" -eq 0 ] && [ -z "$pane_error_code" ]; then
-        return 0
-      fi
-      [ "$pane_error_code" = pane_not_found ] && return 1
       fm_backend_policy_refuse "Herdr target $target" herdr \
         "The verified Herdr session became unavailable while reading the endpoint. Repair Herdr, then verify with 'herdr status --json'."
       return 2
