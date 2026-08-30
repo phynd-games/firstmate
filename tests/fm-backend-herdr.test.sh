@@ -48,7 +48,12 @@ next=$(( $(cat "$COUNT_FILE" 2>/dev/null || echo 0) + 1 ))
   printf '\n'
 } >> "$LOG"
 if [ "${1:-}" = status ] && [ "${2:-}" = --json ] && [ "${FM_HERDR_SCRIPT_STATUS:-0}" != 1 ]; then
-  printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n'
+  printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true,"status":"running","compatible":true,"protocol":14}}\n'
+  exit 0
+fi
+if [ "${1:-} ${2:-}" = "session list" ] \
+  && { [ ! -f "$RESP/$next.out" ] || ! grep -q '"sessions"' "$RESP/$next.out"; }; then
+  printf '{"sessions":[{"name":"%s","running":true}]}\n' "${HERDR_SESSION:-default}"
   exit 0
 fi
 n=$next
@@ -112,7 +117,10 @@ done
 
 case "$cmd $sub" in
   "status --json")
-    printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n'
+    printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true,"status":"running","compatible":true,"protocol":14}}\n'
+    ;;
+  "session list")
+    printf '{"sessions":[{"name":"%s","running":true}]}\n' "${HERDR_SESSION:-default}"
     ;;
   "workspace list")
     jq_state '{result:{workspaces:.workspaces}}'
@@ -508,12 +516,14 @@ test_container_ensure_starts_server_and_workspace() {
   printf '{"server":{"running":false}}\n' > "$resp/2.out"
   # 3: `herdr server` backgrounded launch - no meaningful output
   # 4: server_ensure poll -> now running
-  printf '{"server":{"running":true}}\n' > "$resp/4.out"
-  # 5: workspace list -> empty (no "firstmate" workspace yet)
-  printf '{"result":{"workspaces":[]}}\n' > "$resp/5.out"
-  # 6: workspace create -> w1, seeding default tab w1:t9 (real herdr returns
+  printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true,"status":"running","compatible":true,"protocol":14}}\n' > "$resp/4.out"
+  # 5: exact-session capability status after server startup
+  printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true,"status":"running","compatible":true,"protocol":14}}\n' > "$resp/5.out"
+  # 6: workspace list -> empty (no "firstmate" workspace yet)
+  printf '{"result":{"workspaces":[]}}\n' > "$resp/6.out"
+  # 7: workspace create -> w1, seeding default tab w1:t9 (real herdr returns
   # the seeded tab/pane ids in the SAME response - verified empirically).
-  printf '{"result":{"workspace":{"workspace_id":"w1","label":"firstmate"},"tab":{"tab_id":"w1:t9"},"root_pane":{"pane_id":"w1:p9"}}}\n' > "$resp/6.out"
+  printf '{"result":{"workspace":{"workspace_id":"w1","label":"firstmate"},"tab":{"tab_id":"w1:t9"},"root_pane":{"pane_id":"w1:p9"}}}\n' > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" )
@@ -528,8 +538,9 @@ test_container_ensure_reuses_existing_workspace() {
   local dir log resp fb out
   dir="$TMP_ROOT/container-reuse"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"client":{"version":"0.7.1","protocol":14}}\n' > "$resp/1.out"
-  printf '{"server":{"running":true}}\n' > "$resp/2.out"
-  printf '{"result":{"workspaces":[{"workspace_id":"w9","label":"firstmate"}]}}\n' > "$resp/3.out"
+  printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true,"status":"running","compatible":true,"protocol":14}}\n' > "$resp/2.out"
+  printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true,"status":"running","compatible":true,"protocol":14}}\n' > "$resp/3.out"
+  printf '{"result":{"workspaces":[{"workspace_id":"w9","label":"firstmate"}]}}\n' > "$resp/4.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" )
@@ -788,9 +799,10 @@ test_container_ensure_creates_with_no_focus_flag() {
   local dir log resp fb out
   dir="$TMP_ROOT/container-no-focus"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"client":{"version":"0.7.1","protocol":14}}\n' > "$resp/1.out"
-  printf '{"server":{"running":true}}\n' > "$resp/2.out"
-  printf '{"result":{"workspaces":[]}}\n' > "$resp/3.out"
-  printf '{"result":{"workspace":{"workspace_id":"w1","label":"firstmate"},"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}\n' > "$resp/4.out"
+  printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true,"status":"running","compatible":true,"protocol":14}}\n' > "$resp/2.out"
+  printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true,"status":"running","compatible":true,"protocol":14}}\n' > "$resp/3.out"
+  printf '{"result":{"workspaces":[]}}\n' > "$resp/4.out"
+  printf '{"result":{"workspace":{"workspace_id":"w1","label":"firstmate"},"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}\n' > "$resp/5.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" )
@@ -805,9 +817,10 @@ test_container_ensure_uses_secondmate_home_label() {
   dir="$TMP_ROOT/container-secondmate-label"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   home="$TMP_ROOT/container-secondmate-home"; mkdir -p "$home"; printf 'sshhip-h7\n' > "$home/.fm-secondmate-home"
   printf '{"client":{"version":"0.7.1","protocol":14}}\n' > "$resp/1.out"
-  printf '{"server":{"running":true}}\n' > "$resp/2.out"
-  printf '{"result":{"workspaces":[]}}\n' > "$resp/3.out"
-  printf '{"result":{"workspace":{"workspace_id":"w9","label":"2ndmate-sshhip-h7"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' > "$resp/4.out"
+  printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true,"status":"running","compatible":true,"protocol":14}}\n' > "$resp/2.out"
+  printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true,"status":"running","compatible":true,"protocol":14}}\n' > "$resp/3.out"
+  printf '{"result":{"workspaces":[]}}\n' > "$resp/4.out"
+  printf '{"result":{"workspace":{"workspace_id":"w9","label":"2ndmate-sshhip-h7"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' > "$resp/5.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" )
@@ -1525,7 +1538,7 @@ test_projection_close_emptying_before_focus_repositions_then_uses_pane_death() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","workspace_id":"w1"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"}]}}' > "$resp/5.out"
   cp "$resp/1.out" "$resp/6.out"
-  printf '%s\n' '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true}}' > "$resp/7.out"
+  printf '%s\n' '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}' > "$resp/7.out"
   # shellcheck disable=SC2016 # $defs is a literal JSON Schema key.
   printf '%s\n' '{"schemas":{"request":{"oneOf":[{"properties":{"method":{"const":"workspace.move"}}}],"$defs":{"WorkspaceMoveParams":{"required":["workspace_id","insert_index"],"properties":{"insert_index":{"type":"integer"}}}}}}}' > "$resp/8.out"
   printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fmtest.sock"}]}' > "$resp/9.out"
@@ -1713,7 +1726,7 @@ test_projection_close_move_failure_falls_back_to_plain_close() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","workspace_id":"w1"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"}]}}' > "$resp/5.out"
   cp "$resp/1.out" "$resp/6.out"
-  printf '%s\n' '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true}}' > "$resp/7.out"
+  printf '%s\n' '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}' > "$resp/7.out"
   # shellcheck disable=SC2016 # $defs is a literal JSON Schema key.
   printf '%s\n' '{"schemas":{"request":{"oneOf":[{"properties":{"method":{"const":"workspace.move"}}}],"$defs":{"WorkspaceMoveParams":{"required":["workspace_id","insert_index"],"properties":{"insert_index":{"type":"integer"}}}}}}}' > "$resp/8.out"
   printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fmtest.sock"}]}' > "$resp/9.out"
@@ -1962,7 +1975,7 @@ assert_projection_close_failed_removal_rolls_back_the_reposition() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","workspace_id":"w1"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"}]}}' > "$resp/5.out"
   cp "$resp/1.out" "$resp/6.out"
-  printf '%s\n' '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true}}' > "$resp/7.out"
+  printf '%s\n' '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}' > "$resp/7.out"
   # shellcheck disable=SC2016 # $defs is a literal JSON Schema key.
   printf '%s\n' '{"schemas":{"request":{"oneOf":[{"properties":{"method":{"const":"workspace.move"}}}],"$defs":{"WorkspaceMoveParams":{"required":["workspace_id","insert_index"],"properties":{"insert_index":{"type":"integer"}}}}}}}' > "$resp/8.out"
   printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fmtest.sock"}]}' > "$resp/9.out"
@@ -2225,7 +2238,7 @@ test_projection_order_moves_only_exact_new_workspace_and_preserves_relative_orde
   log="$dir/log"; resp="$dir/responses"; mover="$dir/mover"; mover_log="$dir/mover.log"
   : > "$log"; : > "$mover_log"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate","focused":false},{"workspace_id":"w2","label":"firstmate/old · p:AbCdEfGhIjKlMnOpQrStUv","focused":false},{"workspace_id":"w3","label":"2ndmate-alpha","focused":false},{"workspace_id":"w4","label":"2ndmate-bravo","focused":true},{"workspace_id":"w5","label":"└ new · p:ZyXwVuTsRqPoNmLkJiHgFe","focused":false}]}}' > "$resp/1.out"
-  printf '%s\n' '{"client":{"version":"0.7.4","protocol":16},"server":{"running":true}}' > "$resp/2.out"
+  printf '%s\n' '{"client":{"version":"0.7.4","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}' > "$resp/2.out"
   # shellcheck disable=SC2016 # $defs is a literal JSON Schema key.
   printf '%s\n' '{"schemas":{"request":{"oneOf":[{"properties":{"method":{"const":"workspace.move"}}}],"$defs":{"WorkspaceMoveParams":{"required":["workspace_id","insert_index"],"properties":{"insert_index":{"type":"integer"}}}}}}}' > "$resp/3.out"
   printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fmtest.sock"}]}' > "$resp/4.out"
@@ -2257,7 +2270,7 @@ test_projection_order_secondmate_parent_block() {
   : > "$log"; : > "$mover_log"
   # firstmate, primary child, 2ndmate-A, A-child legacy, 2ndmate-B, human, NEW for A
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w2","label":"└ primary · p:AbCdEfGhIjKlMnOpQrStUv"},{"workspace_id":"w3","label":"2ndmate-alpha"},{"workspace_id":"w4","label":"2ndmate-alpha/old · p:AbCdEfGhIjKlMnOpQrStU1"},{"workspace_id":"w5","label":"2ndmate-bravo"},{"workspace_id":"wH","label":"human-notes"},{"workspace_id":"w6","label":"└ new-a · p:ZyXwVuTsRqPoNmLkJiHgFe"}]}}' > "$resp/1.out"
-  printf '%s\n' '{"client":{"version":"0.7.4","protocol":16},"server":{"running":true}}' > "$resp/2.out"
+  printf '%s\n' '{"client":{"version":"0.7.4","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}' > "$resp/2.out"
   # shellcheck disable=SC2016
   printf '%s\n' '{"schemas":{"request":{"oneOf":[{"properties":{"method":{"const":"workspace.move"}}}],"$defs":{"WorkspaceMoveParams":{"required":["workspace_id","insert_index"],"properties":{"insert_index":{"type":"integer"}}}}}}}' > "$resp/3.out"
   printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fmtest.sock"}]}' > "$resp/4.out"
@@ -2311,7 +2324,7 @@ test_projection_order_allows_intervening_parent_child_block() {
   log="$dir/log"; resp="$dir/responses"; mover="$dir/mover"; mover_log="$dir/mover.log"
   : > "$log"; : > "$mover_log"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w2","label":"firstmate/old · p:AbCdEfGhIjKlMnOpQrStUv"},{"workspace_id":"w3","label":"2ndmate-alpha"},{"workspace_id":"w4","label":"2ndmate-bravo"},{"workspace_id":"w5","label":"└ bravo-child · p:QqWwEeRrTtYyUuIiOoPpAa"},{"workspace_id":"w6","label":"└ new-first · p:ZyXwVuTsRqPoNmLkJiHgFe"}]}}' > "$resp/1.out"
-  printf '%s\n' '{"client":{"version":"0.7.4","protocol":16},"server":{"running":true}}' > "$resp/2.out"
+  printf '%s\n' '{"client":{"version":"0.7.4","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}' > "$resp/2.out"
   # shellcheck disable=SC2016
   printf '%s\n' '{"schemas":{"request":{"oneOf":[{"properties":{"method":{"const":"workspace.move"}}}],"$defs":{"WorkspaceMoveParams":{"required":["workspace_id","insert_index"],"properties":{"insert_index":{"type":"integer"}}}}}}}' > "$resp/3.out"
   printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fmtest.sock"}]}' > "$resp/4.out"
@@ -2339,7 +2352,7 @@ test_projection_order_human_spaces_never_move_targets() {
   log="$dir/log"; resp="$dir/responses"; mover="$dir/mover"; mover_log="$dir/mover.log"
   : > "$log"; : > "$mover_log"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"wH1","label":"notes"},{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"wH2","label":"scratch"},{"workspace_id":"w2","label":"2ndmate-alpha"},{"workspace_id":"w3","label":"└ new · p:ZyXwVuTsRqPoNmLkJiHgFe"}]}}' > "$resp/1.out"
-  printf '%s\n' '{"client":{"version":"0.7.4","protocol":16},"server":{"running":true}}' > "$resp/2.out"
+  printf '%s\n' '{"client":{"version":"0.7.4","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}' > "$resp/2.out"
   # shellcheck disable=SC2016
   printf '%s\n' '{"schemas":{"request":{"oneOf":[{"properties":{"method":{"const":"workspace.move"}}}],"$defs":{"WorkspaceMoveParams":{"required":["workspace_id","insert_index"],"properties":{"insert_index":{"type":"integer"}}}}}}}' > "$resp/3.out"
   printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fmtest.sock"}]}' > "$resp/4.out"
@@ -2365,7 +2378,7 @@ test_projection_order_failure_warns_without_cleanup_or_spawn_failure() {
   dir="$TMP_ROOT/projection-order-failure"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; mover="$dir/mover"; : > "$log"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate","focused":true},{"workspace_id":"w2","label":"2ndmate-alpha","focused":false},{"workspace_id":"w3","label":"└ new · p:ZyXwVuTsRqPoNmLkJiHgFe","focused":false}]}}' > "$resp/1.out"
-  printf '%s\n' '{"client":{"version":"0.7.4","protocol":16},"server":{"running":true}}' > "$resp/2.out"
+  printf '%s\n' '{"client":{"version":"0.7.4","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}' > "$resp/2.out"
   # shellcheck disable=SC2016 # $defs is a literal JSON Schema key.
   printf '%s\n' '{"schemas":{"request":{"oneOf":[{"properties":{"method":{"const":"workspace.move"}}}],"$defs":{"WorkspaceMoveParams":{"required":["workspace_id","insert_index"],"properties":{"insert_index":{"type":"integer"}}}}}}}' > "$resp/3.out"
   printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fmtest.sock"}]}' > "$resp/4.out"
@@ -2579,7 +2592,7 @@ test_projection_order_rejects_malformed_socket() {
   dir="$TMP_ROOT/projection-order-malformed-socket"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; mover="$dir/mover"; : > "$log"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"wH","label":"2ndmate-alpha"},{"workspace_id":"w2","label":"└ new · p:ZyXwVuTsRqPoNmLkJiHgFe"}]}}' > "$resp/1.out"
-  printf '%s\n' '{"client":{"version":"0.7.4","protocol":16},"server":{"running":true}}' > "$resp/2.out"
+  printf '%s\n' '{"client":{"version":"0.7.4","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}' > "$resp/2.out"
   # shellcheck disable=SC2016
   printf '%s\n' '{"schemas":{"request":{"oneOf":[{"properties":{"method":{"const":"workspace.move"}}}],"$defs":{"WorkspaceMoveParams":{"required":["workspace_id","insert_index"],"properties":{"insert_index":{"type":"integer"}}}}}}}' > "$resp/3.out"
   printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":null}]}' > "$resp/4.out"
@@ -3702,6 +3715,7 @@ test_send_text_submit_never_idle_native_state_keeps_pending_without_a_transition
   herdr_cursor_midturn_plain > "$resp/3.out"
   herdr_cursor_midturn_ansi > "$resp/5.out"
   herdr_cursor_midturn_ansi > "$resp/7.out"
+  printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/8.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 2 0.01 0.01' "$ROOT" )
@@ -3828,49 +3842,15 @@ test_dispatch_routes_herdr_backend() {
   pass "fm_backend_validate: herdr is a known backend (P2)"
 }
 
-test_dispatch_busy_state_unknown_for_tmux() {
-  # shellcheck source=bin/fm-backend.sh
-  . "$ROOT/bin/fm-backend.sh"
-  [ "$(fm_backend_busy_state tmux 'sess:win')" = unknown ] \
-    || fail "fm_backend_busy_state should report unknown for tmux (no native agent-state primitive; watcher falls back to regex)"
-  pass "fm_backend_busy_state: tmux (no native primitive) always reports unknown, preserving the P1 regex-only path"
-}
-
-test_dispatch_composer_state_routes_by_backend() {
-  # fm_backend_composer_state (the generic per-backend composer/pending-input
-  # classifier the away-mode daemon dispatches through - bin/fm-supervise-daemon.sh's
-  # pane_input_pending) must route to each backend's OWN named classifier with
-  # the target passed through unchanged - every backend has one now, all thin
-  # wrappers over the shared fm_composer_classify_screen - and report unknown
-  # for an unrecognized backend name.
-  # Sourced-guards are pre-set so fm_backend_source no-ops and these stubs are
-  # never clobbered by the real per-backend files trying (and failing) a live call.
-  (
-    # shellcheck source=bin/fm-backend.sh
-    . "$ROOT/bin/fm-backend.sh"
-    _FM_BACKEND_TMUX_SOURCED=1
-    _FM_BACKEND_HERDR_SOURCED=1
-    _FM_BACKEND_ORCA_SOURCED=1
-    _FM_BACKEND_ZELLIJ_SOURCED=1
-    fm_tmux_composer_state() { [ "$1" = "sess:win" ] || fail "tmux composer_state got wrong target: $1"; printf 'pending'; }
-    fm_backend_herdr_composer_state() { [ "$1" = "default:w1:p2" ] || fail "herdr composer_state got wrong target: $1"; printf 'empty'; }
-    fm_backend_orca_composer_state() { [ "$1" = "term-1" ] || fail "orca composer_state got wrong target: $1"; printf 'empty'; }
-    fm_backend_zellij_composer_state() { [ "$1" = "sess:7" ] || fail "zellij composer_state got wrong target: $1"; printf 'empty'; }
-    [ "$(fm_backend_composer_state tmux sess:win)" = pending ] || fail "composer_state did not dispatch to the tmux classifier"
-    [ "$(fm_backend_composer_state herdr default:w1:p2)" = empty ] || fail "composer_state did not dispatch to the herdr classifier"
-    [ "$(fm_backend_composer_state orca term-1)" = empty ] || fail "composer_state did not dispatch to the orca classifier"
-    [ "$(fm_backend_composer_state zellij sess:7)" = empty ] || fail "composer_state did not dispatch to the zellij classifier"
-    [ "$(fm_backend_composer_state bogus x)" = unknown ] || fail "composer_state should report unknown for an unrecognized backend"
-  ) || fail "composer_state dispatch subshell failed"
-  pass "fm_backend_composer_state dispatches every backend to its named thin classifier, unknown for unrecognized backends"
-}
-
 test_scripts_route_explicit_target_through_meta_backend() {
   local dir state log resp fb neutral out
   dir="$TMP_ROOT/script-explicit-target"; state="$dir/state"; mkdir -p "$state" "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   neutral="$dir/neutral-root"; mkdir -p "$neutral"
-  fm_write_meta "$state/herdr-stale.meta" "window=default:w1:p2" "backend=herdr"
+  fm_write_meta "$state/herdr-stale.meta" "window=default:w1:p2" "backend=herdr" \
+    "worktree=/tmp/proj" "project=firstmate" "endpoint_task_id=herdr-stale" \
+    "herdr_session=default" "herdr_workspace_id=w1" "herdr_tab_id=w1:t1" \
+    "herdr_pane_id=w1:p2"
   touch "$state/.last-watcher-beat"
   printf 'captured herdr pane\n' > "$resp/1.out"
   fb=$(make_herdr_fakebin "$dir")
@@ -3890,6 +3870,7 @@ SH
     "fm-peek did not route the explicit stale target through herdr capture"
 
   : > "$log"
+  : > "$resp/.count"
   PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$neutral" FM_HOME="$neutral" FM_STATE_OVERRIDE="$state" \
     FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     "$ROOT/bin/fm-send.sh" default:w1:p2 --key Escape >/dev/null 2>&1
@@ -4138,7 +4119,7 @@ LOG="${FM_HERDR_LOG:-/dev/null}"
 cmd=${1:-}; sub=${2:-}
 case "$cmd $sub" in
   "status --json")
-    printf '{"client":{"version":"0.7.3","protocol":16},"server":{"running":true}}\n' ;;
+    printf '{"client":{"version":"0.7.3","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}\n' ;;
   "session list")
     printf '{"sessions":[{"name":"%s","running":true,"default":false,"socket_path":"%s"}]}\n' \
       "${FM_FAKE_SESSION_NAME:-default}" "${FM_FAKE_SOCKET:-/tmp/fm-fake.sock}" ;;
@@ -4585,8 +4566,6 @@ test_send_text_submit_send_failed
 test_send_text_submit_unknown_on_capture_failure
 test_send_text_submit_unknown_on_composer_capture_failure
 test_dispatch_routes_herdr_backend
-test_dispatch_busy_state_unknown_for_tmux
-test_dispatch_composer_state_routes_by_backend
 test_scripts_route_explicit_target_through_meta_backend
 test_normalize_event_leaves_from_empty
 test_escalation_marker_keys_like_watcher

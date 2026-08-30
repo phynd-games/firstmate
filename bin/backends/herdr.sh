@@ -1472,7 +1472,7 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
 fm_backend_herdr_server_ensure() {  # <session>
   local session=$1 running status i
   status=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null) || return 2
-  running=$(printf '%s' "$status" | jq -r '.server.running // empty' 2>/dev/null) || running=
+  running=$(printf '%s' "$status" | jq -r '.server.running | if type == "boolean" then tostring else empty end' 2>/dev/null) || running=
   case "$running" in
     true)
       fm_backend_herdr_server_status_healthy "$status" || return 2
@@ -1856,10 +1856,14 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace> [<launcher-
     fi
     return 1
   fi
-  fm_backend_herdr_workspace_ensure "$session" "$cwd" "$relationship" >/dev/null && status=0 || status=$?
-  # A 3 already reported the exact placement it refused to guess at; adding the
-  # generic message here would bury it.
-  [ "$status" -ne 3 ] || return 1
+  if fm_backend_herdr_workspace_ensure "$session" "$cwd" "$relationship" >/dev/null; then
+    status=0
+  else
+    status=$?
+  fi
+  if [ "$status" -eq 3 ]; then
+    return 1
+  fi
   if [ "$status" -ne 0 ] || [ -z "$FM_BACKEND_HERDR_WS_ID" ]; then
     label=$(fm_backend_herdr_workspace_label)
     echo "error: failed to ensure herdr workspace '$label' in session '$session'" >&2
@@ -1871,15 +1875,30 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace> [<launcher-
 # fm_backend_herdr_pane_presence_state: classify one exact pane get response
 # as dead|present|unknown from its JSON body, never from process exit status.
 fm_backend_herdr_pane_presence_state() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 out code pid
-  out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>&1)
+  local session=$1 pane_id=$2 out code pid native_rc cli_rc=0
+  if out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>&1); then
+    cli_rc=0
+  else
+    cli_rc=$?
+  fi
+  if [ "$cli_rc" -ne 0 ] && [ -z "$out" ]; then
+    return 2
+  fi
   code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
   if [ -n "$code" ]; then
-    [ "$code" = "pane_not_found" ] && printf 'dead' || printf 'unknown'
+    [ "$code" = "pane_not_found" ] && { printf 'dead'; return 0; }
+    fm_backend_herdr_native_failure_rc "$out"
+    native_rc=$?
+    [ "$native_rc" -eq 2 ] && return 2
+    printf 'unknown'
     return 0
   fi
   pid=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
-  [ "$pid" = "$pane_id" ] && printf 'present' || printf 'unknown'
+  [ "$pid" = "$pane_id" ] && { printf 'present'; return 0; }
+  fm_backend_herdr_native_failure_rc "$out"
+  native_rc=$?
+  [ "$native_rc" -eq 2 ] && return 2
+  printf 'unknown'
 }
 
 fm_backend_herdr_workspace_presence_state() {  # <session> <workspace_id>
@@ -1937,8 +1956,10 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 #              refusal here, never toward closing - this is the conservative
 #              backstop the husk check depends on.
 fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 out code presence status
+  local session=$1 pane_id=$2 out code presence presence_rc status native_rc cli_rc=0
   presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
+  presence_rc=$?
+  [ "$presence_rc" -eq 2 ] && return 2
   if [ "$presence" != present ]; then
     case "$presence" in
       dead|unknown) printf '%s' "$presence" ;;
@@ -1946,13 +1967,24 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
     esac
     return 0
   fi
-  out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>&1)
+  if out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>&1); then
+    cli_rc=0
+  else
+    cli_rc=$?
+  fi
+  if [ "$cli_rc" -ne 0 ] && [ -z "$out" ]; then
+    return 2
+  fi
   code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
   if [ -n "$code" ]; then
-    [ "$code" = "agent_not_found" ] && printf 'no-agent' || printf 'unknown'
+    [ "$code" = "agent_not_found" ] && { printf 'no-agent'; return 0; }
+    fm_backend_herdr_native_failure_rc "$out"
+    native_rc=$?
+    [ "$native_rc" -eq 2 ] && return 2
+    printf 'unknown'
     return 0
   fi
-  status=$(printf '%s' "$out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null)
+  status=$(printf '%s' "$out" | jq -er '.result.agent.agent_status | strings | select(length > 0)' 2>/dev/null) || return 2
   case "$status" in
     working|idle|done|blocked) printf 'live' ;;
     *) printf 'unknown' ;;
@@ -1977,11 +2009,18 @@ fm_backend_herdr_tab_is_husk() {  # <session> <pane_id>
 # a confirmed agent-less pane is `dead`, a registered agent is `alive`, and an
 # unexpected or failed API read is `unreadable`.
 fm_backend_herdr_agent_state() {  # <target>
-  local target=$1 ready_rc=0
+  local target=$1 ready_rc=0 state state_rc
   fm_backend_herdr_parse_target "$target" || { printf 'unreadable'; return 0; }
   fm_backend_herdr_target_ready "$target" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
-  case "$(fm_backend_herdr_pane_agent_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")" in
+  if state=$(fm_backend_herdr_pane_agent_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"); then
+    :
+  else
+    state_rc=$?
+    [ "$state_rc" -eq 2 ] && return 2
+    state=unknown
+  fi
+  case "$state" in
     dead) printf 'missing' ;;
     no-agent) printf 'dead' ;;
     live) printf 'alive' ;;
@@ -2566,6 +2605,17 @@ fm_backend_herdr_target_ready() {  # <target>
   return "$ready_rc"
 }
 
+fm_backend_herdr_native_failure_rc() {
+  local out=$1 code
+  [ -n "$out" ] || return 1
+  code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)
+  case "$code" in
+    pane_not_found|agent_not_found) return 1 ;;
+    "") return 2 ;;
+    *) return 2 ;;
+  esac
+}
+
 # fm_backend_herdr_current_path: the live FOREGROUND process's cwd, or empty on
 # any error. Mirrors tmux's pane_current_path poll used for worktree-path
 # discovery after `treehouse get`.
@@ -2579,11 +2629,24 @@ fm_backend_herdr_target_ready() {  # <target>
 # process's cwd instead, which is what changes when `treehouse get` enters its
 # worktree subshell - confirmed live against a real treehouse acquisition.
 fm_backend_herdr_current_path() {  # <target>
-  local ready_rc=0
+  local ready_rc=0 out native_rc
   fm_backend_herdr_target_ready "$1" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
-  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane get "$FM_BACKEND_HERDR_PANE" 2>/dev/null \
-    | jq -r '.result.pane.foreground_cwd // empty' 2>/dev/null
+  if out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane get "$FM_BACKEND_HERDR_PANE" 2>&1); then
+    native_rc=0
+  else
+    fm_backend_herdr_native_failure_rc "$out"
+    native_rc=$?
+    [ "$native_rc" -eq 1 ] && return 1
+    return 2
+  fi
+  if [ -n "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ]; then
+    fm_backend_herdr_native_failure_rc "$out"
+    native_rc=$?
+    [ "$native_rc" -eq 1 ] && return 1
+    return 2
+  fi
+  printf '%s' "$out" | jq -r '.result.pane.foreground_cwd // empty' 2>/dev/null
 }
 
 # fm_backend_herdr_send_text_line: send one line of TEXT then submit,
@@ -2591,10 +2654,16 @@ fm_backend_herdr_current_path() {  # <target>
 # spawn-time commands (treehouse get, the GOTMPDIR export). `pane run` types
 # the command and submits it in one call (verified).
 fm_backend_herdr_send_text_line() {  # <target> <text>
-  local ready_rc=0
+  local ready_rc=0 out native_rc
   fm_backend_herdr_target_ready "$1" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
-  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane run "$FM_BACKEND_HERDR_PANE" "$2" >/dev/null 2>&1
+  if out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane run "$FM_BACKEND_HERDR_PANE" "$2" 2>&1); then
+    [ -z "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ] && return 0
+  fi
+  fm_backend_herdr_native_failure_rc "$out"
+  native_rc=$?
+  [ "$native_rc" -eq 1 ] && return 1
+  return 2
 }
 
 # fm_backend_herdr_send_literal: send TEXT as literal, UNSUBMITTED input - the
@@ -2602,10 +2671,16 @@ fm_backend_herdr_send_text_line() {  # <target> <text>
 # Verified: `pane send-text` does NOT auto-submit (contrary to the addendum's
 # original guess); it behaves exactly like tmux's `-l` literal send.
 fm_backend_herdr_send_literal() {  # <target> <text>
-  local ready_rc=0
+  local ready_rc=0 out native_rc
   fm_backend_herdr_target_ready "$1" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
-  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane send-text "$FM_BACKEND_HERDR_PANE" "$2" >/dev/null 2>&1
+  if out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane send-text "$FM_BACKEND_HERDR_PANE" "$2" 2>&1); then
+    [ -z "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ] && return 0
+  fi
+  fm_backend_herdr_native_failure_rc "$out"
+  native_rc=$?
+  [ "$native_rc" -eq 1 ] && return 1
+  return 2
 }
 
 # fm_backend_herdr_normalize_key: map firstmate's key vocabulary (Enter,
@@ -2628,11 +2703,17 @@ fm_backend_herdr_normalize_key() {  # <key>
 # fm_backend_herdr_send_key: one named special key. Mirrors fm-send.sh's --key
 # path (tmux's `send-keys -t T key`).
 fm_backend_herdr_send_key() {  # <target> <key>
-  local ready_rc=0 key
+  local ready_rc=0 key out native_rc
   fm_backend_herdr_target_ready "$1" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
   key=$(fm_backend_herdr_normalize_key "$2")
-  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane send-keys "$FM_BACKEND_HERDR_PANE" "$key" >/dev/null 2>&1
+  if out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane send-keys "$FM_BACKEND_HERDR_PANE" "$key" 2>&1); then
+    [ -z "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ] && return 0
+  fi
+  fm_backend_herdr_native_failure_rc "$out"
+  native_rc=$?
+  [ "$native_rc" -eq 1 ] && return 1
+  return 2
 }
 
 # fm_backend_herdr_capture: bounded plain-text pane capture. Mirrors
@@ -2649,24 +2730,46 @@ fm_backend_herdr_send_key() {  # <target> <key>
 # always request a generous fetch far above any realistic viewport height, then
 # trim to the caller's requested bound ourselves with `tail`.
 fm_backend_herdr_capture() {  # <target> <lines>
-  local ready_rc=0 lines=${2:-200} fetch out
+  local ready_rc=0 lines=${2:-200} fetch out native_rc
   fm_backend_herdr_target_ready "$1" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
   case "$lines" in ''|*[!0-9]*) lines=200 ;; esac
   fetch=$lines
   case "$fetch" in ''|*[!0-9]*) fetch=200 ;; *) [ "$fetch" -ge 200 ] || fetch=200 ;; esac
-  out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane read "$FM_BACKEND_HERDR_PANE" --source recent --lines "$fetch" 2>/dev/null) || return 1
+  if ! out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane read "$FM_BACKEND_HERDR_PANE" --source recent --lines "$fetch" 2>&1); then
+    fm_backend_herdr_native_failure_rc "$out"
+    native_rc=$?
+    [ "$native_rc" -eq 1 ] && return 1
+    return 2
+  fi
+  if [ -n "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ]; then
+    fm_backend_herdr_native_failure_rc "$out"
+    native_rc=$?
+    [ "$native_rc" -eq 1 ] && return 1
+    return 2
+  fi
   printf '%s' "$out" | tail -n "$lines"
 }
 
 fm_backend_herdr_capture_ansi() {  # <target> <lines>
-  local ready_rc=0 lines=${2:-200} fetch out
+  local ready_rc=0 lines=${2:-200} fetch out native_rc
   fm_backend_herdr_target_ready "$1" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
   case "$lines" in ''|*[!0-9]*) lines=200 ;; esac
   fetch=$lines
   case "$fetch" in ''|*[!0-9]*) fetch=200 ;; *) [ "$fetch" -ge 200 ] || fetch=200 ;; esac
-  out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane read "$FM_BACKEND_HERDR_PANE" --source recent --lines "$fetch" --format ansi 2>/dev/null) || return 1
+  if ! out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane read "$FM_BACKEND_HERDR_PANE" --source recent --lines "$fetch" --format ansi 2>&1); then
+    fm_backend_herdr_native_failure_rc "$out"
+    native_rc=$?
+    [ "$native_rc" -eq 1 ] && return 1
+    return 2
+  fi
+  if [ -n "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ]; then
+    fm_backend_herdr_native_failure_rc "$out"
+    native_rc=$?
+    [ "$native_rc" -eq 1 ] && return 1
+    return 2
+  fi
   printf '%s' "$out" | tail -n "$lines"
 }
 
@@ -2683,9 +2786,20 @@ fm_backend_herdr_capture_ansi() {  # <target> <lines>
 # silently omitted is exactly the drift class that consolidation removes.
 
 fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
-  local out
-  out=$(fm_backend_herdr_cli "$1" agent get "$2" 2>/dev/null) || return 1
-  printf '%s' "$out" | jq -r '[.result.agent.agent // "", .result.agent.agent_status // ""] | @tsv' 2>/dev/null
+  local out native_rc
+  if ! out=$(fm_backend_herdr_cli "$1" agent get "$2" 2>&1); then
+    fm_backend_herdr_native_failure_rc "$out"
+    native_rc=$?
+    [ "$native_rc" -eq 1 ] && return 1
+    return 2
+  fi
+  if [ -n "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ]; then
+    fm_backend_herdr_native_failure_rc "$out"
+    native_rc=$?
+    [ "$native_rc" -eq 1 ] && return 1
+    return 2
+  fi
+  printf '%s' "$out" | jq -er '[.result.agent.agent // "", .result.agent.agent_status // ""] | @tsv' 2>/dev/null
 }
 
 # fm_backend_herdr_composer_identity: the native agent identity/state probe
@@ -2723,7 +2837,11 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unprove
   fi
   verdict=$(fm_composer_classify_screen "$caps" "$cap")
   if [ "$verdict" = need-identity ]; then
-    if ! identity=$(fm_backend_herdr_composer_identity "$target" 2>/dev/null) || [ -z "$identity" ]; then
+    if identity=$(fm_backend_herdr_composer_identity "$target" 2>/dev/null); then
+      [ -n "$identity" ] || identity=probe-absent
+    else
+      capture_rc=$?
+      [ "$capture_rc" -eq 2 ] && return 2
       identity=probe-absent
     fi
     verdict=$(fm_composer_classify_screen "$caps" "$cap" '' "$identity")
@@ -2838,8 +2956,14 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # the pane's rendered busy footer, because live Claude keeps agent_status idle
 # through a whole turn.
 fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered>
-  local target=$1 allow_rendered=${2:-0} raw
-  raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+  local target=$1 allow_rendered=${2:-0} raw raw_rc
+  if raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"); then
+    :
+  else
+    raw_rc=$?
+    [ "$raw_rc" -eq 2 ] && return 2
+    raw=
+  fi
   case "$raw" in
     working) printf 'busy'; return 0 ;;
   esac
@@ -2852,13 +2976,19 @@ fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered>
 
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
-  local raw_status footer_baseline='' allow_rendered=0 enter_sent=0 send_rc=0 key_rc=0
+  local raw_status raw_status_rc=0 footer_baseline='' allow_rendered=0 enter_sent=0 send_rc=0 key_rc=0
   local footer_rc=0 composer_rc=0 rendered_now='' rendered_rc=0 queued_busy=unknown queued_rc=0
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   fm_backend_herdr_send_literal "$target" "$text" || send_rc=$?
   [ "$send_rc" -eq 0 ] || { [ "$send_rc" -eq 2 ] && return 2; printf 'send-failed'; return 0; }
   sleep "$settle"
-  raw_status=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+  if raw_status=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"); then
+    :
+  else
+    raw_status_rc=$?
+    [ "$raw_status_rc" -eq 2 ] && return 2
+    raw_status=
+  fi
   baseline=$(fm_backend_herdr_classify_submit_agent_status "$raw_status")
   confirm_sleep=$(fm_backend_herdr_submit_confirm_budget "$sleep_s")
   # Typing never starts a turn, so a footer read taken after the literal send
@@ -3082,8 +3212,9 @@ fm_backend_herdr_classify_submit_agent_status() {  # <raw-agent_status>
 }
 
 # fm_backend_herdr_agent_status_raw: one `agent get` read, echoing the raw
-# agent_status string (working/idle/done/blocked/...), or empty on any
-# failure. Deliberately skips fm_backend_herdr_target_ready's server-ensure
+# agent_status string (working/idle/done/blocked/...), or empty for an absent
+# agent. Capability failures return 2. Deliberately skips
+# fm_backend_herdr_target_ready's server-ensure
 # round trip (an extra `status --json` call) that fm_backend_herdr_busy_state
 # pays on every call: fm_backend_herdr_wait_for_working polls this in a tight
 # loop right after a caller has already parsed the target and confirmed the
@@ -3091,9 +3222,21 @@ fm_backend_herdr_classify_submit_agent_status() {  # <raw-agent_status>
 # successful send-text), so re-checking server liveness on every poll would
 # only add latency without adding safety.
 fm_backend_herdr_agent_status_raw() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 out
-  out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>/dev/null) || { printf ''; return 0; }
-  printf '%s' "$out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null
+  local session=$1 pane_id=$2 out native_rc status
+  if ! out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>&1); then
+    fm_backend_herdr_native_failure_rc "$out"
+    native_rc=$?
+    [ "$native_rc" -eq 1 ] && { printf ''; return 0; }
+    return 2
+  fi
+  if [ -n "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ]; then
+    fm_backend_herdr_native_failure_rc "$out"
+    native_rc=$?
+    [ "$native_rc" -eq 1 ] && { printf ''; return 0; }
+    return 2
+  fi
+  status=$(printf '%s' "$out" | jq -er '.result.agent.agent_status | strings | select(length > 0)' 2>/dev/null) || return 2
+  printf '%s' "$status"
 }
 
 # fm_backend_herdr_busy_state: semantic busy state from herdr's native
@@ -3102,11 +3245,17 @@ fm_backend_herdr_agent_status_raw() {  # <session> <pane_id>
 # fm_backend_herdr_classify_agent_status for the status->busy/idle/unknown
 # mapping.
 fm_backend_herdr_busy_state() {  # <target>
-  local ready_rc=0
+  local ready_rc=0 raw raw_rc
   fm_backend_herdr_target_ready "$1" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
-  fm_backend_herdr_classify_agent_status \
-    "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")"
+  if raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"); then
+    :
+  else
+    raw_rc=$?
+    [ "$raw_rc" -eq 2 ] && return 2
+    raw=
+  fi
+  fm_backend_herdr_classify_agent_status "$raw"
 }
 
 # fm_backend_herdr_wait_for_working: poll <session>:<pane_id>'s NATIVE
@@ -3154,7 +3303,7 @@ fm_backend_herdr_submit_confirm_budget() {  # <caller-budget-seconds>
 }
 
 fm_backend_herdr_wait_for_working() {  # <session> <pane_id> <budget-seconds> <polls>
-  local session=$1 pane_id=$2 budget=$3 polls=${4:-1} i interval raw bs saw_idle=0
+  local session=$1 pane_id=$2 budget=$3 polls=${4:-1} i interval raw raw_rc bs saw_idle=0
   case "$polls" in ''|*[!0-9]*|0) polls=1 ;; esac
   interval=$(awk -v b="$budget" -v p="$polls" 'BEGIN { d = p - 1; if (d < 1) d = 1; v = b / d; if (v < 0) v = 0; printf "%.4f", v }' 2>/dev/null)
   case "$interval" in ''|*[!0-9.]*) interval=0 ;; esac
@@ -3162,7 +3311,13 @@ fm_backend_herdr_wait_for_working() {  # <session> <pane_id> <budget-seconds> <p
     if [ "$polls" -eq 1 ] || [ "$i" -gt 0 ]; then
       sleep "$interval"
     fi
-    raw=$(fm_backend_herdr_agent_status_raw "$session" "$pane_id")
+    if raw=$(fm_backend_herdr_agent_status_raw "$session" "$pane_id"); then
+      :
+    else
+      raw_rc=$?
+      [ "$raw_rc" -eq 2 ] && return 2
+      raw=
+    fi
     bs=$(fm_backend_herdr_classify_submit_agent_status "$raw")
     case "$bs" in
       busy) printf 'busy'; return 0 ;;
@@ -3414,7 +3569,7 @@ fm_backend_herdr_wait_transition() {  # <session> <timeout_secs> <state_dir> <pa
   done < <(fm_backend_herdr_event_reader_cmd)
   [ "${#reader[@]}" -gt 0 ] || return 2
 
-  local fifo_dir fifo reader_pid line ws status agent raw record hit rc=1 reader_rc=0
+  local fifo_dir fifo reader_pid line ws status agent raw raw_rc record hit rc=1 reader_rc=0
   fifo_dir=$(mktemp -d "${TMPDIR:-/tmp}/fm-herdr-eventwait.XXXXXX") || return 2
   fifo="$fifo_dir/events"
   if ! mkfifo "$fifo" 2>/dev/null; then
@@ -3443,7 +3598,13 @@ fm_backend_herdr_wait_transition() {  # <session> <timeout_secs> <state_dir> <pa
       if [ -z "$pane_id" ] || [ "$pane_id" = "$w" ]; then
         continue
       fi
-      raw=$(fm_backend_herdr_agent_status_raw "$session" "$pane_id")
+      if raw=$(fm_backend_herdr_agent_status_raw "$session" "$pane_id"); then
+        :
+      else
+        raw_rc=$?
+        [ "$raw_rc" -eq 2 ] && { rc=2; break; }
+        raw=
+      fi
       [ -n "$raw" ] || continue
       record=$(fm_backend_herdr_normalize_event "$pane_id" "" "$raw" "")
       if hit=$(fm_backend_herdr_apply_transition "$state" "$session" "$record"); then

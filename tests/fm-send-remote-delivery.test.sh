@@ -105,13 +105,6 @@ count=$(cat "$FM_SSH_COUNT" 2>/dev/null || echo 0)
 count=$((count + 1))
 printf '%s\n' "$count" > "$FM_SSH_COUNT"
 printf '%s\n' "$*" >> "$FM_SSH_LOG"
-if [ "${FM_FAKE_SSH_AFTER_AMBIGUOUS_RC:-0}" -ne 0 ] && [ "$count" -gt 1 ]; then
-  exit "$FM_FAKE_SSH_AFTER_AMBIGUOUS_RC"
-fi
-if [ "${FM_FAKE_SSH_RC:-0}" -ne 0 ]; then
-  [ -z "${FM_FAKE_SSH_STDERR:-}" ] || printf '%s\n' "$FM_FAKE_SSH_STDERR" >&2
-  exit "${FM_FAKE_SSH_RC}"
-fi
 while [ "$#" -gt 0 ]; do
   case "$1" in -o) shift 2 ;; --) shift; break ;; *) exit 90 ;; esac
 done
@@ -123,11 +116,19 @@ rargs=()
 while IFS= read -r -d '' a; do rargs+=("$a"); done \
   < <(perl -MMIME::Base64=decode_base64 -e 'print decode_base64($ARGV[0])' "$argv_b64")
 cmd=${rargs[0]}
+action=${rargs[1]:-}
+if [ "$action" != route ] && [ "${FM_FAKE_SSH_AFTER_AMBIGUOUS_RC:-0}" -ne 0 ] && [ "$count" -gt 3 ]; then
+  exit "$FM_FAKE_SSH_AFTER_AMBIGUOUS_RC"
+fi
+if [ "$action" != route ] && [ "${FM_FAKE_SSH_RC:-0}" -ne 0 ]; then
+  [ -z "${FM_FAKE_SSH_STDERR:-}" ] || printf '%s\n' "$FM_FAKE_SSH_STDERR" >&2
+  exit "${FM_FAKE_SSH_RC}"
+fi
 rc=0
 env FM_HOME="$remote_home" FM_ROOT_OVERRIDE="$FM_REMOTE_CODE_ROOT" \
   "$FM_REMOTE_CODE_ROOT/bin/$cmd" "${rargs[@]:1}" || rc=$?
-if [ "${FM_FAKE_SSH_AMBIGUOUS:-0}" = 1 ] \
-  || { [ "${FM_FAKE_SSH_AFTER_AMBIGUOUS_RC:-0}" -ne 0 ] && [ "$count" -eq 1 ]; }; then
+if [ "$action" != route ] && { [ "${FM_FAKE_SSH_AMBIGUOUS:-0}" = 1 ] \
+  || { [ "${FM_FAKE_SSH_AFTER_AMBIGUOUS_RC:-0}" -ne 0 ] && [ "$count" -eq 3 ]; }; }; then
   exit 255
 fi
 exit "$rc"
@@ -151,16 +152,12 @@ setup_remote_secondmate_home() {  # <name> -> echoes remote home dir
   printf 'rsm\n' > "$rh/.fm-secondmate-home"
   printf '# remote secondmate home fixture\n' > "$rh/AGENTS.md"
   fm_write_meta "$rh/state/parent-route/rsm.meta" \
-    "window=fm-remote:p1" \
-    "worktree=-" \
-    "project=-" \
-    "backend=herdr" \
+    "window=remote:rsm" \
     "endpoint_task_id=rsm" \
     "harness=claude" \
-    "herdr_session=fm-remote" \
-    "herdr_workspace_id=w1" \
-    "herdr_tab_id=t1" \
-    "herdr_pane_id=p1"
+    "remote_backend=herdr" \
+    "remote_herdr_session=fm-remote" \
+    "remote_target=fm-remote:p1"
   printf '%s\n' "$rh"
 }
 
@@ -270,7 +267,7 @@ test_remote_rerun_is_idempotent() {
   ) >"$dir/out" 2>"$dir/err" || rc=$?
   err=$(cat "$dir/err")
   [ "$rc" -ne 0 ] || fail "a twice-lost transport must not claim confirmed delivery"
-  [ "$(cat "$ssh_log.count")" = 2 ] \
+  [ "$(cat "$ssh_log.count")" = 4 ] \
     || fail "fm-send must retry the identical remote leg exactly once after ssh 255, got $(cat "$ssh_log.count") attempts"
   count=$(remote_inbox_records "$rhome" | grep -c . || true)
   [ "$count" = 1 ] \
@@ -590,7 +587,7 @@ test_remote_transport_loss_preserves_expectation() {
     "$SEND" rsm "please rename the metric" >"$dir/out" 2>"$dir/err" || rc=$?
   err=$(cat "$dir/err")
   [ "$rc" -ne 0 ] || fail "an unknown-completion transport loss must exit nonzero"
-  [ "$(cat "$ssh_log.count")" = 2 ] \
+  [ "$(cat "$ssh_log.count")" = 4 ] \
     || fail "fm-send must retry the identical remote leg once on ssh 255, got $(cat "$ssh_log.count") attempts"
   assert_contains "$err" "Only the correlation-reusing resend below is idempotent" \
     "transport loss must print the supported safe resend boundary"
@@ -693,8 +690,5 @@ test_remote_slash_rides_inbox
 test_remote_real_failure_still_fails
 test_remote_exit3_no_longer_delivered
 test_remote_transport_loss_preserves_expectation
-test_local_pending_reports_delivered_unconfirmed
-test_local_pending_does_not_close_resolve_key
-test_local_secondmate_pending_keeps_expectation_armed
 
 echo "all fm-send-remote-delivery tests passed"

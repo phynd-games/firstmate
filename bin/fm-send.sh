@@ -321,7 +321,20 @@ fm_send_resolve_target() {  # <raw-target>
   if [ -n "$meta" ]; then
     if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
       id=$(fm_send_id_from_meta "$meta")
-      fm_backend_validate_remote_meta "$meta" "$id" || return 1
+      if ! fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote; then
+        remote_backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
+        case "$remote_backend" in
+          absent|ambiguous|herdr)
+            fm_backend_policy_refuse "task $id remote endpoint record $meta" herdr \
+              "Repair the remote endpoint metadata and verify the native runtime with 'herdr status --json'."
+            ;;
+          *)
+            fm_backend_policy_refuse "task $id remote endpoint record $meta (remote_backend=$remote_backend)" "$remote_backend" \
+              "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
+            ;;
+        esac
+        return 1
+      fi
       RESOLVED_TARGET="remote:$id"
       TARGET_BACKEND=remote
       TARGET_META=$meta
@@ -437,9 +450,25 @@ fm_send_remote_preflight() {
   return "$rc"
 }
 
+fm_send_validate_explicit_corr() {
+  local id
+  [ "$TARGET_BACKEND" = remote ] || return 0
+  [ "${FM_PENDING_REPLY_EXISTING_CORR+x}" = x ] || return 0
+  [ "$TARGET_SELECTOR" = 1 ] && [ -n "$TARGET_META" ] || return 0
+  [ "$(fm_meta_get "$TARGET_META" kind)" = secondmate ] || return 0
+  id=$(fm_send_id_from_meta "$TARGET_META")
+  if [ -n "$FM_PENDING_REPLY_EXISTING_CORR" ] \
+    && fm_pending_reply_corr_reusable "$STATE" "$FM_PENDING_REPLY_EXISTING_CORR" "$id"; then
+    return 0
+  fi
+  echo "error: explicitly requested pending-reply correlation '${FM_PENDING_REPLY_EXISTING_CORR:-empty}' is not reusable for $id; refusing to mint a replacement correlation" >&2
+  return 1
+}
+
 RAW_TARGET=$1
 fm_send_resolve_target "$RAW_TARGET" || exit 1
 T=$RESOLVED_TARGET
+fm_send_validate_explicit_corr || exit 1
 if [ "$TARGET_BACKEND" = remote ]; then
   fm_send_remote_preflight || exit $?
 else
