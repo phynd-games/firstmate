@@ -575,6 +575,33 @@ test_a_herdr_backed_snapshot_times_out_its_local_probe() {
   pass "Herdr-backed snapshot probes are bounded and preserve unknown evidence"
 }
 
+test_a_malformed_herdr_endpoint_is_unknown_not_absent() {
+  local home payload
+  home=$(make_home malformed-herdr-endpoint)
+  fm_write_meta "$home/state/herdr-one.meta" \
+    "window=default:w1:p2:extra" \
+    "endpoint_task_id=herdr-one" \
+    "worktree=$home/wt" \
+    "project=$home/project" \
+    "harness=claude" \
+    "kind=ship" \
+    "backend=herdr"
+  cat > "$home/fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2"}}}'
+SH
+  chmod +x "$home/fakebin/herdr"
+  payload=$(run_dash "$home" json) || fail "the dashboard refused a malformed Herdr endpoint"
+  printf '%s' "$payload" | jq -e '
+    .snapshot.tasks
+    | map(select(.id == "herdr-one"))
+    | length == 1
+    and .[0].endpoint.exists == null
+    and .[0].endpoint.status == "unknown"' >/dev/null \
+    || fail "a malformed Herdr endpoint was rendered as confirmed absence"
+  pass "a malformed Herdr endpoint remains unknown instead of absent"
+}
+
 test_a_malformed_tmux_endpoint_is_unknown_not_absent() {
   local home payload
   home=$(make_home malformed-tmux-endpoint)
@@ -647,6 +674,68 @@ PY
   pass "the initial serve build is bounded before the dashboard binds"
 }
 
+test_initial_build_contains_daemonizing_descendants() {
+  local home port out child state status=0
+  [ "$(uname -s)" = Linux ] || {
+    pass "skip: Linux process containment is unavailable on this platform"
+    return 0
+  }
+  home=$(make_home contained-initial-build)
+  port=$(free_port)
+  cat > "$home/fakebin/jq" <<'SH'
+#!/usr/bin/env bash
+set -u
+marker="${FM_DASHBOARD_DESCENDANT_MARKER:?}"
+if [ ! -e "$marker" ]; then
+  MARKER="$marker" python3 -c '
+import os
+import time
+
+first = os.fork()
+if first == 0:
+    second = os.fork()
+    if second == 0:
+        try:
+            os.setsid()
+            result = "escaped"
+        except PermissionError:
+            result = "contained"
+        with open(os.environ["MARKER"], "w", encoding="utf-8") as marker:
+            marker.write(str(os.getpid()) + "\\n" + result + "\\n")
+        time.sleep(30)
+    os._exit(0)
+os.waitpid(first, 0)
+time.sleep(30)
+'
+fi
+sleep 30
+SH
+  chmod +x "$home/fakebin/jq"
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" \
+    FM_DASHBOARD_BUILD_TIMEOUT=1 FM_DASHBOARD_DESCENDANT_MARKER="$home/descendant.pid" \
+    "$DASH" serve --port "$port" --owner-digest 00000000 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "an uncontained initial build was reported as successful: $out"
+  assert_contains "$out" "initial dashboard build exceeded" \
+    "an initial build timeout did not fail closed"
+  for _ in $(seq 1 20); do
+    [ -s "$home/descendant.pid" ] && break
+    sleep 0.1
+  done
+  [ -s "$home/descendant.pid" ] || fail "the initial build did not create its descendant marker"
+  child=$(sed -n '1p' "$home/descendant.pid")
+  state=$(sed -n '2p' "$home/descendant.pid")
+  [ "$state" = contained ] || fail "the initial build allowed a descendant to escape: $state"
+  for _ in $(seq 1 20); do
+    kill -0 "$child" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$child" 2>/dev/null; then
+    kill -KILL "$child" 2>/dev/null || true
+    fail "the initial build left a descendant process running"
+  fi
+  pass "the initial build contains and cleans daemonizing descendants"
+}
+
 test_direct_json_build_is_bounded() {
   local home out real_jq
   home=$(make_home bounded-direct-build)
@@ -692,7 +781,9 @@ test_a_symlinked_evidence_root_is_refused_before_reading_it
 test_a_symlinked_task_metadata_is_not_silently_dropped
 test_a_symlinked_watcher_heartbeat_is_not_reported_as_healthy
 test_a_herdr_backed_snapshot_times_out_its_local_probe
+test_a_malformed_herdr_endpoint_is_unknown_not_absent
 test_a_malformed_tmux_endpoint_is_unknown_not_absent
 test_malformed_zellij_and_cmux_endpoints_are_unknown_not_absent
 test_initial_serve_build_is_bounded_before_binding
+test_initial_build_contains_daemonizing_descendants
 test_direct_json_build_is_bounded

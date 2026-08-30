@@ -384,7 +384,7 @@ snapshot_herdr_target_state() {  # <target> <expected-label>
     bash -c '
       . "$1"
       fm_backend_source herdr || exit 1
-      fm_backend_herdr_parse_target "$2" || exit 1
+      fm_backend_herdr_target_shape_valid "$2" || exit 1
       fm_backend_herdr_pane_presence_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"
     ' snapshot-herdr-target "$SCRIPT_DIR/fm-backend.sh" "$1" "$2"
 }

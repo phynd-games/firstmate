@@ -977,14 +977,8 @@ command_serve() {
   [ -n "${FM_DASHBOARD_TEMPLATE:-}" ] && export FM_DASHBOARD_TEMPLATE
   export FM_DASHBOARD_EVENT_LINES FM_DASHBOARD_WAKES
   export FM_DASHBOARD_REPORTS FM_DASHBOARD_REPORT_BYTES
-  # Prove the page builds before binding a port, so serve fails closed at
-  # startup rather than answering its first request with an error.
   export FM_DASHBOARD_BUILD_TIMEOUT
   export FM_DASHBOARD_BUILD_INNER=1
-  fm_run_timed "$FM_DASHBOARD_BUILD_TIMEOUT" "$SCRIPT_DIR/fm-dashboard.sh" \
-    build --out - >/dev/null \
-    || fail "the initial dashboard build exceeded its ${FM_DASHBOARD_BUILD_TIMEOUT}s bound"
-  printf 'serving: http://127.0.0.1:%s/ (local only; Ctrl-C to stop)\n' "$port"
   FM_DASHBOARD_SELF="$SCRIPT_DIR/fm-dashboard.sh" FM_DASHBOARD_BIND_PORT="$port" \
     FM_DASHBOARD_OWNER_DIGEST="$digest" FM_DASHBOARD_HEALTH_HOME="$FM_HOME" \
     python3 - <<'PY'
@@ -1451,9 +1445,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(503, b"dashboard rebuild deadline exceeded\n", "text/plain; charset=utf-8")
                     return
                 baseline_processes = process_snapshot()
-                build_command = [SELF, "build", "--out", "-"]
-                if self.server.containment_enabled:
-                    build_command = [sys.executable, "-c", CONTAINED_BUILD] + build_command
+                build_command = dashboard_build_command(self.server.containment_enabled)
                 build = subprocess.Popen(
                     build_command,
                     stdout=subprocess.PIPE,
@@ -1584,9 +1576,59 @@ class BoundedHTTPServer(ThreadingMixIn, HTTPServer):
         super().process_request_thread(request, client_address)
 
 
+def dashboard_build_command(containment_enabled):
+    command = [SELF, "build", "--out", "-"]
+    if containment_enabled:
+        return [sys.executable, "-c", CONTAINED_BUILD] + command
+    return command
+
+
+def initial_build(containment_enabled):
+    baseline_processes = process_snapshot()
+    build = subprocess.Popen(
+        dashboard_build_command(containment_enabled),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+        env=dict(os.environ, FM_DASHBOARD_BUILD_INNER="1"),
+    )
+    try:
+        stdout, stderr = build.communicate(
+            timeout=int(os.environ["FM_DASHBOARD_BUILD_TIMEOUT"])
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.output or b""
+        stderr = exc.stderr or b""
+        proven = cleanup_process_tree(build, baseline_processes, containment_enabled)
+        if not proven:
+            stderr += b"\ninitial dashboard build descendant cleanup could not be proven\n"
+        for stream in (build.stdout, build.stderr):
+            if stream is not None:
+                stream.close()
+        sys.stderr.buffer.write(stderr)
+        sys.stderr.write(
+            "initial dashboard build exceeded its %ss bound\n"
+            % os.environ["FM_DASHBOARD_BUILD_TIMEOUT"]
+        )
+        return False
+    finally:
+        for stream in (build.stdout, build.stderr):
+            if stream is not None:
+                stream.close()
+    if build.returncode != 0 or not stdout:
+        detail = stderr.decode("utf-8", "replace").strip() or "no detail"
+        sys.stderr.write("initial dashboard build failed: %s\n" % detail)
+        return False
+    return True
+
+
 # Loopback only. Binding 127.0.0.1 rather than 0.0.0.0 is the whole
 # local-only guarantee, so it is not configurable.
+if not initial_build(enable_process_containment()):
+    raise SystemExit(1)
 with BoundedHTTPServer(("127.0.0.1", PORT), Handler) as httpd:
+    sys.stdout.write("serving: http://127.0.0.1:%s/ (local only; Ctrl-C to stop)\n" % PORT)
+    sys.stdout.flush()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

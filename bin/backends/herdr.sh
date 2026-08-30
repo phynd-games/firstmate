@@ -2515,6 +2515,15 @@ fm_backend_herdr_parse_target() {  # <target>
   [ -n "$FM_BACKEND_HERDR_SESSION" ] && [ -n "$FM_BACKEND_HERDR_PANE" ] && [ "$FM_BACKEND_HERDR_PANE" != "$target" ]
 }
 
+fm_backend_herdr_target_shape_valid() {  # <target>
+  local target=$1 session pane
+  fm_backend_herdr_parse_target "$target" || return 1
+  session=$FM_BACKEND_HERDR_SESSION
+  pane=$FM_BACKEND_HERDR_PANE
+  [[ "$session" =~ ^[[:alnum:]_.-]+$ ]] || return 1
+  [[ "$pane" =~ ^w[0-9]+:p[0-9]+$ ]]
+}
+
 fm_backend_herdr_target_ready() {  # <target>
   fm_backend_herdr_parse_target "$1" || return 1
   if [ "${FM_BACKEND_NO_SERVER_START:-0}" = 1 ]; then
