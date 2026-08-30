@@ -106,6 +106,7 @@ bin/fm-peek.sh <task-id>
 - [Orca backend](docs/orca-backend.md)
 - [cmux backend](docs/cmux-backend.md)
 - [Remote secondmates](docs/remote-secondmates.md)
+- [Local control-plane dashboard](docs/dashboard.md)
 - [Away-mode alarm](docs/wedge-alarm.md)
 - [Architecture](docs/architecture.md)
 - [Scripts](docs/scripts.md)

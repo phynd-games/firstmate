@@ -1,8 +1,8 @@
 # The local control-plane dashboard
 
-`bin/fm-dashboard.sh` renders one read-only page showing everything this firstmate home records about its own agent activity.
+`bin/fm-dashboard.sh` renders one bounded read-only page showing the agent activity this firstmate home records.
 It is a supervision surface, not a control surface: firstmate remains the only way to prompt, steer, merge, or tear down anything.
-The page never acts, and it makes no network call at all.
+The page never acts, and it makes no external network call at all.
 
 ## Run it
 
@@ -46,7 +46,7 @@ FIRSTMATE_DASHBOARD_URL=http://127.0.0.1:8787/
 ```
 
 `bin/fm-dashboard-start.sh` owns that, and `bin/fm-session-start.sh` calls it.
-Read-only sessions, blocked starts, and unconfirmed ownership continue without printing a URL.
+Read-only sessions do not start a dashboard, but report an already-proven one; blocked starts and unconfirmed ownership continue without printing a URL.
 The server runs inside a Herdr pane created for it, so the process is always attributable to a pane Herdr tracks; there is no tmux path and nothing is ever launched with `&`, `nohup`, or `disown`.
 
 **The URL is a promise, not a guess.** It is printed only after this command has proven, in order: the owner record, that the listener is bound on `127.0.0.1`, the exact port, that the pane still exists, and that the process answering that port is this dashboard for this home.
@@ -89,7 +89,7 @@ An uncertain launch also lands in `state/.dashboard-quarantine` and blocks repla
 
 Each section names the exact file it came from, and the Sources section lists every path the page read, so any claim on the page can be checked at its source.
 
-- **Workers and second mates** - one card per running worker: reconciled current state, the runtime, model and effort its spawn recorded, its endpoint, its local copy, and any recorded pull request. Each card carries the worker's own event history and, where one exists, its report.
+- **Workers and second mates** - one card per recorded worker task: reconciled current state, the runtime, model and effort its spawn recorded, its endpoint, its local copy, and any recorded pull request. Each card carries the worker's own event history and, where one exists, its report.
 - **Captain's calls and holds** - open decisions raised by workers, plus every backlog row held for the captain, with the hold reason, any deferral date, and unresolved blockers.
 - **Backlog** - in flight, queued, and done, exactly as recorded in `data/backlog.md`.
 - **Delivery evidence** - every pull request recorded locally, with where the record came from. Nothing here is a live check.
@@ -106,19 +106,19 @@ The dashboard is a renderer over existing read-only owners and never becomes a s
 
 | Surface | Owner |
 | ------- | ----- |
-| Fleet, backlog, tasks, endpoints, decisions, reports | `bin/fm-fleet-snapshot.sh --local-only --json`, embedded verbatim |
+| Fleet, backlog, tasks, endpoints, decisions, and report pointers | `bin/fm-fleet-snapshot.sh --local-only --json`, embedded verbatim |
 | Supervision health and the monitoring model | `bin/fm-wake-lib.sh` |
 | Status-line verbs and notes | `bin/fm-classify-lib.sh` |
 | The local token estimate | `bin/fm-startup-memory-budget.sh report` |
 
 What the dashboard adds is only bounded presentation evidence the canonical snapshot deliberately does not project: status-log tails, queued wake records, and report bodies, each read from a path the snapshot itself supplies.
-Remote task and secondmate evidence is explicitly marked unavailable in this local-only snapshot and never triggers an SSH or other remote call.
+Remote task and secondmate evidence is explicitly marked unavailable in this local-only snapshot and never triggers an SSH or other external call.
 If the fleet snapshot fails, the dashboard refuses to render rather than showing a page that reads as an idle fleet.
 
 ## Safety boundaries
 
-- **Read-only, with one disclosed exception.** Sourcing `bin/fm-wake-lib.sh` creates this home's `state/` directory when it is absent. Nothing else writes to `data/`, `state/`, or `projects/`.
-- **Local only.** It binds `127.0.0.1` and nothing else, and makes no network, GitHub, or authentication call on any path. Recorded pull requests are labelled as recorded, never as a live check, and the page loads no remote font, script, or stylesheet.
+- **Read-only renderer, with one disclosed exception.** Sourcing `bin/fm-wake-lib.sh` creates this home's `state/` directory when it is absent. The renderer writes no fleet evidence under `data/`, `state/`, or `projects/`; `fm-dashboard-start.sh` writes only its documented startup records under `state/`.
+- **Local only.** It binds `127.0.0.1` and nothing else, and makes no external network, GitHub, or authentication call on any path. Recorded pull requests are labelled as recorded, never as a live check, and the page loads no remote font, script, or stylesheet.
 - **Path-safe and symlink-safe.** A status log or report is read only when it is a regular file, is not itself a symlink, and resolves inside this home's state or data root. Anything refused is disclosed in `degraded[]` and named on the page.
 - **Bounded.** Event tails, queued notifications, report count, and report bytes all have caps, and every cap discloses what it dropped.
 - **Never executable.** Report bodies and status lines reach the page as text nodes. Markdown is rendered into real elements built through the DOM, so a report can style itself but can never inject script or markup, and only an `http(s)` target ever becomes a live link.

@@ -225,6 +225,10 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "GATES.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "GROK_BOT.md",
       "audience": "public-product"
     },
