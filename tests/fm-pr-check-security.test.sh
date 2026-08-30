@@ -442,7 +442,7 @@ run_merge_entry() {
 }
 
 test_pr_ready_requires_durable_self_review() {
-  local dir report rc fixture_digest delivery_digest
+  local dir report rc fixture_digest delivery_digest spaced_path comma_path semi_path spaced_digest comma_digest semi_digest
   dir=$(make_case self-review-required)
   write_task_meta "$dir"
   report="$dir/home/data/task-a/pr-self-review.md"
@@ -700,11 +700,67 @@ PY
   sed -i.bak "s#evidence=bin/fm-pr-create.sh:2 sha256=[0-9a-f]*#evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest#" "$report"
   rm -f "$report.bak"
   spaced_digest=$(sed -n '2p' "$dir/wt/bin/fm-pr spaced.sh" | fm_pr_sha256_stream)
-  sed -i.bak "s#^Authority: .*#Authority: reviewed; files=bin/fm-pr-check.sh,bin/fm-pr spaced.sh; evidence=bin/fm-pr spaced.sh:2 sha256=$spaced_digest delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing.#" "$report"
+  spaced_path=$(fm_pr_review_path_encode 'bin/fm-pr spaced.sh')
+  python3 - "$report" "$spaced_path" "$spaced_digest" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+spaced_path, spaced_digest = sys.argv[2:4]
+text = report.read_text(encoding="utf-8")
+text = re.sub(
+    r"(?m)^Authority: .*",
+    "Authority: reviewed; files=bin/fm-pr-check.sh," + spaced_path + "; evidence=" + spaced_path + ":2 sha256=" + spaced_digest + " delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing.",
+    text,
+    count=1,
+)
+report.write_text(text, encoding="utf-8")
+PY
   rm -f "$report.bak"
   run_check_entry "$dir" task-a https://github.com/o/r/pull/110 >/dev/null \
     || fail "PR-ready path rejected a changed file with spaces"
   rm -f "$dir/home/state/task-a.check.sh" "$dir/home/state/task-a.pr-poll" "$dir/home/state/task-a.pr-poll-registration"
+
+  printf '#!/usr/bin/env bash\ncomma evidence\n' > "$dir/wt/bin/fm-pr,comma.sh"
+  printf '#!/usr/bin/env bash\nsemicolon evidence\n' > "$dir/wt/bin/fm-pr;semi.sh"
+  git -C "$dir/wt" add -- 'bin/fm-pr,comma.sh' 'bin/fm-pr;semi.sh'
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm delimiter-paths
+  write_self_review_report "$dir/home" task-a
+  delivery_digest=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '1p' | fm_pr_sha256_stream)
+  sed -i.bak "s#evidence=bin/fm-pr-create.sh:2 sha256=[0-9a-f]*#evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest#" "$report"
+  rm -f "$report.bak"
+  spaced_path=$(fm_pr_review_path_encode 'bin/fm-pr spaced.sh')
+  comma_path=$(fm_pr_review_path_encode 'bin/fm-pr,comma.sh')
+  semi_path=$(fm_pr_review_path_encode 'bin/fm-pr;semi.sh')
+  spaced_digest=$(sed -n '2p' "$dir/wt/bin/fm-pr spaced.sh" | fm_pr_sha256_stream)
+  comma_digest=$(sed -n '2p' "$dir/wt/bin/fm-pr,comma.sh" | fm_pr_sha256_stream)
+  semi_digest=$(sed -n '2p' "$dir/wt/bin/fm-pr;semi.sh" | fm_pr_sha256_stream)
+  python3 - "$report" "$spaced_path" "$comma_path" "$semi_path" "$spaced_digest" "$comma_digest" "$semi_digest" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+spaced, comma, semi = sys.argv[2:5]
+spaced_digest, comma_digest, semi_digest = sys.argv[5:8]
+text = report.read_text(encoding="utf-8")
+replacements = {
+    "Authority": ("bin/fm-pr-check.sh," + spaced + "," + comma + "," + semi, spaced, spaced_digest, "delivery owner remains no-mistakes", "review cannot authorize delivery", "keep this boundary non-authorizing"),
+    "Security": ("bin/fm-pr-lib.sh," + comma, comma, comma_digest, "private report identity is checked", "tampering is refused", "preserve single-link mode checks"),
+    "Path": ("bin/fm-pr-self-review-check.sh," + semi, semi, semi_digest, "task paths are validated", "path traversal is rejected", "retain canonical task boundaries"),
+}
+for surface, (files, evidence, digest, signal, consequence, fix) in replacements.items():
+    text = re.sub(
+        rf"(?m)^{surface}: .*",
+        f"{surface}: reviewed; files={files}; evidence={evidence}:2 sha256={digest} {signal}; consequence={consequence}; fix={fix}.",
+        text,
+        count=1,
+    )
+report.write_text(text, encoding="utf-8")
+PY
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/111 >/dev/null \
+    || fail "PR-ready path rejected comma, semicolon, or space in encoded paths"
   write_self_review_report "$dir/home" task-a
   rm -f "$dir/home/state/task-a.check.sh" "$dir/home/state/task-a.pr-poll" "$dir/home/state/task-a.pr-poll-registration"
   printf 'uncommitted substrate change\n' >> "$dir/substrate/fixture.txt"

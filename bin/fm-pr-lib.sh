@@ -457,6 +457,13 @@ fm_pr_sha256_stream() {
   fi
 }
 
+fm_pr_review_path_encode() {
+  local path=$1 encoded
+  encoded=$(printf '%s' "$path" | LC_ALL=C od -An -tx1 | tr -d '[:space:]') || return 1
+  [ -n "$encoded" ] || return 1
+  printf 'hex:%s\n' "$encoded"
+}
+
 fm_pr_self_review_report_valid() {
   local data=$1 id=$2 expected_head=${3-} worktree=${4-} substrate_root=${5-} expected_base_ref=${6-} expected_base_sha=${7-} expected_substrate_base=${8-}
   local report data_device parsed target_repository base_ref base_sha head_sha merge_base_sha changed_files tree_status
@@ -605,7 +612,7 @@ fm_pr_self_review_report_valid() {
     function substantive(value, surface,    n, parts, i, signal) {
       n = split(value, parts, "; ")
       if (n != 5 || parts[1] != "reviewed") return 0
-      if (parts[2] !~ /^files=[^;[:space:]][^;]*$/ || parts[2] !~ /[\/.]/) return 0
+      if (parts[2] !~ /^files=[^;[:space:]][^;]*$/) return 0
       if (parts[3] !~ /^evidence=[^;[:space:]][^;]*:[1-9][0-9]* sha256=[0-9a-f]+ [^;[:space:]][^;]*$/) return 0
       for (i = 4; i <= 5; i++) {
         if (parts[i] !~ /^(evidence|consequence|fix)=[^;[:space:]][^;]*$/) return 0
@@ -649,13 +656,32 @@ EOF
   [ -z "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] || return 1
   [ -z "$(git -C "$substrate_root" status --porcelain 2>/dev/null)" ] || return 1
   fm_pr_review_path_syntax_valid() {
-    local candidate=$1
+    local candidate=$1 encoded decoded
     case "$candidate" in
-      ''|/*|*';'*|*,*) return 1 ;;
+      hex:*)
+        encoded=${candidate#hex:}
+        case "$encoded" in
+          ''|*[!0-9a-f]*) return 1 ;;
+        esac
+        [ $(( ${#encoded} % 2 )) -eq 0 ] || return 1
+        decoded=$(printf '%b' "$(printf '%s' "$encoded" | sed 's/../\\x&/g')") || return 1
+        ;;
+      ''|/*|*';'*|*,*|*:*|*[[:space:]]*) return 1 ;;
+      *) decoded=$candidate ;;
     esac
-    case "/$candidate/" in
+    case "$decoded" in
+      ''|/*) return 1 ;;
+      *';'*|*,*|*:*|*[[:space:]]*)
+        case "$candidate" in
+          hex:*) ;;
+          *) return 1 ;;
+        esac
+        ;;
+    esac
+    case "/$decoded/" in
       */../*|*/./*) return 1 ;;
     esac
+    FM_PR_REVIEW_PATH=$decoded
     return 0
   }
   local line finding_path finding_file finding_line surface_files surface_file review_root
@@ -684,6 +710,7 @@ EOF
     finding_file=${finding_path%:*}
     finding_line=${finding_path##*:}
     fm_pr_review_path_syntax_valid "$finding_file" || return 1
+    finding_file=$FM_PR_REVIEW_PATH
     [ "$finding_line" -ge 1 ] 2>/dev/null || return 1
     fm_pr_review_file_valid "$finding_file" || return 1
   done < <(awk '/^Finding: / { print }' "$report")
@@ -693,10 +720,21 @@ EOF
     [ -n "$surface_files" ] || return 1
     while IFS= read -r surface_file || [ -n "$surface_file" ]; do
       fm_pr_review_path_syntax_valid "$surface_file" || return 1
+      surface_file=$FM_PR_REVIEW_PATH
       fm_pr_review_file_valid "$surface_file" || return 1
-      surface_review_files="$surface_review_files,$surface_file,"
+      surface_review_files="$surface_review_files$surface_file
+"
     done < <(printf '%s\n' "$surface_files" | tr ',' '\n')
   done < <(awk '/^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): / { print }' "$report")
+  fm_pr_review_surface_file_valid() {
+    local candidate=$1 listed
+    while IFS= read -r listed || [ -n "$listed" ]; do
+      [ "$listed" = "$candidate" ] && return 0
+    done <<EOF
+$surface_review_files
+EOF
+    return 1
+  }
   fm_pr_changed_path_valid() {
     local candidate=$1
     while IFS= read -r changed_path || [ -n "$changed_path" ]; do
@@ -746,10 +784,7 @@ EOF
   }
   while IFS= read -r changed_path || [ -n "$changed_path" ]; do
     fm_pr_changed_path_valid "$changed_path" || return 1
-    case ",$surface_review_files," in
-      *,"$changed_path",*) ;;
-      *) return 1 ;;
-    esac
+    fm_pr_review_surface_file_valid "$changed_path" || return 1
   done <<EOF
 $actual_changed_paths
 EOF
@@ -766,6 +801,7 @@ EOF
     evidence_file=${evidence_ref%:*}
     evidence_line=${evidence_ref##*:}
     fm_pr_review_path_syntax_valid "$evidence_file" || return 1
+    evidence_file=$FM_PR_REVIEW_PATH
     surface_name=$(printf '%s' "${line%%:*}" | tr '[:upper:]' '[:lower:]') || return 1
     fm_pr_review_surface_path_valid "$surface_name" "$evidence_file" || return 1
     [ "$evidence_line" -ge 1 ] 2>/dev/null || return 1
@@ -773,10 +809,7 @@ EOF
     case "$evidence_hash" in
       *[!0-9a-f]*) return 1 ;;
     esac
-    case ",$surface_files," in
-      *,"$evidence_file",*) ;;
-      *) return 1 ;;
-    esac
+    fm_pr_review_surface_file_valid "$evidence_file" || return 1
     fm_pr_changed_path_valid "$evidence_file" || return 1
     fm_pr_review_changed_line_valid "$evidence_file" "$evidence_line" || return 1
     if [ -f "$worktree/$evidence_file" ] && [ ! -L "$worktree/$evidence_file" ] \
@@ -787,11 +820,12 @@ EOF
       line_content=$(git -C "$worktree" show "$merge_base_sha:$evidence_file" | awk -v target="$evidence_line" 'NR == target { print; found = 1; exit } END { if (!found) exit 1 }') || return 1
       actual_evidence_hash=$(printf '%s\n' "$line_content" | fm_pr_sha256_stream) || return 1
     fi
-    surface_evidence_files="$surface_evidence_files,$evidence_file,"
+    surface_evidence_files="$surface_evidence_files$evidence_file
+"
     [ "$actual_evidence_hash" = "$evidence_hash" ] || return 1
   done < <(awk '/^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): / { print }' "$report")
   local unique_surface_evidence_count required_surface_evidence_count
-  unique_surface_evidence_count=$(printf '%s\n' "$surface_evidence_files" | tr ',' '\n' | LC_ALL=C sort -u | awk 'NF { count++ } END { print count + 0 }') || return 1
+  unique_surface_evidence_count=$(printf '%s\n' "$surface_evidence_files" | LC_ALL=C sort -u | awk 'NF { count++ } END { print count + 0 }') || return 1
   required_surface_evidence_count=$actual_changed_path_count
   [ "$required_surface_evidence_count" -le 7 ] || required_surface_evidence_count=7
   [ "$unique_surface_evidence_count" -ge "$required_surface_evidence_count" ] || return 1
