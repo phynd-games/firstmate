@@ -98,7 +98,7 @@ remote_endpoint_load() {
       return 1
       ;;
   esac
-  if ! capability_error=$(fm_backend_herdr_capability_preflight "remote endpoint route for $id" 2>&1); then
+  if ! capability_error=$(fm_backend_herdr_capability_preflight "remote endpoint route for $id" "$REMOTE_HERDR_SESSION" 2>&1); then
     REMOTE_ENDPOINT_FAILURE=capability-failure
     REMOTE_ENDPOINT_ERROR=$(printf '%s\n' "$capability_error" | sed -n '1p')
     [ -n "$REMOTE_ENDPOINT_ERROR" ] || REMOTE_ENDPOINT_ERROR="REFUSED: Herdr capability is unavailable; repair Herdr and verify with herdr status --json"
@@ -132,7 +132,7 @@ remote_endpoint_refuse() {
 }
 
 state_value() { # <id> [--typed]; prints recovery-grade state
-  local id=$1 typed=${2:-} meta
+  local id=$1 typed=${2:-} meta state state_rc
   meta=$(meta_path "$id")
   [ -f "$meta" ] && [ ! -L "$meta" ] || { printf 'missing\n'; return 0; }
   if ! remote_endpoint_load "$id"; then
@@ -141,7 +141,16 @@ state_value() { # <id> [--typed]; prints recovery-grade state
     printf '%s\n' "$REMOTE_ENDPOINT_FAILURE"
     return 0
   fi
-  fm_backend_agent_state "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null || printf 'unreadable\n'
+  if state=$(fm_backend_agent_state "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null); then
+    printf '%s\n' "$state"
+  else
+    state_rc=$?
+    if [ "$state_rc" -eq 2 ]; then
+      printf 'capability-failure\n'
+    else
+      printf 'unreadable\n'
+    fi
+  fi
 }
 
 print_route() { # <id>
@@ -186,7 +195,7 @@ cmd_launch() {
       return 1
       ;;
   esac
-  fm_backend_herdr_capability_preflight "remote secondmate launch for $id" || return 1
+  fm_backend_herdr_capability_preflight "remote secondmate launch for $id" "$REMOTE_HERDR_SESSION" || return 1
   mkdir -p "$CONTROL_STATE" "$CONTROL_DATA"
   meta=$(meta_path "$id")
   if [ -f "$meta" ]; then

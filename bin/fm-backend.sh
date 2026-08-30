@@ -486,17 +486,9 @@ fm_backend_herdr_capability_check() {  # <origin>
   return 2
 }
 
-fm_backend_herdr_capability_preflight() {  # <origin>
-  local origin=$1 session detail
-  fm_backend_source herdr "$origin" || return $?
-  session=$(fm_backend_herdr_session)
-  if detail=$(fm_backend_herdr_session_capability_check "$session" 2>&1); then
-    return 0
-  fi
-  detail=$(printf '%s\n' "$detail" | sed -n '1p')
-  fm_backend_policy_refuse "$origin" herdr \
-    "The native Herdr session capability check failed${detail:+: $detail} Repair Herdr, then verify the named session with 'herdr status --json'."
-  return 2
+fm_backend_herdr_capability_preflight() {  # <origin> [session]
+  local origin=$1 session=${2:-}
+  fm_backend_source herdr "$origin" "$session"
 }
 
 fm_backend_endpoint_atom_valid() {  # <value>
@@ -775,8 +767,8 @@ fm_backend_expected_label_of_selector() {  # <raw-target> <state-dir>
 # Each adapter is an independently linted canonical root. The /dev/null source
 # boundaries keep runtime dispatch from importing all five adapter ASTs into
 # every dispatcher consumer while preserving the runtime source operations.
-fm_backend_source() {  # <name> [origin]
-  local name=$1 origin=${2:-Herdr runtime operation}
+fm_backend_source() {  # <name> [origin] [session] [spawn]
+  local name=$1 origin=${2:-Herdr runtime operation} session=${3:-} mode=${4:-}
   fm_backend_validate "$name" || return 1
   case "$name" in
     tmux)
@@ -817,6 +809,14 @@ fm_backend_source() {  # <name> [origin]
   esac
   if [ "$name" = herdr ]; then
     fm_backend_herdr_capability_check "$origin" || return 2
+    if [ "$mode" = spawn ] || [ "$mode" = setup ]; then
+      return 0
+    fi
+    [ -n "$session" ] || session=$(fm_backend_herdr_session)
+    fm_backend_herdr_session_capability_check "$session" >/dev/null 2>&1 && return 0
+    fm_backend_policy_refuse "$origin" herdr \
+      "The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'."
+    return 2
   fi
 }
 
@@ -834,12 +834,11 @@ fm_backend_source() {  # <name> [origin]
 #                      metadata, then treated as an ad hoc bare window name and
 #                      resolved by searching the legacy tmux live inventory.
 fm_backend_resolve_selector() {  # <raw-target> <state-dir>
-  local raw=$1 state=$2 meta window id
-  local backend
+  local raw=$1 state=$2 meta window id backend=
   case "$raw" in
     *:*)
       if ! fm_backend_policy_legacy_lane; then
-        fm_backend_herdr_capability_preflight "explicit endpoint resolution" || return 2
+        fm_backend_herdr_capability_preflight "explicit endpoint resolution" "${raw%%:*}" || return 2
       fi
       printf '%s' "$raw"
       return 0
@@ -854,10 +853,11 @@ fm_backend_resolve_selector() {  # <raw-target> <state-dir>
     else
       backend=$(fm_backend_of_meta "$meta") || return 1
       [ "$backend" = "$FM_BACKEND_ACTIVE" ] || return 1
-      fm_backend_herdr_capability_preflight "selector resolution for task $id" || return 2
     fi
     window=$(fm_backend_target_of_meta "$meta")
     [ -n "$window" ] || { echo "error: no backend target recorded in $meta" >&2; return 1; }
+    [ "$backend" != "$FM_BACKEND_ACTIVE" ] || \
+      fm_backend_herdr_capability_preflight "selector resolution for task $id" "${window%%:*}" || return 2
     printf '%s' "$window"
     return 0
   fi
@@ -871,9 +871,9 @@ fm_backend_resolve_selector() {  # <raw-target> <state-dir>
       if [ -n "$meta" ]; then
         backend=$(fm_backend_of_meta "$meta") || return 1
         [ "$backend" = "$FM_BACKEND_ACTIVE" ] || return 1
-        fm_backend_herdr_capability_preflight "selector resolution for task ${meta##*/}" || return 2
         window=$(fm_backend_target_of_meta "$meta")
         [ -n "$window" ] || { echo "error: no backend target recorded in $meta" >&2; return 1; }
+        fm_backend_herdr_capability_preflight "selector resolution for task ${meta##*/}" "${window%%:*}" || return 2
         printf '%s' "$window"
         return 0
       fi
@@ -899,9 +899,10 @@ fm_backend_resolve_selector() {  # <raw-target> <state-dir>
 
 # fm_backend_capture: bounded plain-text session capture.
 fm_backend_capture() {  # <backend> <target> <lines> [expected-label]
-  local backend=$1
+  local backend=$1 target
   shift
-  fm_backend_source "$backend" || return 1
+  target=${1:-}
+  fm_backend_source "$backend" "capture" "${target%%:*}" || return $?
   case "$backend" in
     tmux) fm_backend_tmux_capture "$@" ;;
     herdr) fm_backend_herdr_capture "$@" ;;
@@ -914,9 +915,10 @@ fm_backend_capture() {  # <backend> <target> <lines> [expected-label]
 
 # fm_backend_send_key: one backend-supported named special key.
 fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
-  local backend=$1
+  local backend=$1 target
   shift
-  fm_backend_source "$backend" || return 1
+  target=${1:-}
+  fm_backend_source "$backend" "send key" "${target%%:*}" || return $?
   case "$backend" in
     tmux) fm_backend_tmux_send_key "$@" ;;
     herdr) fm_backend_herdr_send_key "$@" ;;
@@ -931,9 +933,10 @@ fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
 # retrying only the submission (never retyping). Echoes the backend's
 # proof-carrying verdict; callers require exact empty for confirmed delivery.
 fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sleep> <settle> [expected-label]
-  local backend=$1
+  local backend=$1 target
   shift
-  fm_backend_source "$backend" || return 1
+  target=${1:-}
+  fm_backend_source "$backend" "send text" "${target%%:*}" || return $?
   case "$backend" in
     tmux) fm_backend_tmux_send_text_submit "$@" ;;
     herdr) fm_backend_herdr_send_text_submit "$@" ;;
@@ -948,10 +951,11 @@ fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sl
 # nonexistent/already-gone target is not an error - callers already swallow
 # failures here exactly as the inline `tmux kill-window ... || true` did).
 fm_backend_kill() {  # <backend> <target>
-  local backend=$1
+  local backend=$1 target
   shift
   [ -n "${1:-}" ] || { echo "error: refusing empty backend kill target" >&2; return 1; }
-  fm_backend_source "$backend" || return 1
+  target=$1
+  fm_backend_source "$backend" "kill endpoint" "${target%%:*}" || return $?
   case "$backend" in
     tmux) fm_backend_tmux_kill "$@" ;;
     herdr) fm_backend_herdr_kill "$@" ;;
@@ -990,9 +994,10 @@ fm_backend_worktree_path() {  # <backend> <worktree-id>
 # fm-crew-state.sh also corroborates native idle verdicts with the recorded
 # harness's signature before treating a no-run crew as not busy.
 fm_backend_busy_state() {  # <backend> <target>
-  local backend=$1
+  local backend=$1 target
   shift
-  fm_backend_source "$backend"
+  target=${1:-}
+  fm_backend_source "$backend" "busy state" "${target%%:*}"
   local source_rc=$?
   if [ "$source_rc" -ne 0 ]; then
     fm_backend_policy_legacy_lane && { printf 'unknown'; return 0; }
@@ -1017,9 +1022,10 @@ fm_backend_busy_state() {  # <backend> <target>
 # assumption; zellij's classifier reads `dump-screen --ansi`, which replaced
 # its old no-classifier content-diff reporting.
 fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pending|pending-unproven|unknown
-  local backend=$1
+  local backend=$1 target
   shift
-  fm_backend_source "$backend"
+  target=${1:-}
+  fm_backend_source "$backend" "composer state" "${target%%:*}"
   local source_rc=$?
   if [ "$source_rc" -ne 0 ]; then
     fm_backend_policy_legacy_lane && { printf 'unknown'; return 0; }
@@ -1058,10 +1064,10 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
       tmux display-message -p -t "$target" '#{pane_id}' >/dev/null 2>&1
       ;;
     herdr)
-      fm_backend_herdr_capability_preflight "target existence check" || return 2
       session=${target%%:*}
       pane=${target#*:}
       [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
+      fm_backend_herdr_capability_preflight "target existence check" "$session" || return 2
       # fm_backend_herdr_cli (not a raw HERDR_SESSION-only call): verified
       # empirically (docs/herdr-backend.md "Session targeting") that the bare
       # env var alone is NOT reliably honored once another herdr server is
@@ -1107,7 +1113,7 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
 # do not support secondmate spawns.
 fm_backend_agent_state() {  # <backend> <target>
   local backend=$1 target=$2
-  fm_backend_source "$backend"
+  fm_backend_source "$backend" "agent state" "${target%%:*}"
   local source_rc=$?
   if [ "$source_rc" -ne 0 ]; then
     fm_backend_policy_legacy_lane && { printf 'unverified'; return 0; }
@@ -1160,12 +1166,12 @@ fm_backend_has_push() {  # <backend>
 # The watcher memoizes this per session so the potentially heavy capability
 # probe is not repeated every poll.
 fm_backend_events_capable() {  # <backend> <session>
-  local backend=$1
-  shift
+  local backend=$1 session=$2
+  shift 2
   fm_backend_has_push "$backend" || return 1
-  fm_backend_source "$backend" || return 1
+  fm_backend_source "$backend" "event capability" "$session" || return 1
   case "$backend" in
-    herdr) fm_backend_herdr_events_capable "$@" ;;
+    herdr) fm_backend_herdr_events_capable "$session" "$@" ;;
     *) return 1 ;;
   esac
 }
@@ -1177,34 +1183,34 @@ fm_backend_events_capable() {  # <backend> <session>
 # returns 2 when the event path is unusable (the caller sleeps the budget
 # itself). Non-push backends always return 2.
 fm_backend_wait_transition() {  # <backend> <session> <timeout_secs> <state_dir> <pane_window...>
-  local backend=$1
-  shift
+  local backend=$1 session=$2
+  shift 2
   fm_backend_has_push "$backend" || return 2
-  fm_backend_source "$backend" || return 2
+  fm_backend_source "$backend" "event wait" "$session" || return 2
   case "$backend" in
-    herdr) fm_backend_herdr_wait_transition "$@" ;;
+    herdr) fm_backend_herdr_wait_transition "$session" "$@" ;;
     *) return 2 ;;
   esac
 }
 
 fm_backend_commit_transition() {  # <backend> <state_dir> <session> <record>
-  local backend=$1
-  shift
+  local backend=$1 state_dir=$2 session=$3
+  shift 3
   fm_backend_has_push "$backend" || return 1
-  fm_backend_source "$backend" || return 1
+  fm_backend_source "$backend" "event commit" "$session" || return 1
   case "$backend" in
-    herdr) fm_backend_herdr_commit_transition "$@" ;;
+    herdr) fm_backend_herdr_commit_transition "$state_dir" "$session" "$@" ;;
     *) return 1 ;;
   esac
 }
 
 fm_backend_clear_transition() {  # <backend> <state_dir> <window>
-  local backend=$1
-  shift
+  local backend=$1 state_dir=$2 window=$3
+  shift 3
   fm_backend_has_push "$backend" || return 0
-  fm_backend_source "$backend" || return 1
+  fm_backend_source "$backend" "event clear" "${window%%:*}" || return 1
   case "$backend" in
-    herdr) fm_backend_herdr_clear_transition "$@" ;;
+    herdr) fm_backend_herdr_clear_transition "$state_dir" "$window" "$@" ;;
     *) return 0 ;;
   esac
 }

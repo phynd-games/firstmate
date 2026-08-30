@@ -455,11 +455,27 @@ task_json_lines() {
     remote_home_present=null
     remote_identity_valid=1
     if [ -n "$remote_host" ]; then
-      backend=$(meta_value "$meta" remote_backend)
-      if ! fm_backend_validate_remote_meta "$meta" "$id" >/dev/null 2>&1; then
-        remote_identity_valid=0
-        backend="legacy:${backend:-unrecorded}"
-      fi
+      backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
+      case "$backend" in
+        herdr)
+          if ! fm_backend_validate_remote_meta "$meta" "$id" >/dev/null 2>&1; then
+            remote_identity_valid=2
+            backend="invalid:$backend"
+          fi
+          ;;
+        absent|tmux|zellij|orca|cmux)
+          remote_identity_valid=0
+          backend="legacy:${backend:-unrecorded}"
+          ;;
+        ambiguous|'')
+          remote_identity_valid=2
+          backend="ambiguous:${backend:-unrecorded}"
+          ;;
+        *)
+          remote_identity_valid=2
+          backend="invalid:$backend"
+          ;;
+      esac
       target=$(meta_value "$meta" remote_target)
     else
       # A legacy (absent or non-herdr) backend identity is displayed as recorded
@@ -487,6 +503,8 @@ task_json_lines() {
 
     if [ "$remote_identity_valid" -eq 0 ]; then
       current_json=$(jq -n --arg detail "legacy-record: remote backend=$(meta_value "$meta" remote_backend) is not herdr; record is read-only" '{state:"unknown",source:"legacy-backend",detail:$detail,raw:""}')
+    elif [ "$remote_identity_valid" -eq 2 ]; then
+      current_json=$(jq -n --arg detail "remote backend identity is ambiguous or invalid; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\"" '{state:"unknown",source:"backend-identity",detail:$detail,raw:""}')
     else
       current_json=$(crew_state_json "$id")
     fi
@@ -561,7 +579,12 @@ task_json_lines() {
       fi
     elif [ -n "$remote_host" ]; then
       endpoint_exists=null
-      agent_alive=unknown
+      if [ "$remote_identity_valid" -eq 2 ]; then
+        endpoint_status=identity-failure
+        agent_alive=identity-failure
+      else
+        agent_alive=unknown
+      fi
     else
       if [ -n "$target" ]; then
         if fm_backend_target_exists "$backend" "$target" "fm-$id"; then

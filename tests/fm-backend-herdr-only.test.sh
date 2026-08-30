@@ -2,11 +2,8 @@
 # tests/fm-backend-herdr-only.test.sh - the Herdr-only runtime invariant
 # (AGENTS.md hard rule 6; owner bin/fm-backend-policy-lib.sh).
 #
-# Every case runs OUTSIDE the regression lane: tests/lib.sh exports
-# FM_BACKEND_LEGACY_TEST_LANE=1 for the retained-adapter suites, so this file
-# strips it (the same way tests/fm-gate-refuse.test.sh strips
-# FM_GATE_REFUSE_BYPASS) together with every runtime marker the developer's own
-# terminal could leak (TMUX, HERDR_ENV, CMUX_WORKSPACE_ID, ...), and then proves,
+# Every case runs with runtime markers stripped (TMUX, HERDR_ENV,
+# CMUX_WORKSPACE_ID, ...), and then proves,
 # deterministically and without a real backend binary:
 #
 #   - selection never falls back: absent/empty/legacy/unknown config/backend,
@@ -376,7 +373,7 @@ test_spawn_refuses_missing_or_incapable_herdr_without_fallback() {
   run_capture target-floor lib_probe "PATH=$fb:$PATH" -- "fm_backend_target_exists herdr 'default:p1'"
   assert_refusal "target existence with below-floor Herdr" "target existence check resolves 'herdr'" "herdr protocol 13" "Upgrade or repair Herdr"
   run_capture capture-floor lib_probe "PATH=$fb:$PATH" -- "fm_backend_capture herdr 'default:p1' 5"
-  assert_refusal "direct capture with below-floor Herdr" "Herdr runtime operation resolves 'herdr'" "herdr protocol 13" "Upgrade or repair Herdr"
+  assert_refusal "direct capture with below-floor Herdr" "capture resolves 'herdr'" "herdr protocol 13" "Upgrade or repair Herdr"
   [ ! -s "$stublog" ] || fail "a below-floor herdr must be refused by the shared operation boundary; recorded:"$'\n'"$(cat "$stublog")"
   pass "fm-spawn refuses a missing or below-floor Herdr as a terminal blocker and never touches tmux"
 }

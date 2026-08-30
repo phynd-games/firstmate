@@ -306,7 +306,7 @@ fm_control_harness_supported "$HARNESS" \
 
 fm_backend_validate "$BACKEND" || exit 1
 if ! fm_backend_policy_legacy_lane; then
-  fm_backend_herdr_capability_preflight "lifecycle control for task $ID" || exit 1
+  fm_backend_herdr_capability_preflight "lifecycle control for task $ID" "${T%%:*}" || exit 1
 fi
 
 fm_lock_try_acquire "$CONTROL_LOCK" \
@@ -316,7 +316,7 @@ fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
 BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET
 if ! fm_backend_policy_legacy_lane; then
-  fm_backend_herdr_capability_preflight "lifecycle control for task $ID" || exit 1
+  fm_backend_herdr_capability_preflight "lifecycle control for task $ID" "${T%%:*}" || exit 1
 fi
 
 # --- shared helpers ---------------------------------------------------------

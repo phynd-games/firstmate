@@ -109,13 +109,14 @@ WT=$(meta_value worktree)
 KIND=$(meta_value kind)
 HARNESS=$(meta_value harness)
 REMOTE_HOST=$(meta_value remote_host)
+TASK_TARGET=$(fm_backend_target_of_meta "$META")
 [ -n "$KIND" ] || KIND=ship
 
 if [ -z "$REMOTE_HOST" ]; then
   TASK_BACKEND=$(fm_backend_of_meta "$META" 2>/dev/null) \
     || emit unknown legacy-backend "legacy-record: backend=${TASK_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
   if [ "$TASK_BACKEND" = herdr ]; then
-    fm_backend_herdr_capability_preflight "crew state task $ID" || exit $?
+    fm_backend_herdr_capability_preflight "crew state task $ID" "${TASK_TARGET%%:*}" || exit $?
   fi
 fi
 
@@ -168,9 +169,25 @@ LOG_VERB=$(status_line_verb "$LOG_LINE")
 # down or dead mate; only the remote host's own dead/missing verdict may say
 # the endpoint is actually gone.
 if [ -n "$REMOTE_HOST" ]; then
-  REMOTE_BACKEND=$(fm_backend_meta_exact_value "$META" remote_backend 2>/dev/null || true)
+  REMOTE_BACKEND=$(fm_backend_meta_recorded_backend "$META" remote_backend 2>/dev/null || true)
+  case "$REMOTE_BACKEND" in
+    absent|tmux|zellij|orca|cmux)
+      emit unknown legacy-backend "legacy-record: remote backend=${REMOTE_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
+      exit 0
+      ;;
+    ambiguous|'')
+      emit unknown backend-identity "remote backend identity is ambiguous or missing; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\""
+      exit 0
+      ;;
+    herdr) ;;
+    *)
+      emit unknown backend-identity "remote backend=${REMOTE_BACKEND} is not herdr; declare Herdr and verify with herdr status --json"
+      exit 0
+      ;;
+  esac
   if ! fm_backend_validate_remote_meta "$META" "$ID" >/dev/null 2>&1; then
-    emit unknown legacy-backend "legacy-record: remote backend=${REMOTE_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
+    emit unknown backend-identity "remote Herdr metadata is invalid; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\""
+    exit 0
   fi
   if ! REMOTE_STATE=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-on.sh" "$ID" \
     fm-remote-secondmate-control.sh state "$ID" --typed < /dev/null); then
@@ -212,7 +229,7 @@ fi
 TASK_BACKEND=$(fm_backend_of_meta "$META" 2>/dev/null) \
   || emit unknown legacy-backend "legacy-record: backend=${TASK_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
 if [ "$TASK_BACKEND" = herdr ]; then
-  fm_backend_herdr_capability_preflight "crew state task $ID" || exit $?
+  fm_backend_herdr_capability_preflight "crew state task $ID" "${BACKEND_TARGET%%:*}" || exit $?
 fi
 BACKEND_TARGET=$(fm_backend_target_of_meta "$META")
 EXPECTED_LABEL="fm-$ID"

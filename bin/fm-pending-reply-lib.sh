@@ -730,7 +730,7 @@ fm_pending_reply_fallback_idle_eligible() {  # <record-path>
 fm_pending_reply_backend_observation() {  # <backend> <target> [expected-label] [harness]
   local backend=$1 target=$2 expected_label=${3-} harness=${4-} native tail40 native_rc
   if [ "$backend" = herdr ]; then
-    fm_backend_herdr_capability_preflight "pending-reply observation" || return 2
+    fm_backend_herdr_capability_preflight "pending-reply observation" "${target%%:*}" || return 2
   fi
   if native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null); then
     native_rc=0

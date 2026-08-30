@@ -686,7 +686,7 @@ fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
 BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET
 if [ "$BACKEND" = herdr ]; then
-  fm_backend_herdr_capability_preflight "teardown task $ID" || exit $?
+  fm_backend_herdr_capability_preflight "teardown task $ID" "${T%%:*}" || exit $?
 fi
 WT=$(fm_meta_get "$META" worktree)
 PROJ=$(fm_meta_get "$META" project)
@@ -2320,7 +2320,7 @@ FMEOF
 
 teardown_herdr_require_prerequisites() {  # <task-id>
   local task_id=$1 prerequisite
-  if ! fm_backend_source herdr; then
+  if ! fm_backend_source herdr "teardown prerequisites" "" setup; then
     echo "error: herdr teardown prerequisites are unavailable for $task_id; nothing was changed - restore the adapter and rerun teardown" >&2
     return 1
   fi
@@ -2356,6 +2356,7 @@ teardown_herdr_preflight_target() {  # <target> <task-id>
   fi
   session=$FM_BACKEND_HERDR_SESSION
   pane=$FM_BACKEND_HERDR_PANE
+  fm_backend_herdr_capability_preflight "teardown endpoint $task_id" "$session" || return 1
   presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane")
   case "$presence" in
     dead|present) ;;

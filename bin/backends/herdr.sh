@@ -413,7 +413,7 @@ fm_backend_herdr_version_check() {
 }
 
 fm_backend_herdr_session_capability_check() {  # <session>
-  local session=$1 status
+  local session=$1 status sessions
   fm_backend_herdr_tool_check || return 1
   status=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null) || return 1
   printf '%s' "$status" | jq -e --argjson minimum "$FM_BACKEND_HERDR_MIN_PROTOCOL" '
@@ -424,7 +424,10 @@ fm_backend_herdr_session_capability_check() {  # <session>
     and (.server.protocol | type == "number")
     and (.server.protocol >= $minimum)
   ' >/dev/null 2>&1 || return 1
-  fm_backend_herdr_cli "$session" session list --json >/dev/null 2>&1 || return 1
+  sessions=$(fm_backend_herdr_cli "$session" session list --json 2>/dev/null) || return 1
+  printf '%s' "$sessions" | jq -e --arg want "$session" '
+    [.sessions[]? | select(.name == $want and .running == true)] | length == 1
+  ' >/dev/null 2>&1
 }
 
 # fm_backend_herdr_session: resolve which named herdr session this normal

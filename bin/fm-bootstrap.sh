@@ -550,11 +550,27 @@ secondmate_sync() {
   # "move on to the next secondmate".
   secondmate_sync_remote_one() {  # <id> <home> <remote-host>
     local id=$1 _home=$2 remote_host=$3
-    local sync_out inherit_out nudge_needed remote_marker remote_pending converged out remote_lock remote_generation
-    fm_backend_validate_remote_meta "$STATE/$id.meta" "$id" >/dev/null 2>&1 || {
-      echo "SECONDMATE_SYNC: secondmate $id: skipped: legacy remote backend record; Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
+    local sync_out inherit_out nudge_needed remote_marker remote_pending converged out remote_lock remote_generation remote_backend
+    remote_backend=$(fm_backend_meta_recorded_backend "$STATE/$id.meta" remote_backend 2>/dev/null || true)
+    case "$remote_backend" in
+      absent|tmux|zellij|orca|cmux)
+        echo "SECONDMATE_SYNC: secondmate $id: skipped: legacy remote backend record (backend=${remote_backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
+        return 0
+        ;;
+      ambiguous|'')
+        echo "SECONDMATE_SYNC: secondmate $id: blocked: ambiguous or empty remote backend identity; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\"" >&2
+        return 0
+        ;;
+      herdr) ;;
+      *)
+        echo "SECONDMATE_SYNC: secondmate $id: blocked: invalid remote backend identity '${remote_backend}'; declare Herdr and verify with herdr status --json" >&2
+        return 0
+        ;;
+    esac
+    if ! fm_backend_validate_remote_meta "$STATE/$id.meta" "$id" >/dev/null 2>&1; then
+      echo "SECONDMATE_SYNC: secondmate $id: blocked: remote Herdr metadata is invalid; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\"" >&2
       return 0
-    }
+    fi
     remote_lock=$(fm_remote_inherit_transaction_lock_path "$STATE" "$id" 2>/dev/null || true)
     if [ -z "$remote_lock" ] || ! fm_lock_acquire_wait "$remote_lock"; then
       echo "NUDGE_SECONDMATES: secondmate $id: send failed: cannot lock remote inheritance transaction"

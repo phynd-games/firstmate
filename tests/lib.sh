@@ -34,12 +34,6 @@ FM_TEST_LIB_SOURCED=1
 # strips this to verify real refusal.
 export FM_GATE_REFUSE_BYPASS=1
 
-# Re-admit the retained legacy runtime adapters only for this repository-owned
-# test harness. Herdr is the sole supported runtime backend in the active runtime
-# (AGENTS.md hard rule 6; bin/fm-backend-policy-lib.sh), but retained adapter
-# fixtures stay under regression until they are removed.
-export FM_BACKEND_LEGACY_TEST_LANE=1
-
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034

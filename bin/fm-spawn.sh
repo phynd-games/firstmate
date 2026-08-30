@@ -415,7 +415,7 @@ spawn_remote_secondmate() {
     BACKEND=$(fm_backend_name) || return 1
   fi
   fm_backend_validate_spawn "$BACKEND" "remote secondmate backend" || return 1
-  fm_backend_source "$BACKEND" "remote secondmate backend" || return 1
+  fm_backend_source "$BACKEND" "remote secondmate backend" "" spawn || return 1
   id=${POS[0]:-}
   fm_task_id_creation_valid "$id" || { echo "error: invalid task id" >&2; return 2; }
   remote=$(secondmate_registry_field "$DATA/secondmates.md" "$id" remote 2>/dev/null || true)
@@ -684,7 +684,7 @@ spawn_remote_secondmate_preflight() {
     BACKEND=$(fm_backend_name) || return 1
   fi
   fm_backend_validate_spawn "$BACKEND" "remote secondmate backend" || return 1
-  fm_backend_source "$BACKEND" "remote secondmate backend" || return 1
+  fm_backend_source "$BACKEND" "remote secondmate backend" "" spawn || return 1
   remote=$(secondmate_registry_field "$DATA/secondmates.md" "$id" remote 2>/dev/null || true)
   [ "$remote" = 1 ] || return 3
   host=$(secondmate_registry_field "$DATA/secondmates.md" "$id" host)
@@ -953,7 +953,7 @@ fi
 if [ "$RELAUNCH" -eq 1 ] && [ -f "$STATE/$ID.meta" ] && [ -z "$(fm_meta_get "$STATE/$ID.meta" remote_host)" ]; then
   fm_backend_validate_task_endpoint "$STATE/$ID.meta" "$ID" || exit 1
   if [ "$FM_BACKEND_VALIDATED_BACKEND" = herdr ]; then
-    fm_backend_herdr_capability_preflight "relaunch task $ID" || exit 1
+    fm_backend_herdr_capability_preflight "relaunch task $ID" "${FM_BACKEND_VALIDATED_TARGET%%:*}" || exit 1
   fi
 fi
 # Role partition: spawning NEW work is MAIN-owned. A relaunch of an existing
@@ -990,7 +990,7 @@ if [ "$RELAUNCH" -eq 0 ]; then
     BACKEND=$(fm_backend_name) || exit 1
   fi
   fm_backend_validate_spawn "$BACKEND" || exit 1
-  fm_backend_source "$BACKEND" "spawn backend selection" || exit 1
+    fm_backend_source "$BACKEND" "spawn backend selection" "" spawn || exit 1
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = secondmate ]; then
   spawn_remote_secondmate_preflight "$ID"
@@ -1088,7 +1088,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   BACKEND=$FM_BACKEND_VALIDATED_BACKEND
   RELAUNCH_TARGET=$FM_BACKEND_VALIDATED_TARGET
   fm_backend_validate_spawn "$BACKEND" || exit 1
-  fm_backend_source "$BACKEND" || exit 1
+  fm_backend_source "$BACKEND" "spawn backend selection" "" spawn || exit 1
   # A relaunch must PROVE the previous agent is gone before it launches another
   # one into the same endpoint, and only tmux and herdr have a recovery-grade
   # classifier that can (bin/fm-control-lib.sh owns that capability table).

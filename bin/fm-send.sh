@@ -445,7 +445,7 @@ if [ "$TARGET_BACKEND" = remote ]; then
 else
   fm_backend_validate "$TARGET_BACKEND" || exit 1
   if [ "$TARGET_BACKEND" = herdr ]; then
-    fm_backend_herdr_capability_preflight "send target $T" || exit 1
+    fm_backend_herdr_capability_preflight "send target $T" "${T%%:*}" || exit 1
   fi
 fi
 shift
@@ -1026,17 +1026,28 @@ else
   # block: remote text rides the inbox leg above, and remote --key exits
   # earlier.
   send_rc=0
-  if verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MESSAGE" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL"); then
+  verdict=
+  send_stderr_file=$(mktemp "${TMPDIR:-/tmp}/fm-send-stderr.XXXXXX") || exit 1
+  if verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MESSAGE" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL" 2>"$send_stderr_file"); then
     :
   else
     send_rc=$?
   fi
+  send_stderr=$(cat "$send_stderr_file")
+  rm -f -- "$send_stderr_file"
   if [ "$send_rc" -ne 0 ]; then
+    refusal=$(printf '%s\n' "$send_stderr" | sed -n '/^REFUSED:/p' | sed -n '1p')
+    if [ -n "$refusal" ]; then
+      printf '%s\n' "$refusal" >&2
+      exit 1
+    fi
+    [ -z "$send_stderr" ] || printf '%s\n' "$send_stderr" >&2
     fm_send_known_undelivered_cleanup || \
       echo "error: known-undelivered pending-reply state could not be reset for $TARGET_TASK_ID" >&2
     echo "error: text not sent to $T ($TARGET_BACKEND send failed; tried $RESOLUTION_TRIED)" >&2
     exit 1
   fi
+  [ -z "$send_stderr" ] || printf '%s\n' "$send_stderr" >&2
   case "$verdict" in
     empty)
       ;;

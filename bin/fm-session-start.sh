@@ -811,21 +811,47 @@ for meta in "$STATE"/*.meta; do
 
   backend=
   if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
-    backend=$(fm_meta_get "$meta" remote_backend)
+    backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
   else
     backend=$(fm_backend_of_meta "$meta" 2>/dev/null) || backend=legacy
   fi
   window=$(fm_meta_get "$meta" window)
   target=$(fm_backend_target_of_meta "$meta")
+  if [ -z "$window" ] && [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
+    remote_backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
+    case "$remote_backend" in
+      herdr)
+        printf 'endpoint: remote record, read-only (backend=%s host=%s; no window recorded)\n' "$remote_backend" "$(fm_meta_get "$meta" remote_host)"
+        ;;
+      ambiguous|'')
+        printf 'endpoint: remote record ambiguous, read-only (backend=%s host=%s; no window recorded); repair or explicitly migrate it through docs/configuration.md "Legacy task records"\n' "${remote_backend:-absent}" "$(fm_meta_get "$meta" remote_host)"
+        ;;
+      *)
+        printf 'endpoint: legacy record, read-only (backend=%s host=%s; no window recorded); Herdr is the sole supported runtime backend - see docs/configuration.md "Legacy task records"\n' "$remote_backend" "$(fm_meta_get "$meta" remote_host)"
+        ;;
+    esac
+    continue
+  fi
   if [ -n "$window" ]; then
     # A record whose backend identity is absent or not herdr is a legacy
     # record (hard rule 6): present it as such, never probe or dispatch on it.
     if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
-      if fm_backend_validate_remote_meta "$meta" "$id" >/dev/null 2>&1; then
-        printf 'endpoint: remote record, read-only (backend=%s host=%s)\n' "$(fm_meta_get "$meta" remote_backend)" "$(fm_meta_get "$meta" remote_host)"
-      else
-        printf 'endpoint: legacy record, read-only (backend=%s window=%s); Herdr is the sole supported runtime backend - see docs/configuration.md "Legacy task records"\n' "$(fm_meta_get "$meta" remote_backend)" "$window"
-      fi
+      remote_backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
+      case "$remote_backend" in
+        herdr)
+          if fm_backend_validate_remote_meta "$meta" "$id" >/dev/null 2>&1; then
+            printf 'endpoint: remote record, read-only (backend=%s host=%s)\n' "$remote_backend" "$(fm_meta_get "$meta" remote_host)"
+          else
+            printf 'endpoint: remote record invalid, read-only (backend=%s host=%s); repair or explicitly migrate it through docs/configuration.md "Legacy task records"\n' "$remote_backend" "$(fm_meta_get "$meta" remote_host)"
+          fi
+          ;;
+        ambiguous|'')
+          printf 'endpoint: remote record ambiguous, read-only (backend=%s host=%s); repair or explicitly migrate it through docs/configuration.md "Legacy task records"\n' "${remote_backend:-absent}" "$(fm_meta_get "$meta" remote_host)"
+          ;;
+        *)
+          printf 'endpoint: legacy record, read-only (backend=%s host=%s); Herdr is the sole supported runtime backend - see docs/configuration.md "Legacy task records"\n' "$remote_backend" "$(fm_meta_get "$meta" remote_host)"
+          ;;
+      esac
     elif backend=$(fm_backend_of_meta "$meta" 2>/dev/null); then
       if fm_backend_target_exists "$backend" "${target:-$window}" "fm-$id"; then
         printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"
