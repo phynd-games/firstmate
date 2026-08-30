@@ -724,13 +724,15 @@ fm_backend_meta_for_selector() {  # <raw-target> <state-dir>
 }
 
 fm_backend_of_selector() {  # <raw-target> <resolved-target> <state-dir>
-  local raw=$1 resolved=$2 state=$3 meta
+  local raw=$1 resolved=$2 state=$3 meta target
   meta=$(fm_backend_meta_for_selector "$raw" "$state" 2>/dev/null || true)
   if [ -n "$meta" ]; then
     local backend
     backend=$(fm_backend_of_meta "$meta") || return 1
     [ "$backend" = "$FM_BACKEND_ACTIVE" ] || return 1
-    fm_backend_herdr_capability_preflight "selector backend for $raw" || return 2
+    target=$resolved
+    [ -n "$target" ] || target=$(fm_backend_target_of_meta "$meta")
+    fm_backend_herdr_capability_preflight "selector backend for $raw" "${target%%:*}" || return 2
     printf '%s' "$backend"
     return $?
   fi
@@ -740,7 +742,9 @@ fm_backend_of_selector() {  # <raw-target> <resolved-target> <state-dir>
       local backend
       backend=$(fm_backend_of_meta "$meta") || return 1
       [ "$backend" = "$FM_BACKEND_ACTIVE" ] || return 1
-      fm_backend_herdr_capability_preflight "selector backend for $raw" || return 2
+      target=$resolved
+      [ -n "$target" ] || target=$(fm_backend_target_of_meta "$meta")
+      fm_backend_herdr_capability_preflight "selector backend for $raw" "${target%%:*}" || return 2
       printf '%s' "$backend"
       return $?
     fi
@@ -751,7 +755,7 @@ fm_backend_of_selector() {  # <raw-target> <resolved-target> <state-dir>
   if fm_backend_policy_legacy_lane; then
     printf 'tmux'
   else
-    fm_backend_herdr_capability_preflight "selector backend for $raw" || return 2
+    fm_backend_herdr_capability_preflight "selector backend for $raw" "${resolved%%:*}" || return 2
     printf '%s' "$FM_BACKEND_ACTIVE"
   fi
 }

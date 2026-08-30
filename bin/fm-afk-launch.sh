@@ -215,19 +215,28 @@ fm_afk_launch_record_validate_if_present() {
 
 fm_afk_launch_stop_preflight() {
   fm_backend_policy_legacy_lane && return 0
+  local target session
   fm_afk_launch_record_validate_if_present || return 1
-  fm_backend_herdr_capability_preflight "AFK lifecycle" || return 1
+  if [ "$FM_AFK_REC_BACKEND" = herdr ]; then
+    session=${FM_AFK_REC_TARGET%%:*}
+  else
+    target=$(discover_supervisor_target) || return 1
+    session=${target%%:*}
+  fi
+  [ -n "$session" ] || return 1
+  fm_backend_herdr_capability_preflight "AFK lifecycle" "$session" || return 1
 }
 
 # Close a recorded terminal by EXACT id (never a broad sweep). The
 # recorded workspace id (herdr) needs no separate close: closing the pane takes
 # its single-tab dedicated workspace with it.
 fm_afk_launch_close_terminal() {  # <backend> <target>
-  local backend=$1 target=$2
+  local backend=$1 target=$2 session pane
   case "$backend" in
     herdr)
-      fm_backend_source herdr || return 1
-      local session=${target%%:*} pane=${target#*:}
+      session=${target%%:*}
+      pane=${target#*:}
+      fm_backend_source herdr "AFK terminal close" "$session" || return 1
       [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
       fm_backend_herdr_cli "$session" pane close "$pane" >/dev/null 2>&1
       ;;
@@ -250,9 +259,9 @@ fm_afk_launch_terminal_absent() {  # <backend> <target>
   local backend=$1 target=$2 session pane out result code
   case "$backend" in
     herdr)
-      fm_backend_source herdr "AFK terminal liveness" || return 1
       session=${target%%:*}
       pane=${target#*:}
+      fm_backend_source herdr "AFK terminal liveness" "$session" || return 1
       [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
       out=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>&1)
       result=$?
@@ -290,9 +299,9 @@ fm_afk_launch_terminal_alive() {  # <backend> <target>
   local backend=$1 target=$2 session pane
   case "$backend" in
     herdr)
-      fm_backend_source herdr "AFK terminal liveness" || return 1
       session=${target%%:*}
       pane=${target#*:}
+      fm_backend_source herdr "AFK terminal liveness" "$session" || return 1
       [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
       fm_backend_herdr_cli "$session" pane get "$pane" >/dev/null 2>&1
       ;;
@@ -415,7 +424,7 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
     fm_afk_launch_log "cannot derive herdr session from captain target '$captain_target'"
     return 1
   fi
-  fm_backend_source herdr || return 1
+  fm_backend_source herdr "AFK terminal creation" "$session" || return 1
   fm_backend_herdr_server_ensure "$session" || { fm_afk_launch_log "herdr server not ready for session '$session'"; return 1; }
   label=${FM_AFK_LAUNCH_LABEL:-"$FM_AFK_LAUNCH_WS_LABEL-$$-${RANDOM:-0}-$(date '+%s')"}
   out=$(fm_backend_herdr_cli "$session" workspace create --cwd "$FM_HOME" --label "$label" --no-focus 2>/dev/null)
@@ -606,7 +615,15 @@ fm_afk_launch_stop() {
     return 1
   fi
   if ! fm_backend_policy_legacy_lane; then
-    fm_backend_herdr_capability_preflight "AFK stop" || return 1
+    if [ "$FM_AFK_REC_BACKEND" = herdr ]; then
+      fm_backend_herdr_capability_preflight "AFK stop" "${FM_AFK_REC_TARGET%%:*}" || return 1
+    else
+      local target session
+      target=$(discover_supervisor_target) || return 1
+      session=${target%%:*}
+      [ -n "$session" ] || return 1
+      fm_backend_herdr_capability_preflight "AFK stop" "$session" || return 1
+    fi
   fi
   # (1) SIGTERM the daemon so its cleanup trap flushes buffered escalations
   # WHILE state/.afk is still present (the exit-ordering fix: clearing .afk

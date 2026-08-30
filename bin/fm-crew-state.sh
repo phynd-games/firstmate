@@ -229,9 +229,9 @@ fi
 TASK_BACKEND=$(fm_backend_of_meta "$META" 2>/dev/null) \
   || emit unknown legacy-backend "legacy-record: backend=${TASK_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
 if [ "$TASK_BACKEND" = herdr ]; then
-  fm_backend_herdr_capability_preflight "crew state task $ID" "${BACKEND_TARGET%%:*}" || exit $?
+  fm_backend_herdr_capability_preflight "crew state task $ID" "${TASK_TARGET%%:*}" || exit $?
 fi
-BACKEND_TARGET=$(fm_backend_target_of_meta "$META")
+BACKEND_TARGET=$TASK_TARGET
 EXPECTED_LABEL="fm-$ID"
 pane_readable() {  # <target>
   case "$TASK_BACKEND" in
