@@ -980,12 +980,14 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
 SELF = os.environ["FM_DASHBOARD_SELF"]
 PORT = int(os.environ["FM_DASHBOARD_BIND_PORT"])
 HTTP_IO_TIMEOUT = 5
+HTTP_REQUEST_TIMEOUT = int(os.environ["FM_DASHBOARD_BUILD_TIMEOUT"]) + HTTP_IO_TIMEOUT
 MAX_CLIENTS = 10
 MAX_PAGE_BUILDS = 8
 # Only the DIGEST of the owner token reaches this process, and only the digest
@@ -1002,6 +1004,68 @@ HEALTH = json.dumps({
 }).encode() + b"\n"
 
 
+class DeadlineReader:
+    def __init__(self, connection, deadline):
+        self.connection = connection
+        self.deadline = deadline
+        self.buffer = bytearray()
+        self.closed = False
+
+    def readline(self, limit=-1):
+        while True:
+            newline = self.buffer.find(b"\n")
+            if newline >= 0:
+                end = newline + 1
+                if limit >= 0:
+                    end = min(end, limit)
+                result = bytes(self.buffer[:end])
+                del self.buffer[:end]
+                return result
+            if limit >= 0 and len(self.buffer) >= limit:
+                result = bytes(self.buffer[:limit])
+                del self.buffer[:limit]
+                return result
+            remaining = self.deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout("request read deadline exceeded")
+            self.connection.settimeout(min(HTTP_IO_TIMEOUT, remaining))
+            chunk = self.connection.recv(4096)
+            if not chunk:
+                result = bytes(self.buffer)
+                self.buffer.clear()
+                return result
+            self.buffer.extend(chunk)
+
+    def close(self):
+        self.closed = True
+
+
+class DeadlineWriter:
+    def __init__(self, connection, deadline):
+        self.connection = connection
+        self.deadline = deadline
+        self.closed = False
+
+    def write(self, data):
+        view = memoryview(data)
+        while view:
+            remaining = self.deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout("response write deadline exceeded")
+            self.connection.settimeout(min(HTTP_IO_TIMEOUT, remaining))
+            sent = self.connection.send(view)
+            if not sent:
+                raise ConnectionError("response socket closed")
+            view = view[sent:]
+        return len(data)
+
+    def flush(self):
+        return None
+
+    def close(self):
+        self.closed = True
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "fm-dashboard"
     sys_version = ""
@@ -1009,8 +1073,10 @@ class Handler(BaseHTTPRequestHandler):
     def setup(self):
         self.client_slot_released = False
         try:
-            super().setup()
-            self.connection.settimeout(HTTP_IO_TIMEOUT)
+            self.connection = self.request
+            deadline = time.monotonic() + HTTP_REQUEST_TIMEOUT
+            self.rfile = DeadlineReader(self.connection, deadline)
+            self.wfile = DeadlineWriter(self.connection, deadline)
         except BaseException:
             self.release_client_slot()
             raise

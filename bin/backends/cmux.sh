@@ -372,6 +372,11 @@ fm_backend_cmux_create_task() {  # <label> <cwd>
 # fm_backend_cmux_parse_target: split "<workspace_uuid>:<surface_uuid>" on the
 # FIRST colon (neither UUID contains a colon, so this is unambiguous). Sets
 # FM_BACKEND_CMUX_WORKSPACE and FM_BACKEND_CMUX_SURFACE for the caller.
+fm_backend_cmux_uuid_valid() {  # <value>
+  printf '%s\n' "$1" \
+    | grep -Eq '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+}
+
 fm_backend_cmux_parse_target() {  # <target>
   local target=$1
   case "$target" in
@@ -379,7 +384,8 @@ fm_backend_cmux_parse_target() {  # <target>
   esac
   FM_BACKEND_CMUX_WORKSPACE=${target%%:*}
   FM_BACKEND_CMUX_SURFACE=${target#*:}
-  [ -n "$FM_BACKEND_CMUX_WORKSPACE" ] && [ -n "$FM_BACKEND_CMUX_SURFACE" ] && [ "$FM_BACKEND_CMUX_SURFACE" != "$target" ]
+  fm_backend_cmux_uuid_valid "$FM_BACKEND_CMUX_WORKSPACE" \
+    && fm_backend_cmux_uuid_valid "$FM_BACKEND_CMUX_SURFACE"
 }
 
 # fm_backend_cmux_surface_exists: does <surface_id> currently appear as one of

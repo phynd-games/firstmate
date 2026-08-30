@@ -265,6 +265,15 @@ test_parse_target() {
   pass "fm_backend_cmux_parse_target: splits '<workspace_uuid>:<surface_uuid>' on the first colon"
 }
 
+test_parse_target_rejects_non_uuid_components() {
+  if ( . "$ROOT/bin/backends/cmux.sh"
+    fm_backend_cmux_parse_target "not-a-uuid:not-a-surface"
+  ); then
+    fail "fm_backend_cmux_parse_target accepted non-UUID components"
+  fi
+  pass "fm_backend_cmux_parse_target: rejects non-UUID workspace and surface components"
+}
+
 test_normalize_key() {
   ( . "$ROOT/bin/backends/cmux.sh"
     [ "$(fm_backend_cmux_normalize_key Enter)" = enter ] || { echo "Enter failed" >&2; exit 1; }
@@ -972,6 +981,31 @@ test_window_of_workspace_empty_when_not_found() {
   pass "fm_backend_cmux_window_of_workspace: echoes nothing when no window holds the workspace"
 }
 
+test_confirmed_absence_scans_all_cmux_windows() {
+  local dir fb status target
+  dir="$TMP_ROOT/absent-all-windows"; mkdir -p "$dir/responses"
+  target="aaaaaaaa-0000-0000-0000-000000000000:bbbbbbbb-1111-1111-1111-111111111111"
+  cmux_windows_response "$dir" 1 \
+    "e1111111-0000-0000-0000-000000000000" 1 \
+    "e2222222-0000-0000-0000-000000000000" 1
+  cmux_workspace_list_response "$dir" 2 \
+    "ffffffff-0000-0000-0000-000000000000" "other"
+  cmux_workspace_list_response "$dir" 3 \
+    "aaaaaaaa-0000-0000-0000-000000000000" "the-task"
+  cmux_panes_response "$dir" 4 "bbbbbbbb-1111-1111-1111-111111111111"
+  fb=$(make_cmux_fakebin "$dir")
+  PATH="$fb:$PATH" FM_CMUX_LOG="$dir/log" FM_CMUX_RESPONSES="$dir/responses" \
+    bash -c '. "$0/bin/fm-backend.sh"; fm_backend_target_confirmed_absent cmux "$1"' \
+    "$ROOT" "$target"
+  status=$?
+  [ "$status" -ne 0 ] || fail "a live cmux surface in another window was confirmed absent"
+  cmux_assert_call_order "$dir/log" $'\x1f''list-windows' $'\x1f''workspace'$'\x1f''list'$'\x1f''--json'$'\x1f''--id-format'$'\x1f''uuids'$'\x1f''--window'$'\x1f''e1111111-0000-0000-0000-000000000000' \
+    "confirmed absence did not begin with an all-window inventory"
+  assert_contains "$(cat "$dir/log")" $'\x1f''--window'$'\x1f''e2222222-0000-0000-0000-000000000000' \
+    "confirmed absence did not inspect the second cmux window"
+  pass "fm_backend_target_confirmed_absent: scans every cmux window before confirming absence"
+}
+
 # --- kill: close the task workspace, adding a sibling when it is the last one -
 
 # The common case: the task workspace shares its window with at least one other
@@ -1113,6 +1147,7 @@ test_password_respects_config_override
 test_password_empty_when_config_absent
 test_cli_exports_password_only_when_configured
 test_parse_target
+test_parse_target_rejects_non_uuid_components
 test_normalize_key
 test_scoped_title_uses_primary_home_label
 test_scoped_title_uses_secondmate_home_label
@@ -1158,6 +1193,7 @@ test_send_text_submit_popup_autocomplete_requires_second_enter
 test_send_text_submit_send_failed_when_target_absent
 test_window_of_workspace_finds_window_and_count
 test_window_of_workspace_empty_when_not_found
+test_confirmed_absence_scans_all_cmux_windows
 test_kill_closes_workspace_directly_when_not_last
 test_kill_adds_sibling_when_last_in_window
 test_kill_is_best_effort_when_close_workspace_fails

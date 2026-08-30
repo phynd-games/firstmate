@@ -303,6 +303,37 @@ PY
   pass "health remains admissible behind incomplete clients"
 }
 
+test_a_drip_request_hits_an_absolute_http_deadline() {
+  local home port out
+  home=$(make_home drip-request)
+  port=$(free_port)
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FAKE_HERDR_STATE="$home/herdr" \
+    FM_DASHBOARD_BUILD_TIMEOUT=2 FM_DASHBOARD_PORT="$port" "$START" ensure 2>&1) \
+    || fail "ensure failed: $out"
+  python3 - "$port" <<'PY'
+import socket
+import sys
+import time
+
+sock = socket.create_connection(("127.0.0.1", int(sys.argv[1])))
+sock.settimeout(1)
+started = time.monotonic()
+closed = False
+try:
+    for _ in range(20):
+        sock.sendall(b"G")
+        time.sleep(0.4)
+except OSError:
+    closed = True
+finally:
+    sock.close()
+if not closed or time.monotonic() - started > 9:
+    raise SystemExit(1)
+PY
+  [ "$?" -eq 0 ] || fail "a drip request was not bounded by an absolute deadline"
+  pass "a drip request is closed by the absolute HTTP deadline"
+}
+
 test_stop_preserves_an_owner_without_complete_proof() {
   local home port out
   home=$(make_home stop-unproven)
@@ -346,6 +377,21 @@ test_a_mismatched_pane_identity_is_unknown_and_preserved() {
     || fail "the owner record was replaced after an identity mismatch"
   [ "$(pane_count "$home")" = "1" ] || fail "a second pane was created after an identity mismatch"
   pass "a mismatched Herdr pane identity is unknown and the owner is preserved"
+}
+
+test_a_new_pane_response_is_verified_before_running_the_dashboard() {
+  local home port out
+  home=$(make_home unverified-pane)
+  port=$(free_port)
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FAKE_HERDR_STATE="$home/herdr" \
+    FAKE_HERDR_RETURN_PANE_ID=w1p99 FM_DASHBOARD_PORT="$port" "$START" ensure 2>&1) && \
+    fail "startup accepted an unverified pane response: $out"
+  assert_contains "$out" "DASHBOARD_BLOCKED" "an unverified pane response did not block startup"
+  [ ! -e "$home/herdr/panes/w1p1.pid" ] \
+    || fail "startup ran the dashboard before proving the returned pane identity"
+  [ ! -e "$home/state/.dashboard-owner" ] \
+    || fail "startup published an owner after an unverified pane response"
+  pass "startup verifies the exact pane identity before running the dashboard"
 }
 
 test_a_foreign_listener_is_a_collision_not_an_adoption() {
@@ -525,9 +571,11 @@ test_a_lost_workspace_creation_response_is_recovered_before_reporting
 test_lost_resource_recovery_is_quarantined_with_the_journaled_identity
 test_health_remains_responsive_while_a_client_stalls
 test_health_remains_admissible_behind_incomplete_clients
+test_a_drip_request_hits_an_absolute_http_deadline
 test_stop_preserves_an_owner_without_complete_proof
 test_owner_lifecycle_uses_the_recorded_herdr_session
 test_a_mismatched_pane_identity_is_unknown_and_preserved
+test_a_new_pane_response_is_verified_before_running_the_dashboard
 test_a_foreign_listener_is_a_collision_not_an_adoption
 test_a_dashboard_for_another_home_is_not_adopted
 test_no_url_is_printed_when_readiness_cannot_be_proven

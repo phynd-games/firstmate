@@ -890,6 +890,9 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
   startup_journal_write || return 1
   [ -n "$STARTED_PANE" ] || STARTED_PANE=$(recover_pane "$ws" "$STARTED_TAB") || return 1
   [ -n "$STARTED_PANE" ] && STARTED_PANE_IDENTITY="id:$STARTED_PANE"
+  STARTED_STAGE=pane-identity
+  startup_journal_write || return 1
+  [ "$(pane_state "$STARTED_PANE" "$STARTED_SESSION" "$ws" "$STARTED_TAB")" = open ] || return 1
   STARTED_STAGE=pane-run
   startup_journal_write || return 1
   # `env` carries this home explicitly: the pane inherits the Herdr server's

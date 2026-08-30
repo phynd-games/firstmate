@@ -882,6 +882,7 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
 
 fm_backend_target_confirmed_absent() {  # <backend> <target> [expected-label]
   local backend=$1 target=$2 expected_label=${3:-} expected_title windows workspaces panes
+  local window_id window_ids target_workspace_found=0
   case "$backend" in
     tmux)
       fm_backend_tmux_target_shape_valid "$target" || return 1
@@ -892,28 +893,54 @@ fm_backend_target_confirmed_absent() {  # <backend> <target> [expected-label]
     cmux)
       fm_backend_source cmux || return 1
       fm_backend_cmux_parse_target "$target" || return 1
-      workspaces=$(fm_backend_cmux_cli workspace list --json --id-format uuids 2>/dev/null) || return 1
-      printf '%s' "$workspaces" | jq -e '
-        (.workspaces | type) == "array"
-        and all(.workspaces[]; type == "object" and (.id | type) == "string")
+      windows=$(fm_backend_cmux_cli list-windows --json --id-format uuids 2>/dev/null) || return 1
+      printf '%s' "$windows" | jq -e '
+        type == "array"
+        and all(.[]; type == "object" and (.id | type) == "string"
+          and (.id | length > 0))
       ' >/dev/null 2>&1 || return 1
-      if ! printf '%s' "$workspaces" | jq -e --arg id "$FM_BACKEND_CMUX_WORKSPACE" \
-        'any(.workspaces[]; .id == $id)' >/dev/null 2>&1; then
-        if [ -n "$expected_label" ]; then
-          expected_title=$(fm_backend_cmux_scoped_title "$expected_label")
-          printf '%s' "$workspaces" | jq -e --arg title "$expected_title" \
-            'any(.workspaces[]; .title == $title)' >/dev/null 2>&1 && return 1
-        fi
-        return 0
+      window_ids=$(printf '%s' "$windows" | jq -r '.[].id') || return 1
+      expected_title=
+      if [ -n "$expected_label" ]; then
+        expected_title=$(fm_backend_cmux_scoped_title "$expected_label")
       fi
-      panes=$(fm_backend_cmux_cli list-panes --workspace "$FM_BACKEND_CMUX_WORKSPACE" \
-        --json --id-format uuids 2>/dev/null) || return 1
-      printf '%s' "$panes" | jq -e '
-        (.panes | type) == "array"
-        and all(.panes[]; type == "object" and ((.surface_ids // []) | type) == "array")
-      ' >/dev/null 2>&1 || return 1
-      printf '%s' "$panes" | jq -e --arg id "$FM_BACKEND_CMUX_SURFACE" \
-        'any(.panes[]; (.surface_ids // []) | index($id))' >/dev/null 2>&1 && return 1
+      while IFS= read -r window_id; do
+        [ -n "$window_id" ] || continue
+        workspaces=$(fm_backend_cmux_cli workspace list --json --id-format uuids \
+          --window "$window_id" 2>/dev/null) || return 1
+        printf '%s' "$workspaces" | jq -e '
+          (.workspaces | type) == "array"
+          and all(.workspaces[]; type == "object" and (.id | type) == "string"
+            and (.id | length > 0))
+        ' >/dev/null 2>&1 || return 1
+        if printf '%s' "$workspaces" | jq -e --arg id "$FM_BACKEND_CMUX_WORKSPACE" \
+          'any(.workspaces[]; .id == $id)' >/dev/null 2>&1; then
+          if [ -n "$expected_title" ] && ! printf '%s' "$workspaces" | jq -e \
+            --arg id "$FM_BACKEND_CMUX_WORKSPACE" --arg title "$expected_title" \
+            'any(.workspaces[]; .id == $id and .title == $title)' >/dev/null 2>&1; then
+            return 1
+          fi
+          target_workspace_found=1
+          panes=$(fm_backend_cmux_cli list-panes --workspace "$FM_BACKEND_CMUX_WORKSPACE" \
+            --json --id-format uuids 2>/dev/null) || return 1
+          printf '%s' "$panes" | jq -e '
+            (.panes | type) == "array"
+            and all(.panes[]; type == "object"
+              and ((.surface_ids // []) | type) == "array")
+          ' >/dev/null 2>&1 || return 1
+          printf '%s' "$panes" | jq -e --arg id "$FM_BACKEND_CMUX_SURFACE" \
+            'any(.panes[]; (.surface_ids // []) | index($id))' >/dev/null 2>&1 && return 1
+          return 0
+        fi
+        if [ -n "$expected_title" ] && printf '%s' "$workspaces" | jq -e \
+          --arg title "$expected_title" 'any(.workspaces[]; .title == $title)' \
+          >/dev/null 2>&1; then
+          return 1
+        fi
+      done <<EOF
+$window_ids
+EOF
+      [ "$target_workspace_found" -eq 0 ] || return 1
       return 0
       ;;
     orca)
