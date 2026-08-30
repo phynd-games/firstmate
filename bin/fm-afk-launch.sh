@@ -285,14 +285,19 @@ fm_afk_launch_terminal_alive() {  # <backend> <target>
 }
 
 fm_afk_launch_wait_ready() {  # <backend> <target>
-  local backend=$1 target=$2 attempt=0
+  local backend=$1 target=$2 attempt=0 handoff_timeout=${FM_AFK_NATIVE_HANDOFF_TIMEOUT:-30}
   if [ -n "${FM_AFK_LAUNCH_ENTRY:-}" ]; then
-    fm_afk_launch_terminal_alive "$backend" "$target"
+    fm_afk_launch_terminal_alive "$backend" "$target" || return 1
+    fm_supervision_claim_pending_clear "$FM_AFK_LAUNCH_STATE"
     return
   fi
   while [ "$attempt" -lt 100 ]; do
     attempt=$((attempt + 1))
-    daemon_lock_held_by_live_daemon && return 0
+    if daemon_lock_held_by_live_daemon; then
+      fm_supervision_claim_pending_clear "$FM_AFK_LAUNCH_STATE" || return 1
+      return 0
+    fi
+    fm_supervision_claim_pending_write "$FM_AFK_LAUNCH_STATE" "$handoff_timeout" || return 1
     fm_afk_launch_terminal_alive "$backend" "$target" || return 1
     sleep 0.05
   done
@@ -429,15 +434,22 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
     fm_afk_launch_close_terminal herdr "$session:$pane"
     return 1
   fi
-  if ! fm_afk_launch_release_claim_for_handoff; then
-    fm_afk_launch_log "failed to release the ownership claim for daemon handoff"
+  if ! fm_backend_herdr_cli "$session" pane run "$pane" "$cmd" >/dev/null 2>&1; then
+    fm_afk_launch_log "failed to run daemon in herdr pane $session:$pane; closing it"
     FM_AFK_REC_BACKEND=herdr
     FM_AFK_REC_TARGET="$session:$pane"
     fm_afk_launch_close_recorded || true
     return 1
   fi
-  if ! fm_backend_herdr_cli "$session" pane run "$pane" "$cmd" >/dev/null 2>&1; then
-    fm_afk_launch_log "failed to run daemon in herdr pane $session:$pane; closing it"
+  if ! fm_supervision_claim_pending_write "$FM_AFK_LAUNCH_STATE" "${FM_AFK_NATIVE_HANDOFF_TIMEOUT:-30}"; then
+    fm_afk_launch_log "failed to refresh the ownership claim reservation for daemon handoff"
+    FM_AFK_REC_BACKEND=herdr
+    FM_AFK_REC_TARGET="$session:$pane"
+    fm_afk_launch_close_recorded || true
+    return 1
+  fi
+  if ! fm_afk_launch_release_claim_for_handoff; then
+    fm_afk_launch_log "failed to release the ownership claim for daemon handoff"
     FM_AFK_REC_BACKEND=herdr
     FM_AFK_REC_TARGET="$session:$pane"
     fm_afk_launch_close_recorded || true
@@ -462,16 +474,21 @@ fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
     fm_afk_launch_log "failed to persist planned tmux daemon session '$session'"
     return 1
   fi
-  if ! fm_afk_launch_release_claim_for_handoff; then
-    fm_afk_launch_log "failed to release the ownership claim for daemon handoff"
-    rm -f "$FM_AFK_LAUNCH_RECORD"
-    return 1
-  fi
   if ! tmux new-session -d -s "$session" "$cmd" 2>/dev/null; then
     fm_afk_launch_log "failed to create detached tmux daemon session '$session'"
     if ! rm -f "$FM_AFK_LAUNCH_RECORD"; then
       fm_afk_launch_log "failed to remove planned tmux daemon record after creation failure"
     fi
+    return 1
+  fi
+  if ! fm_supervision_claim_pending_write "$FM_AFK_LAUNCH_STATE" "${FM_AFK_NATIVE_HANDOFF_TIMEOUT:-30}"; then
+    fm_afk_launch_log "failed to refresh the ownership claim reservation for daemon handoff"
+    rm -f "$FM_AFK_LAUNCH_RECORD"
+    return 1
+  fi
+  if ! fm_afk_launch_release_claim_for_handoff; then
+    fm_afk_launch_log "failed to release the ownership claim for daemon handoff"
+    rm -f "$FM_AFK_LAUNCH_RECORD"
     return 1
   fi
   fm_afk_launch_commit_terminal tmux "$session" "" 1 || return 1

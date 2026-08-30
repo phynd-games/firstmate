@@ -163,6 +163,7 @@ All under `state/`, all private to the home.
 - `.herdr-supervisor-alarm-history` - the append-only per-attempt alarm history.
 - `.herdr-supervisor-emergency` - fallback evidence when alarm or queue persistence fails.
 - `.watch-arm-blocked` - a durable blocked state used when a native arm cannot persist its normal alarm or queue escalation, so fallback ownership is not suppressed.
+- An arm whose process identity cannot be confirmed remains a tracked blocked child after bounded termination attempts, with durable escalation until that child exits safely.
 - `.herdr-supervisor.log` - a bounded lifecycle ledger.
   Diagnostic evidence only, written best-effort, and never read as authority for any decision, so an observability failure cannot stall supervision.
 - `.lock-pid-identity` - the process-instance identity paired with the Pi session lock.
