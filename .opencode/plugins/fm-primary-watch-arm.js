@@ -130,6 +130,21 @@ async function sessionOwnsLock(paths) {
   return false;
 }
 
+function watcherRestartContract(paths) {
+  try {
+    const pid = readFileSync(`${paths.state}/.watch.lock/pid`, "utf8").trim();
+    const identity = readFileSync(`${paths.state}/.watch.lock/pid-identity`, "utf8").trim();
+    if (!/^[0-9]+$/.test(pid) || !identity) return {};
+    return {
+      FM_WATCH_RESTART_EXPECTED_PID: pid,
+      FM_WATCH_RESTART_EXPECTED_IDENTITY: identity,
+      FM_WATCH_RESTART_RECLAIM: "auto",
+    };
+  } catch {
+    return {};
+  }
+}
+
 function classifyArmClose(stdout, stderr, code, signal) {
   const combined = `${stdout}\n${stderr}`;
   const reason = combined.split(/\r?\n/).find((line) => /^(signal:|stale:|check:|heartbeat($|:))/.test(line));
@@ -341,6 +356,7 @@ function spawnArm(paths, sessionID, client, predecessorArmPid = "") {
     FM_ROOT_OVERRIDE: paths.root,
     FM_CONFIG_OVERRIDE: paths.config,
     FM_WATCH_PREDECESSOR_ARM_PID: predecessorArmPid,
+    ...watcherRestartContract(paths),
   };
   const armChild = spawn("bash", ["-lc", 'config_dir="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"; [ -f "$config_dir/x-mode.env" ] && . "$config_dir/x-mode.env"; exec "$FM_ROOT_OVERRIDE/bin/fm-watch-arm.sh" --restart'], {
     cwd: paths.root,

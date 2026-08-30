@@ -149,6 +149,21 @@ function lockOwnership(): LockOwnership {
   return pidAlive(lockPid) ? "other" : "missing";
 }
 
+function watcherRestartContract(): Record<string, string> {
+  try {
+    const pid = readFileSync(`${state}/.watch.lock/pid`, "utf8").trim();
+    const identity = readFileSync(`${state}/.watch.lock/pid-identity`, "utf8").trim();
+    if (!/^[0-9]+$/.test(pid) || !identity) return {};
+    return {
+      FM_WATCH_RESTART_EXPECTED_PID: pid,
+      FM_WATCH_RESTART_EXPECTED_IDENTITY: identity,
+      FM_WATCH_RESTART_RECLAIM: "auto",
+    };
+  } catch {
+    return {};
+  }
+}
+
 let markerRetryTimer: ReturnType<typeof setTimeout> | undefined;
 
 function clearMarkerRetry(): void {
@@ -167,31 +182,39 @@ function retryMarkLoaded(): void {
   markerRetryTimer = timer;
 }
 
-function markLoaded(): void {
+function markLoaded(): boolean {
   const ownership = lockOwnership();
   if (ownership === "other") {
     clearMarkerRetry();
-    return;
+    return false;
   }
   if (ownership === "missing") {
     retryMarkLoaded();
-    return;
+    return false;
   }
   let lockPid = "";
   try {
     lockPid = readFileSync(`${state}/.lock`, "utf8").trim();
   } catch {
     retryMarkLoaded();
-    return;
+    return false;
   }
   const lockIdentity = processInstanceIdentity(lockPid);
-  if (!lockIdentity) {
+  let recordedIdentity = "";
+  try {
+    recordedIdentity = readFileSync(`${state}/.lock-pid-identity`, "utf8").trim();
+  } catch {
     retryMarkLoaded();
-    return;
+    return false;
+  }
+  if (!lockIdentity || !recordedIdentity || lockIdentity !== recordedIdentity) {
+    retryMarkLoaded();
+    return false;
   }
   mkdirSync(state, { recursive: true });
   writeFileSync(marker, `${extensionVersion}\n${process.pid}\n${lockIdentity}\n`);
   clearMarkerRetry();
+  return true;
 }
 
 function actionableLine(output: string): string {
@@ -434,7 +457,11 @@ export default function (pi: ExtensionAPI) {
       const replacement = startArm(owner, predecessorArmPid);
       const successorChild = owner.child;
       if (replacement.ok && successorChild && await waitForReadiness(successorChild)) {
-        return { failure: "", recovery: armRecovery.get(successorChild) };
+        await new Promise<void>((resolveReady) => setImmediate(resolveReady));
+        if (owner.child === successorChild && successorChild.exitCode === null && successorChild.signalCode === null) {
+          return { failure: "", recovery: armRecovery.get(successorChild) };
+        }
+        failure = "watcher: FAILED - Pi extension successor watcher exited immediately after becoming ready";
       }
       if (replacement.ok) {
         failure = "watcher: FAILED - Pi extension could not verify a ready successor watcher";
@@ -475,7 +502,6 @@ export default function (pi: ExtensionAPI) {
         surfaceFailure(owner, `watcher: FAILED - Pi extension could not launch a continuity retry\n${result.message}`);
       }
     }, retryDelay(owner.retryFailures));
-    timer.unref();
     owner.retryTimer = timer;
   }
 
@@ -489,7 +515,9 @@ export default function (pi: ExtensionAPI) {
         message: "watcher: not armed - no live session holds the lock; run bin/fm-session-start.sh to reclaim it, then call fm_watch_arm_pi to re-arm",
       };
     }
-    markLoaded();
+    if (!markLoaded()) {
+      return { ok: false, message: "watcher: not armed - the session lock process identity is not verified" };
+    }
     if (owner.child) {
       return {
         ok: true,
@@ -510,6 +538,7 @@ export default function (pi: ExtensionAPI) {
       FM_CONFIG_OVERRIDE: config,
       FM_WATCH_ARM_SCRIPT: armScript,
       FM_WATCH_PREDECESSOR_ARM_PID: predecessorArmPid,
+      ...watcherRestartContract(),
     };
     const armChild = spawn("bash", ["-lc", "config_dir=\"${FM_CONFIG_OVERRIDE:-$FM_HOME/config}\"; [ -f \"$config_dir/x-mode.env\" ] && . \"$config_dir/x-mode.env\"; exec \"$FM_WATCH_ARM_SCRIPT\" --restart"], {
       cwd: fmRoot,

@@ -54,6 +54,21 @@ function lockOwnership(): LockOwnership {
   return pidAlive(lockPid) ? "other" : "missing";
 }
 
+function watcherRestartContract(): Record<string, string> {
+  try {
+    const pid = readFileSync(`${state}/.watch.lock/pid`, "utf8").trim();
+    const identity = readFileSync(`${state}/.watch.lock/pid-identity`, "utf8").trim();
+    if (!/^[0-9]+$/.test(pid) || !identity) return {};
+    return {
+      FM_WATCH_RESTART_EXPECTED_PID: pid,
+      FM_WATCH_RESTART_EXPECTED_IDENTITY: identity,
+      FM_WATCH_RESTART_RECLAIM: "auto",
+    };
+  } catch {
+    return {};
+  }
+}
+
 let markerRetryTimer: ReturnType<typeof setTimeout> | undefined;
 
 function clearMarkerRetry(): void {
@@ -90,7 +105,14 @@ function markLoaded(): void {
     return;
   }
   const lockIdentity = processInstanceIdentity(lockPid);
-  if (!lockIdentity) {
+  let recordedIdentity = "";
+  try {
+    recordedIdentity = readFileSync(`${state}/.lock-pid-identity`, "utf8").trim();
+  } catch {
+    retryMarkLoaded();
+    return;
+  }
+  if (!lockIdentity || !recordedIdentity || lockIdentity !== recordedIdentity) {
     retryMarkLoaded();
     return;
   }

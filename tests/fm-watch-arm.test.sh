@@ -602,7 +602,10 @@ test_restart_preserves_recovery_across_reused_pid_lock() {
   printf '%s\n' 'reused-pid-does-not-match' > "$owner/pid-identity"
   ln -s "$owner" "$state/.watch.lock"
 
-  start_rearm_arm "$home" "$state" "$fakebin" "$armout"
+  FM_WATCH_RESTART_EXPECTED_PID="$unrelated" \
+  FM_WATCH_RESTART_EXPECTED_IDENTITY='reused-pid-does-not-match' \
+  FM_WATCH_RESTART_RECLAIM=auto \
+    start_rearm_arm "$home" "$state" "$fakebin" "$armout"
   wait_for_exit "$ARM_PID" 80 || fail "restart did not surface recovery after clearing a reused-pid lock"
   grep -F 'check: rearm-resurface' "$armout" >/dev/null \
     || fail "restart cleared reused-pid lock evidence without a recovery wake: $(cat "$armout")"

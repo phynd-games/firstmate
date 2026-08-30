@@ -107,6 +107,7 @@ Recovery is bounded, idempotent, and generation-safe.
 | Herdr CLI hangs | Bounded and treated as a failed read, so no caller can be wedged |
 
 Every failed or ambiguous establish and every failed arm attempt writes `state/.herdr-supervisor-alarm` and appends one `check: herdr-supervisor` record to the durable wake queue.
+The latest alarm is retained after a later successful cycle, and each alarm is appended to `state/.herdr-supervisor-alarm-history` for per-attempt evidence.
 When another owner is provable, the Herdr loop remains alive as a standby and rechecks ownership until it can resume arming.
 That reuses the channels that already exist rather than inventing one, so the lapse reaches the captain through the normal drain.
 
@@ -155,7 +156,8 @@ All under `state/`, all private to the home.
 - `.herdr-supervisor-heartbeat` - the supervisor's liveness beacon, refreshed every pass and while the arm child is waiting.
 - `.herdr-supervisor-pending-cleanup` - an exact session, socket, workspace, tab, and pane receipt retained across uncertain establish or retirement cleanup.
 - `.herdr-supervisor-quarantine.<generation>` - an exact old binding retained when the recorded Herdr server or pane identity can no longer be proven safe to close.
-- `.herdr-supervisor-alarm` - the durable actionable diagnostic; present means an escalation is outstanding.
+- `.herdr-supervisor-alarm` - the latest durable actionable diagnostic; it remains available after later recovery so the last failed attempt is not erased.
+- `.herdr-supervisor-alarm-history` - the append-only per-attempt alarm history.
 - `.herdr-supervisor-emergency` - fallback evidence when alarm or queue persistence fails.
 - `.herdr-supervisor.log` - a bounded lifecycle ledger.
   Diagnostic evidence only, written best-effort, and never read as authority for any decision, so an observability failure cannot stall supervision.

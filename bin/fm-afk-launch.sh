@@ -414,7 +414,7 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
     IFS=$'\t' read -r wsid pane <<< "$recovered"
   fi
   entry=$(fm_afk_launch_entry_cmd)
-  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q %q' \
+  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q FM_AFK_STATE_PREPARED=1 FM_SUPERVISION_CLAIM_HELD=1 %q' \
     "$FM_HOME" "$captain_target" "$captain_backend" "$entry")
   if ! fm_afk_launch_record_write herdr "$session:$pane" "$wsid"; then
     fm_afk_launch_log "failed to persist herdr daemon terminal record; closing $session:$pane"
@@ -441,7 +441,7 @@ fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
   nonce="$$-${RANDOM:-0}-$(date '+%s')"
   session="fm-afk-daemon-$hash-$nonce"
   entry=$(fm_afk_launch_entry_cmd)
-  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q %q' \
+  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q FM_AFK_STATE_PREPARED=1 FM_SUPERVISION_CLAIM_HELD=1 %q' \
     "$FM_HOME" "$captain_target" "$captain_backend" "$entry")
   if ! fm_afk_launch_record_write tmux "$session" ""; then
     fm_afk_launch_log "failed to persist planned tmux daemon session '$session'"
@@ -625,7 +625,7 @@ fm_afk_launch_stop() {
 }
 
 fm_afk_launch_main() {
-  local result
+  local result claim_held=0 command=${1:-start}
   # Traps first, lock second. Acquiring before the handlers exist leaves a
   # window where a signal terminates this process by default action and leaks
   # the lock directory, which then blocks the next away-mode launch until the
@@ -635,15 +635,30 @@ fm_afk_launch_main() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
   fm_afk_launch_lock_acquire || return 1
-  case "${1:-start}" in
-    start) fm_afk_launch_start ;;
-    start-native) fm_afk_launch_start_native ;;
+  case "$command" in
+    start|start-native)
+      if fm_supervision_claim_acquire "$FM_AFK_LAUNCH_STATE/.supervision-claim.lock" 100; then
+        claim_held=1
+        if [ "$command" = start ]; then
+          fm_afk_launch_start
+        else
+          fm_afk_launch_start_native
+        fi
+      else
+        fm_afk_launch_log "could not acquire the continuity ownership claim"
+        result=1
+        false
+      fi
+      ;;
     stop) fm_afk_launch_stop ;;
     reconcile) fm_afk_launch_reconcile ;;
     -h|--help|help) fm_afk_launch_usage ;;
     *) fm_afk_launch_usage >&2; return 2 ;;
   esac
   result=$?
+  if [ "$claim_held" -eq 1 ]; then
+    fm_lock_release "$FM_AFK_LAUNCH_STATE/.supervision-claim.lock" || result=1
+  fi
   fm_afk_launch_lock_release || result=1
   trap - EXIT INT TERM
   return "$result"
