@@ -500,6 +500,18 @@ test_a_symlinked_start_lock_is_refused() {
   pass "a symlinked startup lock is refused before lifecycle state is written"
 }
 
+test_a_torn_lock_with_a_reused_pid_is_recovered() {
+  local home port out
+  home=$(make_home torn-lock)
+  port=$(free_port)
+  mkdir -p "$home/state/.dashboard-start.lock"
+  printf '%s\n' "$$" > "$home/state/.dashboard-start.lock/pid"
+  out=$(start "$home" "$port" ensure) || fail "a torn lock with an unrelated live pid blocked recovery: $out"
+  printf '%s' "$out" | grep -q '^FIRSTMATE_DASHBOARD_URL=' \
+    || fail "torn lock recovery did not publish a verified URL: $out"
+  pass "a torn startup lock with a reused unrelated pid is recovered"
+}
+
 test_failed_cleanup_is_quarantined_before_retry() {
   local home port out
   home=$(make_home cleanup-quarantine)
@@ -583,6 +595,7 @@ test_a_missing_runtime_blocks_instead_of_guessing
 test_a_hung_herdr_call_is_bounded_and_blocks
 test_a_symlinked_state_boundary_is_refused_without_outside_writes
 test_a_symlinked_start_lock_is_refused
+test_a_torn_lock_with_a_reused_pid_is_recovered
 test_failed_cleanup_is_quarantined_before_retry
 test_no_free_port_blocks_without_a_url
 test_status_reports_without_changing_anything

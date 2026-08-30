@@ -189,8 +189,21 @@ dashboard_process_identity() {  # <pid> -> stable process-start identity
   printf 'ps:%s:%s' "$start" "$command_hash"
 }
 
+dashboard_process_command() {  # <pid>
+  local pid=$1 command
+  if [ -r "/proc/$pid/cmdline" ]; then
+    command=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null) || return 1
+    [ -n "$command" ] || return 1
+    printf '%s' "$command"
+    return 0
+  fi
+  command=$(ps -p "$pid" -o command= 2>/dev/null | sed -n '1p') || return 1
+  [ -n "$command" ] || return 1
+  printf '%s' "$command"
+}
+
 dashboard_lock_try_acquire() {
-  local pid current current_identity stored_identity mtime now age entry
+  local pid current current_identity stored_identity mtime now age entry entry_name command
   DASHBOARD_LOCK_HELD=0
   [ ! -L "$LOCK" ] || return 1
   if ! mkdir -m 700 "$LOCK" 2>/dev/null; then
@@ -202,13 +215,19 @@ dashboard_lock_try_acquire() {
       '')
         for entry in "$LOCK"/* "$LOCK"/.[!.]* "$LOCK"/..?*; do
           [ -e "$entry" ] || [ -L "$entry" ] || continue
-          return 1
+          entry_name=${entry##*/}
+          case "$entry_name" in
+            pid|identity) ;;
+            *) return 1 ;;
+          esac
         done
         mtime=$(stat -f '%m' "$LOCK" 2>/dev/null || stat -c '%Y' "$LOCK" 2>/dev/null || true)
         now=$(date +%s)
         case "$mtime" in ''|*[!0-9]*) return 1 ;; esac
         age=$((now - mtime))
         [ "$age" -ge "$FM_DASHBOARD_HERDR_TIMEOUT" ] || return 1
+        log_line blocked "recovered a torn dashboard startup lock with no pid"
+        rm -f -- "$LOCK/pid" "$LOCK_IDENTITY" 2>/dev/null || return 1
         rmdir "$LOCK" 2>/dev/null || return 1
         return 1
         ;;
@@ -216,10 +235,27 @@ dashboard_lock_try_acquire() {
     esac
     if kill -0 "$pid" 2>/dev/null; then
       stored_identity=$(cat "$LOCK_IDENTITY" 2>/dev/null || true)
-      [ -n "$stored_identity" ] || return 1
-      current_identity=$(dashboard_process_identity "$pid" 2>/dev/null || true)
-      [ -n "$current_identity" ] || return 1
-      [ "$stored_identity" = "$current_identity" ] && return 1
+      if [ -z "$stored_identity" ]; then
+        command=$(dashboard_process_command "$pid" 2>/dev/null || true)
+        case "$command" in
+          *"$SCRIPT_DIR/fm-dashboard-start.sh"*)
+            log_line blocked "dashboard startup lock has a live pid without process identity: $pid"
+            return 1
+            ;;
+          '')
+            log_line blocked "dashboard startup lock has an uninspectable live pid without process identity: $pid"
+            return 1
+            ;;
+          *)
+            current_identity=$(dashboard_process_identity "$pid" 2>/dev/null || true)
+            log_line blocked "recovered a torn dashboard startup lock for pid $pid (${current_identity:-unknown})"
+            ;;
+        esac
+      else
+        current_identity=$(dashboard_process_identity "$pid" 2>/dev/null || true)
+        [ -n "$current_identity" ] || return 1
+        [ "$stored_identity" = "$current_identity" ] && return 1
+      fi
     fi
     rm -f -- "$LOCK/pid" "$LOCK_IDENTITY" 2>/dev/null || return 1
     rmdir "$LOCK" 2>/dev/null || return 1
@@ -235,12 +271,12 @@ dashboard_lock_try_acquire() {
     rmdir "$LOCK" 2>/dev/null || true
     return 1
   }
-  printf '%s\n' "$current" > "$LOCK/pid" 2>/dev/null || {
-    rm -f -- "$LOCK/pid" 2>/dev/null || true
+  printf '%s\n' "$current_identity" > "$LOCK_IDENTITY" 2>/dev/null || {
+    rm -f -- "$LOCK/pid" "$LOCK_IDENTITY" 2>/dev/null || true
     rmdir "$LOCK" 2>/dev/null || true
     return 1
   }
-  printf '%s\n' "$current_identity" > "$LOCK_IDENTITY" 2>/dev/null || {
+  printf '%s\n' "$current" > "$LOCK/pid" 2>/dev/null || {
     rm -f -- "$LOCK/pid" "$LOCK_IDENTITY" 2>/dev/null || true
     rmdir "$LOCK" 2>/dev/null || true
     return 1

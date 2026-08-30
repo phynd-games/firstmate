@@ -923,13 +923,9 @@ fm_backend_target_confirmed_absent() {  # <backend> <target> [expected-label]
           target_workspace_found=1
           panes=$(fm_backend_cmux_cli list-panes --workspace "$FM_BACKEND_CMUX_WORKSPACE" \
             --json --id-format uuids 2>/dev/null) || return 1
-          printf '%s' "$panes" | jq -e '
-            (.panes | type) == "array"
-            and all(.panes[]; type == "object"
-              and ((.surface_ids // []) | type) == "array")
-          ' >/dev/null 2>&1 || return 1
+          printf '%s' "$panes" | fm_backend_cmux_panes_shape_valid || return 1
           printf '%s' "$panes" | jq -e --arg id "$FM_BACKEND_CMUX_SURFACE" \
-            'any(.panes[]; (.surface_ids // []) | index($id))' >/dev/null 2>&1 && return 1
+            'any(.panes[]; .surface_ids | index($id))' >/dev/null 2>&1 && return 1
           return 0
         fi
         if [ -n "$expected_title" ] && printf '%s' "$workspaces" | jq -e \

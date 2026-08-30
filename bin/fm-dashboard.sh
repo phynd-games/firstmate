@@ -1086,6 +1086,9 @@ class Handler(BaseHTTPRequestHandler):
             self.server.release_admission(self.request)
             self.client_slot_released = True
 
+    def request_time_left(self):
+        return self.request_deadline - time.monotonic()
+
     def finish(self):
         try:
             super().finish()
@@ -1117,7 +1120,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(503, b"dashboard rebuild capacity is busy\n", "text/plain; charset=utf-8")
             return
         try:
-            with self.server.build_lock:
+            lock_wait = self.request_time_left()
+            if lock_wait <= 0 or not self.server.build_lock.acquire(timeout=lock_wait):
+                self._send(503, b"dashboard rebuild capacity is busy\n", "text/plain; charset=utf-8")
+                return
+            try:
+                if self.request_time_left() <= 0:
+                    self._send(503, b"dashboard rebuild deadline exceeded\n", "text/plain; charset=utf-8")
+                    return
                 build = subprocess.Popen(
                     [SELF, "build", "--out", "-"],
                     capture_output=True,
@@ -1126,21 +1136,42 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 try:
                     stdout, stderr = build.communicate(
-                        timeout=int(os.environ["FM_DASHBOARD_BUILD_TIMEOUT"])
+                        timeout=min(
+                            int(os.environ["FM_DASHBOARD_BUILD_TIMEOUT"]),
+                            self.request_time_left(),
+                        )
                     )
-                except subprocess.TimeoutExpired:
+                except subprocess.TimeoutExpired as exc:
+                    stdout = exc.output or b""
+                    stderr = exc.stderr or b""
+                    terminate_timed_out = True
                     try:
                         os.killpg(build.pid, signal.SIGTERM)
                     except OSError:
                         pass
                     try:
-                        stdout, stderr = build.communicate(timeout=1)
-                    except subprocess.TimeoutExpired:
+                        if self.request_time_left() > 0:
+                            stdout, stderr = build.communicate(
+                                timeout=min(1, self.request_time_left())
+                            )
+                            terminate_timed_out = False
+                    except subprocess.TimeoutExpired as term_exc:
+                        stdout = term_exc.output or stdout
+                        stderr = term_exc.stderr or stderr
+                    if terminate_timed_out:
                         try:
                             os.killpg(build.pid, signal.SIGKILL)
                         except OSError:
                             pass
-                        stdout, stderr = build.communicate()
+                        if build.poll() is None:
+                            try:
+                                if self.request_time_left() > 0:
+                                    build.wait(timeout=min(0.5, self.request_time_left()))
+                            except subprocess.TimeoutExpired:
+                                pass
+                    for stream in (build.stdout, build.stderr):
+                        if stream is not None:
+                            stream.close()
                     done = subprocess.CompletedProcess(
                         build.args, 124, stdout, stderr
                     )
@@ -1148,6 +1179,8 @@ class Handler(BaseHTTPRequestHandler):
                     done = subprocess.CompletedProcess(
                         build.args, build.returncode, stdout, stderr
                     )
+            finally:
+                self.server.build_lock.release()
         except Exception as exc:  # noqa: BLE001 - reported, never swallowed
             self._send(500, ("the dashboard could not be rebuilt: %s\n" % exc).encode(),
                        "text/plain; charset=utf-8")
