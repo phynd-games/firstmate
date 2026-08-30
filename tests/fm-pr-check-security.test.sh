@@ -596,6 +596,43 @@ PY
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "reusable surface evidence left a runnable poll"
 
   write_self_review_report "$dir/home" task-a
+  python3 - "$report" "$dir/wt" <<'PY'
+import hashlib
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[2])
+paths = {
+    "Authority": "bin/fm-operational-input.sh",
+    "Security": "bin/fm-pr-check.sh",
+    "Path": "tests/fm-pr-check-security.test.sh",
+    "Failure": ".agents/skills/firstmate-pr-self-review/SKILL.md",
+    "Tests": "bin/fm-pr-create.sh",
+    "Documentation": "bin/fm-pr-lib.sh",
+    "Delivery": "bin/fm-pr-self-review-check.sh",
+}
+text = report.read_text(encoding="utf-8")
+for surface, relative in paths.items():
+    line = (root / relative).read_bytes().splitlines(keepends=True)[1]
+    digest = hashlib.sha256(line).hexdigest()
+    text = re.sub(
+        rf"(?m)^{surface}: reviewed; files=[^;]+; evidence=[^;]+;",
+        f"{surface}: reviewed; files={relative}; evidence={relative}:2 sha256={digest} changed hunk evidence;",
+        text,
+        count=1,
+    )
+report.write_text(text, encoding="utf-8")
+PY
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted cross-category surface evidence"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "cross-category surface evidence left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
   sed -i.bak 's/^Authority: .*/Authority: reviewed; files=bin\/fm-pr-lib.sh; evidence=abcdefghijkl; consequence=abcdefghijkl; fix=abcdefghijkl/' "$report"
   rm -f "$report.bak"
   set +e

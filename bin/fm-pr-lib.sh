@@ -631,7 +631,7 @@ EOF
   [ -z "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] || return 1
   [ -z "$(git -C "$substrate_root" status --porcelain 2>/dev/null)" ] || return 1
   local line finding_path finding_file finding_line surface_files surface_file review_root
-  local surface_evidence evidence_ref evidence_file evidence_line evidence_hash line_content actual_evidence_hash surface_review_files surface_evidence_files changed_path
+  local surface_evidence evidence_ref evidence_file evidence_line evidence_hash line_content actual_evidence_hash surface_review_files surface_evidence_files changed_path surface_name
   surface_review_files=
   surface_evidence_files=
   fm_pr_review_file_valid() {
@@ -682,6 +682,44 @@ $actual_changed_paths
 EOF
     return 1
   }
+  fm_pr_review_surface_path_valid() {
+    local review_surface=$1 review_file=$2
+    [ "$actual_changed_path_count" -lt 7 ] && return 0
+    case "$review_surface:$review_file" in
+      authority:AGENTS.md|authority:.agents/*|authority:bin/fm-brief.sh|authority:bin/fm-check*.sh|authority:bin/fm-merge*.sh|authority:bin/fm-pr*.sh|authority:bin/fm-promote.sh|authority:bin/fm-spawn.sh) return 0 ;;
+      security:.agents/*|security:bin/fm-operational-input.sh|security:bin/fm-pending-reply-lib.sh|security:bin/fm-pr*.sh|security:bin/fm-send.sh|security:bin/firstmate_factory/*|security:schemas/*|security:tests/*security*|security:tests/*trust*) return 0 ;;
+      path:.agents/*|path:bin/fm-pr*.sh|path:bin/fm-remote*.sh|path:bin/fm-send.sh|path:bin/fm-spawn.sh|path:tests/*path*|path:tests/*spawn*|path:tests/*secondmate*) return 0 ;;
+      failure:bin/fm-*.sh|failure:bin/firstmate_factory/*|failure:schemas/*|failure:tests/*) return 0 ;;
+      tests:bin/fm-test*.sh|tests:tests/*) return 0 ;;
+      documentation:AGENTS.md|documentation:.agents/*|documentation:CONTRIBUTING.md|documentation:README*|documentation:docs/*|documentation:bin/fm-brief.sh) return 0 ;;
+      delivery:AGENTS.md|delivery:bin/fm-brief.sh|delivery:bin/fm-merge*.sh|delivery:bin/fm-pr*.sh|delivery:bin/fm-promote.sh|delivery:bin/fm-send.sh|delivery:bin/fm-spawn.sh|delivery:tests/*delivery*|delivery:tests/*pr*) return 0 ;;
+    esac
+    return 1
+  }
+  fm_pr_review_changed_line_valid() {
+    local review_file=$1 review_line=$2
+    git -C "$worktree" diff --no-color --unified=0 "$merge_base_sha" "$head_sha" -- "$review_file" |
+      awk -v target="$review_line" '
+        function range_start(value, parts) {
+          sub(/^[-+]/, "", value)
+          split(value, parts, ",")
+          return parts[1] + 0
+        }
+        function range_count(value, parts) {
+          split(value, parts, ",")
+          return parts[2] == "" ? 1 : parts[2] + 0
+        }
+        /^@@ / {
+          old_start = range_start($2)
+          old_count = range_count($2)
+          new_start = range_start($3)
+          new_count = range_count($3)
+          if (new_count > 0 && target >= new_start && target < new_start + new_count) found = 1
+          if (new_count == 0 && old_count > 0 && target >= old_start && target < old_start + old_count) found = 1
+        }
+        END { exit found ? 0 : 1 }
+      '
+  }
   while IFS= read -r changed_path || [ -n "$changed_path" ]; do
     fm_pr_changed_path_valid "$changed_path" || return 1
     case ",$surface_review_files," in
@@ -705,6 +743,8 @@ EOF
     case "$evidence_file" in
       ''|/*|*..*|*[!A-Za-z0-9._/-]*) return 1 ;;
     esac
+    surface_name=$(printf '%s' "${line%%:*}" | tr '[:upper:]' '[:lower:]') || return 1
+    fm_pr_review_surface_path_valid "$surface_name" "$evidence_file" || return 1
     [ "$evidence_line" -ge 1 ] 2>/dev/null || return 1
     [ "${#evidence_hash}" -eq 64 ] || return 1
     case "$evidence_hash" in
@@ -715,6 +755,7 @@ EOF
       *) return 1 ;;
     esac
     fm_pr_changed_path_valid "$evidence_file" || return 1
+    fm_pr_review_changed_line_valid "$evidence_file" "$evidence_line" || return 1
     if [ -f "$worktree/$evidence_file" ] && [ ! -L "$worktree/$evidence_file" ] \
       && git -C "$worktree" ls-files --error-unmatch -- "$evidence_file" >/dev/null 2>&1; then
       line_content=$(awk -v target="$evidence_line" 'NR == target { print; found = 1; exit } END { if (!found) exit 1 }' "$worktree/$evidence_file") || return 1

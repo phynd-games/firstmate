@@ -50,7 +50,7 @@ SH
 }
 
 test_fm_home_parameterization() {
-  local brief home_one home_two out task_wt target_head base_head merge_base_sha changed_digest substrate_root substrate_sha empty_digest surface_digest
+  local brief home_one home_two out task_wt target_head base_head merge_base_sha changed_digest substrate_root substrate_sha empty_digest surface_digest fakebin
   home_one="$TMP_ROOT/home one"
   home_two="$TMP_ROOT/home-two"
   mkdir -p "$home_one/data" "$home_one/state" "$home_two/data" "$home_two/state"
@@ -77,6 +77,7 @@ test_fm_home_parameterization() {
 
   task_wt="$home_one/task-wt"
   fm_git_init_commit "$task_wt"
+  git -C "$task_wt" remote add origin https://github.com/example/repo.git
   git -C "$task_wt" branch -M main
   git -C "$task_wt" checkout -qb fm/task-a
   printf 'reviewed surface\n' >> "$task_wt/README.md"
@@ -131,7 +132,20 @@ test_fm_home_parameterization() {
     "window=firstmate:fm-task-a" "worktree=$task_wt" "project=x" \
     'review_base_ref=main' "review_base_sha=$base_head" \
     'kind=ship' 'mode=no-mistakes'
-  FM_HOME="$home_one" FM_SUBSTRATE_ROOT_OVERRIDE="$substrate_root" FM_GUARD_GRACE=999999 "$ROOT/bin/fm-pr-check.sh" task-a https://github.com/example/repo/pull/1 >/dev/null 2>/dev/null \
+  fakebin="$home_one/fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+case " $* " in
+  *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:?}" ;;
+  *" baseRefName "*) printf '%s\n' main ;;
+  *) exit 2 ;;
+esac
+SH
+  chmod +x "$fakebin/gh"
+  FM_HOME="$home_one" FM_SUBSTRATE_ROOT_OVERRIDE="$substrate_root" FM_GUARD_GRACE=999999 \
+    FM_TEST_GH_HEAD="$target_head" PATH="$fakebin:$PATH" "$ROOT/bin/fm-pr-check.sh" task-a https://github.com/example/repo/pull/1 >/dev/null 2>/dev/null \
     || fail "fm-pr-check failed under FM_HOME"
   [ -f "$home_one/state/task-a.check.sh" ] || fail "pr check was not written under FM_HOME/state"
   [ ! -e "$home_two/state/task-a.check.sh" ] || fail "pr check leaked into another home"

@@ -64,6 +64,7 @@ The findings section must contain `Review status: complete`, a non-negative `Fin
 The surface section must contain `Authority:`, `Security:`, `Path:`, `Failure:`, `Tests:`, `Documentation:`, and `Delivery:` fields in the form `reviewed; files=<...>; evidence=<path>:<line> sha256=<line-digest> <signal>; consequence=<...>; fix=<...>`, with each evidence reference naming a listed tracked file from the target diff and the lowercase SHA-256 digest of its referenced line.
 The seven surface file lists must collectively cover every target-project changed path, and each surface must cite changed-file evidence specific to its declared surface.
 When the target diff has at least seven paths, the seven surface evidence references must name seven distinct changed files; smaller diffs require one distinct evidence file per changed path up to the seven surfaces. Deleted files may use the exact referenced line from the merge-base blob.
+Each surface evidence line must also fall within a changed hunk for its referenced path, and when seven or more target paths exist its path must belong to the shared validator's relevant file class for that surface.
 The verification section must contain at least one non-empty `Command:` field and one non-empty `Result:` field.
 
 1. `Findings` with severity, `path:line`, evidence, consequence, and required fix for each issue.
