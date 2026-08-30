@@ -550,7 +550,7 @@ secondmate_sync() {
   # "move on to the next secondmate".
   secondmate_sync_remote_one() {  # <id> <home> <remote-host>
     local id=$1 _home=$2 remote_host=$3
-    local sync_out inherit_out nudge_needed remote_marker remote_pending converged out remote_lock remote_generation remote_backend
+    local sync_out inherit_out nudge_needed remote_marker remote_pending converged out remote_lock remote_generation remote_backend remote_rc
     remote_backend=$(fm_backend_meta_recorded_backend "$STATE/$id.meta" remote_backend 2>/dev/null || true)
     case "$remote_backend" in
       absent|tmux|zellij|orca|cmux)
@@ -567,8 +567,29 @@ secondmate_sync() {
         return 0
         ;;
     esac
-    if ! fm_backend_validate_remote_meta "$STATE/$id.meta" "$id" >/dev/null 2>&1; then
+    if ! fm_backend_validate_remote_task_endpoint "$STATE/$id.meta" "$id" fm-remote >/dev/null 2>&1; then
       echo "SECONDMATE_SYNC: secondmate $id: blocked: remote Herdr metadata is invalid; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\"" >&2
+      return 0
+    fi
+    if out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" --typed < /dev/null 2>&1); then
+      case "$(printf '%s\n' "$out" | tail -1)" in
+        missing)
+          echo "SECONDMATE_SYNC: secondmate $id: blocked: remote endpoint metadata is missing on $remote_host; repair or explicitly migrate the record" >&2
+          return 0
+          ;;
+        capability-failure|unreadable|unverified|ambiguous)
+          echo "SECONDMATE_SYNC: secondmate $id: blocked: Herdr capability could not be confirmed on $remote_host; repair Herdr and verify with herdr status --json" >&2
+          return 0
+          ;;
+      esac
+    else
+      remote_rc=$?
+      case "$remote_rc" in
+        2) echo "SECONDMATE_SYNC: secondmate $id: blocked: Herdr capability is unavailable on $remote_host; $(first_line "$out")" >&2 ;;
+        3) echo "SECONDMATE_SYNC: secondmate $id: blocked: remote endpoint metadata was refused as read-only on $remote_host; $(first_line "$out")" >&2 ;;
+        255) echo "SECONDMATE_SYNC: secondmate $id: skipped: remote host unavailable on $remote_host; route preserved" ;;
+        *) echo "SECONDMATE_SYNC: secondmate $id: blocked: remote endpoint preflight failed on $remote_host: $(first_line "$out")" >&2 ;;
+      esac
       return 0
     fi
     remote_lock=$(fm_remote_inherit_transaction_lock_path "$STATE" "$id" 2>/dev/null || true)
@@ -732,7 +753,7 @@ secondmate_liveness_one() {  # <meta> <id>
         return 0
         ;;
     esac
-    if ! fm_backend_validate_remote_meta "$meta" "$id" >/dev/null 2>&1; then
+    if ! fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote >/dev/null 2>&1; then
       echo "SECONDMATE_LIVENESS: secondmate $id: blocked: remote Herdr metadata is invalid; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\"" >&2
       return 0
     fi
