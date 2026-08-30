@@ -78,6 +78,10 @@ test_landed_untyped_prefix_is_explicitly_legacy() {
   legacy_v="${FM_OPERATIONAL_PREFIX}vintage body from a legacy transcript"
   [ "$(classify_cli "$legacy_v")" = legacy-operational ] \
     || fail "legacy FIRSTMATE_OP body beginning with v was not retained"
+  [ "$(classify_cli "${FM_OPERATIONAL_PREFIX}v2 legacy body")" = legacy-operational ] \
+    || fail "ambiguous numeric legacy FIRSTMATE_OP body was not retained"
+  [ "$(classify_cli "${FM_OPERATIONAL_PREFIX}v2")" = legacy-operational ] \
+    || fail "malformed legacy FIRSTMATE_OP body was not retained"
   ! fm_operational_input_classify "${FM_OPERATIONAL_PREFIX}v2 watcher: unknown" parsed \
     || fail "unknown versioned FIRSTMATE_OP envelope downgraded to legacy"
   pass "operational input: untyped landed FIRSTMATE_OP transcripts are explicit legacy-operational input"

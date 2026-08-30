@@ -16,21 +16,55 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+SUBSTRATE_ROOT="${FM_SUBSTRATE_ROOT_OVERRIDE:-$FM_ROOT}"
 "$FM_ROOT/bin/fm-guard.sh" || true
 # Role partition: landing local-only work is MAIN-owned; the Pi supervision
 # branch reports readiness and never lands (contract: bin/fm-lease-lib.sh;
 # no-op in homes without a branch actor).
 # shellcheck source=bin/fm-lease-lib.sh
 . "$SCRIPT_DIR/fm-lease-lib.sh"
+# shellcheck source=bin/fm-pr-lib.sh
+. "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
 fm_lease_forbid_branch "local-only landing (fm-merge-local)"
 ID=${1:?usage: fm-merge-local.sh <task-id>}
+fm_pr_task_id_valid "$ID" || { echo "error: invalid local-only task" >&2; exit 2; }
 META="$STATE/$ID.meta"
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
+META_LOCK=$(fm_meta_lock_path "$META") || exit 1
+META_LOCK_HELD=0
+merge_local_cleanup() {
+  if [ "$META_LOCK_HELD" = 1 ]; then
+    fm_lock_release "$META_LOCK" || true
+    META_LOCK_HELD=0
+  fi
+}
+trap merge_local_cleanup EXIT
+trap 'exit 1' HUP INT TERM
+fm_lock_acquire_wait "$META_LOCK"
+META_LOCK_HELD=1
 
 PROJ=$(grep '^project=' "$META" | cut -d= -f2-)
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ "$MODE" = local-only ] || { echo "error: task $ID is mode=$MODE, not local-only; merge PR tasks with bin/fm-pr-merge.sh <id> <PR url> after approval" >&2; exit 1; }
 "$FM_ROOT/bin/fm-pr-self-review-check.sh" "$ID" local-only
+
+WT=$(grep '^worktree=' "$META" | cut -d= -f2-)
+[ -n "$WT" ] && [ -d "$WT" ] && [ ! -L "$WT" ] || {
+  echo "error: local-only task worktree is unavailable" >&2
+  exit 1
+}
+[ "$(fm_pr_git_common_dir "$PROJ" 2>/dev/null || true)" = "$(fm_pr_git_common_dir "$WT" 2>/dev/null || true)" ] \
+  && [ -n "$(fm_pr_git_common_dir "$PROJ" 2>/dev/null || true)" ] || {
+  echo "error: local-only project is not the reviewed repository" >&2
+  exit 1
+}
+REVIEW_HEAD=$(git -C "$WT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
+fm_pr_head_valid "$REVIEW_HEAD" || { echo "error: local-only task has no reviewed head" >&2; exit 1; }
+REPORT=$(fm_pr_self_review_report_path "$DATA" "$ID") || exit 1
+REPORT_HASH=$(fm_pr_sha256 "$REPORT") || exit 1
 
 default_branch() {
   local ref branch
@@ -50,6 +84,10 @@ default_branch() {
 
 BRANCH="fm/$ID"
 git -C "$PROJ" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null || { echo "error: branch $BRANCH does not exist in $PROJ" >&2; exit 1; }
+[ "$(git -C "$PROJ" rev-parse --verify "refs/heads/$BRANCH")" = "$REVIEW_HEAD" ] || {
+  echo "error: local-only branch is not the reviewed head" >&2
+  exit 1
+}
 
 DEFAULT=$(default_branch) || { echo "error: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master" >&2; exit 1; }
 
@@ -61,6 +99,12 @@ if [ -n "$(git -C "$PROJ" status --porcelain 2>/dev/null | head -1)" ]; then
   echo "error: $PROJ has a dirty working tree; refusing to merge into it" >&2
   exit 1
 fi
+[ "$(git -C "$WT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)" = "$REVIEW_HEAD" ] \
+  && [ "$(git -C "$PROJ" rev-parse --verify "refs/heads/$BRANCH" 2>/dev/null || true)" = "$REVIEW_HEAD" ] \
+  && [ "$(fm_pr_sha256 "$REPORT")" = "$REPORT_HASH" ] || {
+  echo "error: local-only reviewed inputs changed after validation" >&2
+  exit 1
+}
 
 # Clean fast-forward only: DEFAULT must be an ancestor of BRANCH.
 if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BRANCH"; then
@@ -70,6 +114,6 @@ if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BRANCH"; then
 fi
 
 before=$(git -C "$PROJ" rev-parse --short "$DEFAULT")
-git -C "$PROJ" merge --ff-only "$BRANCH" >/dev/null
+git -C "$PROJ" merge --ff-only "$REVIEW_HEAD" >/dev/null
 after=$(git -C "$PROJ" rev-parse --short "$DEFAULT")
 echo "merged $BRANCH into local $DEFAULT ($before -> $after) in $PROJ"

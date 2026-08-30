@@ -24,6 +24,9 @@ FM_PR_PATH=
 FM_PR_OWNER=
 FM_PR_REPO=
 FM_PR_NUMBER=
+FM_PR_REMOTE_PROVIDER=
+FM_PR_REMOTE_HOST=
+FM_PR_REMOTE_PATH=
 FM_PR_DATA_PROVIDER=
 FM_PR_DATA_URL=
 FM_PR_DATA_HOST=
@@ -205,6 +208,64 @@ fm_pr_url_parse() {
   FM_PR_HOST=$host
   FM_PR_PATH=$path
   FM_PR_NUMBER=${BASH_REMATCH[3]}
+}
+
+fm_pr_git_remote_identity() {
+  local repo=$1 raw authority host path
+  FM_PR_REMOTE_PROVIDER=
+  FM_PR_REMOTE_HOST=
+  FM_PR_REMOTE_PATH=
+  [ -d "$repo" ] && [ ! -L "$repo" ] || return 1
+  raw=$(git -C "$repo" remote get-url origin 2>/dev/null) || return 1
+  case "$raw" in
+    git@*:*)
+      host=${raw#git@}
+      host=${host%%:*}
+      path=${raw#*:}
+      ;;
+    ssh://git@*/*)
+      authority=${raw#ssh://git@}
+      host=${authority%%/*}
+      path=${authority#*/}
+      ;;
+    https://*/*|http://*/*)
+      authority=${raw#*://}
+      host=${authority%%/*}
+      path=${authority#*/}
+      ;;
+    *) return 1 ;;
+  esac
+  case "$host" in ''|*:*|*[^A-Za-z0-9.-]*) return 1 ;; esac
+  case "$path" in ''|/*|*/|*//*|*\?*|*#*) return 1 ;; esac
+  case "$path" in *.git) path=${path%.git} ;; esac
+  [ -n "$path" ] || return 1
+  if [ "$host" = github.com ]; then
+    [[ "$path" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$ ]] || return 1
+    FM_PR_REMOTE_PROVIDER=github
+  else
+    fm_pr_gitlab_host_valid "$host" || return 1
+    fm_pr_gitlab_path_valid "$path" || return 1
+    FM_PR_REMOTE_PROVIDER=gitlab
+  fi
+  FM_PR_REMOTE_HOST=$host
+  FM_PR_REMOTE_PATH=$path
+}
+
+fm_pr_git_remote_matches() {
+  local repo=$1 provider=$2 host=$3 path=$4
+  fm_pr_git_remote_identity "$repo" || return 1
+  [ "$FM_PR_REMOTE_PROVIDER" = "$provider" ] \
+    && [ "$FM_PR_REMOTE_HOST" = "$host" ] \
+    && [ "$FM_PR_REMOTE_PATH" = "$path" ]
+}
+
+fm_pr_git_common_dir() {
+  local repo=$1 common
+  common=$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null) || return 1
+  case "$common" in
+    /*) (cd "$common" && pwd -P) || return 1 ;;
+    *) (cd "$repo" && cd "$common" && pwd -P) || return 1 ;;
+  esac
 }
 
 fm_pr_head_valid() {
@@ -423,7 +484,7 @@ fm_pr_self_review_report_valid() {
         if ($0 == "Finding summary: none") finding_summary = 1
         if (index($0, "Finding: ") == 1) {
           finding_entries++
-          if (substr($0, length("Finding: ") + 1) !~ /^severity=(error|warning|info); path=[^;]+; evidence=[^;]+; consequence=[^;]+; fix=[^;]+$/) bad = 1
+          if (substr($0, length("Finding: ") + 1) !~ /^severity=(error|warning|info); path=[A-Za-z0-9._\/-]+:[1-9][0-9]*; evidence=[^;[:space:]][^;]*[[:space:]][^;[:space:]]; consequence=[^;[:space:]][^;]*[[:space:]][^;[:space:]]; fix=[^;[:space:]][^;]*[[:space:]][^;[:space:]]$/) bad = 1
         }
       }
       if (expected == 3) {
@@ -472,13 +533,13 @@ fm_pr_self_review_report_valid() {
         if ($0 == "Substrate diff: no substrate diff") substrate_no_diff = 1
       }
       if (expected == 5) {
-        if (index($0, "Authority: ") == 1 && substantive(field("Authority: "), "authority")) authority = 1
-        if (index($0, "Security: ") == 1 && substantive(field("Security: "), "security")) security = 1
-        if (index($0, "Path: ") == 1 && substantive(field("Path: "), "path")) path = 1
-        if (index($0, "Failure: ") == 1 && substantive(field("Failure: "), "failure")) failure = 1
-        if (index($0, "Tests: ") == 1 && substantive(field("Tests: "), "tests")) tests = 1
-        if (index($0, "Documentation: ") == 1 && substantive(field("Documentation: "), "documentation")) documentation = 1
-        if (index($0, "Delivery: ") == 1 && substantive(field("Delivery: "), "delivery")) delivery = 1
+        if (index($0, "Authority: ") == 1) { authority_count++; if (substantive(field("Authority: "), "authority")) authority = 1 }
+        if (index($0, "Security: ") == 1) { security_count++; if (substantive(field("Security: "), "security")) security = 1 }
+        if (index($0, "Path: ") == 1) { path_count++; if (substantive(field("Path: "), "path")) path = 1 }
+        if (index($0, "Failure: ") == 1) { failure_count++; if (substantive(field("Failure: "), "failure")) failure = 1 }
+        if (index($0, "Tests: ") == 1) { tests_count++; if (substantive(field("Tests: "), "tests")) tests = 1 }
+        if (index($0, "Documentation: ") == 1) { documentation_count++; if (substantive(field("Documentation: "), "documentation")) documentation = 1 }
+        if (index($0, "Delivery: ") == 1) { delivery_count++; if (substantive(field("Delivery: "), "delivery")) delivery = 1 }
       }
       if (expected == 6) {
         if (index($0, "Command: ") == 1 && length(field("Command: ")) > 0) command = 1
@@ -492,6 +553,7 @@ fm_pr_self_review_report_valid() {
       if (!target_repository || !base_ref || !base_sha || !target_head || !merge_base_sha || !changed_files || !tree_status) bad = 1
       if (!substrate_base_sha || !substrate_head_sha || !substrate_changed_files) bad = 1
       if (!authority || !security || !path || !failure || !tests || !documentation || !delivery) bad = 1
+      if (authority_count != 1 || security_count != 1 || path_count != 1 || failure_count != 1 || tests_count != 1 || documentation_count != 1 || delivery_count != 1) bad = 1
       if (!command || !result) bad = 1
       if (expected_head != "" && head_sha != expected_head) bad = 1
       if (valid && !bad && expected == 7 && NR >= 8) {
@@ -542,6 +604,39 @@ EOF
   [ "$changed_files" = "$actual_changed_files" ] || return 1
   [ -z "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] || return 1
   [ -z "$(git -C "$substrate_root" status --porcelain 2>/dev/null)" ] || return 1
+  local line finding_path finding_file finding_line surface_files surface_file review_root
+  fm_pr_review_file_valid() {
+    local review_file=$1
+    for review_root in "$worktree" "$substrate_root"; do
+      if [ -f "$review_root/$review_file" ] && [ ! -L "$review_root/$review_file" ] \
+        && git -C "$review_root" ls-files --error-unmatch -- "$review_file" >/dev/null 2>&1; then
+        return 0
+      fi
+    done
+    return 1
+  }
+  while IFS= read -r line || [ -n "$line" ]; do
+    finding_path=${line#* path=}
+    finding_path=${finding_path%%; evidence=*}
+    finding_file=${finding_path%:*}
+    finding_line=${finding_path##*:}
+    case "$finding_file" in
+      ''|/*|*..*|*[!A-Za-z0-9._/-]*) return 1 ;;
+    esac
+    [ "$finding_line" -ge 1 ] 2>/dev/null || return 1
+    fm_pr_review_file_valid "$finding_file" || return 1
+  done < <(awk '/^Finding: / { print }' "$report")
+  while IFS= read -r line || [ -n "$line" ]; do
+    surface_files=${line#*files=}
+    surface_files=${surface_files%%; evidence=*}
+    [ -n "$surface_files" ] || return 1
+    while IFS= read -r surface_file || [ -n "$surface_file" ]; do
+      case "$surface_file" in
+        ''|/*|*..*|*[!A-Za-z0-9._/-]*) return 1 ;;
+      esac
+      fm_pr_review_file_valid "$surface_file" || return 1
+    done < <(printf '%s\n' "$surface_files" | tr ',' '\n')
+  done < <(awk '/^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): / { print }' "$report")
   local actual_substrate_head actual_substrate_changed empty_digest
   actual_substrate_head=$(git -C "$substrate_root" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1
   [ "$substrate_head_sha" = "$actual_substrate_head" ] || return 1

@@ -2371,7 +2371,6 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
 fi
 REVIEW_BASE_REF=
 REVIEW_BASE_SHA=
-REVIEW_BASE_DEFAULT=0
 if [ "$KIND" = ship ]; then
   if [ "$RELAUNCH" -eq 1 ]; then
     REVIEW_BASE=$(fm_pr_review_base_from_meta "$RELAUNCH_META") || {
@@ -2382,19 +2381,19 @@ if [ "$KIND" = ship ]; then
     :
   else
     REVIEW_BASE_STATUS=$?
-    [ "$REVIEW_BASE_STATUS" -eq 2 ] || {
+    if [ "$REVIEW_BASE_STATUS" -eq 2 ]; then
+      echo "error: brief $BRIEF has no approved target base" >&2
+    else
       echo "error: brief $BRIEF has an invalid or ambiguous approved target base" >&2
-      exit 1
-    }
-    REVIEW_BASE=
-    REVIEW_BASE_DEFAULT=1
+    fi
+    exit 1
   fi
   if [ -n "$REVIEW_BASE" ]; then
     IFS="$(printf '\t')" read -r REVIEW_BASE_REF REVIEW_BASE_SHA <<EOF
 $REVIEW_BASE
 EOF
   fi
-  if [ "$REVIEW_BASE_DEFAULT" -eq 0 ] && [ "$RELAUNCH" -eq 1 ]; then
+  if [ "$RELAUNCH" -eq 1 ]; then
     RESOLVED_REVIEW_BASE=$(git -C "$WT" rev-parse --verify "$REVIEW_BASE_REF^{commit}" 2>/dev/null) || {
       echo "error: task's approved target base is unavailable" >&2
       exit 1
@@ -2407,18 +2406,8 @@ EOF
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" "$REVIEW_BASE_REF" "$REVIEW_BASE_SHA" || exit 1
-  if [ "$REVIEW_BASE_DEFAULT" -eq 0 ] && [ -n "$SPAWN_FRESHEN_APPROVED_REF" ]; then
+  if [ -n "$SPAWN_FRESHEN_APPROVED_REF" ]; then
     REVIEW_BASE_REF=$SPAWN_FRESHEN_APPROVED_REF
-  fi
-  if [ "$KIND" = ship ] && [ "$REVIEW_BASE_DEFAULT" -eq 1 ]; then
-    REVIEW_BASE_REF=$(fm_pr_default_branch "$WT") || {
-      echo "error: could not resolve the task's approved target base" >&2
-      exit 1
-    }
-    REVIEW_BASE_SHA=$(git -C "$WT" rev-parse --verify "$REVIEW_BASE_REF^{commit}" 2>/dev/null) || {
-      echo "error: could not resolve the task's approved target base commit" >&2
-      exit 1
-    }
   fi
 fi
 

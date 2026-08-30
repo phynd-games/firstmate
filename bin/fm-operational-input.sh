@@ -204,7 +204,7 @@ fm_operational_input_classify() {  # <message> <result-var>
 }
 
 fm_operational_versioned_envelope_shape() {  # <message>
-  local message=${1-} remainder version digits
+  local message=${1-} remainder version digits envelope kind
   case "$message" in
     "$FM_OPERATIONAL_PREFIX"v*) ;;
     *) return 1 ;;
@@ -220,7 +220,13 @@ fm_operational_versioned_envelope_shape() {  # <message>
   case "$digits" in
     *[!0-9]*) return 1 ;;
   esac
-  return 0
+  envelope=${remainder#"$version "}
+  case "$envelope" in
+    *": "*) ;;
+    *) return 1 ;;
+  esac
+  kind=${envelope%%": "*}
+  fm_operational_kind_is_current "$kind"
 }
 
 fm_message_from_firstmate() {  # <message>

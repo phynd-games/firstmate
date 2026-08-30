@@ -93,6 +93,10 @@ WT=$(grep '^worktree=' "$META" | cut -d= -f2- || true)
   echo "error: PR-ready task worktree is unavailable" >&2
   exit 1
 }
+fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH" || {
+  echo "error: PR-ready URL does not identify the reviewed repository" >&2
+  exit 1
+}
 REVIEW_HEAD=$(git -C "$WT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
 fm_pr_head_valid "$REVIEW_HEAD" || {
   echo "error: PR-ready task worktree has no valid HEAD" >&2
@@ -103,6 +107,8 @@ if ! fm_pr_self_review_report_valid "$DATA" "$ID" "$REVIEW_HEAD" "$WT" "$SUBSTRA
   echo "error: durable findings-first self-review report is unavailable or invalid" >&2
   exit 1
 fi
+REPORT=$(fm_pr_self_review_report_path "$DATA" "$ID") || exit 1
+REPORT_HASH=$(fm_pr_sha256 "$REPORT") || exit 1
 
 # A prior exact merged result may have queued its durable wake immediately
 # before interruption.
@@ -127,25 +133,49 @@ fi
 "$SCRIPT_DIR/fm-pr-check-migrate.sh" --checks-safe || exit 1
 "$FM_ROOT/bin/fm-guard.sh" || true
 
-# pr_head is recorded only when the forge's CLI can supply it. gh exposes the
-# head commit as a selectable field; plain glab exposes it only inside its JSON
-# output, which would need a JSON processor firstmate does not require, so a
-# GitLab task records no pr_head. Both consumers already treat it as optional:
-# bin/fm-teardown.sh reads the head from the forge at teardown rather than from
-# metadata and falls back to its provider-agnostic content check, and
-# bin/fm-review-diff.sh resolves the head from the remote when none is recorded.
-# bin/fm-pr-merge.sh reads a GitLab head live at merge time for the same reason,
-# and treats a recorded value that disagrees as stale rather than authoritative.
+# pr_head binds the registered PR/MR to the exact reviewed worktree head.
 PR_HEAD=
-if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/dev/null 2>&1; then
-  if REMOTE_HEAD=$(cd "$WT" && gh pr view "$URL" --json headRefOid -q .headRefOid 2>/dev/null) \
-    && fm_pr_head_valid "$REMOTE_HEAD"; then
-    PR_HEAD=$REMOTE_HEAD
-  fi
+if [ "$PROVIDER" = github ]; then
+  command -v gh >/dev/null 2>&1 || { echo "error: GitHub PR head could not be verified" >&2; exit 1; }
+  REMOTE_HEAD=$(cd "$WT" && gh pr view "$URL" --json headRefOid -q .headRefOid 2>/dev/null) || {
+    echo "error: GitHub PR head could not be verified" >&2
+    exit 1
+  }
+else
+  command -v glab >/dev/null 2>&1 || { echo "error: GitLab MR head could not be verified" >&2; exit 1; }
+  GITLAB_PROJECT_URL="https://$HOST/$PROJECT_PATH"
+  GITLAB_JSON=$(GITLAB_HOST="$HOST" glab mr view "$NUMBER" -R "$GITLAB_PROJECT_URL" -F json 2>/dev/null) || {
+    echo "error: GitLab MR head could not be verified" >&2
+    exit 1
+  }
+  REMOTE_HEAD=$(printf '%s\n' "$GITLAB_JSON" | sed \
+    -e 's/.*"head_sha"[[:space:]]*:[[:space:]]*"\([0-9a-f][0-9a-f]*\)".*/\1/p' \
+    -e 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-f][0-9a-f]*\)".*/\1/p' | head -1)
 fi
+fm_pr_head_valid "$REMOTE_HEAD" && [ "$REMOTE_HEAD" = "$REVIEW_HEAD" ] || {
+  echo "error: forge PR/MR head does not match the reviewed worktree head" >&2
+  exit 1
+}
+PR_HEAD=$REMOTE_HEAD
+
+FINAL_REVIEW_HEAD=$(git -C "$WT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
+[ "$FINAL_REVIEW_HEAD" = "$REVIEW_HEAD" ] \
+  && [ "$(fm_pr_sha256 "$REPORT")" = "$REPORT_HASH" ] \
+  && fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH" || {
+  echo "error: reviewed PR-ready inputs changed before publication" >&2
+  exit 1
+}
 
 fm_pr_poll_prepare "$STATE" "$ID" "$PROVIDER" "$URL" "$HOST" "$PROJECT_PATH" "$NUMBER" "$SCRIPT_DIR/fm-pr-poll.sh" \
   || { echo "error: could not prepare PR poll" >&2; exit 1; }
+
+FINAL_REVIEW_HEAD=$(git -C "$WT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
+[ "$FINAL_REVIEW_HEAD" = "$REVIEW_HEAD" ] \
+  && [ "$(fm_pr_sha256 "$REPORT")" = "$REPORT_HASH" ] \
+  && fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH" || {
+  echo "error: reviewed PR-ready inputs changed before publication" >&2
+  exit 1
+}
 
 [ -f "$META" ] && [ ! -L "$META" ] && [ "$(fm_pr_file_link_count "$META")" = 1 ] \
   || { echo "error: task metadata is unavailable" >&2; exit 1; }

@@ -78,7 +78,14 @@ make_case() {
   git -C "$dir/wt" config user.name fmtest
   git -C "$dir/wt" config user.email fmtest@example.invalid
   printf 'fixture\n' > "$dir/wt/fixture.txt"
-  git -C "$dir/wt" add fixture.txt
+  mkdir -p "$dir/wt/bin" "$dir/wt/tests" "$dir/wt/.agents/skills/firstmate-pr-self-review"
+  touch "$dir/wt/bin/fm-pr-check.sh" "$dir/wt/bin/fm-pr-lib.sh" \
+    "$dir/wt/bin/fm-pr-self-review-check.sh" "$dir/wt/bin/fm-operational-input.sh" \
+    "$dir/wt/bin/fm-pr-create.sh" "$dir/wt/bin/fm-merge-local.sh" "$dir/wt/bin/fm-brief.sh" \
+    "$dir/wt/tests/fm-pr-check-security.test.sh" "$dir/wt/tests/fm-pr-merge.test.sh" \
+    "$dir/wt/.agents/skills/firstmate-pr-self-review/SKILL.md"
+  git -C "$dir/wt" remote add origin https://github.com/o/r.git
+  git -C "$dir/wt" add fixture.txt bin tests .agents
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
   git -C "$dir/wt" branch -M main
   git -C "$dir/substrate" init -q
@@ -134,6 +141,24 @@ SH
 printf '%s\n' "$*" >> "$FM_TEST_GLAB_LOG"
 [ "${FM_TEST_GLAB_FAIL:-0}" = 0 ] || exit 1
 [ "${FM_TEST_GLAB_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GLAB_SLEEP"
+  case " $* " in
+  *" -F json "*)
+    glab_call_count=0
+    if [ -n "${FM_TEST_GLAB_CALL_COUNT:-}" ] && [ -f "$FM_TEST_GLAB_CALL_COUNT" ]; then
+      glab_call_count=$(cat "$FM_TEST_GLAB_CALL_COUNT")
+    fi
+    glab_call_count=$((glab_call_count + 1))
+    if [ -n "${FM_TEST_GLAB_CALL_COUNT:-}" ]; then
+      printf '%s\n' "$glab_call_count" > "$FM_TEST_GLAB_CALL_COUNT"
+    fi
+    if [ "${FM_TEST_GLAB_MERGE_UNREADABLE:-0}" = 1 ] && [ "$glab_call_count" -ge 2 ]; then
+      printf '{\n'
+      exit 0
+    fi
+    printf '{"diff_refs":{"head_sha":"%s"}}\n' "${FM_TEST_GLAB_HEAD:-0123456789abcdef0123456789abcdef01234567}"
+    exit 0
+    ;;
+esac
 printf 'title:\tfixture merge request\nstate:\t%s\nauthor:\tsomeone\n' "${FM_TEST_GLAB_STATE:-opened}"
 SH
   chmod +x "$fakebin/gh" "$fakebin/gh-axi" "$fakebin/glab"
@@ -337,12 +362,15 @@ assert_private_symlink_unchanged() {
 }
 
 run_check_entry() {
-  local dir=$1
+  local dir=$1 forge_head
   shift
+  forge_head=${FM_TEST_GH_HEAD-}
+  [ -n "$forge_head" ] || forge_head=$(git -C "$dir/wt" rev-parse HEAD)
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
     FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
+    FM_TEST_GH_HEAD="$forge_head" FM_TEST_GLAB_HEAD="$forge_head" \
     PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_CHECK" "$@"
 }
@@ -359,13 +387,18 @@ run_create_entry() {
 }
 
 run_merge_entry() {
-  local dir=$1
+  local dir=$1 forge_head
   shift
+  forge_head=${FM_TEST_GLAB_HEAD-}
+  [ -n "$forge_head" ] || forge_head=$(git -C "$dir/wt" rev-parse HEAD)
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
     FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" \
     FM_DATA_OVERRIDE="$dir/home/data" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
+    FM_TEST_GLAB_CALL_COUNT="$dir/glab-call-count" \
+    FM_TEST_GH_HEAD="$forge_head" FM_TEST_GLAB_HEAD="$forge_head" \
+    FM_TEST_GLAB_MERGE_UNREADABLE="${FM_TEST_GLAB_MERGE_UNREADABLE:-0}" \
     PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_MERGE" "$@"
 }
@@ -425,6 +458,42 @@ PY
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "PR-ready path accepted a self-referential target base"
+
+  write_self_review_report "$dir/home" task-a
+  git -C "$dir/wt" remote set-url origin https://github.com/other/repo.git
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/104 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a URL for another repository"
+  git -C "$dir/wt" remote set-url origin https://github.com/o/r.git
+
+  set +e
+  FM_TEST_GH_HEAD=0123456789abcdef0123456789abcdef01234567 \
+    run_check_entry "$dir" task-a https://github.com/o/r/pull/104 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a forge head for another revision"
+
+  write_self_review_report "$dir/home" task-a
+  python3 - "$report" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace(
+    "Finding count: 0\nFinding summary: none\nNone.",
+    "Finding count: 1\nFinding: severity=error; path=missing-file.sh:1; evidence=observed invalid path handling; consequence=review evidence could be fabricated; fix=reject paths absent from the repository."
+)
+path.write_text(text, encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/104 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a finding for a nonexistent file"
 
   write_self_review_report "$dir/home" task-a
   python3 - "$report" <<'PY'
@@ -513,7 +582,7 @@ test_direct_pr_creation_requires_self_review() {
   write_self_review_report "$dir/home" task-a
   run_create_entry "$dir" task-a --title accepted >/dev/null \
     || fail "direct PR creation rejected a valid self-review report"
-  grep -qxF 'pr create --title accepted' "$dir/gh-axi.log" \
+  grep -qxF "pr create --repo o/r --head fm/task-a --title accepted" "$dir/gh-axi.log" \
     || fail "direct PR creation did not forward arguments after validation"
   set +e
   run_create_entry "$dir" task-a --repo attacker/repo --title rejected > "$dir/stdout" 2> "$dir/stderr"
@@ -789,8 +858,9 @@ test_invalid_entrypoints_have_zero_side_effects() {
 test_valid_recording_and_merge_derivation() {
   local dir expected sidecar count rc
   dir=$(make_case valid-recording)
+  git -C "$dir/wt" remote set-url origin https://github.com/my-org/repo_name.with-dots.git
   write_task_meta "$dir"
-  expected=0123456789abcdef0123456789abcdef01234567
+  expected=$(git -C "$dir/wt" rev-parse HEAD)
   FM_TEST_GH_HEAD=$expected run_check_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 \
     > "$dir/stdout" 2> "$dir/stderr" || fail "valid direct check failed"
 
@@ -848,9 +918,13 @@ test_valid_recording_and_merge_derivation() {
 
   dir=$(make_case newline-head)
   write_task_meta "$dir"
+  set +e
   FM_TEST_GH_HEAD=$'0123456789abcdef0123456789abcdef01234567\nwindow=unexpected' \
-    run_check_entry "$dir" task-a https://github.com/o/r/pull/2 >/dev/null 2>/dev/null \
-    || fail "valid check with malformed remote head failed"
+    run_check_entry "$dir" task-a https://github.com/o/r/pull/2 >/dev/null 2>/dev/null
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "check accepted a malformed forge head"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "malformed forge head armed a poll"
   assert_no_grep 'pr_head=' "$dir/home/state/task-a.meta" "multiline PR head reached metadata"
   assert_no_grep 'window=unexpected' "$dir/home/state/task-a.meta" "newline metadata key was injected"
 
@@ -1091,8 +1165,7 @@ sleep 0.3
 SH
     chmod +x "$dir/fakebin/cp"
 
-    FM_TEST_GH_HEAD=0123456789abcdef0123456789abcdef01234567 \
-      run_check_entry "$dir" task-a https://github.com/o/r/pull/1 > "$dir/direct.out" 2> "$dir/direct.err" &
+    run_check_entry "$dir" task-a https://github.com/o/r/pull/1 > "$dir/direct.out" 2> "$dir/direct.err" &
     direct_pid=$!
     i=0
     while [ "$i" -lt 100 ] && ! find "$dir/home/state" -name '.fm-pr-poll-check.*' -print | grep . >/dev/null; do
@@ -1743,7 +1816,8 @@ test_ambiguous_failure_accepts_validated_replacement() {
     || fail "ambiguous partial migration did not persist recovery obligations"
 
   rmdir "$state/task-a.pr-poll"
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" PATH="$dir/fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" \
+    FM_TEST_GH_HEAD="$(git -C "$dir/wt" rev-parse HEAD)" PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_CHECK" task-a https://github.com/o/r/pull/10 >/dev/null \
     || fail "validated replacement poll could not be published"
   fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
@@ -2543,7 +2617,7 @@ test_direct_registration_refreshes_v1_x_shim() {
     esac
 
     FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" FM_TEST_GUARD_LOG="$dir/guard.log" \
-      PATH="$dir/fakebin:$BASE_PATH" "$PR_CHECK" task-a "https://github.com/o/r/pull/$number" \
+      FM_TEST_GH_HEAD="$(git -C "$dir/wt" rev-parse HEAD)" PATH="$dir/fakebin:$BASE_PATH" "$PR_CHECK" task-a "https://github.com/o/r/pull/$number" \
       > "$dir/register.out" 2> "$dir/register.err" \
       || fail "$marker_kind direct registration did not preserve the v1 X shim: $(cat "$dir/register.err")"
     fmx_poll_shim_valid "$shim" "$dir/home" "$dir/root" \
@@ -2573,7 +2647,7 @@ test_direct_registration_refreshes_v1_x_shim() {
   chmod 0755 "$shim"
 
   FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" FM_TEST_GUARD_LOG="$dir/guard.log" \
-    PATH="$dir/fakebin:$BASE_PATH" "$PR_CHECK" task-a https://github.com/o/r/pull/22 \
+    FM_TEST_GH_HEAD="$(git -C "$dir/wt" rev-parse HEAD)" PATH="$dir/fakebin:$BASE_PATH" "$PR_CHECK" task-a https://github.com/o/r/pull/22 \
     >/dev/null 2> "$dir/register.err" \
     || fail "direct registration failed after quarantining an X shim lookalike: $(cat "$dir/register.err")"
   [ ! -e "$shim" ] && [ ! -L "$shim" ] \
@@ -3151,6 +3225,7 @@ EOF
   [ -z "$out" ] || fail "GitLab poll emitted for a sidecar whose project was swapped"
 
   # Arming is where a missing CLI can still be reported, so it refuses there.
+  git -C "$dir/wt" remote set-url origin https://gitlab.example/group/subgroup/project.git
   write_task_meta "$dir" task-b
   set +e
   out=$(FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" FM_HOME="$dir/home" \
@@ -3175,12 +3250,13 @@ EOF
   # and the refusal below is the unreadable state rather than a missing tool.
   ln -sf "$REAL_JQ" "$dir/fakebin/jq"
   set +e
-  run_merge_entry "$dir" task-c "$url" >/dev/null 2> "$dir/merge-c.err"
+  FM_TEST_GLAB_HEAD=$(git -C "$dir/wt" rev-parse HEAD) \
+    FM_TEST_GLAB_MERGE_UNREADABLE=1 run_merge_entry "$dir" task-c "$url" >/dev/null 2> "$dir/merge-c.err"
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "merge wrapper merged a GitLab merge request it could not read"
   grep -qF 'could not read the GitLab merge request state before merging' "$dir/merge-c.err" \
-    || fail "merge wrapper refused for some reason other than the state it could not read"
+    || { cat "$dir/merge-c.err" >&2; fail "merge wrapper refused for some reason other than the state it could not read"; }
   [ ! -s "$dir/gh-axi.log" ] || fail "merge wrapper reached the GitHub CLI for a GitLab URL"
   grep -qF "mr view 7 -R https://gitlab.example/group/subgroup/project" "$dir/glab.log" \
     || fail "merge wrapper did not read the merge request through glab at its own instance"
