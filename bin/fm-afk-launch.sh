@@ -155,6 +155,13 @@ fm_afk_launch_entry_cmd() {
   printf '%s' "${FM_AFK_LAUNCH_ENTRY:-$FM_ROOT/bin/fm-afk-start.sh}"
 }
 
+fm_afk_launch_release_claim_for_handoff() {
+  if fm_lock_owned_by_current "$FM_AFK_LAUNCH_STATE/.supervision-claim.lock"; then
+    fm_lock_release "$FM_AFK_LAUNCH_STATE/.supervision-claim.lock" || return 1
+    FM_AFK_LAUNCH_CLAIM_RELEASED=1
+  fi
+}
+
 fm_afk_launch_record_write() {  # <backend> <target> <extra>
   local pending
   mkdir -p "$FM_AFK_LAUNCH_STATE" || return 1
@@ -358,13 +365,14 @@ fm_afk_launch_reconcile() {
 fm_afk_launch_restore_backup() {  # <backup> <had-afk>
   local backup=$1 had_afk=$2 artifact result=0
   rm -f "$FM_AFK_LAUNCH_STATE/.afk" \
+    "$FM_AFK_LAUNCH_STATE/.supervision-claim.pending" \
     "$FM_AFK_LAUNCH_STATE/.subsuper-escalations" \
     "$FM_AFK_LAUNCH_STATE/.subsuper-escalations.since" \
     "$FM_AFK_LAUNCH_STATE/.subsuper-inject-wedged" || result=1
   if [ "$had_afk" -eq 1 ]; then
     cp "$backup/.afk" "$FM_AFK_LAUNCH_STATE/.afk" || result=1
   fi
-  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged; do
+  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged .supervision-claim.pending; do
     if [ -e "$backup/$artifact" ]; then
       cp -p "$backup/$artifact" "$FM_AFK_LAUNCH_STATE/$artifact" || result=1
     fi
@@ -414,11 +422,18 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
     IFS=$'\t' read -r wsid pane <<< "$recovered"
   fi
   entry=$(fm_afk_launch_entry_cmd)
-  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q FM_AFK_STATE_PREPARED=1 FM_SUPERVISION_CLAIM_HELD=1 %q' \
+  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q FM_AFK_STATE_PREPARED=1 FM_AFK_HANDOFF=1 %q' \
     "$FM_HOME" "$captain_target" "$captain_backend" "$entry")
   if ! fm_afk_launch_record_write herdr "$session:$pane" "$wsid"; then
     fm_afk_launch_log "failed to persist herdr daemon terminal record; closing $session:$pane"
     fm_afk_launch_close_terminal herdr "$session:$pane"
+    return 1
+  fi
+  if ! fm_afk_launch_release_claim_for_handoff; then
+    fm_afk_launch_log "failed to release the ownership claim for daemon handoff"
+    FM_AFK_REC_BACKEND=herdr
+    FM_AFK_REC_TARGET="$session:$pane"
+    fm_afk_launch_close_recorded || true
     return 1
   fi
   if ! fm_backend_herdr_cli "$session" pane run "$pane" "$cmd" >/dev/null 2>&1; then
@@ -441,10 +456,15 @@ fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
   nonce="$$-${RANDOM:-0}-$(date '+%s')"
   session="fm-afk-daemon-$hash-$nonce"
   entry=$(fm_afk_launch_entry_cmd)
-  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q FM_AFK_STATE_PREPARED=1 FM_SUPERVISION_CLAIM_HELD=1 %q' \
+  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q FM_AFK_STATE_PREPARED=1 FM_AFK_HANDOFF=1 %q' \
     "$FM_HOME" "$captain_target" "$captain_backend" "$entry")
   if ! fm_afk_launch_record_write tmux "$session" ""; then
     fm_afk_launch_log "failed to persist planned tmux daemon session '$session'"
+    return 1
+  fi
+  if ! fm_afk_launch_release_claim_for_handoff; then
+    fm_afk_launch_log "failed to release the ownership claim for daemon handoff"
+    rm -f "$FM_AFK_LAUNCH_RECORD"
     return 1
   fi
   if ! tmux new-session -d -s "$session" "$cmd" 2>/dev/null; then
@@ -487,7 +507,7 @@ fm_afk_launch_start() {
     had_afk=1
     cp "$FM_AFK_LAUNCH_STATE/.afk" "$backup/.afk" || { rm -rf "$backup"; return 1; }
   fi
-  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged; do
+  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged .supervision-claim.pending; do
     if [ -e "$FM_AFK_LAUNCH_STATE/$artifact" ]; then
       cp -p "$FM_AFK_LAUNCH_STATE/$artifact" "$backup/$artifact" || { rm -rf "$backup"; return 1; }
     fi
@@ -508,7 +528,12 @@ fm_afk_launch_start() {
       result=1
     fi
   fi
-
+  if [ "$result" -eq 0 ]; then
+    if ! fm_supervision_claim_pending_write "$FM_AFK_LAUNCH_STATE" "${FM_AFK_NATIVE_HANDOFF_TIMEOUT:-30}"; then
+      fm_afk_launch_log "failed to publish the away-mode ownership handoff reservation"
+      result=1
+    fi
+  fi
   if [ "$result" -eq 0 ]; then
     case "$captain_backend" in
       herdr) fm_afk_launch_create_herdr "$captain_target" "$captain_backend"; result=$? ;;
@@ -545,7 +570,7 @@ fm_afk_launch_start_native() {
     had_afk=1
     cp "$FM_AFK_LAUNCH_STATE/.afk" "$backup/.afk" || { rm -rf "$backup"; return 1; }
   fi
-  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged; do
+  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged .supervision-claim.pending; do
     if [ -e "$FM_AFK_LAUNCH_STATE/$artifact" ]; then
       cp -p "$FM_AFK_LAUNCH_STATE/$artifact" "$backup/$artifact" || { rm -rf "$backup"; return 1; }
     fi
@@ -561,6 +586,9 @@ fm_afk_launch_start_native() {
   fi
   if [ "$result" -eq 0 ]; then
     fm_afk_launch_record_write none - native || result=1
+  fi
+  if [ "$result" -eq 0 ]; then
+    fm_supervision_claim_pending_write "$FM_AFK_LAUNCH_STATE" "${FM_AFK_NATIVE_HANDOFF_TIMEOUT:-30}" || result=1
   fi
   if [ "$result" -ne 0 ]; then
     fm_afk_launch_restore_backup "$backup" "$had_afk" || result=1
@@ -616,6 +644,7 @@ fm_afk_launch_stop() {
     fm_afk_launch_log "failed to clear away-mode flag"
     result=1
   fi
+  fm_supervision_claim_pending_clear "$FM_AFK_LAUNCH_STATE" || result=1
   if [ "$result" -eq 0 ]; then
     fm_afk_launch_log "away mode stopped; daemon terminal torn down and .afk cleared"
   else
@@ -626,6 +655,7 @@ fm_afk_launch_stop() {
 
 fm_afk_launch_main() {
   local result claim_held=0 command=${1:-start}
+  FM_AFK_LAUNCH_CLAIM_RELEASED=0
   # Traps first, lock second. Acquiring before the handlers exist leaves a
   # window where a signal terminates this process by default action and leaks
   # the lock directory, which then blocks the next away-mode launch until the
@@ -656,7 +686,7 @@ fm_afk_launch_main() {
     *) fm_afk_launch_usage >&2; return 2 ;;
   esac
   result=$?
-  if [ "$claim_held" -eq 1 ]; then
+  if [ "$claim_held" -eq 1 ] && [ "$FM_AFK_LAUNCH_CLAIM_RELEASED" -ne 1 ]; then
     fm_lock_release "$FM_AFK_LAUNCH_STATE/.supervision-claim.lock" || result=1
   fi
   fm_afk_launch_lock_release || result=1

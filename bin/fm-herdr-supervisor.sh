@@ -725,6 +725,10 @@ harness_owner_provable() {
     HS_DEFER_REASON="another continuity owner is completing its ownership claim"
     return 0
   fi
+  if fm_supervision_claim_pending "$STATE"; then
+    HS_DEFER_REASON="a native away-mode owner is completing its ownership handoff"
+    return 0
+  fi
   if [ -e "$STATE/.afk" ] && (
     . "$SCRIPT_DIR/fm-afk-start.sh" >/dev/null 2>&1
     daemon_lock_held_by_live_daemon

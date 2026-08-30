@@ -663,10 +663,10 @@ _fm_recovery_marker_ack() {
 }
 
 _fm_recovery_marker_arm_check() {
-  local marker=$1 lock line quarantine
+  local marker=$1 lock line quarantine queue_lock_tries=${FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES:-100}
   FM_RECOVERY_MARKER_ACTION='none'
   lock="${marker}.lock"
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
+  fm_lock_acquire_bounded "$FM_WAKE_QUEUE_LOCK" "$queue_lock_tries" || return 1
   if ! _fm_recovery_marker_lock_acquire "$lock"; then
     fm_lock_release "$FM_WAKE_QUEUE_LOCK"
     return 1
@@ -961,6 +961,18 @@ fm_lock_acquire_wait() {
   done
 }
 
+fm_lock_acquire_bounded() {
+  local lockdir=$1 tries=${2:-100} attempt=0
+  case "$tries" in
+    ''|*[!0-9]*|0) tries=100 ;;
+  esac
+  while ! fm_lock_try_acquire "$lockdir"; do
+    [ "$attempt" -lt "$tries" ] || return 1
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+}
+
 fm_lock_release() {
   local lockdir=$1 pid current ownerdir
   current=${BASHPID:-$$}
@@ -981,15 +993,52 @@ fm_lock_release() {
 }
 
 fm_supervision_claim_acquire() {
-  local lock=$1 tries=${2:-100} attempt=0
-  case "$tries" in
-    ''|*[!0-9]*|0) tries=100 ;;
+  fm_lock_acquire_bounded "$@"
+}
+
+fm_lock_owned_by_current() {
+  local lock=$1 owner pid expected current
+  if [ -L "$lock" ]; then
+    owner=$(fm_lock_link_owner "$lock" 2>/dev/null || true)
+  else
+    owner=$lock
+  fi
+  [ -n "$owner" ] && [ -d "$owner" ] || return 1
+  pid=$(cat "$owner/pid" 2>/dev/null || true)
+  expected=$(cat "$owner/pid-identity" 2>/dev/null || true)
+  [ "$pid" = "${BASHPID:-$$}" ] || return 1
+  [ -n "$expected" ] || return 1
+  current=$(fm_pid_identity "$pid" 2>/dev/null || true)
+  [ -n "$current" ] && [ "$current" = "$expected" ]
+}
+
+fm_supervision_claim_pending_write() {
+  local state=$1 ttl=${2:-30} pending="$1/.supervision-claim.pending" now deadline tmp
+  case "$ttl" in
+    ''|*[!0-9]*|0) ttl=30 ;;
   esac
-  while ! fm_lock_try_acquire "$lock"; do
-    [ "$attempt" -lt "$tries" ] || return 1
-    sleep 0.1
-    attempt=$((attempt + 1))
-  done
+  now=$(date +%s) || return 1
+  deadline=$((now + ttl))
+  tmp=$(mktemp "$pending.tmp.XXXXXX") || return 1
+  if ! printf '%s\n' "$deadline" > "$tmp" || ! chmod 0600 "$tmp" || ! mv -f -- "$tmp" "$pending"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+
+fm_supervision_claim_pending() {
+  local state=$1 pending="$1/.supervision-claim.pending" deadline now
+  [ -f "$pending" ] || return 1
+  read -r deadline < "$pending" || return 1
+  case "$deadline" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  now=$(date +%s) || return 1
+  [ "$deadline" -gt "$now" ]
+}
+
+fm_supervision_claim_pending_clear() {
+  rm -f -- "$1/.supervision-claim.pending"
 }
 
 fm_supervision_claim_held_by_other() {

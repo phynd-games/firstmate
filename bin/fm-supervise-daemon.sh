@@ -1418,6 +1418,9 @@ fm_super_main() {
     release_inherited_claim
     exit 1
   fi
+  if [ "${FM_AFK_HANDOFF:-0}" = 1 ]; then
+    fm_supervision_claim_pending_clear "$STATE" || true
+  fi
   release_inherited_claim
   echo "$$" > "$PIDFILE"
   fm_pid_identity "${BASHPID:-$$}" > "$LOCK/pid-identity" 2>/dev/null || true

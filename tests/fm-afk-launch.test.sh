@@ -491,13 +491,15 @@ unit_native_lifecycle() {
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" start-native >/dev/null 2>&1 \
     && [ "$(cut -f1 "$st/state/.afk-daemon-terminal")" = none ] \
     && [ -e "$st/state/.afk" ] \
+    && [ -e "$st/state/.supervision-claim.pending" ] \
     && [ ! -e "$st/state/.subsuper-escalations" ]; then
     pass "native lifecycle: launcher owns state with no terminal"
   else
     fail "native lifecycle: state preparation or no-terminal record failed"
   fi
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" stop >/dev/null 2>&1
-  if [ ! -e "$st/state/.afk" ] && [ ! -e "$st/state/.afk-daemon-terminal" ]; then
+  if [ ! -e "$st/state/.afk" ] && [ ! -e "$st/state/.afk-daemon-terminal" ] \
+    && [ ! -e "$st/state/.supervision-claim.pending" ]; then
     pass "native lifecycle: uniform stop clears state without closing a terminal"
   else
     fail "native lifecycle: uniform stop retained state"
@@ -513,6 +515,7 @@ unit_native_entry_preserves_prepared_state() {
   : > "$st/state/.subsuper-escalations"
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_STATE_PREPARED=1 bash -c '
     . "$1"
+    fm_supervision_claim_pending_write "$FM_AFK_STATE" 30
     FM_AFK_DAEMON=/bin/true
     fm_afk_start_main
   ' _ "$START" >/dev/null 2>&1
@@ -520,6 +523,24 @@ unit_native_entry_preserves_prepared_state() {
     pass "native entry: launcher-prepared lifecycle state is not rewritten"
   else
     fail "native entry: launcher-prepared lifecycle state was mutated"
+  fi
+  rm -rf "$st"
+}
+
+unit_prepared_claim_flag_requires_owned_claim() {
+  local st
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-claim-proof.XXXXXX")
+  mkdir -p "$st/state"
+  : > "$st/state/.afk"
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_STATE_PREPARED=1 \
+    FM_SUPERVISION_CLAIM_HELD=1 bash -c '
+      . "$1"
+      FM_AFK_DAEMON=/bin/true
+      ! fm_afk_start_main
+    ' _ "$START" >/dev/null 2>&1; then
+    pass "claim proof: prepared entry rejects an unverified inherited claim"
+  else
+    fail "claim proof: forged inherited claim was accepted"
   fi
   rm -rf "$st"
 }
@@ -941,6 +962,7 @@ unit_readiness_failure_preserves_unconfirmed_record
 unit_tmux_absence_distinguishes_probe_failure
 unit_native_lifecycle
 unit_native_entry_preserves_prepared_state
+unit_prepared_claim_flag_requires_owned_claim
 unit_close_failure_preserves_record
 unit_record_publication_atomic
 unit_malformed_record_fails_closed

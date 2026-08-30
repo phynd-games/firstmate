@@ -133,7 +133,12 @@ fm_afk_start_main() {
   esac
 
   mkdir -p "$FM_AFK_STATE"
-  if [ "${FM_SUPERVISION_CLAIM_HELD:-0}" != 1 ]; then
+  if [ "${FM_SUPERVISION_CLAIM_HELD:-0}" = 1 ]; then
+    if ! fm_lock_owned_by_current "$FM_SUPERVISION_CLAIM"; then
+      echo "afk: refusing an unverified continuity ownership claim" >&2
+      return 1
+    fi
+  else
     if ! fm_supervision_claim_acquire "$FM_SUPERVISION_CLAIM" 100; then
       echo "afk: could not acquire the continuity ownership claim" >&2
       return 1
@@ -147,6 +152,12 @@ fm_afk_start_main() {
       echo "afk: launcher-prepared state is missing" >&2
       return 1
     fi
+    if ! fm_supervision_claim_pending "$FM_AFK_STATE"; then
+      [ "$claim_acquired" -eq 1 ] && fm_lock_release "$FM_SUPERVISION_CLAIM"
+      echo "afk: lifecycle handoff reservation is missing or expired" >&2
+      return 1
+    fi
+    export FM_AFK_HANDOFF=1
   else
     if ! fm_afk_flag_write "$FM_AFK_STATE"; then
       [ "$claim_acquired" -eq 1 ] && fm_lock_release "$FM_SUPERVISION_CLAIM"
