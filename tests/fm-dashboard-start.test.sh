@@ -100,6 +100,8 @@ test_a_fresh_start_proves_readiness_before_it_prints_a_url() {
   assert_contains "$out" "started on 127.0.0.1" "a fresh start did not say it started the dashboard"
   health=$(curl -fsS --max-time 3 "http://127.0.0.1:$port/healthz") \
     || fail "the reported URL does not actually answer"
+  curl -fsS --max-time 3 "http://127.0.0.1:$port/" >/dev/null \
+    || fail "the reported dashboard URL does not serve a page"
   printf '%s' "$health" | jq -e --arg home "$home" '
     .schema == "fm-dashboard-health.v1" and .home == $home and .ready == true' >/dev/null \
     || fail "the served health record does not identify this home: $health"
@@ -332,6 +334,48 @@ if not closed or time.monotonic() - started > 9:
 PY
   [ "$?" -eq 0 ] || fail "a drip request was not bounded by an absolute deadline"
   pass "a drip request is closed by the absolute HTTP deadline"
+}
+
+test_a_timed_out_build_kills_its_descendant_group() {
+  local home port out child code
+  home=$(make_home killed-build-group)
+  port=$(free_port)
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FAKE_HERDR_STATE="$home/herdr" \
+    FM_DASHBOARD_BUILD_TIMEOUT=1 FM_DASHBOARD_DESCENDANT_MARKER="$home/descendant.pid" \
+    FM_DASHBOARD_PORT="$port" "$START" ensure 2>&1) \
+    || fail "ensure failed: $out"
+  cat > "$home/fakebin/jq" <<'SH'
+#!/usr/bin/env bash
+set -u
+marker="${FM_DASHBOARD_DESCENDANT_MARKER:?}"
+if [ ! -e "$marker" ]; then
+  sleep 30 &
+  printf '%s\n' "$!" > "$marker"
+fi
+sleep 30
+SH
+  chmod +x "$home/fakebin/jq"
+  code=$(curl -sS --max-time 6 -o "$home/timeout-response" \
+    -w '%{http_code}' "http://127.0.0.1:$port/" 2>/dev/null || true)
+  [ "$code" = "500" ] || fail "a timed-out rebuild returned HTTP $code instead of 500"
+  child=
+  for _ in $(seq 1 20); do
+    if [ -s "$home/descendant.pid" ]; then
+      child=$(cat "$home/descendant.pid")
+      break
+    fi
+    sleep 0.1
+  done
+  [ -n "$child" ] || fail "the timed-out build did not create its descendant marker"
+  for _ in $(seq 1 20); do
+    kill -0 "$child" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$child" 2>/dev/null; then
+    kill -KILL "$child" 2>/dev/null || true
+    fail "a timed-out build left a descendant process running"
+  fi
+  pass "a timed-out build kills its complete descendant process group"
 }
 
 test_stop_preserves_an_owner_without_complete_proof() {
@@ -584,6 +628,7 @@ test_lost_resource_recovery_is_quarantined_with_the_journaled_identity
 test_health_remains_responsive_while_a_client_stalls
 test_health_remains_admissible_behind_incomplete_clients
 test_a_drip_request_hits_an_absolute_http_deadline
+test_a_timed_out_build_kills_its_descendant_group
 test_stop_preserves_an_owner_without_complete_proof
 test_owner_lifecycle_uses_the_recorded_herdr_session
 test_a_mismatched_pane_identity_is_unknown_and_preserved

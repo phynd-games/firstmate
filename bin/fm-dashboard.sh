@@ -1075,6 +1075,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.connection = self.request
             deadline = time.monotonic() + HTTP_REQUEST_TIMEOUT
+            self.request_deadline = deadline
             self.rfile = DeadlineReader(self.connection, deadline)
             self.wfile = DeadlineWriter(self.connection, deadline)
         except BaseException:
@@ -1130,7 +1131,8 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 build = subprocess.Popen(
                     [SELF, "build", "--out", "-"],
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     start_new_session=True,
                     env=dict(os.environ, FM_DASHBOARD_BUILD_INNER="1"),
                 )
@@ -1144,7 +1146,6 @@ class Handler(BaseHTTPRequestHandler):
                 except subprocess.TimeoutExpired as exc:
                     stdout = exc.output or b""
                     stderr = exc.stderr or b""
-                    terminate_timed_out = True
                     try:
                         os.killpg(build.pid, signal.SIGTERM)
                     except OSError:
@@ -1154,21 +1155,18 @@ class Handler(BaseHTTPRequestHandler):
                             stdout, stderr = build.communicate(
                                 timeout=min(1, self.request_time_left())
                             )
-                            terminate_timed_out = False
                     except subprocess.TimeoutExpired as term_exc:
                         stdout = term_exc.output or stdout
                         stderr = term_exc.stderr or stderr
-                    if terminate_timed_out:
+                    try:
+                        os.killpg(build.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                    if build.poll() is None:
                         try:
-                            os.killpg(build.pid, signal.SIGKILL)
-                        except OSError:
+                            build.wait(timeout=min(0.5, max(0, self.request_time_left())))
+                        except subprocess.TimeoutExpired:
                             pass
-                        if build.poll() is None:
-                            try:
-                                if self.request_time_left() > 0:
-                                    build.wait(timeout=min(0.5, self.request_time_left()))
-                            except subprocess.TimeoutExpired:
-                                pass
                     for stream in (build.stdout, build.stderr):
                         if stream is not None:
                             stream.close()
