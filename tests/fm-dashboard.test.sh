@@ -15,6 +15,12 @@ TMP_ROOT=$(fm_test_tmproot fm-dashboard)
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 
+containment_available() {
+  [ "$(uname -s)" = Linux ] || return 1
+  command -v unshare >/dev/null 2>&1 || return 1
+  unshare --pid --fork --mount-proc --kill-child=9 true >/dev/null 2>&1
+}
+
 # A home with one worker, a backlog, a status log and a report. Callers add the
 # malformed, missing, and oversized variants they need on top.
 make_home() {  # <name>
@@ -70,6 +76,16 @@ run_dash() {  # <home> <args...>
   PATH="$home/fakebin:$PATH" FM_HOME="$home" \
     FM_SNAPSHOT_NOW=2026-08-01T00:00:00Z \
     "$DASH" "$@"
+}
+
+free_port() {
+  python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
 }
 
 test_path_is_stable_and_inside_the_home() {
@@ -654,8 +670,8 @@ test_malformed_zellij_and_cmux_endpoints_are_unknown_not_absent() {
 
 test_initial_serve_build_is_bounded_before_binding() {
   local home port out real_jq
-  [ "$(uname -s)" = Linux ] || {
-    pass "skip: bounded serve builds require Linux process containment"
+  containment_available || {
+    pass "skip: bounded serve builds require available process containment"
     return 0
   }
   home=$(make_home bounded-initial-build)
@@ -680,8 +696,8 @@ PY
 
 test_serve_refuses_without_process_containment() {
   local home port out status=0
-  [ "$(uname -s)" = Linux ] && {
-    pass "skip: this host provides Linux process containment"
+  containment_available && {
+    pass "skip: this host provides process containment"
     return 0
   }
   home=$(make_home unavailable-containment)
@@ -704,8 +720,8 @@ PY
 }
 
 test_initial_build_contains_daemonizing_descendants() {
-  local home port out child state status=0
-  [ "$(uname -s)" = Linux ] || {
+  local home port out child status=0
+  containment_available || {
     pass "skip: Linux process containment is unavailable on this platform"
     return 0
   }
@@ -726,11 +742,10 @@ if first == 0:
     if second == 0:
         try:
             os.setsid()
-            result = "escaped"
-        except PermissionError:
-            result = "contained"
+        except OSError:
+            pass
         with open(os.environ["MARKER"], "w", encoding="utf-8") as marker:
-            marker.write(str(os.getpid()) + "\\n" + result + "\\n")
+            marker.write(str(os.getpid()) + "\\n")
         time.sleep(30)
     os._exit(0)
 os.waitpid(first, 0)
@@ -752,8 +767,8 @@ SH
   done
   [ -s "$home/descendant.pid" ] || fail "the initial build did not create its descendant marker"
   child=$(sed -n '1p' "$home/descendant.pid")
-  state=$(sed -n '2p' "$home/descendant.pid")
-  [ "$state" = contained ] || fail "the initial build allowed a descendant to escape: $state"
+  [ -n "$(sed -n '1p' "$home/descendant.pid")" ] \
+    || fail "the initial build did not record its daemonized descendant"
   for _ in $(seq 1 20); do
     kill -0 "$child" 2>/dev/null || break
     sleep 0.1
@@ -763,6 +778,108 @@ SH
     fail "the initial build left a descendant process running"
   fi
   pass "the initial build contains and cleans daemonizing descendants"
+}
+
+test_initial_build_proves_descendant_cleanup_after_success() {
+  local home port out child status=0 real_jq
+  containment_available || {
+    pass "skip: successful descendant checks require available process containment"
+    return 0
+  }
+  home=$(make_home successful-descendant)
+  port=$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+  )
+  real_jq=$(command -v jq)
+  cat > "$home/fakebin/jq" <<'SH'
+#!/usr/bin/env bash
+set -u
+marker="${FM_DASHBOARD_DESCENDANT_MARKER:?}"
+if [ ! -e "$marker" ]; then
+  MARKER="$marker" python3 -c '
+import os
+import time
+
+child = os.fork()
+if child == 0:
+    os.close(1)
+    os.close(2)
+    with open(os.environ["MARKER"], "w", encoding="utf-8") as marker:
+        marker.write(str(os.getpid()) + "\\n")
+    time.sleep(30)
+    os._exit(0)
+os._exit(0)
+'
+fi
+exec "${FM_DASHBOARD_REAL_JQ:?}" "$@"
+SH
+  chmod +x "$home/fakebin/jq"
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" \
+    FM_DASHBOARD_DESCENDANT_MARKER="$home/descendant.pid" \
+    FM_DASHBOARD_REAL_JQ="$real_jq" \
+    python3 - "$DASH" "$home" "$port" <<'PY'
+import os
+import select
+import signal
+import subprocess
+import sys
+import time
+
+dash, home, port = sys.argv[1:]
+proc = subprocess.Popen(
+    [dash, "serve", "--port", port, "--owner-digest", "00000000"],
+    env=os.environ.copy(),
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    text=True,
+    start_new_session=True,
+)
+lines = []
+started = False
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline:
+    ready, _, _ = select.select([proc.stdout], [], [], 0.1)
+    if not ready:
+        continue
+    line = proc.stdout.readline()
+    if not line:
+        break
+    lines.append(line)
+    if line.startswith("serving:"):
+        started = True
+        break
+if started:
+    os.killpg(proc.pid, signal.SIGTERM)
+try:
+    proc.wait(timeout=2)
+except subprocess.TimeoutExpired:
+    os.killpg(proc.pid, signal.SIGKILL)
+    proc.wait(timeout=2)
+sys.stdout.write("".join(lines))
+sys.exit(0 if started else 1)
+PY
+  ) || status=$?
+  [ "$status" -eq 0 ] || fail "a contained successful build did not report a URL: $out"
+  assert_contains "$out" "serving:" \
+    "a contained successful build did not bind after proving cleanup"
+  assert_not_contains "$out" "DASHBOARD_BLOCKED" \
+    "a contained successful build reported a false blocker"
+  [ -s "$home/descendant.pid" ] || fail "the successful build did not create its descendant marker"
+  child=$(sed -n '1p' "$home/descendant.pid")
+  for _ in $(seq 1 20); do
+    kill -0 "$child" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$child" 2>/dev/null; then
+    kill -KILL "$child" 2>/dev/null || true
+    fail "a successful build left a descendant process running"
+  fi
+  pass "a successful build proves and cleans its descendants"
 }
 
 test_direct_json_build_is_bounded() {
@@ -816,4 +933,5 @@ test_malformed_zellij_and_cmux_endpoints_are_unknown_not_absent
 test_initial_serve_build_is_bounded_before_binding
 test_serve_refuses_without_process_containment
 test_initial_build_contains_daemonizing_descendants
+test_initial_build_proves_descendant_cleanup_after_success
 test_direct_json_build_is_bounded

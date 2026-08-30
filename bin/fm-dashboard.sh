@@ -983,12 +983,12 @@ command_serve() {
     FM_DASHBOARD_OWNER_DIGEST="$digest" FM_DASHBOARD_HEALTH_HOME="$FM_HOME" \
     python3 - <<'PY'
 import json
-import ctypes
 import os
 import signal
 import socket
 import subprocess
 import sys
+import shutil
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -1001,8 +1001,7 @@ HTTP_REQUEST_TIMEOUT = int(os.environ["FM_DASHBOARD_BUILD_TIMEOUT"]) + HTTP_IO_T
 MAX_CLIENTS = 10
 MAX_PAGE_BUILDS = 8
 BUILD_CLEANUP_GRACE = 0.5
-PROCESS_SNAPSHOT_TIMEOUT = 0.1
-PROCESS_CLEANUP_POLL = 0.05
+CONTAINMENT_HANDSHAKE_TIMEOUT = 1.0
 # Only the DIGEST of the owner token reaches this process, and only the digest
 # is ever published. A caller proves it started this exact server for this
 # exact home by hashing the token it holds privately and comparing; the token
@@ -1017,289 +1016,88 @@ HEALTH = json.dumps({
 }).encode() + b"\n"
 
 
-def process_snapshot():
+def enable_process_containment():
+    if sys.platform != "linux":
+        return None
+    tool = shutil.which("unshare")
+    if tool is None:
+        return None
     try:
         result = subprocess.run(
-            ["ps", "-axo", "pid=,ppid=,pgid="],
-            stdout=subprocess.PIPE,
+            [
+                tool,
+                "--pid",
+                "--fork",
+                "--mount-proc",
+                "--kill-child=9",
+                "true",
+            ],
+            stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=PROCESS_SNAPSHOT_TIMEOUT,
+            timeout=CONTAINMENT_HANDSHAKE_TIMEOUT,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    if result.returncode != 0:
-        return None
-    processes = {}
-    for line in result.stdout.splitlines():
-        fields = line.split()
-        if len(fields) != 3:
-            return None
-        try:
-            pid, ppid, pgid = (int(field) for field in fields)
-        except ValueError:
-            return None
-        try:
-            sid = os.getsid(pid)
-        except OSError:
-            continue
-        processes[pid] = (ppid, pgid, sid)
-    return processes
+    return tool if result.returncode == 0 else None
 
 
-def process_descendants(processes, root):
-    children = {}
-    for pid, (ppid, _pgid, _sid) in processes.items():
-        children.setdefault(ppid, []).append(pid)
-    descendants = set()
-    pending = [root]
-    while pending:
-        parent = pending.pop()
-        for child in children.get(parent, ()):
-            if child not in descendants:
-                descendants.add(child)
-                pending.append(child)
-    return descendants
-
-
-def enable_process_containment():
-    if sys.platform != "linux":
-        return False
+def kill_build_group(build, signum):
     try:
-        libc = ctypes.CDLL(None, use_errno=True)
-        prctl = libc.prctl
-        prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong,
-                          ctypes.c_ulong, ctypes.c_ulong]
-        prctl.restype = ctypes.c_int
-        return prctl(36, 1, 0, 0, 0) == 0
-    except (AttributeError, OSError):
-        return False
-
-
-CONTAINED_BUILD = r'''
-import ctypes
-import platform
-import os
-import sys
-
-class SockFilter(ctypes.Structure):
-    _fields_ = (("code", ctypes.c_ushort), ("jt", ctypes.c_ubyte),
-                ("jf", ctypes.c_ubyte), ("k", ctypes.c_uint))
-
-class SockFprog(ctypes.Structure):
-    _fields_ = (("length", ctypes.c_ushort),
-                ("filter", ctypes.POINTER(SockFilter)))
-
-BPF_LD_W_ABS = 0x20
-BPF_JMP_JEQ_K = 0x15
-BPF_JMP_JSET_K = 0x45
-BPF_RET_K = 0x06
-SECCOMP_MODE_FILTER = 2
-SECCOMP_RET_ALLOW = 0x7fff0000
-SECCOMP_RET_ERRNO = 0x00050000
-CLONE_NEWPID = 0x20000000
-
-machine = platform.machine().lower()
-syscalls = {
-    "x86_64": (112, 308, 272, 435, 56),
-    "amd64": (112, 308, 272, 435, 56),
-    "aarch64": (157, 268, 97, 435, 220),
-    "arm64": (157, 268, 97, 435, 220),
-}
-if machine not in syscalls:
-    raise SystemExit(125)
-
-setsid_nr, setns_nr, unshare_nr, clone3_nr, clone_nr = syscalls[machine]
-filters = []
-def instruction(code, jt=0, jf=0, k=0):
-    filters.append(SockFilter(code, jt, jf, k))
-
-def deny():
-    instruction(BPF_RET_K, k=SECCOMP_RET_ERRNO | 1)
-
-for syscall_nr in (setsid_nr, setns_nr, unshare_nr, clone3_nr):
-    instruction(BPF_LD_W_ABS, k=0)
-    instruction(BPF_JMP_JEQ_K, jf=1, k=syscall_nr)
-    deny()
-instruction(BPF_LD_W_ABS, k=0)
-instruction(BPF_JMP_JEQ_K, jf=1, k=clone_nr)
-instruction(BPF_LD_W_ABS, k=16)
-instruction(BPF_JMP_JSET_K, jf=1, k=CLONE_NEWPID)
-deny()
-instruction(BPF_RET_K, k=SECCOMP_RET_ALLOW)
-filter_array = (SockFilter * len(filters))(*filters)
-program = SockFprog(len(filters), filter_array)
-libc = ctypes.CDLL(None, use_errno=True)
-prctl = libc.prctl
-prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong,
-                  ctypes.c_ulong, ctypes.c_ulong]
-prctl.restype = ctypes.c_int
-if prctl(38, 1, 0, 0, 0) != 0:
-    raise SystemExit(125)
-if prctl(22, SECCOMP_MODE_FILTER, ctypes.addressof(program),
-         0, 0) != 0:
-    raise SystemExit(125)
-os.execvpe(sys.argv[1], sys.argv[1:], os.environ)
-'''
-
-
-def reap_processes(pids):
-    for pid in sorted(pids, reverse=True):
-        if pid == os.getpid():
-            continue
-        try:
-            os.waitpid(pid, os.WNOHANG)
-        except (ChildProcessError, OSError):
-            pass
-
-
-def process_tree_snapshot(root, processes=None):
-    if processes is None:
-        processes = process_snapshot()
-    if processes is None:
-        return None, None, None
-    if root not in processes:
-        try:
-            os.kill(root, 0)
-        except ProcessLookupError:
-            return {root}, set(), set()
-        except OSError:
-            return None, None, None
-        return None, None, None
-    children = {}
-    for pid, (ppid, _pgid, _sid) in processes.items():
-        children.setdefault(ppid, []).append(pid)
-    pids = {root}
-    pending = [root]
-    while pending:
-        parent = pending.pop()
-        for child in children.get(parent, ()):
-            if child not in pids:
-                pids.add(child)
-                pending.append(child)
-    groups = {processes[pid][1] for pid in pids if pid in processes}
-    sessions = {processes[pid][2] for pid in pids if pid in processes}
-    return pids, groups, sessions
-
-
-def process_scope_snapshot(processes, known_pids, known_groups, known_sessions):
-    pids = {
-        pid for pid, (_ppid, pgid, sid) in processes.items()
-        if pid in known_pids or pgid in known_groups or sid in known_sessions
-    }
-    groups = {processes[pid][1] for pid in pids}
-    sessions = {processes[pid][2] for pid in pids}
-    return pids, groups, sessions
-
-
-def signal_process_tree(pids, groups, signum):
-    pids = set(pids)
-    groups = set(groups)
-    groups.discard(0)
-    groups.discard(os.getpgrp())
-    for pgid in sorted(groups):
-        try:
-            os.killpg(pgid, signum)
-        except OSError:
-            pass
-    for pid in sorted(pids, reverse=True):
-        if pid == os.getpid():
-            continue
-        try:
-            os.kill(pid, signum)
-        except OSError:
-            pass
-
-
-def cleanup_process_tree(build, baseline_processes, containment_enabled):
-    known_pids = {build.pid}
-    known_groups = set()
-    known_sessions = set()
-    observed_root = False
-    try:
-        known_groups.add(os.getpgid(build.pid))
+        os.killpg(build.pid, signum)
     except OSError:
-        pass
-    try:
-        known_sessions.add(os.getsid(build.pid))
-    except OSError:
-        pass
-    baseline_descendants = set()
-    if containment_enabled and baseline_processes is not None:
-        baseline_descendants = process_descendants(baseline_processes, os.getpid())
-    proven = containment_enabled and baseline_processes is not None
-    for signum in (signal.SIGTERM, signal.SIGKILL):
-        deadline = time.monotonic() + BUILD_CLEANUP_GRACE
-        while time.monotonic() < deadline:
-            processes = process_snapshot()
-            pids, groups, sessions = process_tree_snapshot(build.pid, processes)
-            if pids is None:
-                proven = False
-            else:
-                observed_root = observed_root or build.pid in pids
-                known_pids.update(pids)
-                known_groups.update(groups)
-                known_sessions.update(sessions)
-            if processes is not None:
-                known_pids.update(
-                    process_descendants(processes, os.getpid()) - baseline_descendants
-                )
-                scoped_pids, scoped_groups, scoped_sessions = process_scope_snapshot(
-                    processes, known_pids, known_groups, known_sessions
-                )
-                known_pids.update(scoped_pids)
-                known_groups.update(scoped_groups)
-                known_sessions.update(scoped_sessions)
-            signal_process_tree(known_pids, known_groups, signum)
-            reap_processes(known_pids - {build.pid})
-            try:
-                build.wait(timeout=min(PROCESS_CLEANUP_POLL, max(0, deadline - time.monotonic())))
-            except subprocess.TimeoutExpired:
-                pass
-            remaining = deadline - time.monotonic()
-            if remaining > 0:
-                time.sleep(min(PROCESS_CLEANUP_POLL, remaining))
-    remaining_pids = set()
-    remaining_groups = set()
-    remaining_sessions = set()
-    verify_deadline = time.monotonic() + BUILD_CLEANUP_GRACE
-    while time.monotonic() < verify_deadline:
-        processes = process_snapshot()
-        if processes is None:
-            proven = False
-            break
-        remaining_pids, remaining_groups, remaining_sessions = process_scope_snapshot(
-            processes, known_pids, known_groups, known_sessions
-        )
-        if not remaining_pids and not remaining_groups and not remaining_sessions:
-            break
-        signal_process_tree(remaining_pids, remaining_groups, signal.SIGKILL)
-        reap_processes(remaining_pids - {build.pid})
         try:
-            build.wait(timeout=PROCESS_CLEANUP_POLL)
-        except subprocess.TimeoutExpired:
+            build.send_signal(signum)
+        except OSError:
             pass
-        time.sleep(PROCESS_CLEANUP_POLL)
-    processes = process_snapshot()
-    if processes is None:
-        proven = False
-    else:
-        known_pids.update(
-            process_descendants(processes, os.getpid()) - baseline_descendants
-        )
-        remaining_pids, remaining_groups, remaining_sessions = process_scope_snapshot(
-            processes, known_pids, known_groups, known_sessions
-        )
-        if remaining_pids or remaining_groups or remaining_sessions:
-            proven = False
-    reap_processes(known_pids - {build.pid})
+
+
+def cleanup_contained_build(build):
+    kill_build_group(build, signal.SIGTERM)
     try:
         build.wait(timeout=BUILD_CLEANUP_GRACE)
+        return True
     except subprocess.TimeoutExpired:
-        proven = False
-    return proven and observed_root and build.poll() is not None
+        pass
+    kill_build_group(build, signal.SIGKILL)
+    try:
+        build.wait(timeout=BUILD_CLEANUP_GRACE)
+        return True
+    except subprocess.TimeoutExpired:
+        return False
 
+
+def start_contained_build(containment_command):
+    build = subprocess.Popen(
+        dashboard_build_command(containment_command),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+        env=dict(os.environ, FM_DASHBOARD_BUILD_INNER="1"),
+    )
+    return build
+
+
+def finish_contained_build(build):
+    if build.poll() is not None:
+        return True
+    return cleanup_contained_build(build)
+
+
+def dashboard_build_command(containment_command):
+    if not containment_command:
+        raise RuntimeError("dashboard build containment is unavailable")
+    return [
+        containment_command,
+        "--pid",
+        "--fork",
+        "--mount-proc",
+        "--kill-child=9",
+        SELF,
+        "build",
+        "--out",
+        "-",
+    ]
 
 def health_body(server):
     if getattr(server, "cleanup_blocked", False):
@@ -1444,15 +1242,7 @@ class Handler(BaseHTTPRequestHandler):
                 if self.request_time_left() <= 0:
                     self._send(503, b"dashboard rebuild deadline exceeded\n", "text/plain; charset=utf-8")
                     return
-                baseline_processes = process_snapshot()
-                build_command = dashboard_build_command(self.server.containment_enabled)
-                build = subprocess.Popen(
-                    build_command,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    start_new_session=True,
-                    env=dict(os.environ, FM_DASHBOARD_BUILD_INNER="1"),
-                )
+                build = start_contained_build(self.server.containment_root)
                 try:
                     stdout, stderr = build.communicate(
                         timeout=min(
@@ -1463,11 +1253,7 @@ class Handler(BaseHTTPRequestHandler):
                 except subprocess.TimeoutExpired as exc:
                     stdout = exc.output or b""
                     stderr = exc.stderr or b""
-                    if not cleanup_process_tree(
-                        build,
-                        baseline_processes,
-                        self.server.containment_enabled,
-                    ):
+                    if not finish_contained_build(build):
                         self.server.cleanup_blocked = True
                         sys.stderr.write(
                             "fm-dashboard: DASHBOARD_BLOCKED: build descendant cleanup could not be proven\n"
@@ -1480,18 +1266,32 @@ class Handler(BaseHTTPRequestHandler):
                         build.args, 124, stdout, stderr
                     )
                 else:
-                    done = subprocess.CompletedProcess(
-                        build.args, build.returncode, stdout, stderr
-                    )
+                    if not finish_contained_build(build):
+                        self.server.cleanup_blocked = True
+                        sys.stderr.write(
+                            "fm-dashboard: DASHBOARD_BLOCKED: build descendant cleanup could not be proven\n"
+                        )
+                        stderr += b"\nbuild descendant cleanup could not be proven\n"
+                        done = subprocess.CompletedProcess(
+                            build.args, 125, stdout, stderr
+                        )
+                    else:
+                        done = subprocess.CompletedProcess(
+                            build.args, build.returncode, stdout, stderr
+                        )
             finally:
                 self.server.build_lock.release()
         except Exception as exc:  # noqa: BLE001 - reported, never swallowed
-            self._send(500, ("the dashboard could not be rebuilt: %s\n" % exc).encode(),
+            self.server.cleanup_blocked = True
+            sys.stderr.write(
+                "fm-dashboard: DASHBOARD_BLOCKED: build containment failed: %s\n" % exc
+            )
+            self._send(503, ("the dashboard could not be rebuilt: %s\n" % exc).encode(),
                        "text/plain; charset=utf-8")
             return
         finally:
             self.server.page_slots.release()
-        if done.returncode == 125 and self.server.containment_enabled:
+        if done.returncode == 125 and self.server.containment_root:
             self.server.cleanup_blocked = True
         if done.returncode != 0 or not done.stdout:
             detail = done.stderr.decode("utf-8", "replace").strip() or "no detail"
@@ -1519,7 +1319,7 @@ class BoundedHTTPServer(ThreadingMixIn, HTTPServer):
         self.pending_request = None
         self.page_slots = threading.BoundedSemaphore(MAX_PAGE_BUILDS)
         self.cleanup_blocked = False
-        self.containment_enabled = containment_enabled
+        self.containment_root = containment_enabled
 
     def process_request(self, request, client_address):
         try:
@@ -1576,27 +1376,19 @@ class BoundedHTTPServer(ThreadingMixIn, HTTPServer):
         super().process_request_thread(request, client_address)
 
 
-def dashboard_build_command(containment_enabled):
-    if not containment_enabled:
-        raise RuntimeError("dashboard build containment is unavailable")
-    command = [SELF, "build", "--out", "-"]
-    return [sys.executable, "-c", CONTAINED_BUILD] + command
-
-
 def initial_build(containment_enabled):
     if not containment_enabled:
         sys.stderr.write(
             "fm-dashboard: DASHBOARD_BLOCKED: initial build containment could not be established\n"
         )
         return False
-    baseline_processes = process_snapshot()
-    build = subprocess.Popen(
-        dashboard_build_command(containment_enabled),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-        env=dict(os.environ, FM_DASHBOARD_BUILD_INNER="1"),
-    )
+    try:
+        build = start_contained_build(containment_enabled)
+    except Exception as exc:
+        sys.stderr.write(
+            "fm-dashboard: DASHBOARD_BLOCKED: initial build containment failed: %s\n" % exc
+        )
+        return False
     try:
         stdout, stderr = build.communicate(
             timeout=int(os.environ["FM_DASHBOARD_BUILD_TIMEOUT"])
@@ -1604,7 +1396,7 @@ def initial_build(containment_enabled):
     except subprocess.TimeoutExpired as exc:
         stdout = exc.output or b""
         stderr = exc.stderr or b""
-        proven = cleanup_process_tree(build, baseline_processes, containment_enabled)
+        proven = finish_contained_build(build)
         if not proven:
             stderr += b"\ninitial dashboard build descendant cleanup could not be proven\n"
         for stream in (build.stdout, build.stderr):
@@ -1621,8 +1413,21 @@ def initial_build(containment_enabled):
             if stream is not None:
                 stream.close()
     if build.returncode != 0 or not stdout:
+        if not finish_contained_build(build):
+            sys.stderr.write(
+                "fm-dashboard: DASHBOARD_BLOCKED: initial build descendant cleanup could not be proven\n"
+            )
+        if build.returncode == 125:
+            sys.stderr.write(
+                "fm-dashboard: DASHBOARD_BLOCKED: initial build containment failed\n"
+            )
         detail = stderr.decode("utf-8", "replace").strip() or "no detail"
         sys.stderr.write("initial dashboard build failed: %s\n" % detail)
+        return False
+    if not finish_contained_build(build):
+        sys.stderr.write(
+            "fm-dashboard: DASHBOARD_BLOCKED: initial build descendant cleanup could not be proven\n"
+        )
         return False
     return True
 

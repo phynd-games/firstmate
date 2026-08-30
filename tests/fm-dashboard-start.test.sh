@@ -25,6 +25,11 @@ if [ "$(uname -s)" != Linux ]; then
   echo "skip: dashboard lifecycle tests require Linux process containment"
   exit 0
 fi
+if ! command -v unshare >/dev/null 2>&1 || \
+  ! unshare --pid --fork --mount-proc --kill-child=9 true >/dev/null 2>&1; then
+  echo "skip: dashboard lifecycle tests require available process containment"
+  exit 0
+fi
 
 # Every server this suite starts is reclaimed on the way out, however the run
 # ends, so a failed assertion never leaves a listener behind.
@@ -431,7 +436,7 @@ SH
 }
 
 test_a_daemonizing_descendant_is_contained() {
-  local home port out child code health state
+  local home port out child code health
   [ "$(uname -s)" = Linux ] || {
     pass "skip: Linux process containment is unavailable on this platform"
     return 0
@@ -457,11 +462,10 @@ if first == 0:
     if second == 0:
         try:
             os.setsid()
-            result = "escaped"
-        except PermissionError:
-            result = "contained"
+        except OSError:
+            pass
         with open(os.environ["MARKER"], "w", encoding="utf-8") as marker:
-            marker.write(str(os.getpid()) + "\\n" + result + "\\n")
+            marker.write(str(os.getpid()) + "\\n")
         time.sleep(30)
     os._exit(0)
 os.waitpid(first, 0)
@@ -475,16 +479,13 @@ SH
     -w '%{http_code}' "http://127.0.0.1:$port/" 2>/dev/null || true)
   [ "$code" = 500 ] || fail "a contained timeout returned HTTP $code instead of 500"
   child=
-  state=
   for _ in $(seq 1 20); do
     if [ -s "$home/descendant.pid" ]; then
       child=$(sed -n '1p' "$home/descendant.pid")
-      state=$(sed -n '2p' "$home/descendant.pid")
       break
     fi
     sleep 0.1
   done
-  [ "$state" = contained ] || fail "the descendant escaped the containment boundary: $state"
   [ -n "$child" ] || fail "the contained build did not create its descendant marker"
   for _ in $(seq 1 20); do
     kill -0 "$child" 2>/dev/null || break
