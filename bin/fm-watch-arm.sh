@@ -103,6 +103,39 @@ lock_snapshot() {
 
 WATCH_DELIVERY_LOG="$STATE/.watch-deliveries.log"
 WATCH_DELIVERY_LOCK="$STATE/.watch-deliveries.lock"
+ARM_BLOCKED="$STATE/.watch-arm-blocked"
+
+ARM_CLAIM_HELD=0
+if [ "${FM_WATCH_ARM_CLAIM_REQUIRED:-0}" = 1 ]; then
+  if ! fm_supervision_claim_acquire "$STATE/.supervision-claim.lock" "${FM_WATCH_ARM_CLAIM_TRIES:-100}"; then
+    echo "watcher: FAILED - Pi arm could not acquire the shared continuity claim" >&2
+    exit 125
+  fi
+  ARM_CLAIM_HELD=1
+fi
+
+arm_release_claim() {
+  if [ "$ARM_CLAIM_HELD" -eq 1 ]; then
+    fm_lock_release "$STATE/.supervision-claim.lock" || true
+    ARM_CLAIM_HELD=0
+  fi
+}
+
+arm_blocked_write() {
+  local reason=$1 tmp
+  tmp=$(mktemp "$ARM_BLOCKED.tmp.XXXXXX") || return 1
+  if ! {
+    printf 'pid=%s\nidentity=%s\nat=%s\nreason=%s\n' \
+      "$ARM_PID" "${child_identity:-unknown}" "$(date +%s)" "$reason"
+  } > "$tmp" 2>/dev/null || ! chmod 0600 "$tmp" 2>/dev/null || ! mv -f "$tmp" "$ARM_BLOCKED" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+}
+
+arm_blocked_clear() {
+  rm -f "$ARM_BLOCKED" 2>/dev/null || true
+}
 
 cycle_active=0
 cycle_watcher_pid=none
@@ -649,13 +682,15 @@ hold_child_tracked() {
         || printf 'watcher: emergency diagnostic persistence failed\n' >&2
       arm_emergency_write "$reason; bounded cleanup window exhausted; retaining explicit child ownership" \
         || printf 'watcher: emergency diagnostic persistence failed\n' >&2
+      arm_blocked_write "$reason; bounded cleanup window exhausted; retaining explicit child ownership" \
+        || printf 'watcher: blocked-child state persistence failed\n' >&2
       blocked=1
     fi
     if [ "$blocked" -eq 1 ]; then
       child_status
       status=$?
       case "$status" in
-        0) wait "$child" 2>/dev/null || true; child=; break ;;
+        0) wait "$child" 2>/dev/null || true; child=; arm_blocked_clear; break ;;
         1|2) sleep 1 ;;
       esac
       continue
@@ -663,7 +698,7 @@ hold_child_tracked() {
     child_status
     status=$?
     case "$status" in
-      0) wait "$child" 2>/dev/null || true; child=; break ;;
+      0) wait "$child" 2>/dev/null || true; child=; arm_blocked_clear; break ;;
       1|2) sleep 1 ;;
     esac
   done
@@ -689,6 +724,7 @@ handle_arm_signal() {
 trap 'handle_arm_signal HUP 129' HUP
 trap 'handle_arm_signal TERM 143' TERM
 trap 'handle_arm_signal INT 130' INT
+trap 'arm_release_claim' EXIT
 
 child_out=$(mktemp "$STATE/.watch-arm-output.XXXXXX") || {
   echo "watcher: FAILED - no live watcher with a fresh beacon"
