@@ -134,10 +134,14 @@ RAPID_CYCLE_FLOOR=${FM_HERDR_SUPERVISOR_RAPID_CYCLE_FLOOR:-5}
 HERDR_CALL_TIMEOUT=${FM_HERDR_SUPERVISOR_HERDR_TIMEOUT:-15}
 WATCHER_STALE_GRACE=${FM_WATCHER_STALE_GRACE:-${FM_GUARD_GRACE:-300}}
 SUPERVISOR_LOCK_TRIES=${FM_HERDR_SUPERVISOR_LOCK_TRIES:-100}
+WATCH_QUEUE_LOCK_TRIES=${FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES:-100}
 LEDGER_MAX_BYTES=${FM_HERDR_SUPERVISOR_LEDGER_MAX_BYTES:-262144}
 LEDGER_KEEP_LINES=${FM_HERDR_SUPERVISOR_LEDGER_KEEP_LINES:-1000}
 case "$WATCHER_STALE_GRACE" in
   ''|*[!0-9]*) WATCHER_STALE_GRACE=300 ;;
+esac
+case "$WATCH_QUEUE_LOCK_TRIES" in
+  ''|*[!0-9]*|0) WATCH_QUEUE_LOCK_TRIES=100 ;;
 esac
 case "$HERDR_CALL_TIMEOUT" in
   ''|*[!0-9]*|0)
@@ -1112,7 +1116,10 @@ establish() {  # <reason>
     [ -z "${FM_GUARD_GRACE:-}" ] || printf 'export FM_GUARD_GRACE=%s\n' "$(shell_quote "$FM_GUARD_GRACE")"
     [ -z "${FM_WATCHER_STALE_GRACE:-}" ] || printf 'export FM_WATCHER_STALE_GRACE=%s\n' "$(shell_quote "$FM_WATCHER_STALE_GRACE")"
     [ -z "${FM_ARM_CONFIRM_TIMEOUT:-}" ] || printf 'export FM_ARM_CONFIRM_TIMEOUT=%s\n' "$(shell_quote "$FM_ARM_CONFIRM_TIMEOUT")"
-    [ -z "${FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES:-}" ] || printf 'export FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES=%s\n' "$(shell_quote "$FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES")"
+    printf 'export FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES=%s\n' "$WATCH_QUEUE_LOCK_TRIES"
+    printf 'export FM_WAKE_QUEUE_LOCK_TRIES=%s\n' "$WATCH_QUEUE_LOCK_TRIES"
+    printf 'export FM_WAKE_APPEND_LOCK_TRIES=%s\n' "$WATCH_QUEUE_LOCK_TRIES"
+    printf 'export FM_WAKE_QUEUED_KEYS_LOCK_TRIES=%s\n' "$WATCH_QUEUE_LOCK_TRIES"
     printf 'export FM_RECOVERY_MARKER_LOCK_TRIES=100\n'
     [ -z "${FM_SIGNAL_GRACE:-}" ] || printf 'export FM_SIGNAL_GRACE=%s\n' "$(shell_quote "$FM_SIGNAL_GRACE")"
     [ -z "${FM_POLL:-}" ] || printf 'export FM_POLL=%s\n' "$(shell_quote "$FM_POLL")"
@@ -1865,7 +1872,7 @@ cmd_run() {
         LOOP_ARM_UNRESOLVED_NEXT=0
         loop_release_claim || true
       else
-        if [ "$LOOP_ARM_UNRESOLVED_REPORTED" -eq 0 ] && [ "$(date +%s)" -ge "$LOOP_ARM_UNRESOLVED_NEXT" ]; then
+        if [ "$(date +%s)" -ge "$LOOP_ARM_UNRESOLVED_NEXT" ]; then
           if [ "$(hs_config_preference)" = off ]; then
             escalate "config/herdr-supervisor is off but the arm identity remains unknown; retaining the child and supervisor binding"
           elif harness_owner_provable; then
@@ -1873,8 +1880,16 @@ cmd_run() {
           else
             escalate "the arm identity remains unknown after its bounded wait; retaining the tracked child and supervisor binding"
           fi
-          LOOP_ARM_UNRESOLVED_NEXT=$(( $(date +%s) + UNKNOWN_ARM_TIMEOUT + 1 ))
-          LOOP_ARM_UNRESOLVED_REPORTED=1
+          LOOP_ARM_UNRESOLVED_REPORTED=0
+          if loop_stop_arm; then
+            [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT" 2>/dev/null || true
+            LOOP_ARM_OUT=
+            LOOP_ARM_UNRESOLVED_REPORTED=0
+            loop_release_claim || true
+          else
+            LOOP_ARM_UNRESOLVED_NEXT=$(( $(date +%s) + UNKNOWN_ARM_TIMEOUT + 1 ))
+            LOOP_ARM_UNRESOLVED_REPORTED=1
+          fi
         fi
         : > "$HEARTBEAT" 2>/dev/null || true
         sleep 0.5
@@ -1973,7 +1988,7 @@ cmd_run() {
     else
       arm_match=2
       escalate "the foreground watcher arm process identity became unknown or changed; retaining the child without signaling a recycled pid"
-      LOOP_ARM_UNRESOLVED_REPORTED=1
+      LOOP_ARM_UNRESOLVED_REPORTED=0
     fi
     if [ "$arm_match" -eq 2 ]; then
       if ! loop_stop_arm; then
