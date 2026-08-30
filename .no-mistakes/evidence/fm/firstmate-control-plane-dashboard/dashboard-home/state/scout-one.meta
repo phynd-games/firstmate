@@ -1,0 +1,12 @@
+schema=fm-task-meta.v1
+window=firstmate:fm-scout-one
+endpoint_task_id=scout-one
+worktree=/tmp/scout-one
+project=firstmate
+harness=claude
+model=opus
+effort=high
+kind=review
+mode=no-mistakes
+yolo=off
+backend=tmux

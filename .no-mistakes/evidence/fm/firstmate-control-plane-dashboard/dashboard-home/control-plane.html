@@ -1,0 +1,1520 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Firstmate - control plane</title>
+<style>
+/* ============================================================
+   Firstmate control plane - Firstmate Design System, inlined.
+   Tokens match .agents/skills/bearings/assets/board-template.html so the two
+   local surfaces read as one product. No webfont is imported and no asset is
+   fetched: the page must render identically with no network at all, so every
+   family is a system stack.
+   ============================================================ */
+:root {
+  --rust-700: #8f2f17; --rust-600: #a93a1f; --rust-500: #c0452a;
+  --rust-400: #d35f3f; --rust-300: #e08365; --rust-100: #f4d8c9; --rust-050: #fbece3;
+  --navy-700: #1a2238; --navy-600: #222c49; --navy-500: #2a3656;
+  --navy-300: #6c7796; --navy-100: #d9deea;
+  --gold-600: #b5791c; --gold-500: #e0a52e; --gold-300: #f0d38c; --gold-100: #f8ecc9;
+  --ocean-600: #2f6688; --ocean-500: #3c7ea6; --ocean-200: #b6d4e2; --ocean-050: #e8f1f5;
+  --sea-700: #234e3a; --sea-500: #2f6b4f; --sea-200: #b9d4c5; --sea-050: #e9f2ec;
+  --paper-000: #fbf4e2; --paper-100: #f6ecd3; --paper-200: #f0e3c4; --paper-300: #e7d6ae;
+  --cream-line: #ddc89c;
+  --ink-900: #241c14; --ink-700: #3f3224; --ink-500: #6f5e46; --ink-300: #9c8a6c;
+  --white: #fffdf7;
+  --bg-page: var(--paper-100);
+  --surface-card: var(--white);
+  --surface-card-warm: var(--paper-000);
+  --text-strong: var(--ink-900); --text-body: var(--ink-700);
+  --text-muted: var(--ink-500); --text-faint: var(--ink-300);
+  --border-default: var(--cream-line); --border-soft: var(--paper-300);
+  --status-online: var(--sea-500); --status-online-soft: var(--sea-050);
+  --status-warn: var(--gold-600); --status-warn-soft: var(--gold-100);
+  --status-danger: var(--rust-600); --status-danger-soft: var(--rust-050);
+  --status-info: var(--ocean-500); --status-info-soft: var(--ocean-050);
+  --font-display: "Cooper Black", Rockwell, Georgia, serif;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --fs-h3: 1.4rem; --fs-h4: 1.15rem; --fs-base: 1rem; --fs-sm: 0.9375rem;
+  --fs-xs: 0.8125rem; --fs-2xs: 0.6875rem;
+  --ls-caps: 0.16em;
+  --radius-xs: 6px; --radius-sm: 9px; --radius-md: 12px;
+  --radius-lg: 18px; --radius-pill: 999px;
+  --shadow-sm: 0 1px 2px rgba(36, 28, 20, 0.06), 0 4px 10px rgba(36, 28, 20, 0.06);
+  --shadow-hard: 4px 4px 0 var(--ink-900);
+  --shadow-hard-sm: 3px 3px 0 var(--ink-900);
+  --focus-ring: 0 0 0 3px var(--gold-300);
+  --container-app: 1240px;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--font-sans);
+  color: var(--text-body);
+  background: var(--bg-page);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: inherit; text-decoration: none; }
+
+/* ---- shared Firstmate primitives ---- */
+.fm-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: var(--fs-2xs); font-weight: 800; line-height: 1;
+  padding: 5px 9px 4px; text-transform: uppercase; letter-spacing: 0.07em;
+  border-radius: var(--radius-xs); border: 1.5px solid var(--ink-900);
+  box-shadow: 2px 2px 0 var(--ink-900); white-space: nowrap;
+}
+.fm-badge--online  { background: var(--sea-500);  color: var(--paper-000); }
+.fm-badge--warn    { background: var(--gold-500); color: var(--navy-700); }
+.fm-badge--danger  { background: var(--rust-600); color: var(--paper-000); }
+.fm-badge--info    { background: var(--ocean-500); color: var(--paper-000); }
+.fm-badge--neutral { background: var(--paper-000); color: var(--ink-900); }
+
+.fm-btn {
+  display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+  font-family: var(--font-sans); font-size: var(--fs-sm); font-weight: 700;
+  padding: 9px 18px; border-radius: var(--radius-sm);
+  border: 2px solid var(--ink-900); background: var(--paper-000);
+  color: var(--ink-900); line-height: 1;
+}
+.fm-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.fm-btn:active { transform: translateY(1px); }
+.fm-btn--sm { font-size: var(--fs-xs); padding: 7px 13px; }
+.fm-btn--primary { background: var(--rust-500); color: var(--white); box-shadow: var(--shadow-hard-sm); }
+.fm-btn--primary:hover { background: var(--rust-600); }
+.fm-btn--ghost { background: transparent; border-color: var(--border-default); color: var(--text-muted); }
+.fm-btn--ghost:hover { border-color: var(--ink-500); color: var(--text-strong); }
+
+.fm-card {
+  background: var(--surface-card); border: 1.5px solid var(--border-default);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-sm); min-width: 0;
+}
+.fm-card--poster { border: 2px solid var(--ink-900); box-shadow: var(--shadow-hard); }
+.fm-card--warm { background: var(--surface-card-warm); }
+
+.fm-sign {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--font-mono); font-size: var(--fs-2xs); font-weight: 700;
+  text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--text-muted);
+}
+.fm-sign--eyebrow { color: var(--rust-500); }
+.fm-ico { width: 1.15em; height: 1.15em; flex: none; vertical-align: -0.18em; }
+
+/* ---- page chrome ---- */
+.cp-nav {
+  position: sticky; top: 0; z-index: 40;
+  background: var(--paper-000); border-bottom: 2px solid var(--ink-900);
+}
+.cp-nav__inner {
+  max-width: var(--container-app); margin: 0 auto; padding: 12px 22px;
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+}
+.cp-brand { display: inline-flex; align-items: center; gap: 11px; flex: none; }
+.cp-brand__disc {
+  width: 34px; height: 34px; border-radius: var(--radius-pill);
+  background: var(--rust-500); color: var(--paper-000);
+  display: grid; place-items: center; border: 2px solid var(--ink-900);
+}
+.cp-brand__disc svg { width: 60%; height: 60%; }
+.cp-brand__wm { font-family: var(--font-display); font-size: 21px; color: var(--text-strong); line-height: 1; }
+.cp-brand__sub { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint);
+  text-transform: uppercase; letter-spacing: var(--ls-caps); display: block; margin-top: 2px; }
+.cp-nav__spacer { flex: 1 1 auto; }
+.cp-nav__meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.cp-mono { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+
+.cp-tabs {
+  max-width: var(--container-app); margin: 0 auto; padding: 0 22px;
+  display: flex; gap: 6px; flex-wrap: wrap; overflow-x: auto;
+}
+.cp-tab {
+  font-family: var(--font-mono); font-size: var(--fs-2xs); font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted);
+  padding: 9px 11px; border-bottom: 3px solid transparent; white-space: nowrap; cursor: pointer;
+}
+.cp-tab:hover { color: var(--text-strong); }
+.cp-tab.is-active { color: var(--rust-600); border-bottom-color: var(--rust-500); }
+.cp-tab__n { color: var(--text-faint); font-weight: 600; }
+
+.cp-main {
+  max-width: var(--container-app); margin: 0 auto;
+  padding: 22px 22px 64px; display: flex; flex-direction: column; gap: 26px;
+}
+
+/* ---- stat strip ---- */
+.cp-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.cp-stat {
+  background: var(--surface-card); border: 1.5px solid var(--border-default);
+  border-radius: var(--radius-sm); padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 4px; min-width: 0;
+}
+.cp-stat--alert { background: var(--rust-050); border: 2px solid var(--rust-500); }
+.cp-stat__num { font-family: var(--font-mono); font-size: var(--fs-h3); font-weight: 600;
+  line-height: 1; color: var(--text-strong); }
+.cp-stat--alert .cp-stat__num { color: var(--rust-600); }
+.cp-stat__label { font-family: var(--font-mono); font-size: var(--fs-2xs);
+  letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); }
+
+/* ---- notices ---- */
+.cp-notices { display: flex; flex-direction: column; gap: 10px; }
+.cp-notice {
+  display: flex; gap: 11px; align-items: flex-start; padding: 12px 15px;
+  border-radius: var(--radius-sm); border-left: 5px solid var(--status-warn);
+  background: var(--status-warn-soft); font-size: var(--fs-sm); color: var(--text-body);
+}
+.cp-notice--danger { border-left-color: var(--status-danger); background: var(--status-danger-soft); }
+.cp-notice--info { border-left-color: var(--status-info); background: var(--status-info-soft); }
+.cp-notice__body { min-width: 0; }
+.cp-notice__title { font-weight: 800; color: var(--text-strong); }
+.cp-notice__detail { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; word-break: break-word; }
+
+/* ---- sections ---- */
+.cp-section { display: flex; flex-direction: column; gap: 13px; min-width: 0; scroll-margin-top: 152px; }
+.cp-section[hidden] { display: none; }
+.cp-section__head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.cp-section__note { font-size: var(--fs-xs); color: var(--text-muted); }
+.cp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 16px; }
+.cp-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+
+/* ---- worker cards ---- */
+.cp-worker { display: flex; flex-direction: column; min-width: 0; }
+.cp-worker__pad { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.cp-worker__top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.cp-worker__id { font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: 700;
+  color: var(--text-strong); word-break: break-all; }
+.cp-worker__repo { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 1px; }
+.cp-worker__badges { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; flex: none; }
+.cp-state {
+  border: 1.5px solid var(--border-default); border-radius: var(--radius-sm);
+  background: var(--paper-000); padding: 10px 12px; display: flex; flex-direction: column; gap: 3px;
+}
+.cp-state__k { font-family: var(--font-mono); font-size: var(--fs-2xs);
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); }
+.cp-state__v { font-size: var(--fs-sm); color: var(--text-strong); font-weight: 700; }
+.cp-state__d { font-size: var(--fs-xs); color: var(--text-muted); }
+
+.cp-kv { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 5px 10px; align-items: baseline; }
+.cp-kv__k { font-family: var(--font-mono); font-size: var(--fs-2xs);
+  text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); }
+.cp-kv__v { font-size: var(--fs-xs); color: var(--text-body); min-width: 0; word-break: break-word; }
+.cp-kv__v--mono { font-family: var(--font-mono); }
+
+.cp-link { color: var(--ocean-600); font-weight: 600; word-break: break-all; }
+.cp-link:hover { text-decoration: underline; }
+.cp-actionlink { cursor: pointer; color: var(--ocean-600); font-weight: 600; }
+.cp-actionlink:hover { text-decoration: underline; }
+
+details.cp-fold { border-top: 1px dashed var(--border-default); padding-top: 9px; }
+details.cp-fold > summary {
+  cursor: pointer; list-style: none; font-family: var(--font-mono);
+  font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--rust-500); font-weight: 700; padding: 2px 0;
+}
+details.cp-fold > summary::-webkit-details-marker { display: none; }
+details.cp-fold > summary::before { content: "\25B8 "; }
+details.cp-fold[open] > summary::before { content: "\25BE "; }
+details.cp-fold > summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* ---- event log ---- */
+.cp-events { display: flex; flex-direction: column; gap: 6px; margin-top: 9px; }
+.cp-event { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 9px; align-items: baseline; }
+.cp-event__note { font-size: var(--fs-xs); color: var(--text-body); word-break: break-word; }
+.cp-event__note--empty { color: var(--text-faint); font-style: italic; }
+
+/* ---- compact rows ---- */
+.cp-rows { display: flex; flex-direction: column; }
+.cp-row {
+  display: flex; align-items: center; gap: 11px;
+  padding: 11px 15px; border-top: 1px solid var(--border-default); min-width: 0;
+}
+.cp-row:first-child { border-top: none; }
+.cp-row__main { min-width: 0; flex: 1 1 auto; }
+.cp-row__title { font-size: var(--fs-sm); font-weight: 700; color: var(--text-strong);
+  line-height: 1.3; overflow: hidden; text-overflow: ellipsis; }
+.cp-row__sub { font-size: var(--fs-xs); color: var(--text-muted); line-height: 1.35;
+  margin-top: 1px; word-break: break-word; }
+.cp-row__side { flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  justify-content: flex-end; max-width: 46%; }
+.cp-empty { padding: 17px; font-size: var(--fs-sm); color: var(--text-muted); }
+
+/* ---- tables ---- */
+.cp-tablewrap { overflow-x: auto; }
+.cp-table { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); }
+.cp-table th, .cp-table td { padding: 9px 13px; text-align: left; border-top: 1px solid var(--border-default);
+  vertical-align: top; }
+.cp-table th { font-family: var(--font-mono); font-size: var(--fs-2xs); text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--text-faint); font-weight: 700; border-top: none; white-space: nowrap; }
+.cp-table td.cp-num { font-family: var(--font-mono); text-align: right; white-space: nowrap; }
+.cp-table td.cp-mono-cell { font-family: var(--font-mono); word-break: break-all; }
+
+/* ---- filter ---- */
+.cp-filter {
+  font-family: var(--font-sans); font-size: var(--fs-sm); color: var(--text-strong);
+  padding: 8px 12px; border-radius: var(--radius-sm); border: 1.5px solid var(--border-default);
+  background: var(--white); min-width: 220px;
+}
+.cp-filter:focus { outline: none; border-color: var(--rust-400); box-shadow: var(--focus-ring); }
+
+/* ---- report drawer ---- */
+.cp-drawer {
+  position: fixed; inset: 0; z-index: 60; display: none;
+  background: rgba(36, 28, 20, 0.45); padding: 26px;
+}
+.cp-drawer.is-open { display: grid; place-items: center; }
+.cp-drawer__panel {
+  background: var(--white); border: 2px solid var(--ink-900); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-hard); width: min(960px, 100%); max-height: 100%;
+  display: flex; flex-direction: column; min-width: 0;
+}
+.cp-drawer__head {
+  padding: 15px 18px; border-bottom: 1.5px solid var(--border-default);
+  display: flex; align-items: flex-start; gap: 12px; background: var(--paper-000);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
+.cp-drawer__title { font-size: var(--fs-h4); font-weight: 800; color: var(--text-strong);
+  word-break: break-word; min-width: 0; flex: 1 1 auto; }
+.cp-drawer__body { padding: 20px 24px 28px; overflow: auto; min-width: 0; }
+
+/* ---- rendered markdown (built as DOM nodes, never as HTML text) ---- */
+.cp-md { font-size: var(--fs-sm); color: var(--text-body); }
+.cp-md h1, .cp-md h2, .cp-md h3, .cp-md h4 { color: var(--text-strong); line-height: 1.25; margin: 1.4em 0 0.5em; }
+.cp-md h1 { font-size: 1.5rem; } .cp-md h2 { font-size: 1.25rem; }
+.cp-md h3 { font-size: 1.06rem; } .cp-md h4 { font-size: 0.97rem; }
+.cp-md > :first-child { margin-top: 0; }
+.cp-md p { margin: 0 0 0.85em; }
+.cp-md ul, .cp-md ol { margin: 0 0 0.85em; padding-left: 1.5em; }
+.cp-md li { margin-bottom: 0.25em; }
+.cp-md blockquote { margin: 0 0 0.85em; padding: 2px 0 2px 14px;
+  border-left: 3px solid var(--border-default); color: var(--text-muted); }
+.cp-md hr { border: none; border-top: 1px solid var(--border-default); margin: 1.4em 0; }
+.cp-md code { font-family: var(--font-mono); font-size: 0.88em; background: var(--paper-100);
+  border: 1px solid var(--border-soft); border-radius: var(--radius-xs); padding: 1px 4px; }
+.cp-md pre { background: var(--navy-700); color: var(--paper-000); border-radius: var(--radius-sm);
+  padding: 13px 15px; overflow-x: auto; margin: 0 0 0.9em; }
+.cp-md pre code { background: none; border: none; padding: 0; color: inherit; font-size: 0.82rem; }
+.cp-md table { border-collapse: collapse; width: 100%; font-size: var(--fs-xs); margin: 0 0 0.9em; }
+.cp-md th, .cp-md td { border: 1px solid var(--border-default); padding: 7px 10px; text-align: left; }
+.cp-md th { background: var(--paper-100); font-family: var(--font-mono); font-size: var(--fs-2xs);
+  text-transform: uppercase; letter-spacing: 0.04em; }
+.cp-md a { color: var(--ocean-600); font-weight: 600; text-decoration: underline; word-break: break-all; }
+.cp-mdwrap { overflow-x: auto; }
+
+/* ---- provenance ---- */
+.cp-foot { border-top: 1px solid var(--border-default); padding-top: 16px;
+  font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); }
+
+.cp-copy { display: block; width: 100%; font-family: var(--font-mono); font-size: var(--fs-xs);
+  color: var(--text-body); background: var(--paper-100); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-xs); padding: 7px 9px; margin-top: 6px; word-break: break-all; }
+
+.cp-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+@media (max-width: 900px) {
+  .cp-cols { grid-template-columns: 1fr; }
+  .cp-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<header class="cp-nav">
+  <div class="cp-nav__inner">
+    <span class="cp-brand">
+      <span class="cp-brand__disc">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/>
+          <path d="M12 3v3M12 18v3M3 12h3M18 12h3"/>
+        </svg>
+      </span>
+      <span>
+        <span class="cp-brand__wm">control plane</span>
+        <span class="cp-brand__sub">read-only view</span>
+      </span>
+    </span>
+    <span class="cp-nav__spacer"></span>
+    <span class="cp-nav__meta" id="cp-nav-meta"></span>
+  </div>
+  <nav class="cp-tabs" id="cp-tabs" aria-label="Sections"></nav>
+</header>
+
+<main class="cp-main" id="cp-main">
+  <div class="cp-stats" id="cp-stats"></div>
+  <div class="cp-notices" id="cp-notices"></div>
+  <div id="cp-sections"></div>
+  <footer class="cp-foot" id="cp-provenance"></footer>
+</main>
+
+<div class="cp-drawer" id="cp-drawer" role="dialog" aria-modal="true" aria-labelledby="cp-drawer-title">
+  <div class="cp-drawer__panel">
+    <div class="cp-drawer__head">
+      <div style="min-width:0;flex:1 1 auto;">
+        <div class="cp-drawer__title" id="cp-drawer-title">-</div>
+        <div class="cp-mono" id="cp-drawer-path" style="max-width:100%;"></div>
+      </div>
+      <button type="button" class="fm-btn fm-btn--sm fm-btn--ghost" id="cp-drawer-close">Close</button>
+    </div>
+    <div class="cp-drawer__body" id="cp-drawer-body"></div>
+  </div>
+</div>
+
+<!-- ONE SLOT. bin/fm-dashboard.sh build injects the fresh fm-dashboard.v1
+     payload in place of the placeholder below; everything above and below is
+     the shipped template and is never regenerated per run. -->
+<script id="fm-dashboard-data" type="application/json">
+{"schema":"fm-dashboard.v1","generated":"2026-08-30T09:50:24Z","fm_home":"/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M17FFK25EAE5D6ZNBG58ATD4/dashboard-home","snapshot":{"schema":"fm-fleet-snapshot.v1","generated":"2026-08-30T09:50:23Z","fm_home":"/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M17FFK25EAE5D6ZNBG58ATD4/dashboard-home","roots":{"fm_root":"/Users/criz/.no-mistakes/worktrees/b253f85a49ed/01M17FFK25EAE5D6ZNBG58ATD4","state":"/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M17FFK25EAE5D6ZNBG58ATD4/dashboard-home/state","data":"/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M17FFK25EAE5D6ZNBG58ATD4/dashboard-home/data","config":"/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M17FFK25EAE5D6ZNBG58ATD4/dashboard-home/config","projects":"/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M17FFK25EAE5D6ZNBG58ATD4/dashboard-home/projects"},"backlog":{"path":"/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M17FFK25EAE5D6ZNBG58ATD4/dashboard-home/data/backlog.md","present":true,"available":true,"reason":null,"records":[{"order":1,"state":"in_flight","structured":true,"id":"scout-one","checked":false,"title":"Review dashboard evidence","repo":"firstmate","kind":"review","priority":"0","hold_reason":null,"hold_kind":null,"hold_until":null,"blocked_by":null,"blocked_by_ids":[],"blocked_reason":null,"since":"2026-08-30","merged":null,"reported":null,"done":null,"completion":{"verb":null,"date":null},"links":[],"pr_url":null,"report_path":null,"local_note":null,"raw":"- [ ] scout-one - Review dashboard evidence (repo: firstmate) (kind: review) (priority: 0) (since 2026-08-30)","body_lines":[],"body_excerpt":null,"unresolved_blocker_ids":[],"current_role":"worker","requires_child_metadata":true,"captain_actionable":false,"deferred_marker":false},{"order":2,"state":"queued","structured":true,"id":"queued-one","checked":false,"title":"Follow up on review","repo":null,"kind":null,"priority":null,"hold_reason":null,"hold_kind":null,"hold_until":null,"blocked_by":null,"blocked_by_ids":[],"blocked_reason":null,"since":null,"merged":null,"reported":null,"done":null,"completion":{"verb":null,"date":null},"links":[],"pr_url":null,"report_path":null,"local_note":null,"raw":"- [ ] queued-one - Follow up on review","body_lines":[],"body_excerpt":null,"unresolved_blocker_ids":[],"current_role":"queued","requires_child_metadata":false,"captain_actionable":false,"deferred_marker":false}]},"tasks":[{"id":"scout-one","kind":"review","harness":"claude","model":"opus","effort":"high","mode":"no-mistakes","yolo":"off","project":"firstmate","spawn_gen":null,"backend":"tmux","remote":null,"paths":{"meta":{"path":"/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M17FFK25EAE5D6ZNBG58ATD4/dashboard-home/state/scout-one.meta","present":true},"status_log":{"path":"/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M17FFK25EAE5D6ZNBG58ATD4/dashboard-home/state/scout-one.status","present":true,"available":false,"reason":null,"kind":"event_history","last_event":{"state":"2026-08-30T12","note":"05:00Z\tneeds-decision\tcaptain choice pending","raw":"2026-08-30T12:05:00Z\tneeds-decision\tcaptain choice pending"}},"worktree":{"path":"/tmp/scout-one","present":false},"home":{"path":null,"present":false},"report":{"path":"/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M17FFK25EAE5D6ZNBG58ATD4/dashboard-home/data/scout-one/report.md","present":true}},"secondmate_projects":[],"current_state":{"state":"unknown","source":"none","detail":"worktree gone (torn down?)","raw":"state: unknown · source: none · worktree gone (torn down?)","observed_at":"2026-08-30T09:50:23Z","freshness":"fresh"},"endpoint":{"target":"firstmate:fm-scout-one","exists":null,"agent_alive":"not_checked","status":"unknown","observed_at":"2026-08-30T09:50:23Z","freshness":"fresh"},"pr":{"url":null,"source":"absent"},"hints":{"pending_decision":false,"blocked_event":false,"open_decisions":[],"scout_report_present":true,"last_event_text":"2026-08-30T12:05:00Z\tneeds-decision\tcaptain choice pending"},"actions":{"watch":"bin/fm-peek.sh fm-scout-one","steer":"bin/fm-send.sh fm-scout-one '\u003cinstruction>'","return_channel_note":null},"backlog":{"order":1,"state":"in_flight","structured":true,"id":"scout-one","checked":false,"title":"Review dashboard evidence","repo":"firstmate","kind":"review","priority":"0","hold_reason":null,"hold_kind":null,"hold_until":null,"blocked_by":null,"blocked_by_ids":[],"blocked_reason":null,"since":"2026-08-30","merged":null,"reported":null,"done":null,"completion":{"verb":null,"date":null},"links":[],"pr_url":null,"report_path":null,"local_note":null,"raw":"- [ ] scout-one - Review dashboard evidence (repo: firstmate) (kind: review) (priority: 0) (since 2026-08-30)","body_lines":[],"body_excerpt":null,"unresolved_blocker_ids":[],"current_role":"worker","requires_child_metadata":true,"captain_actionable":false,"deferred_marker":false}}],"main_inventory":{"valid":true,"reason":null,"orphan_in_flight":[],"unstructured_current_count":0},"scout_reports":[{"id":"scout-one","path":"/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M17FFK25EAE5D6ZNBG58ATD4/dashboard-home/data/scout-one/report.md","kind":"review"}],"secondmate_current":{"registry":{"present":true,"available":true,"reason":null,"provenance":"registered-table","path":"/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M17FFK25EAE5D6ZNBG58ATD4/dashboard-home/data/secondmates.md","freshness":{"status":"fresh","observed_at":"2026-08-30T09:50:23Z"},"records":[],"input_truncated":false,"records_truncated":false,"complete":true,"reasons":[],"lines_in_window":0,"records_in_window":0},"records":[],"total_registered":0,"total":0,"shown":0,"truncated":0},"secondmate_landed":{"records":[],"truncated":[],"unreadable":[],"partial":[]},"secondmate_guidance":{"note":"For kind=secondmate, bearings selects validated structured state from that registered home; parent events and bounded terminal evidence are fallback-only supplements and never current-state authority."}},"supervision":{"model":"persistent","healthy":false,"reason":"stale-beacon","beacon_present":false,"beacon_age_seconds":null,"away_mode":false,"recovery_marker":false,"wakes":{"records":[],"total":0,"shown":0,"truncated":0,"available":true,"reason":"no queued notifications"}},"events":[{"task_id":"scout-one","path":"/private/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M17FFK25EAE5D6ZNBG58ATD4/dashboard-home/state/scout-one.status","readable":true,"reason":null,"total":2,"shown":2,"truncated":0,"lines":[{"verb":"2026-08-30T12","note":"00:00Z\tworking\tstarted review","raw":"2026-08-30T12:00:00Z\tworking\tstarted review"},{"verb":"2026-08-30T12","note":"05:00Z\tneeds-decision\tcaptain choice pending","raw":"2026-08-30T12:05:00Z\tneeds-decision\tcaptain choice pending"}]}],"reports":{"records":[{"id":"scout-one","path":"/private/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M17FFK25EAE5D6ZNBG58ATD4/dashboard-home/data/scout-one/report.md","readable":true,"reason":null,"bytes":173,"truncated":false,"modified":"2026-08-30T09:50:23Z","body":"# Review report\n\n## Verdict\n\nThe dashboard is **read-only** and evidence is visible. See https://example.invalid/pr/1.\n\n| finding | severity |\n| --- | --- |\n| none | info |\n"}],"total":1,"shown":1,"truncated":0},"usage":{"budget":{"available":true,"reason":null,"effective_budget_tokens":7500,"total_estimated_tokens":15,"status":"within-budget","files":[{"file":"data/captain.md","bytes":43,"estimated_tokens":15,"status":"present"},{"file":"data/captain-shared.md","bytes":0,"estimated_tokens":0,"status":"present"},{"file":"data/learnings.md","bytes":0,"estimated_tokens":0,"status":"present"}]},"agents":[{"task_id":"scout-one","kind":"review","harness":"claude","model":"opus","effort":"high","backend":"tmux","mode":"no-mistakes","yolo":"off"}]},"degraded":[]}
+</script>
+
+<script>
+(function () {
+  "use strict";
+
+  var SCHEMA = "fm-dashboard.v1";
+
+  /* ---------------------------------------------------------------
+     DOM helpers. Every value that came out of the payload reaches the
+     page as a text node or an attribute set through the DOM API, never
+     as markup: this page never assigns innerHTML, so a report, a status
+     line, or a backlog note cannot become executable HTML.
+     --------------------------------------------------------------- */
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = String(text);
+    return n;
+  }
+  function add(parent, node) { parent.appendChild(node); return node; }
+  function txt(parent, tag, cls, text) { return add(parent, el(tag, cls, text)); }
+  function dash(v) { return (v === null || v === undefined || v === "") ? "-" : String(v); }
+  function num(v) { return (typeof v === "number" && isFinite(v)) ? v : 0; }
+  function arr(v) { return Array.isArray(v) ? v : []; }
+
+  function badge(parent, text, tone) {
+    return add(parent, el("span", "fm-badge fm-badge--" + (tone || "neutral"), text));
+  }
+  function kvRow(parent, key, value, mono) {
+    txt(parent, "span", "cp-kv__k", key);
+    txt(parent, "span", "cp-kv__v" + (mono ? " cp-kv__v--mono" : ""), dash(value));
+  }
+  function externalLink(parent, url, label) {
+    if (typeof url !== "string" || !/^https:\/\/|^http:\/\//.test(url)) {
+      return txt(parent, "span", "cp-kv__v cp-kv__v--mono", dash(url));
+    }
+    var a = el("a", "cp-link", label || url);
+    a.setAttribute("href", url);
+    a.setAttribute("target", "_blank");
+    a.setAttribute("rel", "noreferrer noopener");
+    return add(parent, a);
+  }
+
+  /* Fail closed: a page with unreadable or wrong-schema data says so plainly
+     rather than rendering an empty shell that reads as an idle fleet. */
+  function renderError(msg) {
+    var main = document.getElementById("cp-main");
+    main.textContent = "";
+    var card = el("div", "fm-card fm-card--poster");
+    var pad = el("div", "cp-worker__pad");
+    txt(pad, "div", "cp-drawer__title", "This dashboard could not load");
+    txt(pad, "div", "cp-state__d", msg + " - rebuild it with bin/fm-dashboard.sh build.");
+    add(card, pad);
+    add(main, card);
+  }
+
+  var slot = document.getElementById("fm-dashboard-data");
+  var data = null;
+  try {
+    data = JSON.parse(slot.textContent);
+  } catch (e) {
+    renderError("Its embedded data is not readable JSON.");
+    return;
+  }
+  if (!data || typeof data !== "object" || data.schema !== SCHEMA) {
+    renderError("Its embedded data is not a " + SCHEMA + " document.");
+    return;
+  }
+
+  function usableDashboardData(d) {
+    var s = d.snapshot;
+    var b = s && s.backlog;
+    var sup = d.supervision;
+    var wakes = sup && sup.wakes;
+    var reports = d.reports;
+    var usage = d.usage;
+    function obj(v) { return v && typeof v === "object" && !Array.isArray(v); }
+    if (typeof d.fm_home !== "string" || !obj(s) || typeof s.fm_home !== "string"
+        || d.fm_home !== s.fm_home) return false;
+    function field(o, k, t) {
+      return obj(o) && Object.prototype.hasOwnProperty.call(o, k) && typeof o[k] === t;
+    }
+    function nullable(o, k, t) {
+      return obj(o) && Object.prototype.hasOwnProperty.call(o, k)
+        && (o[k] === null || typeof o[k] === t);
+    }
+    function nonnegInt(v) { return Number.isSafeInteger(v) && v >= 0; }
+    function validTimestamp(v) {
+      if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(v)) return false;
+      var epoch = Date.parse(v);
+      return isFinite(epoch) && epoch >= -8640000000000000 && epoch <= 8640000000000000;
+    }
+    function boundedCounts(v) {
+      return obj(v) && nonnegInt(v.total) && nonnegInt(v.shown)
+        && nonnegInt(v.truncated) && v.shown <= v.total
+        && v.truncated === v.total - v.shown;
+    }
+    function usageBudget(v) {
+      if (!obj(v) || !field(v, "available", "boolean")
+          || !nullable(v, "reason", "string")
+          || !nullable(v, "effective_budget_tokens", "number")
+          || !nullable(v, "total_estimated_tokens", "number")
+          || !nullable(v, "status", "string") || !Array.isArray(v.files)) return false;
+      if (!v.files.every(function (x) {
+        return field(x, "file", "string") && nullable(x, "bytes", "number")
+          && (x.bytes === null || nonnegInt(x.bytes))
+          && nullable(x, "estimated_tokens", "number")
+          && (x.estimated_tokens === null || nonnegInt(x.estimated_tokens))
+          && field(x, "status", "string");
+      })) return false;
+      if (!v.available) return v.effective_budget_tokens === null
+        && v.total_estimated_tokens === null && v.status === null && v.files.length === 0;
+      if (!nonnegInt(v.effective_budget_tokens) || !nonnegInt(v.total_estimated_tokens)
+          || (v.status !== "within-budget" && v.status !== "over-budget")) return false;
+      var estimates = v.files.map(function (x) { return x.estimated_tokens; });
+      if (estimates.some(function (x) { return x === null; })) return false;
+      var estimatesConsistent = estimates.length === 0
+        ? v.total_estimated_tokens === 0 && v.status === "within-budget"
+        : v.total_estimated_tokens === estimates.reduce(function (sum, x) { return sum + x; }, 0);
+      return estimatesConsistent
+        && (v.status === "within-budget"
+          ? v.total_estimated_tokens <= v.effective_budget_tokens
+          : v.total_estimated_tokens > v.effective_budget_tokens);
+    }
+    function pathRef(v) {
+      return obj(v) && nullable(v, "path", "string") && nullable(v, "present", "boolean");
+    }
+    function decision(v) {
+      return field(v, "key", "string") && field(v, "verb", "string")
+        && field(v, "summary", "string");
+    }
+    function backlogRecord(v) {
+      return field(v, "state", "string") && field(v, "structured", "boolean")
+        && nullable(v, "id", "string") && nullable(v, "title", "string")
+        && nullable(v, "raw", "string") && nullable(v, "repo", "string")
+        && nullable(v, "kind", "string") && nullable(v, "priority", "string")
+        && nullable(v, "hold_reason", "string") && nullable(v, "hold_kind", "string")
+        && nullable(v, "hold_until", "string") && nullable(v, "blocked_reason", "string")
+        && nullable(v, "since", "string") && nullable(v, "merged", "string")
+        && nullable(v, "reported", "string") && nullable(v, "done", "string")
+        && nullable(v, "local_note", "string") && nullable(v, "pr_url", "string")
+        && nullable(v, "report_path", "string") && nullable(v, "body_excerpt", "string")
+        && Array.isArray(v.blocked_by_ids) && v.blocked_by_ids.every(function (x) { return typeof x === "string"; })
+        && Array.isArray(v.unresolved_blocker_ids)
+        && v.unresolved_blocker_ids.every(function (x) { return typeof x === "string"; })
+        && obj(v.completion) && nullable(v.completion, "verb", "string")
+        && nullable(v.completion, "date", "string") && Array.isArray(v.links)
+        && v.links.every(function (x) { return typeof x === "string"; })
+        && (!v.structured || (field(v, "captain_actionable", "boolean")
+          && field(v, "deferred_marker", "boolean") && field(v, "current_role", "string")
+          && field(v, "requires_child_metadata", "boolean")));
+    }
+    function task(v) {
+      return field(v, "id", "string") && v.id.length > 0 && field(v, "kind", "string")
+        && field(v, "harness", "string") && nullable(v, "model", "string")
+        && nullable(v, "effort", "string") && field(v, "mode", "string")
+        && field(v, "yolo", "string") && field(v, "project", "string")
+        && nullable(v, "spawn_gen", "string") && field(v, "backend", "string")
+        && (v.remote === null || (obj(v.remote) && field(v.remote, "host", "string")
+          && field(v.remote, "root", "string") && nullable(v.remote, "evidence", "string")
+          && nullable(v.remote, "reason", "string")))
+        && obj(v.paths) && pathRef(v.paths.meta) && pathRef(v.paths.status_log)
+        && pathRef(v.paths.worktree) && pathRef(v.paths.home) && pathRef(v.paths.report)
+        && obj(v.current_state) && field(v.current_state, "state", "string")
+        && field(v.current_state, "source", "string") && field(v.current_state, "detail", "string")
+        && field(v.current_state, "raw", "string") && field(v.current_state, "observed_at", "string")
+        && field(v.current_state, "freshness", "string") && obj(v.endpoint)
+        && nullable(v.endpoint, "target", "string") && nullable(v.endpoint, "exists", "boolean")
+        && field(v.endpoint, "agent_alive", "string") && field(v.endpoint, "status", "string")
+        && field(v.endpoint, "observed_at", "string") && field(v.endpoint, "freshness", "string")
+        && obj(v.pr) && nullable(v.pr, "url", "string") && field(v.pr, "source", "string")
+        && obj(v.hints) && field(v.hints, "pending_decision", "boolean")
+        && field(v.hints, "blocked_event", "boolean") && Array.isArray(v.hints.open_decisions)
+        && v.hints.open_decisions.every(decision) && field(v.hints, "scout_report_present", "boolean")
+        && field(v.hints, "last_event_text", "string") && obj(v.actions)
+        && field(v.actions, "watch", "string") && (typeof v.actions.steer === "string"
+          || typeof v.actions.send === "string") && nullable(v.actions, "return_channel_note", "string")
+        && (v.backlog === null || backlogRecord(v.backlog));
+    }
+    function event(v) {
+      return field(v, "task_id", "string") && field(v, "path", "string")
+        && field(v, "readable", "boolean") && nullable(v, "reason", "string")
+        && boundedCounts(v) && Array.isArray(v.lines) && v.shown === v.lines.length
+        && v.lines.every(function (x) { return field(x, "verb", "string")
+          && field(x, "note", "string") && field(x, "raw", "string"); });
+    }
+    function report(v) {
+      return field(v, "id", "string") && field(v, "path", "string")
+        && field(v, "readable", "boolean") && nullable(v, "reason", "string")
+        && nonnegInt(v.bytes) && field(v, "truncated", "boolean")
+        && nullable(v, "modified", "string") && field(v, "body", "string");
+    }
+    function wake(v) {
+      function safeEpoch(value) {
+        return typeof value === "number" && isFinite(value) && Math.floor(value) === value
+          && value >= -8640000000000 && value <= 8640000000000;
+      }
+      return nullable(v, "epoch", "number") && nullable(v, "seq", "string")
+        && nullable(v, "kind", "string") && nullable(v, "key", "string")
+        && field(v, "payload", "string") && field(v, "malformed", "boolean")
+        && (v.epoch === null || safeEpoch(v.epoch))
+        && (v.malformed || (field(v, "epoch", "number") && field(v, "seq", "string")
+          && field(v, "kind", "string") && field(v, "key", "string")));
+    }
+    function evidence(v) { return obj(v); }
+    function secondmate(v) {
+      return field(v, "id", "string") && nullable(v, "home", "string")
+        && nullable(v, "host", "string") && field(v, "remote", "boolean")
+        && nullable(v, "spawn_gen", "string") && nullable(v, "registered", "boolean")
+        && obj(v.current) && field(v.current, "state", "string")
+        && nullable(v.current, "reason", "string") && obj(v.provenance)
+        && field(v.provenance, "selected", "string")
+        && field(v.provenance, "parent_event_role", "string") && obj(v.freshness)
+        && field(v.freshness, "status", "string")
+        && field(v.freshness, "observed_at", "string")
+        && nullable(v.freshness, "age_seconds", "number")
+        && Array.isArray(v.active_children) && v.active_children.every(evidence)
+        && Array.isArray(v.decisions_open) && v.decisions_open.every(evidence)
+        && Array.isArray(v.holds) && v.holds.every(evidence)
+        && Array.isArray(v.queued) && v.queued.every(evidence)
+        && Array.isArray(v.landed) && v.landed.every(evidence)
+        && Array.isArray(v.endpoints) && v.endpoints.every(evidence)
+        && obj(v.counts) && nonnegInt(v.counts.active_children)
+        && nonnegInt(v.counts.decisions_open) && nonnegInt(v.counts.holds)
+        && nonnegInt(v.counts.queued) && nonnegInt(v.counts.landed)
+        && nonnegInt(v.counts.endpoints)
+        && v.counts.active_children >= v.active_children.length
+        && v.counts.decisions_open >= v.decisions_open.length
+        && v.counts.holds >= v.holds.length && v.counts.queued >= v.queued.length
+        && v.counts.landed >= v.landed.length && v.counts.endpoints >= v.endpoints.length
+        && Array.isArray(v.omitted)
+        && v.omitted.every(evidence) && obj(v.parent_event) && obj(v.terminal_evidence)
+        && field(v, "contradiction", "boolean");
+    }
+    return validTimestamp(d.generated) && field(d, "fm_home", "string")
+      && obj(s) && s.schema === "fm-fleet-snapshot.v1" && validTimestamp(s.generated)
+      && obj(s.roots) && field(s.roots, "state", "string") && field(s.roots, "data", "string")
+      && field(s.roots, "config", "string") && field(s.roots, "projects", "string")
+      && obj(b) && field(b, "path", "string") && field(b, "present", "boolean")
+      && field(b, "available", "boolean") && nullable(b, "reason", "string")
+      && Array.isArray(b.records) && b.records.every(backlogRecord) && Array.isArray(s.tasks)
+      && s.tasks.every(task) && Array.isArray(s.scout_reports)
+      && s.scout_reports.every(function (x) { return field(x, "id", "string")
+        && field(x, "path", "string") && field(x, "kind", "string"); })
+      && field(s, "main_inventory", "object") && field(s.main_inventory, "valid", "boolean")
+      && nullable(s.main_inventory, "reason", "string") && Array.isArray(s.main_inventory.orphan_in_flight)
+      && s.main_inventory.orphan_in_flight.every(function (x) { return typeof x === "string"; })
+      && boundedCounts(s.secondmate_current)
+      && obj(s.secondmate_current.registry)
+      && field(s.secondmate_current.registry, "path", "string")
+      && field(s.secondmate_current.registry, "present", "boolean")
+      && field(s.secondmate_current.registry, "available", "boolean")
+      && field(s.secondmate_current.registry, "complete", "boolean")
+      && nullable(s.secondmate_current.registry, "reason", "string")
+      && Array.isArray(s.secondmate_current.records)
+      && s.secondmate_current.shown === s.secondmate_current.records.length
+      && s.secondmate_current.records.every(secondmate)
+      && obj(s.secondmate_landed) && Array.isArray(s.secondmate_landed.records)
+      && s.secondmate_landed.records.every(evidence)
+      && Array.isArray(s.secondmate_landed.truncated)
+      && s.secondmate_landed.truncated.every(function (x) { return typeof x === "string"; })
+      && Array.isArray(s.secondmate_landed.unreadable)
+      && s.secondmate_landed.unreadable.every(function (x) { return typeof x === "string"; })
+      && Array.isArray(s.secondmate_landed.partial)
+      && s.secondmate_landed.partial.every(function (x) { return typeof x === "string"; })
+      && obj(s.secondmate_guidance) && field(s.secondmate_guidance, "note", "string")
+      && obj(sup) && field(sup, "model", "string") && field(sup, "healthy", "boolean")
+      && field(sup, "reason", "string") && field(sup, "beacon_present", "boolean")
+      && nullable(sup, "beacon_age_seconds", "number") && field(sup, "away_mode", "boolean")
+      && field(sup, "recovery_marker", "boolean") && obj(wakes)
+      && boundedCounts(wakes) && typeof wakes.available === "boolean"
+      && nullable(wakes, "reason", "string") && Array.isArray(wakes.records)
+      && wakes.shown === wakes.records.length
+      && wakes.records.every(wake) && Array.isArray(d.events) && d.events.every(event)
+      && obj(reports) && boundedCounts(reports) && Array.isArray(reports.records)
+      && reports.shown === reports.records.length
+      && reports.records.every(report)
+      && obj(usage) && usageBudget(usage.budget) && Array.isArray(usage.agents)
+      && usage.agents.every(function (x) { return field(x, "task_id", "string")
+        && field(x, "kind", "string") && field(x, "harness", "string")
+        && nullable(x, "model", "string") && nullable(x, "effort", "string")
+        && field(x, "backend", "string") && field(x, "mode", "string")
+        && field(x, "yolo", "string"); }) && Array.isArray(d.degraded)
+      && d.degraded.every(function (x) { return field(x, "source", "string")
+        && field(x, "path", "string") && field(x, "reason", "string"); });
+  }
+  if (!usableDashboardData(data)) {
+    renderError("Its embedded data is incomplete or unusable.");
+    return;
+  }
+
+  var snapshot = data.snapshot;
+  var tasks = arr(snapshot.tasks);
+  var backlog = arr(snapshot.backlog && snapshot.backlog.records);
+  var secondmateCurrent = snapshot.secondmate_current || {};
+  var secondmateRegistry = secondmateCurrent.registry || {};
+  var secondmateRecords = arr(secondmateCurrent.records);
+  var secondmateLanded = snapshot.secondmate_landed || {};
+  var secondmateGuidance = snapshot.secondmate_guidance || {};
+  var events = arr(data.events);
+  var reports = (data.reports && typeof data.reports === "object") ? data.reports : { records: [] };
+  var supervision = (data.supervision && typeof data.supervision === "object") ? data.supervision : {};
+  var wakes = (supervision.wakes && typeof supervision.wakes === "object") ? supervision.wakes : { records: [] };
+  var usage = (data.usage && typeof data.usage === "object") ? data.usage : {};
+  var degraded = arr(data.degraded);
+
+  var NOW = Date.parse(data.generated);
+  if (!isFinite(NOW)) {
+    renderError("Its generated timestamp is invalid.");
+    return;
+  }
+
+  function stampIso(epochSeconds) {
+    if (typeof epochSeconds !== "number" || !isFinite(epochSeconds)) return "-";
+    return new Date(epochSeconds * 1000).toISOString().replace(/\.\d+Z$/, "Z");
+  }
+  function agoFrom(iso) {
+    var t = Date.parse(iso);
+    if (!isFinite(t)) return "";
+    return agoSeconds(Math.round((NOW - t) / 1000));
+  }
+  function agoSeconds(s) {
+    if (typeof s !== "number" || !isFinite(s)) return "";
+    if (s < 0) s = 0;
+    if (s < 90) return s + "s ago";
+    if (s < 5400) return Math.round(s / 60) + "m ago";
+    if (s < 172800) return Math.round(s / 3600) + "h ago";
+    return Math.round(s / 86400) + "d ago";
+  }
+
+  /* Presentation tone only. The payload stays data: nothing here changes a
+     recorded state, it only chooses how loudly to draw one. */
+  function stateTone(state) {
+    switch (String(state || "").toLowerCase()) {
+      case "done": case "passed": case "checks-passed": case "landed": return "online";
+      case "failed": case "cancelled": case "dead": case "missing": return "danger";
+      case "blocked": case "needs-decision": case "paused": return "warn";
+      case "working": case "running": return "info";
+      default: return "neutral";
+    }
+  }
+  function verbTone(verb) {
+    switch (String(verb || "").toLowerCase()) {
+      case "done": case "resolved": return "online";
+      case "failed": case "blocked": return "danger";
+      case "needs-decision": case "paused": return "warn";
+      case "working": return "info";
+      default: return "neutral";
+    }
+  }
+
+  /* ---------------------------------------------------------------
+     Safe Markdown subset. Every node is constructed with createElement
+     and textContent, so a report can style itself but can never inject
+     script, markup, or an event handler. Raw HTML in a report is left as
+     literal text on purpose.
+     --------------------------------------------------------------- */
+  var INLINE = /(`[^`\n]+`)|(\*\*[\s\S]+?\*\*)|(\[[^\]\n]+\]\((?:https?:\/\/)[^\s)]+\))|(\bhttps?:\/\/[^\s<>()\[\]]+)|(\*[^*\n]+\*)/g;
+
+  function renderInline(parent, text) {
+    var s = String(text === undefined || text === null ? "" : text);
+    var last = 0, m;
+    INLINE.lastIndex = 0;
+    while ((m = INLINE.exec(s)) !== null) {
+      if (m.index > last) parent.appendChild(document.createTextNode(s.slice(last, m.index)));
+      var tok = m[0];
+      if (m[1]) {
+        txt(parent, "code", "", tok.slice(1, -1));
+      } else if (m[2]) {
+        txt(parent, "strong", "", tok.slice(2, -2));
+      } else if (m[3]) {
+        var cut = tok.lastIndexOf("](");
+        externalLink(parent, tok.slice(cut + 2, -1), tok.slice(1, cut));
+      } else if (m[4]) {
+        externalLink(parent, tok, tok);
+      } else {
+        txt(parent, "em", "", tok.slice(1, -1));
+      }
+      last = m.index + tok.length;
+    }
+    if (last < s.length) parent.appendChild(document.createTextNode(s.slice(last)));
+  }
+
+  function splitTableRow(line) {
+    var t = line.trim();
+    if (t.charAt(0) === "|") t = t.slice(1);
+    if (t.charAt(t.length - 1) === "|") t = t.slice(0, -1);
+    return t.split("|").map(function (c) { return c.trim(); });
+  }
+
+  function renderMarkdown(root, text) {
+    var lines = String(text === undefined || text === null ? "" : text).split(/\r?\n/);
+    var i = 0;
+    while (i < lines.length) {
+      var line = lines[i];
+
+      if (/^\s*```/.test(line)) {
+        var body = [];
+        i += 1;
+        while (i < lines.length && !/^\s*```/.test(lines[i])) { body.push(lines[i]); i += 1; }
+        if (i < lines.length) i += 1;
+        var pre = el("pre");
+        txt(pre, "code", "", body.join("\n"));
+        add(root, pre);
+        continue;
+      }
+
+      if (/^\s*$/.test(line)) { i += 1; continue; }
+
+      if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+        add(root, el("hr"));
+        i += 1;
+        continue;
+      }
+
+      var h = /^\s*(#{1,6})\s+(.*)$/.exec(line);
+      if (h) {
+        var level = Math.min(h[1].length, 4);
+        renderInline(add(root, el("h" + level)), h[2].trim());
+        i += 1;
+        continue;
+      }
+
+      if (/^\s*\|/.test(line) && i + 1 < lines.length
+        && /^\s*\|?[\s:|-]*-[\s:|-]*$/.test(lines[i + 1]) && lines[i + 1].indexOf("|") !== -1) {
+        var wrap = add(root, el("div", "cp-mdwrap"));
+        var table = add(wrap, el("table"));
+        var head = add(table, el("thead"));
+        var hrow = add(head, el("tr"));
+        splitTableRow(line).forEach(function (c) { renderInline(add(hrow, el("th")), c); });
+        var tbody = add(table, el("tbody"));
+        i += 2;
+        while (i < lines.length && /^\s*\|/.test(lines[i])) {
+          var trow = add(tbody, el("tr"));
+          splitTableRow(lines[i]).forEach(function (c) { renderInline(add(trow, el("td")), c); });
+          i += 1;
+        }
+        continue;
+      }
+
+      if (/^\s*>\s?/.test(line)) {
+        var quote = [];
+        while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+          quote.push(lines[i].replace(/^\s*>\s?/, ""));
+          i += 1;
+        }
+        renderInline(add(root, el("blockquote")), quote.join(" "));
+        continue;
+      }
+
+      var bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
+      var ordered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+      if (bullet || ordered) {
+        var listTag = bullet ? "ul" : "ol";
+        var list = add(root, el(listTag));
+        while (i < lines.length) {
+          var item = bullet
+            ? /^\s*[-*+]\s+(.*)$/.exec(lines[i])
+            : /^\s*\d+[.)]\s+(.*)$/.exec(lines[i]);
+          if (!item) break;
+          renderInline(add(list, el("li")), item[1]);
+          i += 1;
+        }
+        continue;
+      }
+
+      var para = [];
+      while (i < lines.length && !/^\s*$/.test(lines[i]) && !/^\s*(#{1,6})\s/.test(lines[i])
+        && !/^\s*```/.test(lines[i]) && !/^\s*[-*+]\s/.test(lines[i])
+        && !/^\s*\d+[.)]\s/.test(lines[i]) && !/^\s*>/.test(lines[i])
+        && !/^\s*\|/.test(lines[i])) {
+        para.push(lines[i]);
+        i += 1;
+      }
+      if (para.length) renderInline(add(root, el("p")), para.join(" "));
+      else i += 1;
+    }
+  }
+
+  /* ---------------------------------------------------------------
+     Sections
+     --------------------------------------------------------------- */
+  var sectionsRoot = document.getElementById("cp-sections");
+  var tabsRoot = document.getElementById("cp-tabs");
+  var registered = [];
+
+  function section(id, title, note) {
+    var sec = add(sectionsRoot, el("section", "cp-section"));
+    sec.setAttribute("id", "cp-sec-" + id);
+    var head = add(sec, el("div", "cp-section__head"));
+    txt(head, "span", "fm-sign fm-sign--eyebrow", title);
+    if (note) txt(head, "span", "cp-section__note", note);
+    return sec;
+  }
+  function tab(id, label, count) {
+    var a = el("a", "cp-tab", label + " ");
+    a.setAttribute("href", "#cp-sec-" + id);
+    txt(a, "span", "cp-tab__n", String(count));
+    a.addEventListener("click", function () {
+      registered.forEach(function (t) { t.classList.remove("is-active"); });
+      a.classList.add("is-active");
+    });
+    registered.push(a);
+    add(tabsRoot, a);
+    return a;
+  }
+  function emptyRow(parent, message) {
+    txt(parent, "div", "cp-empty", message);
+  }
+
+  /* --- nav meta ------------------------------------------------- */
+  var meta = document.getElementById("cp-nav-meta");
+  var supTone = supervision.healthy ? "online" : "danger";
+  var supText = supervision.healthy
+    ? "monitoring healthy"
+    : (supervision.reason === "no-watcher" ? "no monitor running" : "monitor not confirmed");
+  badge(meta, supText, supTone);
+  if (supervision.away_mode) badge(meta, "away mode", "warn");
+  if (supervision.recovery_marker) badge(meta, "recovering notifications", "warn");
+  txt(meta, "span", "cp-mono", dash(data.fm_home));
+  txt(meta, "span", "cp-mono", "read " + dash(data.generated) + " (" + agoFrom(data.generated) + ")");
+
+  /* --- stat strip ----------------------------------------------- */
+  var statsRoot = document.getElementById("cp-stats");
+  function stat(n, label, alert) {
+    var s = add(statsRoot, el("div", "cp-stat" + (alert && n > 0 ? " cp-stat--alert" : "")));
+    txt(s, "div", "cp-stat__num", String(n));
+    txt(s, "div", "cp-stat__label", label);
+  }
+  var workersActive = tasks.filter(function (t) { return t.kind !== "secondmate"; });
+  var secondmates = tasks.filter(function (t) { return t.kind === "secondmate"; });
+  var calls = backlog.filter(function (r) { return r.captain_actionable === true; });
+  var holds = backlog.filter(function (r) {
+    return r.hold_kind !== null && r.hold_kind !== undefined && r.state !== "done";
+  });
+  var openDecisions = [];
+  tasks.forEach(function (t) {
+    arr(t.hints && t.hints.open_decisions).forEach(function (d) {
+      openDecisions.push({ task_id: t.id, decision: d });
+    });
+  });
+  var recordedPrs = tasks.filter(function (t) { return t.pr && t.pr.url; });
+  var unhealthyEndpoints = tasks.filter(function (t) { return t.endpoint && t.endpoint.exists === false; });
+
+  stat(workersActive.length, "workers");
+  stat(secondmates.length, "second mates");
+  stat(calls.length + openDecisions.length, "captain's calls", true);
+  stat(num(wakes.total), "queued notifications", true);
+  stat(num(reports.total), "reports");
+  stat(recordedPrs.length, "recorded prs");
+  stat(degraded.length + unhealthyEndpoints.length, "evidence gaps", true);
+
+  /* --- notices --------------------------------------------------- */
+  var noticesRoot = document.getElementById("cp-notices");
+  function notice(tone, title, detail) {
+    var n = add(noticesRoot, el("div", "cp-notice cp-notice--" + tone));
+    var body = add(n, el("div", "cp-notice__body"));
+    txt(body, "div", "cp-notice__title", title);
+    if (detail) txt(body, "div", "cp-notice__detail", detail);
+  }
+  if (!supervision.healthy) {
+    notice("danger", "Supervision is not confirmed healthy",
+      "Reported reason: " + dash(supervision.reason) + ". Monitoring model: "
+      + dash(supervision.model) + ". Heartbeat: "
+      + (supervision.beacon_present
+        ? (agoSeconds(supervision.beacon_age_seconds) || "unknown age")
+        : "never recorded")
+      + ". Firstmate repairs this; the dashboard only reports it.");
+  }
+  if (supervision.away_mode) {
+    notice("info", "Away mode is on",
+      "Routine notifications are being handled without interrupting you.");
+  }
+  var inventory = snapshot.main_inventory || {};
+  if (inventory.valid === false) {
+    notice("danger", "This home's current-work inventory does not add up",
+      dash(inventory.reason) + (arr(inventory.orphan_in_flight).length
+        ? " Affected: " + arr(inventory.orphan_in_flight).join(", ") : ""));
+  }
+  if (snapshot.backlog && snapshot.backlog.available === false) {
+    notice("warn", "Backlog evidence could not be read",
+      dash(snapshot.backlog.reason) + " - " + dash(snapshot.backlog.path));
+  }
+  if (!wakes.available) {
+    notice("warn", "Queued notifications could not be read", dash(wakes.reason));
+  }
+  degraded.forEach(function (d) {
+    notice("warn", "Evidence not shown: " + dash(d.source), dash(d.reason) + " - " + dash(d.path));
+  });
+  if (!noticesRoot.children.length) {
+    notice("info", "No degraded evidence", "Every recorded source on this page was readable.");
+  }
+
+  /* --- workers ---------------------------------------------------- */
+  var eventsById = {};
+  events.forEach(function (e) { eventsById[e.task_id] = e; });
+  var reportsById = {};
+  arr(reports.records).forEach(function (r) { reportsById[r.id] = r; });
+  var backlogById = {};
+  backlog.forEach(function (r) { if (r.id) backlogById[r.id] = r; });
+
+  tab("workers", "Workers", tasks.length);
+  var secWorkers = section("workers", "Workers and second mates",
+    "Current state is reconciled at read time. The event log below each worker is history, not current state.");
+  var workerGrid = add(secWorkers, el("div", "cp-grid"));
+  if (!tasks.length) {
+    var emptyCard = add(workerGrid, el("div", "fm-card"));
+    emptyRow(emptyCard, "No worker is running in this home.");
+  }
+  tasks.forEach(function (t) { renderWorker(workerGrid, t); });
+
+  tab("secondmates", "Child activity", secondmateRecords.length);
+  var secSecondmates = section("secondmates", "Secondmate child activity",
+    "Current, queued, held, endpoint, and landed evidence from each registered home.");
+  var secondmateGrid = add(secSecondmates, el("div", "cp-grid"));
+  if (secondmateRegistry.available === false) {
+    var registryWarning = add(secondmateGrid, el("div", "fm-card"));
+    txt(registryWarning, "div", "fm-sign", "Secondmate registry unavailable");
+    txt(registryWarning, "div", "cp-event__note",
+      dash(secondmateRegistry.reason || "The registered secondmate table could not be read."));
+    txt(registryWarning, "div", "cp-event__note", dash(secondmateRegistry.path));
+  }
+  function renderEvidenceList(parent, label, records) {
+    var fold = add(parent, el("details", "cp-fold"));
+    txt(fold, "summary", "", label + " (" + records.length + ")");
+    var body = add(fold, el("div", "cp-events"));
+    if (!records.length) {
+      emptyRow(body, "None recorded.");
+      return;
+    }
+    records.forEach(function (record) {
+      txt(body, "div", "cp-event__note", JSON.stringify(record));
+    });
+  }
+  if (!secondmateRecords.length) {
+    var noSecondmates = add(secondmateGrid, el("div", "fm-card"));
+    emptyRow(noSecondmates, "No registered secondmate activity is recorded.");
+  }
+  secondmateRecords.forEach(function (mate) {
+    var card = add(secondmateGrid, el("div", "fm-card cp-worker"));
+    var pad = add(card, el("div", "cp-worker__pad"));
+    var top = add(pad, el("div", "cp-worker__top"));
+    var idBox = add(top, el("div"));
+    txt(idBox, "div", "cp-worker__id", dash(mate.id));
+    txt(idBox, "div", "cp-worker__repo", dash(mate.home));
+    var badges = add(top, el("div", "cp-worker__badges"));
+    badge(badges, dash(mate.current.state), stateTone(mate.current.state));
+    if (mate.contradiction) badge(badges, "contradiction", "danger");
+    var kv = add(pad, el("div", "cp-kv"));
+    kvRow(kv, "provenance", dash(mate.provenance.selected) + " / "
+      + dash(mate.provenance.trust || mate.provenance.parent_event_role), true);
+    kvRow(kv, "freshness", dash(mate.freshness.status) + " / "
+      + dash(mate.freshness.observed_at), true);
+    kvRow(kv, "current", dash(mate.current.state) + " - " + dash(mate.current.reason));
+    kvRow(kv, "counts", Object.keys(mate.counts).map(function (key) {
+      return key + " " + num(mate.counts[key]);
+    }).join(" - "));
+    renderEvidenceList(pad, "Active children", mate.active_children);
+    renderEvidenceList(pad, "Open decisions", mate.decisions_open);
+    renderEvidenceList(pad, "Holds", mate.holds);
+    renderEvidenceList(pad, "Queued", mate.queued);
+    renderEvidenceList(pad, "Landed", mate.landed);
+    renderEvidenceList(pad, "Endpoints", mate.endpoints);
+    if (mate.omitted.length) {
+      txt(pad, "div", "cp-event__note cp-event__note--empty",
+        "Omitted by source bounds: " + mate.omitted.map(function (item) {
+          return JSON.stringify(item);
+        }).join("; "));
+    }
+  });
+  var landedCard = add(secSecondmates, el("div", "fm-card"));
+  txt(landedCard, "div", "fm-sign", "Landed roll-up");
+  renderEvidenceList(landedCard, "All landed records", arr(secondmateLanded.records));
+  if (arr(secondmateLanded.truncated).length) {
+    txt(landedCard, "div", "cp-event__note", "Landed evidence truncated for: "
+      + arr(secondmateLanded.truncated).join(", "));
+  }
+  if (arr(secondmateLanded.unreadable).length) {
+    txt(landedCard, "div", "cp-event__note", "Unreadable homes: "
+      + arr(secondmateLanded.unreadable).join(", "));
+  }
+  if (arr(secondmateLanded.partial).length) {
+    txt(landedCard, "div", "cp-event__note", "Partial homes: "
+      + arr(secondmateLanded.partial).join(", "));
+  }
+  txt(secSecondmates, "div", "cp-event__note cp-event__note--empty",
+    "Guidance: " + dash(secondmateGuidance.note));
+
+  function renderWorker(parent, t) {
+    var card = add(parent, el("div", "fm-card cp-worker"));
+    card.setAttribute("data-task", String(t.id));
+    var pad = add(card, el("div", "cp-worker__pad"));
+
+    var top = add(pad, el("div", "cp-worker__top"));
+    var idBox = add(top, el("div"));
+    txt(idBox, "div", "cp-worker__id", dash(t.id));
+    var bl = backlogById[t.id];
+    txt(idBox, "div", "cp-worker__repo",
+      [(bl && bl.title) || t.project, bl && bl.repo].filter(Boolean).join(" - ") || "-");
+    var badges = add(top, el("div", "cp-worker__badges"));
+    badge(badges, dash(t.kind), t.kind === "secondmate" ? "info" : "neutral");
+    var cs = t.current_state || {};
+    badge(badges, dash(cs.state), stateTone(cs.state));
+
+    var state = add(pad, el("div", "cp-state"));
+    txt(state, "div", "cp-state__k", "current state - reconciled");
+    txt(state, "div", "cp-state__v", dash(cs.state) + " - via " + dash(cs.source));
+    txt(state, "div", "cp-state__d", dash(cs.detail));
+    txt(state, "div", "cp-state__d",
+      "observed " + dash(cs.observed_at) + " (" + dash(cs.freshness) + ")");
+
+    var kv = add(pad, el("div", "cp-kv"));
+    kvRow(kv, "runtime", dash(t.harness) + " / " + dash(t.model) + " / " + dash(t.effort), true);
+    kvRow(kv, "delivery", dash(t.mode) + " - merge by captain: " + (t.yolo === "on" ? "no" : "yes"));
+    var ep = t.endpoint || {};
+    var epText = (ep.exists === true ? "present" : ep.exists === false ? "absent" : "unknown")
+      + " - " + dash(ep.target) + " (" + dash(t.backend) + ")";
+    if (t.kind === "secondmate") epText += " - agent " + dash(ep.agent_alive);
+    kvRow(kv, "endpoint", epText, true);
+    var paths = t.paths || {};
+    if (t.remote) {
+      kvRow(kv, "remote", dash(t.remote.host) + ":" + dash(t.remote.root), true);
+      kvRow(kv, "remote evidence", dash(t.remote.evidence || "unavailable")
+        + (t.remote.reason ? " - " + dash(t.remote.reason) : ""), true);
+      kvRow(kv, "local copy", "not read in local-only mode", true);
+    } else {
+      var loc = (paths.home && paths.home.path) || (paths.worktree && paths.worktree.path) || null;
+      kvRow(kv, "local copy", loc, true);
+    }
+    txt(kv, "span", "cp-kv__k", "pr");
+    var prCell = add(kv, el("span", "cp-kv__v cp-kv__v--mono"));
+    if (t.pr && t.pr.url) {
+      externalLink(prCell, t.pr.url, t.pr.url);
+      txt(prCell, "span", "cp-state__d", " recorded from " + dash(t.pr.source) + "; not a live check");
+    } else {
+      prCell.textContent = "none recorded";
+    }
+
+    var decisions = arr(t.hints && t.hints.open_decisions);
+    if (decisions.length) {
+      var dfold = add(pad, el("details", "cp-fold"));
+      dfold.setAttribute("open", "open");
+      txt(dfold, "summary", "", "Open captain's calls (" + decisions.length + ")");
+      var dlist = add(dfold, el("div", "cp-events"));
+      decisions.forEach(function (d) {
+        var row = add(dlist, el("div", "cp-event"));
+        badge(row, dash(d.verb || d.state || "open"), "warn");
+        txt(row, "span", "cp-event__note", dash(d.summary || d.note || d.raw || d.key));
+      });
+    }
+
+    var ev = eventsById[t.id];
+    var evFold = add(pad, el("details", "cp-fold"));
+    var evCount = ev && ev.readable ? num(ev.shown) : 0;
+    txt(evFold, "summary", "", "Event history (" + evCount + " of " + (ev ? num(ev.total) : 0) + ")");
+    var evBody = add(evFold, el("div", "cp-events"));
+    if (!ev || !ev.readable) {
+      txt(evBody, "div", "cp-event__note cp-event__note--empty",
+        ev ? "No event history: " + dash(ev.reason) : "No event history recorded.");
+    } else if (!arr(ev.lines).length) {
+      txt(evBody, "div", "cp-event__note cp-event__note--empty", "No events recorded yet.");
+    } else {
+      arr(ev.lines).slice().reverse().forEach(function (line) {
+        var row = add(evBody, el("div", "cp-event"));
+        badge(row, dash(line.verb), verbTone(line.verb));
+        var noteCell = add(row, el("span", "cp-event__note"));
+        noteCell.textContent = line.note ? String(line.note) : String(line.raw || "");
+      });
+      if (num(ev.truncated) > 0) {
+        txt(evBody, "div", "cp-event__note cp-event__note--empty",
+          num(ev.truncated) + " older events not shown; the full log is at " + dash(ev.path));
+      }
+      txt(evBody, "div", "cp-event__note cp-event__note--empty", "source: " + dash(ev.path));
+    }
+
+    var rp = reportsById[t.id] || ((paths.report && paths.report.present) ? { id: t.id } : null);
+    if (rp && reportsById[t.id]) {
+      var artFold = add(pad, el("details", "cp-fold"));
+      txt(artFold, "summary", "", "Report");
+      var artBody = add(artFold, el("div", "cp-events"));
+      addReportOpener(artBody, reportsById[t.id]);
+    }
+
+    var actions = t.actions || {};
+    if (actions.watch) {
+      var cmdFold = add(pad, el("details", "cp-fold"));
+      txt(cmdFold, "summary", "", "Inspect from your own terminal");
+      txt(cmdFold, "div", "cp-copy", String(actions.watch));
+      txt(cmdFold, "div", "cp-event__note cp-event__note--empty",
+        "Read-only. This page never runs anything; firstmate stays the only way to steer a worker.");
+    }
+  }
+
+  /* --- captain's calls -------------------------------------------- */
+  tab("calls", "Captain's calls", calls.length + openDecisions.length);
+  var secCalls = section("calls", "Captain's calls and holds",
+    "Work waiting on a decision from you, plus every hold recorded against a task.");
+  var callsCard = add(secCalls, el("div", "fm-card fm-card--warm"));
+  var callsRows = add(callsCard, el("div", "cp-rows"));
+  if (!calls.length && !openDecisions.length && !holds.length) {
+    emptyRow(callsRows, "Nothing is waiting on you.");
+  }
+  openDecisions.forEach(function (o) {
+    var row = add(callsRows, el("div", "cp-row"));
+    var main = add(row, el("div", "cp-row__main"));
+    txt(main, "div", "cp-row__title",
+      dash(o.decision.summary || o.decision.note || o.decision.raw || o.decision.key));
+    txt(main, "div", "cp-row__sub", "raised by " + dash(o.task_id) + " - key " + dash(o.decision.key));
+    var side = add(row, el("div", "cp-row__side"));
+    badge(side, dash(o.decision.verb || "open"), "danger");
+  });
+  calls.concat(holds.filter(function (h) { return calls.indexOf(h) === -1; })).forEach(function (r) {
+    var row = add(callsRows, el("div", "cp-row"));
+    var main = add(row, el("div", "cp-row__main"));
+    txt(main, "div", "cp-row__title", dash(r.title || r.raw));
+    var sub = dash(r.repo) + " - " + dash(r.hold_reason || r.blocked_reason || "held");
+    if (r.hold_until) sub += " - deferred to " + r.hold_until;
+    if (arr(r.unresolved_blocker_ids).length) {
+      sub += " - waiting on " + arr(r.unresolved_blocker_ids).join(", ");
+    }
+    txt(main, "div", "cp-row__sub", sub);
+    var side = add(row, el("div", "cp-row__side"));
+    badge(side, r.captain_actionable ? "your call now" : "deferred",
+      r.captain_actionable ? "danger" : "warn");
+    if (r.hold_kind) badge(side, dash(r.hold_kind), "neutral");
+  });
+
+  /* --- backlog ------------------------------------------------------ */
+  tab("backlog", "Backlog", backlog.length);
+  var secBacklog = section("backlog", "Backlog",
+    "Exactly as recorded in " + dash(snapshot.backlog && snapshot.backlog.path) + ".");
+  var backlogCols = add(secBacklog, el("div", "cp-cols"));
+  [["in_flight", "In flight"], ["queued", "Queued"], ["done", "Done"]].forEach(function (group) {
+    var col = add(backlogCols, el("div", "cp-section"));
+    var rows_ = backlog.filter(function (r) { return r.state === group[0]; });
+    txt(col, "span", "fm-sign", group[1] + " (" + rows_.length + ")");
+    var card = add(col, el("div", "fm-card"));
+    var rowsRoot = add(card, el("div", "cp-rows"));
+    if (!rows_.length) { emptyRow(rowsRoot, "Nothing here."); return; }
+    rows_.forEach(function (r) {
+      var row = add(rowsRoot, el("div", "cp-row"));
+      var main = add(row, el("div", "cp-row__main"));
+      txt(main, "div", "cp-row__title", dash(r.title || r.raw));
+      var bits = [r.repo, r.kind];
+      if (r.since) bits.push("since " + r.since);
+      if (r.completion && r.completion.verb) {
+        bits.push(r.completion.verb + " " + dash(r.completion.date));
+      }
+      txt(main, "div", "cp-row__sub", bits.filter(Boolean).join(" - ") || "-");
+      if (r.body_excerpt) {
+        txt(main, "div", "cp-row__sub",
+          "note: " + r.body_excerpt + " (source: " + dash(snapshot.backlog.path) + ")");
+      }
+      var side = add(row, el("div", "cp-row__side"));
+      if (!r.structured) badge(side, "free-form", "warn");
+      if (r.pr_url) externalLink(side, r.pr_url, "PR");
+      if (r.report_path && reportsById[r.id]) addReportOpener(side, reportsById[r.id], "report");
+    });
+  });
+
+  /* --- delivery ----------------------------------------------------- */
+  var deliveryRows = [];
+  tasks.forEach(function (t) {
+    if (t.pr && t.pr.url) {
+      deliveryRows.push({
+        id: t.id, url: t.pr.url, source: t.pr.source,
+        mode: t.mode, yolo: t.yolo, merged: (backlogById[t.id] || {}).merged || null
+      });
+    }
+  });
+  backlog.forEach(function (r) {
+    if (r.pr_url && !deliveryRows.some(function (d) { return d.url === r.pr_url; })) {
+      deliveryRows.push({ id: dash(r.id), url: r.pr_url, source: "backlog", mode: null, yolo: null, merged: r.merged });
+    }
+  });
+  tab("delivery", "Delivery", deliveryRows.length);
+  var secDelivery = section("delivery", "Delivery evidence",
+    "Recorded locally. This page makes no network call, so no live check state is claimed.");
+  var deliveryCard = add(secDelivery, el("div", "fm-card"));
+  if (!deliveryRows.length) {
+    emptyRow(deliveryCard, "No pull request is recorded in this home.");
+  } else {
+    var dw = add(deliveryCard, el("div", "cp-tablewrap"));
+    var dt = add(dw, el("table", "cp-table"));
+    var dh = add(add(dt, el("thead")), el("tr"));
+    ["task", "pull request", "recorded from", "delivery mode", "merge recorded"].forEach(function (h) {
+      txt(dh, "th", "", h);
+    });
+    var db = add(dt, el("tbody"));
+    deliveryRows.forEach(function (d) {
+      var tr = add(db, el("tr"));
+      txt(tr, "td", "cp-mono-cell", dash(d.id));
+      externalLink(add(tr, el("td", "cp-mono-cell")), d.url, d.url);
+      txt(tr, "td", "", dash(d.source));
+      txt(tr, "td", "", d.mode ? dash(d.mode) + (d.yolo === "on" ? " - auto merge" : " - captain merges") : "-");
+      txt(tr, "td", "", dash(d.merged));
+    });
+  }
+
+  /* --- reports ------------------------------------------------------ */
+  tab("reports", "Reports", num(reports.total));
+  var secReports = section("reports", "Reports and findings",
+    "Durable deliverables written by workers. Rendered as text, never as live HTML.");
+  var repHead = secReports.children[0];
+  var filter = el("input", "cp-filter");
+  filter.setAttribute("type", "search");
+  filter.setAttribute("id", "cp-report-filter");
+  filter.setAttribute("placeholder", "Filter reports");
+  filter.setAttribute("aria-label", "Filter reports");
+  add(repHead, filter);
+  var reportsCard = add(secReports, el("div", "fm-card"));
+  var reportRows = add(reportsCard, el("div", "cp-rows"));
+  var reportRowNodes = [];
+  if (!arr(reports.records).length) emptyRow(reportRows, "No report has been written in this home.");
+  arr(reports.records).forEach(function (r) {
+    var row = add(reportRows, el("div", "cp-row"));
+    row.setAttribute("data-report", String(r.id));
+    reportRowNodes.push({ node: row, hay: (String(r.id) + " " + String(r.path || "")).toLowerCase() });
+    var main = add(row, el("div", "cp-row__main"));
+    txt(main, "div", "cp-row__title", dash(r.id));
+    var sub = dash(r.path);
+    if (r.readable) {
+      sub += " - " + num(r.bytes) + " bytes";
+      if (r.modified) sub += " - modified " + r.modified;
+      if (r.truncated) sub += " - shown truncated";
+    } else {
+      sub += " - " + dash(r.reason);
+    }
+    txt(main, "div", "cp-row__sub", sub);
+    var side = add(row, el("div", "cp-row__side"));
+    if (r.truncated) badge(side, "truncated", "warn");
+    if (!r.readable) badge(side, "unavailable", "danger");
+    else addReportOpener(side, r, "Open");
+  });
+  if (num(reports.truncated) > 0) {
+    txt(reportsCard, "div", "cp-empty",
+      num(reports.truncated) + " further reports were not read because of this page's report limit.");
+  }
+  filter.addEventListener("input", function () {
+    var q = String(filter.value || "").toLowerCase().trim();
+    reportRowNodes.forEach(function (r) { r.node.hidden = q !== "" && r.hay.indexOf(q) === -1; });
+  });
+
+  /* --- notifications ------------------------------------------------ */
+  tab("wakes", "Notifications", num(wakes.total));
+  var secWakes = section("wakes", "Queued notifications",
+    "Durable records firstmate has not yet handled and acknowledged.");
+  var wakeCard = add(secWakes, el("div", "fm-card"));
+  if (!arr(wakes.records).length) {
+    emptyRow(wakeCard, dash(wakes.reason || "No queued notification."));
+  } else {
+    var ww = add(wakeCard, el("div", "cp-tablewrap"));
+    var wt = add(ww, el("table", "cp-table"));
+    var wh = add(add(wt, el("thead")), el("tr"));
+    ["queued at", "no.", "kind", "about", "detail"].forEach(function (h) { txt(wh, "th", "", h); });
+    var wb = add(wt, el("tbody"));
+    arr(wakes.records).forEach(function (w) {
+      var tr = add(wb, el("tr"));
+      if (w.malformed) {
+        txt(tr, "td", "cp-mono-cell", "-");
+        txt(tr, "td", "cp-num", "-");
+        var mc = add(tr, el("td"));
+        badge(mc, "unreadable", "danger");
+        txt(tr, "td", "", "-");
+        txt(tr, "td", "cp-mono-cell", dash(w.payload));
+        return;
+      }
+      txt(tr, "td", "cp-mono-cell", stampIso(w.epoch) + " (" + agoSeconds(Math.round((NOW - w.epoch * 1000) / 1000)) + ")");
+      txt(tr, "td", "cp-num", dash(w.seq));
+      var kc = add(tr, el("td"));
+      badge(kc, dash(w.kind), w.kind === "stale" ? "danger" : w.kind === "heartbeat" ? "neutral" : "info");
+      txt(tr, "td", "cp-mono-cell", dash(w.key));
+      txt(tr, "td", "", dash(w.payload));
+    });
+  }
+  if (num(wakes.truncated) > 0) {
+    txt(wakeCard, "div", "cp-empty",
+      num(wakes.truncated) + " older queued notifications are not shown.");
+  }
+
+  /* --- usage --------------------------------------------------------- */
+  var budget = usage.budget || {};
+  tab("usage", "Usage", arr(usage.agents).length);
+  var secUsage = section("usage", "Model and token records",
+    "Every token and model fact this home records locally. No vendor account is queried.");
+  var usageCols = add(secUsage, el("div", "cp-cols"));
+
+  var agentsCol = add(usageCols, el("div", "cp-section"));
+  txt(agentsCol, "span", "fm-sign", "Dispatched runtimes");
+  var agentsCard = add(agentsCol, el("div", "fm-card"));
+  if (!arr(usage.agents).length) {
+    emptyRow(agentsCard, "No worker is running in this home.");
+  } else {
+    var aw = add(agentsCard, el("div", "cp-tablewrap"));
+    var at = add(aw, el("table", "cp-table"));
+    var ah = add(add(at, el("thead")), el("tr"));
+    ["task", "runtime", "model", "effort"].forEach(function (h) { txt(ah, "th", "", h); });
+    var ab = add(at, el("tbody"));
+    arr(usage.agents).forEach(function (a) {
+      var tr = add(ab, el("tr"));
+      txt(tr, "td", "cp-mono-cell", dash(a.task_id));
+      txt(tr, "td", "", dash(a.harness));
+      txt(tr, "td", "cp-mono-cell", dash(a.model));
+      txt(tr, "td", "", dash(a.effort));
+    });
+  }
+
+  var budgetCol = add(usageCols, el("div", "cp-section"));
+  txt(budgetCol, "span", "fm-sign", "Startup memory budget");
+  var budgetCard = add(budgetCol, el("div", "fm-card"));
+  if (!budget.available) {
+    emptyRow(budgetCard, dash(budget.reason || "The local token budget could not be read."));
+  } else {
+    var bw = add(budgetCard, el("div", "cp-tablewrap"));
+    var bt = add(bw, el("table", "cp-table"));
+    var bh = add(add(bt, el("thead")), el("tr"));
+    ["file", "bytes", "est. tokens", "state"].forEach(function (h) { txt(bh, "th", "", h); });
+    var bb = add(bt, el("tbody"));
+    arr(budget.files).forEach(function (f) {
+      var tr = add(bb, el("tr"));
+      txt(tr, "td", "cp-mono-cell", dash(f.file));
+      txt(tr, "td", "cp-num", dash(f.bytes));
+      txt(tr, "td", "cp-num", dash(f.estimated_tokens));
+      txt(tr, "td", "", dash(f.status));
+    });
+    var totalRow = add(budgetCard, el("div", "cp-row"));
+    var totalMain = add(totalRow, el("div", "cp-row__main"));
+    txt(totalMain, "div", "cp-row__title",
+      num(budget.total_estimated_tokens) + " of " + num(budget.effective_budget_tokens) + " estimated tokens");
+    txt(totalMain, "div", "cp-row__sub", "conservative local estimate, not a vendor meter");
+    badge(add(totalRow, el("div", "cp-row__side")), dash(budget.status),
+      budget.status === "within-budget" ? "online" : "warn");
+  }
+
+  /* --- sources -------------------------------------------------------- */
+  var sources = [
+    ["home", data.fm_home],
+    ["state", snapshot.roots && snapshot.roots.state],
+    ["data", snapshot.roots && snapshot.roots.data],
+    ["projects", snapshot.roots && snapshot.roots.projects],
+    ["backlog", snapshot.backlog && snapshot.backlog.path],
+    ["wake queue", (snapshot.roots && snapshot.roots.state) + "/.wake-queue"],
+    ["watch lock", (snapshot.roots && snapshot.roots.state) + "/.watch.lock"],
+    ["watch lock pid", (snapshot.roots && snapshot.roots.state) + "/.watch.lock/pid"],
+    ["watch lock home", (snapshot.roots && snapshot.roots.state) + "/.watch.lock/fm-home"],
+    ["watch lock watcher path", (snapshot.roots && snapshot.roots.state) + "/.watch.lock/watcher-path"],
+    ["watch lock pid identity", (snapshot.roots && snapshot.roots.state) + "/.watch.lock/pid-identity"],
+    ["watcher heartbeat", (snapshot.roots && snapshot.roots.state) + "/.last-watcher-beat"],
+    ["away marker", (snapshot.roots && snapshot.roots.state) + "/.afk"],
+    ["recovery marker", (snapshot.roots && snapshot.roots.state) + "/.watcher-down"],
+    ["startup memory budget", (snapshot.roots && snapshot.roots.config) + "/startup-memory-budget"],
+    ["startup memory captain.md", (snapshot.roots && snapshot.roots.data) + "/captain.md"],
+    ["startup memory captain-shared.md", (snapshot.roots && snapshot.roots.data) + "/captain-shared.md"],
+    ["startup memory learnings.md", (snapshot.roots && snapshot.roots.data) + "/learnings.md"]
+  ];
+  if (snapshot.secondmate_current && snapshot.secondmate_current.registry
+      && typeof snapshot.secondmate_current.registry.path === "string") {
+    sources.push(["secondmate registry", snapshot.secondmate_current.registry.path]);
+  }
+  sources.push(["secondmate home marker", String(data.fm_home || "").replace(/\/$/, "") + "/.fm-secondmate-home"]);
+  function usageSourcePath(path) {
+    var value = String(path || "");
+    if (value.charAt(0) === "/") return value;
+    return String(data.fm_home || "").replace(/\/$/, "") + "/" + value.replace(/^\.\//, "");
+  }
+  tasks.forEach(function (t) {
+    if (t.paths && t.paths.meta) sources.push(["metadata " + t.id, t.paths.meta.path]);
+    if (t.paths && t.paths.home && typeof t.paths.home.path === "string") {
+      sources.push(["home " + t.id, t.paths.home.path]);
+    }
+    if (t.paths && t.paths.worktree && typeof t.paths.worktree.path === "string") {
+      sources.push(["worktree " + t.id, t.paths.worktree.path]);
+    }
+  });
+  arr(budget.files).forEach(function (f) {
+    sources.push(["usage " + f.file, usageSourcePath(f.file)]);
+  });
+  events.forEach(function (e) { sources.push(["events " + e.task_id, e.path]); });
+  arr(reports.records).forEach(function (r) { sources.push(["report " + r.id, r.path]); });
+  tab("sources", "Sources", sources.length);
+  var secSources = section("sources", "Exact sources",
+    "Every path this page read, unaltered, so any claim here can be checked at its source.");
+  var sourcesCard = add(secSources, el("div", "fm-card"));
+  var sw = add(sourcesCard, el("div", "cp-tablewrap"));
+  var st = add(sw, el("table", "cp-table"));
+  var sh = add(add(st, el("thead")), el("tr"));
+  ["surface", "path"].forEach(function (h) { txt(sh, "th", "", h); });
+  var sb = add(st, el("tbody"));
+  sources.forEach(function (s) {
+    var tr = add(sb, el("tr"));
+    txt(tr, "td", "", dash(s[0]));
+    txt(tr, "td", "cp-mono-cell", dash(s[1]));
+  });
+
+  /* --- provenance footer ----------------------------------------------- */
+  var prov = document.getElementById("cp-provenance");
+  txt(prov, "div", "",
+    data.schema + " built " + dash(data.generated)
+    + " over " + dash(snapshot.schema) + " observed " + dash(snapshot.generated)
+    + " - local evidence only, no network call, nothing on this page acts.");
+
+  /* --- report drawer ---------------------------------------------------- */
+  var drawer = document.getElementById("cp-drawer");
+  var drawerTitle = document.getElementById("cp-drawer-title");
+  var drawerPath = document.getElementById("cp-drawer-path");
+  var drawerBody = document.getElementById("cp-drawer-body");
+  document.getElementById("cp-drawer-close").addEventListener("click", closeDrawer);
+  drawer.addEventListener("click", function (e) { if (e && e.target === drawer) closeDrawer(); });
+  document.addEventListener("keydown", function (e) {
+    if (e && (e.key === "Escape" || e.keyCode === 27)) closeDrawer();
+  });
+  function closeDrawer() { drawer.classList.remove("is-open"); }
+  function openReport(r) {
+    drawerTitle.textContent = String(r.id);
+    drawerPath.textContent = String(r.path || "");
+    drawerBody.textContent = "";
+    if (!r.readable) {
+      txt(drawerBody, "div", "cp-empty", "This report could not be read: " + dash(r.reason));
+    } else {
+      if (r.truncated) {
+        var warn = add(drawerBody, el("div", "cp-notice cp-notice--warn"));
+        var wbody = add(warn, el("div", "cp-notice__body"));
+        txt(wbody, "div", "cp-notice__title", "Shown truncated");
+        txt(wbody, "div", "cp-notice__detail",
+          "This report is " + num(r.bytes) + " bytes; only the leading part was read. Open the file for the rest.");
+      }
+      renderMarkdown(add(drawerBody, el("div", "cp-md")), r.body);
+    }
+    drawer.classList.add("is-open");
+  }
+  function addReportOpener(parent, r, label) {
+    var b = el("span", "cp-actionlink", label || ("Open " + r.id));
+    b.setAttribute("role", "button");
+    b.setAttribute("tabindex", "0");
+    b.setAttribute("data-open-report", String(r.id));
+    b.addEventListener("click", function () { openReport(r); });
+    b.addEventListener("keydown", function (e) {
+      if (e && (e.key === "Enter" || e.key === " " || e.keyCode === 13 || e.keyCode === 32)) {
+        if (e.preventDefault) e.preventDefault();
+        openReport(r);
+      }
+    });
+    return add(parent, b);
+  }
+
+  if (registered.length) registered[0].classList.add("is-active");
+})();
+</script>
+</body>
+</html>
