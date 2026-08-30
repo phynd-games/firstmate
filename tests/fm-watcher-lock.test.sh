@@ -1100,6 +1100,27 @@ test_stale_watch_reclaim_publishes_before_clear() {
   pass "stale watcher reclaim publishes durable recovery evidence before clear"
 }
 
+test_stale_clear_preserves_a_successor_lock() {
+  local dir state lockdir out
+  dir=$(make_case stale-clear-successor)
+  state="$dir/state"
+  lockdir="$state/.watch.lock"
+  mkdir -p "$lockdir"
+  printf '99999999\n' > "$lockdir/pid"
+  printf 'stale-instance\n' > "$lockdir/pid-identity"
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2.steal" || exit 1
+    steal_owner=${FM_LOCK_OWNER_DIR:?}
+    fm_lock_remove_path "$2" || exit 2
+    fm_lock_try_create "$2" "$steal_owner" || exit 3
+    ! fm_recovery_transition "$3" clear-stale-lock "$2" downtime 99999999 stale-instance 1
+    printf "%s\n" "$(cat "$2/pid")"
+  ' _ "$LIB" "$lockdir" "$state/.watcher-down") || fail "stale clear unexpectedly removed a successor lock"
+  [ "$out" != "99999999" ] || fail "successor lock was replaced with the stale holder"
+  pass "stale clear revalidation preserves a successor lock"
+}
+
 test_msys_pid_identity_uses_proc() {
   local live identity
   case "$(uname)" in
@@ -1127,6 +1148,7 @@ test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
 test_msys_pid_identity_uses_proc
 test_stale_watch_lock_reclaimed
 test_stale_watch_reclaim_publishes_before_clear
+test_stale_clear_preserves_a_successor_lock
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings
 test_lock_single_winner_under_concurrency

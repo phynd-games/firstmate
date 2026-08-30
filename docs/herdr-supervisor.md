@@ -58,7 +58,7 @@ It is not a second lifecycle authority.
 - `config/herdr-supervisor` is not `off`.
 - Supervision is genuinely needed - in-flight work, a registered event source, or a Relay poll.
 - No other owner is provable.
-  Away mode is provable through `state/.afk` plus its live daemon lock and identity, and a loaded Pi primary extension is provable through both extension markers naming a live verified harness process at their current on-disk builds.
+  Away mode is provable through `state/.afk` plus its live daemon lock and identity, and a loaded Pi primary extension is provable through either extension marker naming a live verified harness process at its current on-disk build.
 
 With `config/herdr-supervisor` absent or `auto`, the default scope is exactly the harness class this was built for: a supervision model of `extension`, meaning Pi or pi-signed, whose owner lives in a project-local extension that can silently fail to load.
 Any other harness needs a deliberate `on`, because its owner's presence is not provable from durable state and guessing would create the duplicate owner this design exists to avoid.

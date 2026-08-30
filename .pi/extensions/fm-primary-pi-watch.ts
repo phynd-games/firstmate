@@ -10,7 +10,7 @@
 // callbacks from a prior generation are no-ops against the active replacement.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
@@ -102,6 +102,7 @@ const armReadyTimeoutMs = positiveInteger(
   process.platform === "win32" ? 35000 : 12000,
 );
 const armRetireTimeoutMs = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 1000);
+const failurePersistTimeoutMs = positiveInteger("FM_PI_FAILURE_PERSIST_TIMEOUT_MS", 5000);
 const repairOnlyHint = "call fm_watch_arm_pi again only after a later notification says the cycle is missing, failed, or unhealthy";
 const shuttingDownMessage = "watcher: not armed - Pi session is shutting down";
 
@@ -110,6 +111,7 @@ let activeGeneration: SessionGeneration | null = null;
 const armReadiness = new WeakMap<ChildProcess, Promise<boolean>>();
 const armClose = new WeakMap<ChildProcess, Promise<void>>();
 const armRecovery = new WeakMap<ChildProcess, { generation: string; watcherPid: string }>();
+let retirementBarrier: Promise<void> = Promise.resolve();
 
 function positiveInteger(name: string, fallback: number): number {
   const value = Number(process.env[name]);
@@ -277,8 +279,11 @@ function stopGeneration(generation: SessionGeneration): void {
   generation.stopping = true;
   if (generation.retryTimer) clearTimeout(generation.retryTimer);
   generation.retryTimer = null;
-  if (generation.child) generation.child.kill("SIGTERM");
-  generation.child = null;
+  if (generation.child) {
+    generation.child.kill("SIGTERM");
+    const closed = armClose.get(generation.child);
+    if (closed) retirementBarrier = retirementBarrier.then(() => closed);
+  }
 }
 
 const cleanupOnProcessExit = () => {
@@ -288,8 +293,12 @@ const cleanupOnProcessExit = () => {
 process.once("exit", cleanupOnProcessExit);
 
 export default function (pi: ExtensionAPI) {
+  const previousGeneration = activeGeneration;
   let generation = createGeneration();
+  if (previousGeneration) stopGeneration(previousGeneration);
   activateGeneration(generation);
+  let replacementRequested = false;
+  let replacingGeneration = false;
 
   let calmPresentation: CalmPresentationState = {
     active: false,
@@ -403,6 +412,50 @@ export default function (pi: ExtensionAPI) {
   }
 
   function surfaceFailure(owner: SessionGeneration, message: string): void {
+    const emergency = `${state}/.watch-arm-emergency`;
+    const temporary = `${emergency}.pi-${process.pid}-${Date.now()}`;
+    let durableStatus = 1;
+    try {
+      durableStatus = spawnSync(
+        "bash",
+        ["-c", ". \"$FM_ROOT_OVERRIDE/bin/fm-wake-lib.sh\" && fm_wake_append check pi-watch-arm \"$1\"", "fm-pi-watch-failure", message],
+        {
+          cwd: fmRoot,
+          encoding: "utf8",
+          timeout: failurePersistTimeoutMs,
+          env: {
+            ...process.env,
+            FM_HOME: fmHome,
+            FM_ROOT_OVERRIDE: fmRoot,
+            FM_STATE_OVERRIDE: state,
+            FM_WAKE_APPEND_LOCK_TRIES: process.env.FM_WAKE_APPEND_LOCK_TRIES || "100",
+          },
+        },
+      ).status ?? 1;
+    } catch {
+    }
+    if (durableStatus !== 0) {
+      let previous = "";
+      try {
+        if (!lstatSync(emergency).isSymbolicLink()) previous = readFileSync(emergency, "utf8");
+      } catch {
+      }
+      try {
+        mkdirSync(state, { recursive: true });
+        writeFileSync(
+          temporary,
+          `${previous}${previous && !previous.endsWith("\n") ? "\n" : ""}at=${Date.now()}\nreason=${message}\n`,
+        );
+        chmodSync(temporary, 0o600);
+        renameSync(temporary, emergency);
+        durable = { status: 0 } as typeof durable;
+      } catch {
+        try {
+          unlinkSync(temporary);
+        } catch {
+        }
+      }
+    }
     void sendWake(owner, message).catch(() => {
       // Pi owns delivery errors; continuity restoration never waits on prompting.
     });
@@ -445,6 +498,23 @@ export default function (pi: ExtensionAPI) {
         resolveRetired(true);
       });
     });
+  }
+
+  async function replaceStoppedGeneration(): Promise<void> {
+    if (!replacementRequested || !generation.stopping || replacingGeneration) return;
+    replacingGeneration = true;
+    const previous = generation;
+    try {
+      if (previous.child && !(await retireArm(previous.child))) return;
+      if (previous.child || !replacementRequested || generation !== previous) return;
+      replacementRequested = false;
+      generation = createGeneration();
+      activateGeneration(generation);
+      markLoaded();
+      armForLifecycle(generation, "session start");
+    } finally {
+      replacingGeneration = false;
+    }
   }
 
   async function restoreAfterActionableClose(owner: SessionGeneration, predecessorArmPid: string): Promise<{
@@ -604,6 +674,10 @@ export default function (pi: ExtensionAPI) {
       resolveClosed();
       settleReadiness(false);
       releaseChild();
+      if (owner.stopping && replacementRequested) {
+        void replaceStoppedGeneration();
+        return;
+      }
       if (!generationIsLive(owner)) return;
       const classification = classifyClose(stdout, stderr, code, signal);
       const predecessor = String(armChild.pid ?? "");
@@ -635,6 +709,10 @@ export default function (pi: ExtensionAPI) {
       resolveClosed();
       settleReadiness(false);
       releaseChild();
+      if (owner.stopping && replacementRequested) {
+        void replaceStoppedGeneration();
+        return;
+      }
       if (!generationIsLive(owner)) return;
       if (owner.restoring) return;
       scheduleRetry(owner, `watcher: FAILED - Pi extension arm child ${id} failed: ${error.message}`, String(armChild.pid ?? ""));
@@ -645,8 +723,14 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
-  pi.on?.("session_start", () => {
-    if (generation.stopping) generation = createGeneration();
+  pi.on?.("session_start", async () => {
+    if (generation.stopping) {
+      replacementRequested = true;
+      await replaceStoppedGeneration();
+      return;
+    }
+    await retirementBarrier;
+    if (!generationIsLive(generation)) return;
     activateGeneration(generation);
     markLoaded();
     armForLifecycle(generation, "session start");

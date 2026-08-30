@@ -382,6 +382,28 @@ assert_absent "$HOME3/state/.herdr-supervisor" "an extension-owned home hosts no
 pass "a loaded Pi extension is a provable owner and the supervisor stands down"
 
 # =============================================================================
+# 3a. Either loaded Pi continuity extension is enough to defer takeover.
+# =============================================================================
+HOME3A=$(new_home pi-watch-extension-only)
+make_arm_stub "$HOME3A/arm.sh" ok
+fm_write_meta "$HOME3A/state/ext-only-task.meta" "window=firstmate:fm-ext-only-task"
+bash -c 'exec -a pi bash -c "sleep 300 & wait"' &
+PI_WATCH_OWNER_PID=$!
+printf '%s\n' "$PI_WATCH_OWNER_PID" > "$HOME3A/state/.lock"
+fm_test_pid_identity "$PI_WATCH_OWNER_PID" > "$HOME3A/state/.lock-pid-identity" \
+  || fail "could not record the single-extension Pi session identity"
+version=$(shasum -a 256 "$ROOT/.pi/extensions/fm-primary-pi-watch.ts" | awk '{print "sha256:" $1}')
+printf '%s\n%s\n' "$version" "$PI_WATCH_OWNER_PID" > "$HOME3A/state/.pi-watch-extension-loaded"
+fm_test_pid_identity "$PI_WATCH_OWNER_PID" >> "$HOME3A/state/.pi-watch-extension-loaded" \
+  || fail "could not record the single-extension marker identity"
+out=$(run_supervisor "$HOME3A" "$FAKEBIN" ensure 2>&1)
+kill "$PI_WATCH_OWNER_PID" 2>/dev/null || true
+wait "$PI_WATCH_OWNER_PID" 2>/dev/null || true
+assert_contains "$out" "deferred" "one loaded Pi extension defers the supervisor"
+assert_absent "$HOME3A/state/.herdr-supervisor" "one loaded Pi extension hosts no supervisor"
+pass "either individually loaded Pi extension defers takeover"
+
+# =============================================================================
 # 3b. A marker without process-instance identity never proves Pi ownership.
 # =============================================================================
 HOME3B=$(new_home pi-reused-pid)

@@ -296,7 +296,7 @@ restart_recorded_watcher_lock() {
       fi
     fi
     if [ "$rc" -eq 0 ] && { [ -e "$WATCH_LOCK" ] || [ -L "$WATCH_LOCK" ]; }; then
-      if ! fm_recovery_transition "$STATE/.watcher-down" clear-stale-lock "$WATCH_LOCK" downtime; then
+      if ! fm_recovery_transition "$STATE/.watcher-down" clear-stale-lock "$WATCH_LOCK" downtime "$lock_pid" "$lock_identity" 1; then
         rc=1
       fi
     fi
@@ -592,15 +592,16 @@ arm_emergency_write() {
   return 0
 }
 arm_publish_failure() {
-  local reason=$1
-  if fm_recovery_transition "$STATE/.watcher-down" publish arm-child-termination-unconfirmed >/dev/null 2>&1; then
-    return 0
-  fi
+  local reason=$1 marker_status=1 queue_status=1 emergency_status=1
+  fm_recovery_transition "$STATE/.watcher-down" publish downtime >/dev/null 2>&1 && marker_status=0
   if FM_WAKE_APPEND_LOCK_TRIES=${FM_WAKE_APPEND_LOCK_TRIES:-${FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES:-100}} \
     fm_wake_append check watcher-arm "$reason" >/dev/null 2>&1; then
-    return 0
+    queue_status=0
   fi
-  arm_emergency_write "$reason"
+  if [ "$queue_status" -ne 0 ]; then
+    arm_emergency_write "$reason" >/dev/null 2>&1 && emergency_status=0
+  fi
+  [ "$marker_status" -eq 0 ] || [ "$queue_status" -eq 0 ] || [ "$emergency_status" -eq 0 ]
 }
 cleanup_child() {
   local status attempts=0 max_attempts=${FM_WATCH_ARM_CLEANUP_TRIES:-40}
@@ -628,17 +629,27 @@ cleanup_child() {
 }
 
 hold_child_tracked() {
-  local status next_report=0 now reason
+  local status next_report=0 now reason hold_seconds=${FM_WATCH_ARM_UNKNOWN_CHILD_HOLD_SECONDS:-60}
+  local hold_deadline blocked=0
+  case "$hold_seconds" in ''|*[!0-9]*|0) hold_seconds=60 ;; esac
+  hold_deadline=$(( $(date +%s) + hold_seconds ))
   while [ -n "$child" ]; do
     if stop_child_bounded; then
       child=
       break
     fi
     now=$(date +%s)
-    if [ "$now" -ge "$next_report" ]; then
-      reason="watcher arm child remains live but its process identity cannot be confirmed"
+    reason="watcher arm child remains live but its process identity cannot be confirmed"
+    if [ "$blocked" -eq 0 ] && [ "$now" -ge "$next_report" ]; then
       arm_publish_failure "$reason" || printf 'watcher: emergency diagnostic persistence failed\n' >&2
       next_report=$((now + 20))
+    fi
+    if [ "$blocked" -eq 0 ] && [ "$now" -ge "$hold_deadline" ]; then
+      arm_publish_failure "$reason; bounded cleanup window exhausted; retaining explicit child ownership" \
+        || printf 'watcher: emergency diagnostic persistence failed\n' >&2
+      arm_emergency_write "$reason; bounded cleanup window exhausted; retaining explicit child ownership" \
+        || printf 'watcher: emergency diagnostic persistence failed\n' >&2
+      blocked=1
     fi
     child_status
     status=$?
@@ -655,9 +666,13 @@ handle_arm_signal() {
   trap - HUP TERM INT
   if ! cleanup_child; then
     cycle_log_append "$rc" "$signal" arm-interrupted-unconfirmed none
+    arm_publish_failure "watcher arm interrupted by $signal; child termination could not be confirmed" \
+      || printf 'watcher: emergency diagnostic persistence failed\n' >&2
     hold_child_tracked
     exit "$rc"
   fi
+  arm_publish_failure "watcher arm interrupted by $signal" \
+    || printf 'watcher: emergency diagnostic persistence failed\n' >&2
   cycle_log_append "$rc" "$signal" arm-interrupted none
   exit "$rc"
 }
