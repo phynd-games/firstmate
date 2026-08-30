@@ -367,7 +367,7 @@ import os
 import subprocess
 import time
 
-child = subprocess.Popen(["sleep", "30"], start_new_session=True)
+child = subprocess.Popen(["sleep", "30"])
 with open(os.environ["MARKER"], "w", encoding="utf-8") as marker:
     marker.write(str(child.pid) + "\n")
 time.sleep(30)
@@ -425,6 +425,77 @@ SH
   pass "a proven timeout cleanup keeps the dashboard healthy"
 }
 
+test_a_daemonizing_descendant_is_contained() {
+  local home port out child code health state
+  [ "$(uname -s)" = Linux ] || {
+    pass "skip: Linux process containment is unavailable on this platform"
+    return 0
+  }
+  home=$(make_home contained-build-descendant)
+  port=$(free_port)
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FAKE_HERDR_STATE="$home/herdr" \
+    FM_DASHBOARD_BUILD_TIMEOUT=1 FM_DASHBOARD_DESCENDANT_MARKER="$home/descendant.pid" \
+    FM_DASHBOARD_PORT="$port" "$START" ensure 2>&1) \
+    || fail "ensure failed: $out"
+  cat > "$home/fakebin/jq" <<'SH'
+#!/usr/bin/env bash
+set -u
+marker="${FM_DASHBOARD_DESCENDANT_MARKER:?}"
+if [ ! -e "$marker" ]; then
+  MARKER="$marker" python3 -c '
+import os
+import time
+
+first = os.fork()
+if first == 0:
+    second = os.fork()
+    if second == 0:
+        try:
+            os.setsid()
+            result = "escaped"
+        except PermissionError:
+            result = "contained"
+        with open(os.environ["MARKER"], "w", encoding="utf-8") as marker:
+            marker.write(str(os.getpid()) + "\\n" + result + "\\n")
+        time.sleep(30)
+    os._exit(0)
+os.waitpid(first, 0)
+time.sleep(30)
+'
+fi
+sleep 30
+SH
+  chmod +x "$home/fakebin/jq"
+  code=$(curl -sS --max-time 6 -o "$home/timeout-response" \
+    -w '%{http_code}' "http://127.0.0.1:$port/" 2>/dev/null || true)
+  [ "$code" = 500 ] || fail "a contained timeout returned HTTP $code instead of 500"
+  child=
+  state=
+  for _ in $(seq 1 20); do
+    if [ -s "$home/descendant.pid" ]; then
+      child=$(sed -n '1p' "$home/descendant.pid")
+      state=$(sed -n '2p' "$home/descendant.pid")
+      break
+    fi
+    sleep 0.1
+  done
+  [ "$state" = contained ] || fail "the descendant escaped the containment boundary: $state"
+  [ -n "$child" ] || fail "the contained build did not create its descendant marker"
+  for _ in $(seq 1 20); do
+    kill -0 "$child" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$child" 2>/dev/null; then
+    kill -KILL "$child" 2>/dev/null || true
+    fail "a contained timeout left a descendant process running"
+  fi
+  health=$(curl -fsS --max-time 3 "http://127.0.0.1:$port/healthz") \
+    || fail "contained cleanup made health unavailable"
+  printf '%s' "$health" | jq -e '.ready == true' >/dev/null \
+    || fail "contained cleanup incorrectly blocked health: $health"
+  pass "a daemonizing descendant is contained and reaped"
+}
+
 test_an_unprovable_build_cleanup_fails_closed() {
   local home port out child code health
   home=$(make_home unprovable-build-cleanup)
@@ -443,7 +514,7 @@ import os
 import subprocess
 import time
 
-child = subprocess.Popen(["sleep", "30"], start_new_session=True)
+child = subprocess.Popen(["sleep", "30"])
 with open(os.environ["MARKER"], "w", encoding="utf-8") as marker:
     marker.write(str(child.pid) + "\n")
 time.sleep(30)
@@ -760,6 +831,7 @@ test_health_remains_admissible_behind_incomplete_clients
 test_a_drip_request_hits_an_absolute_http_deadline
 test_a_timed_out_build_kills_its_descendant_group
 test_a_proven_timeout_cleanup_keeps_health_available
+test_a_daemonizing_descendant_is_contained
 test_an_unprovable_build_cleanup_fails_closed
 test_stop_preserves_an_owner_without_complete_proof
 test_owner_lifecycle_uses_the_recorded_herdr_session

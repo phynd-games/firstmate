@@ -1083,6 +1083,73 @@ def enable_process_containment():
         return False
 
 
+CONTAINED_BUILD = r'''
+import ctypes
+import platform
+import os
+import sys
+
+class SockFilter(ctypes.Structure):
+    _fields_ = (("code", ctypes.c_ushort), ("jt", ctypes.c_ubyte),
+                ("jf", ctypes.c_ubyte), ("k", ctypes.c_uint))
+
+class SockFprog(ctypes.Structure):
+    _fields_ = (("length", ctypes.c_ushort),
+                ("filter", ctypes.POINTER(SockFilter)))
+
+BPF_LD_W_ABS = 0x20
+BPF_JMP_JEQ_K = 0x15
+BPF_JMP_JSET_K = 0x45
+BPF_RET_K = 0x06
+SECCOMP_MODE_FILTER = 2
+SECCOMP_RET_ALLOW = 0x7fff0000
+SECCOMP_RET_ERRNO = 0x00050000
+CLONE_NEWPID = 0x20000000
+
+machine = platform.machine().lower()
+syscalls = {
+    "x86_64": (112, 308, 272, 435, 56),
+    "amd64": (112, 308, 272, 435, 56),
+    "aarch64": (157, 268, 97, 435, 220),
+    "arm64": (157, 268, 97, 435, 220),
+}
+if machine not in syscalls:
+    raise SystemExit(125)
+
+setsid_nr, setns_nr, unshare_nr, clone3_nr, clone_nr = syscalls[machine]
+filters = []
+def instruction(code, jt=0, jf=0, k=0):
+    filters.append(SockFilter(code, jt, jf, k))
+
+def deny():
+    instruction(BPF_RET_K, k=SECCOMP_RET_ERRNO | 1)
+
+for syscall_nr in (setsid_nr, setns_nr, unshare_nr, clone3_nr):
+    instruction(BPF_LD_W_ABS, k=0)
+    instruction(BPF_JMP_JEQ_K, jf=1, k=syscall_nr)
+    deny()
+instruction(BPF_LD_W_ABS, k=0)
+instruction(BPF_JMP_JEQ_K, jf=1, k=clone_nr)
+instruction(BPF_LD_W_ABS, k=16)
+instruction(BPF_JMP_JSET_K, jf=1, k=CLONE_NEWPID)
+deny()
+instruction(BPF_RET_K, k=SECCOMP_RET_ALLOW)
+filter_array = (SockFilter * len(filters))(*filters)
+program = SockFprog(len(filters), filter_array)
+libc = ctypes.CDLL(None, use_errno=True)
+prctl = libc.prctl
+prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong,
+                  ctypes.c_ulong, ctypes.c_ulong]
+prctl.restype = ctypes.c_int
+if prctl(38, 1, 0, 0, 0) != 0:
+    raise SystemExit(125)
+if prctl(22, SECCOMP_MODE_FILTER, ctypes.addressof(program),
+         0, 0) != 0:
+    raise SystemExit(125)
+os.execvpe(sys.argv[1], sys.argv[1:], os.environ)
+'''
+
+
 def reap_processes(pids):
     for pid in sorted(pids, reverse=True):
         if pid == os.getpid():
@@ -1384,8 +1451,11 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(503, b"dashboard rebuild deadline exceeded\n", "text/plain; charset=utf-8")
                     return
                 baseline_processes = process_snapshot()
+                build_command = [SELF, "build", "--out", "-"]
+                if self.server.containment_enabled:
+                    build_command = [sys.executable, "-c", CONTAINED_BUILD] + build_command
                 build = subprocess.Popen(
-                    [SELF, "build", "--out", "-"],
+                    build_command,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     start_new_session=True,
@@ -1429,6 +1499,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         finally:
             self.server.page_slots.release()
+        if done.returncode == 125 and self.server.containment_enabled:
+            self.server.cleanup_blocked = True
         if done.returncode != 0 or not done.stdout:
             detail = done.stderr.decode("utf-8", "replace").strip() or "no detail"
             self._send(500, ("the dashboard could not be rebuilt: %s\n" % detail).encode(),
