@@ -173,7 +173,7 @@ if [ -n "$REMOTE_HOST" ]; then
     emit unknown legacy-backend "legacy-record: remote backend=${REMOTE_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
   fi
   if ! REMOTE_STATE=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-on.sh" "$ID" \
-    fm-remote-secondmate-control.sh state "$ID" < /dev/null); then
+    fm-remote-secondmate-control.sh state "$ID" --typed < /dev/null); then
     REMOTE_STATE=
   fi
   REMOTE_STATE=$(printf '%s\n' "$REMOTE_STATE" | tail -1)

@@ -41,6 +41,7 @@ TMP_ROOT=$(fm_test_tmproot fm-backend-herdr-only)
 # Every marker the environment could contribute, stripped for every case.
 STRIP=(-u FM_BACKEND_LEGACY_TEST_LANE -u FM_BACKEND -u FM_BACKEND_TEST_HARNESS
   -u FM_BACKEND_TEST_ROOT -u FM_BACKEND_TEST_OWNER_PID -u FM_BACKEND_TEST_OWNER_IDENTITY
+  -u FM_BACKEND_TEST_CAPABILITY_FD
   -u TMUX -u TMUX_PANE
   -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID
   -u HERDR_SOCKET_PATH -u HERDR_SESSION -u CMUX_WORKSPACE_ID -u CMUX_SURFACE_ID
@@ -116,7 +117,7 @@ test_legacy_lane_requires_harness_identity() {
   local config="$TMP_ROOT/untrusted-lane-config"
   mkdir -p "$config"
   printf 'tmux\n' > "$config/backend"
-  run_capture untrusted-lane lib_probe "FM_CONFIG_OVERRIDE=$config" FM_BACKEND_LEGACY_TEST_LANE=1 -- 'fm_backend_name'
+  run_capture untrusted-lane lib_probe "FM_CONFIG_OVERRIDE=$config" FM_BACKEND_LEGACY_TEST_LANE=1 -- 'exec 9>&-; fm_backend_name'
   assert_refusal "an untrusted legacy-lane marker" "$config/backend resolves 'tmux'"
   pass "the retained-adapter lane requires the hermetic test harness identity"
 }

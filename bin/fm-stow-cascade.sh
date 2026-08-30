@@ -144,7 +144,7 @@ resolve_remote_transport() { # <id>
     set_transport deferred 'no recorded endpoint and no remote memory write path'
     return 0
   fi
-  run_step "$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" || rc=$?
+  run_step "$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" --typed || rc=$?
   if [ "$rc" -eq 124 ]; then
     set_transport deferred "remote endpoint probe exceeded the ${BOUND}s bound"
     return 0

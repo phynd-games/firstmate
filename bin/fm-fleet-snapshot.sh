@@ -531,7 +531,7 @@ task_json_lines() {
     agent_alive=not_checked
     if [ -n "$remote_host" ] && [ "$remote_identity_valid" -eq 1 ]; then
       if remote_state=$(fm_run_timed "$FM_SNAPSHOT_SECONDMATE_TIMEOUT" \
-        "$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null); then
+        "$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" --typed < /dev/null); then
         remote_rc=0
       else
         remote_rc=$?

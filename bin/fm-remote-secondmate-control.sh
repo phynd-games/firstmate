@@ -131,12 +131,13 @@ remote_endpoint_refuse() {
   esac
 }
 
-state_value() { # <id>; prints recovery-grade state
-  local id=$1 meta
+state_value() { # <id> [--typed]; prints recovery-grade state
+  local id=$1 typed=${2:-} meta
   meta=$(meta_path "$id")
   [ -f "$meta" ] && [ ! -L "$meta" ] || { printf 'missing\n'; return 0; }
   if ! remote_endpoint_load "$id"; then
     remote_endpoint_refuse "$id" || true
+    [ "$typed" = --typed ] || fm_backend_policy_legacy_lane || return 1
     printf '%s\n' "$REMOTE_ENDPOINT_FAILURE"
     return 0
   fi
@@ -365,7 +366,7 @@ cmd_retire() {
 
 case "${1:-}" in
   launch) shift; [ "$#" -ge 5 ] && [ "$#" -le 6 ] || usage; cmd_launch "$@" ;;
-  state) shift; [ "$#" -eq 1 ] || usage; validate_id "$1"; validate_home "$1"; state_value "$1" ;;
+  state) shift; [ "$#" -ge 1 ] && [ "$#" -le 2 ] || usage; [ "$#" -eq 1 ] || [ "$2" = --typed ] || usage; validate_id "$1"; validate_home "$1"; state_value "$@" ;;
   route) shift; [ "$#" -eq 1 ] || usage; cmd_route "$1" ;;
   send) shift; [ "$#" -ge 2 ] && [ "$#" -le 3 ] || usage; cmd_send "$@" ;;
   key) shift; [ "$#" -eq 2 ] || usage; cmd_key "$@" ;;

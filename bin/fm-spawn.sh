@@ -676,6 +676,34 @@ spawn_remote_secondmate() {
   return 0
 }
 
+spawn_remote_secondmate_preflight() {
+  local id=$1 remote host root home rc
+  if [ "$BACKEND_SET" -eq 1 ]; then
+    BACKEND=$BACKEND_ARG
+  else
+    BACKEND=$(fm_backend_name) || return 1
+  fi
+  fm_backend_validate_spawn "$BACKEND" "remote secondmate backend" || return 1
+  fm_backend_source "$BACKEND" "remote secondmate backend" || return 1
+  remote=$(secondmate_registry_field "$DATA/secondmates.md" "$id" remote 2>/dev/null || true)
+  [ "$remote" = 1 ] || return 3
+  host=$(secondmate_registry_field "$DATA/secondmates.md" "$id" host)
+  root=$(secondmate_registry_field "$DATA/secondmates.md" "$id" root)
+  home=$(secondmate_registry_field "$DATA/secondmates.md" "$id" home)
+  rc=0
+  fm_remote_readiness_ensure "$SCRIPT_DIR" "$id" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if [ "$rc" -eq 255 ]; then
+      echo "error: remote secondmate $id readiness could not be confirmed; preserved route $host:$home" >&2
+    else
+      echo "error: remote secondmate $id host $host is not ready for a remote second mate; launch refused" >&2
+    fi
+    [ -z "$FM_REMOTE_READINESS_OUT" ] || printf '%s\n' "$FM_REMOTE_READINESS_OUT" >&2
+    [ "$rc" -ne 255 ] || return 255
+    return 1
+  fi
+}
+
 BACKEND=
 ORCA_ABORT_CLEANUP=0
 ORCA_WORKTREE_ID=
@@ -963,6 +991,12 @@ if [ "$RELAUNCH" -eq 0 ]; then
   fi
   fm_backend_validate_spawn "$BACKEND" || exit 1
   fm_backend_source "$BACKEND" "spawn backend selection" || exit 1
+fi
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = secondmate ]; then
+  spawn_remote_secondmate_preflight "$ID"
+  remote_spawn_preflight_rc=$?
+  [ "$remote_spawn_preflight_rc" -eq 3 ] || [ "$remote_spawn_preflight_rc" -eq 0 ] \
+    || exit "$remote_spawn_preflight_rc"
 fi
 if [ "$RELAUNCH" -eq 0 ]; then
   mkdir -p "$STATE" || {

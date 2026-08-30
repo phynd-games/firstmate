@@ -577,6 +577,7 @@ remote_secondmate_teardown() {
   route_home=$SECONDMATE_REGISTRY_HOME
   [ "$route_host" = "$remote_host" ] && [ "$route_root" = "$remote_root" ] && [ "$route_home" = "$remote_home" ] \
     || { echo "REFUSED: remote secondmate metadata does not match its registry route" >&2; return 1; }
+  remote_secondmate_herdr_preflight || return 1
   [ -z "$FORCE" ] || [ "$FORCE" = --force ] || { echo "error: invalid teardown option: $FORCE" >&2; return 2; }
   handoff_wake_retire_validate || return 1
   remote_recovery_paths_validate initial || return 1
@@ -639,9 +640,21 @@ remote_secondmate_teardown() {
   return 0
 }
 
+remote_secondmate_herdr_preflight() {
+  local out rc
+  if out=$("$SCRIPT_DIR/fm-on.sh" "$ID" fm-remote-secondmate-control.sh route "$ID" < /dev/null 2>&1); then
+    return 0
+  else
+    rc=$?
+  fi
+  [ -z "$out" ] || printf '%s\n' "$out" >&2
+  return "$rc"
+}
+
 remote_secondmate_teardown_locked() {
   local rc
   [ -n "$(fm_meta_get "$META" remote_host)" ] || return 3
+  remote_secondmate_herdr_preflight || return $?
   REMOTE_REGISTRY_LOCK=$(secondmate_registry_lock_path "$STATE")
   fm_lock_acquire_wait "$REMOTE_REGISTRY_LOCK" || return 1
   REMOTE_HANDOFF_LOCK="$STATE/.backlog-handoff-$ID.lock"

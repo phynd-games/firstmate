@@ -27,10 +27,9 @@
 #   fm_backend_policy_config_remediation, fm_backend_policy_legacy_record_remediation,
 #   fm_backend_policy_marker_note   remediation and marker text used by every boundary
 #
-# Legacy test lane. The retained adapters are admitted only from a repository
-# test process with the harness marker and root identity.
-# Ordinary Firstmate processes cannot enable this lane by setting backend
-# variables; the lane is removed together with the retained adapters.
+# Legacy test lane. The explicit lane marker is admitted only when descriptor 9
+# is inherited from a repository test process in the same checkout.
+# Ordinary Firstmate processes cannot enable this lane without that provenance.
 #
 # Sourced by bin/fm-backend.sh and bin/fm-supervisor-target-lib.sh. It sets no
 # FM_ROOT/FM_HOME globals and runs no commands at source time.
@@ -42,43 +41,6 @@ _FM_BACKEND_POLICY_LIB_SOURCED=1
 
 FM_BACKEND_ACTIVE="herdr"
 FM_BACKEND_RETAINED_LEGACY="tmux zellij orca cmux"
-
-fm_backend_policy_pid_identity() {
-  local pid=$1 proc_root stat_line starttime cmdline_hex out identity_key
-  local -a stat_fields
-  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  proc_root=/proc
-  if [ -r "$proc_root/$pid/stat" ] && [ -r "$proc_root/$pid/cmdline" ]; then
-    stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
-    read -r -a stat_fields <<< "${stat_line##*)}"
-    [ "${#stat_fields[@]}" -ge 20 ] || return 1
-    starttime=${stat_fields[19]}
-    case "$starttime" in ''|*[!0-9]*) return 1 ;; esac
-    cmdline_hex=$(od -An -v -tx1 "$proc_root/$pid/cmdline" 2>/dev/null | tr -d '[:space:]') || return 1
-    [ -n "$cmdline_hex" ] || return 1
-    identity_key=proc-starttime
-    [ "$(uname 2>/dev/null || true)" != Linux ] || identity_key=linux-starttime
-    printf '%s=%s cmdline-hex=%s\n' "$identity_key" "$starttime" "$cmdline_hex"
-    return 0
-  fi
-  out=$(LC_ALL=C ps -p "$pid" -o lstart= -o command= 2>/dev/null) || return 1
-  [ -n "$out" ] || return 1
-  printf '%s\n' "$out" | sed 's/^[[:space:]]*//'
-}
-
-fm_backend_policy_pid_is_current_or_ancestor() {
-  local wanted=$1 pid=${BASHPID:-$$} parent hops=0
-  case "$wanted" in ''|*[!0-9]*) return 1 ;; esac
-  while [ -n "$pid" ] && [ "$pid" -gt 1 ] && [ "$hops" -lt 64 ]; do
-    [ "$pid" = "$wanted" ] && return 0
-    parent=$(ps -o ppid= -p "$pid" 2>/dev/null || true)
-    parent=${parent//[[:space:]]/}
-    [ -n "$parent" ] && [ "$parent" != "$pid" ] || break
-    pid=$parent
-    hops=$((hops + 1))
-  done
-  return 1
-}
 
 fm_backend_policy_fd_target() {
   local pid=$1 fd=$2 target
@@ -92,58 +54,42 @@ fm_backend_policy_fd_target() {
   printf '%s\n' "$target"
 }
 
-fm_backend_policy_test_capability() {
-  local owner_pid=${FM_BACKEND_TEST_OWNER_PID:-} fd=${FM_BACKEND_TEST_CAPABILITY_FD:-}
-  local owner_target current_target
-  case "$fd" in ''|*[!0-9]*) return 1 ;; esac
-  [ -n "$owner_pid" ] || return 1
-  [ -f "/dev/fd/$fd" ] || return 1
-  owner_target=$(fm_backend_policy_fd_target "$owner_pid" "$fd") || return 1
-  current_target=$(fm_backend_policy_fd_target "${BASHPID:-$$}" "$fd") || return 1
-  [ "$owner_target" = "$current_target" ] || return 1
-}
-
 fm_backend_policy_test_process() {
-  local owner_pid=${FM_BACKEND_TEST_OWNER_PID:-} owner_identity=${FM_BACKEND_TEST_OWNER_IDENTITY:-}
-  local owner_script=${FM_BACKEND_TEST_OWNER_SCRIPT:-} current_identity owner_command owner_cwd owner_comm source resolved root
-  [ -n "$owner_pid" ] && [ -n "$owner_identity" ] || return 1
-  fm_backend_policy_test_capability || return 1
+  local fd=9 current_pid=${BASHPID:-$$}
+  local current_target command comm cwd target parent hops=0 root
+  case "$fd" in ''|*[!0-9]*) return 1 ;; esac
+  current_target=$(fm_backend_policy_fd_target "$current_pid" "$fd") || return 1
   root=$(cd "${BASH_SOURCE[0]%/*}/.." 2>/dev/null && pwd -P) || return 1
-  case "$owner_script" in
-    "$root"/tests/*.test.sh) ;;
-    *) return 1 ;;
-  esac
-  owner_command=$(ps -p "$owner_pid" -o command= 2>/dev/null) || return 1
-  owner_comm=$(ps -p "$owner_pid" -o comm= 2>/dev/null) || return 1
-  case "$owner_comm" in bash|zsh|sh) ;; *) return 1 ;; esac
-  case "$owner_command" in *"$root/tests/"*.test.sh*|*"tests/"*.test.sh*) ;; *) return 1 ;; esac
-  if [ -r "/proc/$owner_pid/cwd" ]; then
-    owner_cwd=$(readlink "/proc/$owner_pid/cwd" 2>/dev/null) || return 1
-  else
-    owner_cwd=$(lsof -Fn -a -p "$owner_pid" -d cwd 2>/dev/null | sed -n 's/^n//p' | tail -1) || return 1
-  fi
-  case "$owner_cwd" in "$root"|"$root"/*) ;; *) return 1 ;; esac
-  case "$owner_script" in "$root"/tests/*.test.sh) ;; *) return 1 ;; esac
-  case "$owner_command" in *"$(basename "$owner_script")"*) ;; *) return 1 ;; esac
-  if [ "$owner_pid" = "${BASHPID:-$$}" ]; then
-    for source in "${BASH_SOURCE[@]}"; do
-      case "$source" in
-        /*) resolved=$source ;;
-        *) resolved=$(cd "${source%/*}" 2>/dev/null && pwd -P)/${source##*/} || continue ;;
+  while [ -n "$current_pid" ] && [ "$current_pid" -gt 1 ] && [ "$hops" -lt 64 ]; do
+    target=$(fm_backend_policy_fd_target "$current_pid" "$fd" 2>/dev/null || true)
+    if [ "$target" = "$current_target" ]; then
+      command=$(ps -p "$current_pid" -o command= 2>/dev/null || true)
+      comm=$(ps -p "$current_pid" -o comm= 2>/dev/null || true)
+      case "$comm" in
+        bash|zsh|sh)
+          case "$command" in *"$root/tests/"*.test.sh*|*"tests/"*.test.sh*) ;; *) command= ;; esac
+          if [ -n "$command" ]; then
+            if [ -r "/proc/$current_pid/cwd" ]; then
+              cwd=$(readlink "/proc/$current_pid/cwd" 2>/dev/null || true)
+            else
+              cwd=$(lsof -Fn -a -p "$current_pid" -d cwd 2>/dev/null | sed -n 's/^n//p' | tail -1 || true)
+            fi
+            case "$cwd" in "$root"|"$root"/*) return 0 ;; esac
+          fi
+          ;;
       esac
-      case "$resolved" in "$root"/tests/*.test.sh) return 0 ;; esac
-    done
-    return 1
-  fi
-  fm_backend_policy_pid_is_current_or_ancestor "$owner_pid" || return 1
-  current_identity=$(fm_backend_policy_pid_identity "$owner_pid") || return 1
-  [ "$current_identity" = "$owner_identity" ]
+    fi
+    parent=$(ps -o ppid= -p "$current_pid" 2>/dev/null || true)
+    parent=${parent//[[:space:]]/}
+    [ -n "$parent" ] && [ "$parent" != "$current_pid" ] || break
+    current_pid=$parent
+    hops=$((hops + 1))
+  done
+  return 1
 }
 
 fm_backend_policy_legacy_lane() {
   [ "${FM_BACKEND_LEGACY_TEST_LANE:-}" = 1 ] || return 1
-  [ "${FM_BACKEND_TEST_HARNESS:-}" = 1 ] || return 1
-  [ "${FM_BACKEND_TEST_ROOT:-}" = "$(cd "${BASH_SOURCE[0]%/*}/.." 2>/dev/null && pwd -P)" ] || return 1
   fm_backend_policy_test_process
 }
 

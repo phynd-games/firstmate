@@ -85,16 +85,10 @@ fm_test_pid_identity() {
     '. "$1"; fm_pid_identity "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$pid"
 }
 
-FM_TEST_OWNER_IDENTITY=$(fm_test_pid_identity "$$") || {
-  rm -f "$FM_TEST_CLEANUP_REGISTRY"
-  return 1
-}
-export FM_BACKEND_TEST_OWNER_PID=$$
-export FM_BACKEND_TEST_OWNER_IDENTITY="$FM_TEST_OWNER_IDENTITY"
-FM_BACKEND_TEST_OWNER_SCRIPT=$(cd "$(dirname "${BASH_SOURCE[1]}")" && pwd -P)/$(basename "${BASH_SOURCE[1]}")
-export FM_BACKEND_TEST_OWNER_SCRIPT
+FM_TEST_OWNER_IDENTITY=$(fm_test_pid_identity "$$") || return 1
+
 FM_BACKEND_TEST_CAPABILITY_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-harness-capability.XXXXXX") || return 1
-printf '%s\n' "${FM_TEST_OWNER_IDENTITY}" > "$FM_BACKEND_TEST_CAPABILITY_FILE" || return 1
+printf '%s\n' "$$-${RANDOM:-0}" > "$FM_BACKEND_TEST_CAPABILITY_FILE" || return 1
 exec 9< "$FM_BACKEND_TEST_CAPABILITY_FILE"
 rm -f "$FM_BACKEND_TEST_CAPABILITY_FILE"
 export FM_BACKEND_TEST_CAPABILITY_FD=9
