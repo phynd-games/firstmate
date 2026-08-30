@@ -251,6 +251,7 @@ test_promote_requires_and_records_the_delivery_contract() {
   assert_grep '# Required PR self-review' "$home/data/promote-d1/brief.md" "promotion did not install the ship self-review contract"
   assert_grep 'Firstmate substrate launch SHA:' "$home/data/promote-d1/brief.md" "promotion did not install the substrate launch evidence"
   assert_grep 'Target-project approved base: ref=main;' "$home/data/promote-d1/brief.md" "promotion did not record the approved base in the ship brief"
+  assert_contains "$(cat "$home/data/promote-d1/brief.md")" "Scout brief." "promotion did not preserve the scout task context"
   assert_not_contains "$out" 'reset to a clean default-branch base' "promotion still instructed a default-base reset"
   assert_contains "$out" "ship instructions for mode=direct-PR" "promotion hint did not carry the decided mode"
   [ "$(grep -c '^mode=' "$meta")" = 1 ] || fail "promotion left more than one mode= line in the task record"

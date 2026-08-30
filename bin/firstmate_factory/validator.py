@@ -515,6 +515,8 @@ def validate_source_bytes(
         if not isinstance(nested, list):
             errors.add("schema.type", f"{epic_path}.tasks", "expected array")
             continue
+        if not nested:
+            errors.add("schema.min-items", f"{epic_path}.tasks", "expected at least 1 item(s)")
         if valid_epic_id:
             epic_counts[epic_id] = len(nested)
         for task_index, item in enumerate(nested):

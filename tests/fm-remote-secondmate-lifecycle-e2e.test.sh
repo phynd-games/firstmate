@@ -1058,6 +1058,22 @@ assert_contains "$UPDATE_OUT" 'synced:' "remote update did not report a host-loc
 assert_present "$REMOTE_HOME/REMOTE_UPDATE_PROBE" "remote update did not materialize the code-root commit"
 pass "remote update imports and fast-forwards the persistent home on its configured host"
 
+rm -rf -- "$REMOTE_HOME/config"
+printf 'unsafe untracked config file\n' > "$REMOTE_HOME/config"
+if remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh update ios >/dev/null 2>&1; then
+  fail "remote sync accepted an untracked config file"
+fi
+rm -f -- "$REMOTE_HOME/config"
+ln -s "$TMP_ROOT/config-target" "$REMOTE_HOME/config"
+if remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh update ios >/dev/null 2>&1; then
+  fail "remote sync accepted an untracked config symlink"
+fi
+rm -f -- "$REMOTE_HOME/config"
+mkdir "$REMOTE_HOME/config"
+remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh update ios >/dev/null \
+  || fail "remote sync rejected a host-local config directory"
+pass "remote sync exempts only a real host-local config directory"
+
 rm -f "$TMP_ROOT/doctor.repaired"
 : > "$DOCTOR_LOG"
 [ "$(FM_FAKE_SSH_MODE=doctor-fixable remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)" = unreadable ] \

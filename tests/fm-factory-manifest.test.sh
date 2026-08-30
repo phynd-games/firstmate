@@ -67,6 +67,8 @@ elif mode == "empty-graph":
     doc["task_count"] = 0
     doc["epics"] = []
     doc["tasks"] = []
+elif mode == "empty-epic":
+    doc["epics"][0]["tasks"] = []
 else:
     raise SystemExit(f"unknown mutation: {mode}")
 pathlib.Path(output).write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
@@ -109,6 +111,7 @@ EOF
   json_assert "$TMP_ROOT/schema-execution-manifest.json" "r['properties']['source']['minContains'] == 1 and r['properties']['source']['maxContains'] == 1" "published source schema must require exactly one task-graph binding like runtime validation"
   json_assert "$TMP_ROOT/schema-task.json" "r['properties']['source_refs']['minItems'] == 1" "source references must be non-empty in the published schema"
   json_assert "$TMP_ROOT/schema-source.json" "r['properties']['task_count']['minimum'] == 1 and r['properties']['epics']['minItems'] == 1 and r['properties']['tasks']['minItems'] == 1" "published source schema must reject empty graphs like runtime validation"
+  json_assert "$TMP_ROOT/schema-source.json" "r['properties']['epics']['items']['properties']['tasks']['minItems'] == 1" "published source schema must reject empty epics like runtime validation"
   pass "public CLI exposes four versioned schemas aligned with runtime trust constraints"
 }
 
@@ -175,6 +178,7 @@ test_malformed_source_fixtures() {
   run_invalid_source cycle graph.cycle
   run_invalid_source malformed-epic schema.type
   run_invalid_source empty-graph schema.type
+  run_invalid_source empty-epic schema.min-items
   pass "malformed source fixtures reject mismatches, counts, IDs, edges, and cycles"
 }
 

@@ -87,9 +87,13 @@ CONTROL_LOCK_HELD=0
 META_LOCK=
 META_LOCK_HELD=0
 TMP=
+PROMOTE_TASK_TMP=
+PROMOTE_SHIP_TMP=
 promote_cleanup() {
   local status=$?
   [ -z "$TMP" ] || rm -f -- "$TMP" 2>/dev/null || true
+  [ -z "$PROMOTE_TASK_TMP" ] || rm -f -- "$PROMOTE_TASK_TMP" 2>/dev/null || true
+  [ -z "$PROMOTE_SHIP_TMP" ] || rm -f -- "$PROMOTE_SHIP_TMP" 2>/dev/null || true
   if [ "$META_LOCK_HELD" = 1 ]; then
     META_LOCK_HELD=0
     fm_lock_release "$META_LOCK" || true
@@ -171,6 +175,21 @@ if [ -e "$PROMOTE_BRIEF" ]; then
     echo "error: scout $ID's brief is not a regular file" >&2
     exit 1
   }
+  PROMOTE_TASK_TMP="$DATA/$ID/.scout-task.promote.$$"
+  if ! awk '
+    $0 == "# Task" { in_task = 1; next }
+    in_task && ($0 == "# Setup" || $0 == "# Herdr isolation") { exit }
+    in_task { print }
+  ' "$PROMOTE_BRIEF" > "$PROMOTE_TASK_TMP"; then
+    rm -f -- "$PROMOTE_TASK_TMP"
+    PROMOTE_TASK_TMP=
+    echo "error: could not preserve scout $ID task context" >&2
+    exit 1
+  fi
+  if [ ! -s "$PROMOTE_TASK_TMP" ]; then
+    cp -- "$PROMOTE_BRIEF" "$PROMOTE_TASK_TMP"
+  fi
+  chmod 600 "$PROMOTE_TASK_TMP"
   mv -- "$PROMOTE_BRIEF" "$PROMOTE_BRIEF_BACKUP"
   PROMOTE_BRIEF_BACKED_UP=1
 fi
@@ -184,6 +203,31 @@ if ! FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" \
   fi
   echo "error: could not install the ship brief for promoted scout $ID" >&2
   exit 1
+fi
+if [ -n "$PROMOTE_TASK_TMP" ]; then
+  PROMOTE_SHIP_TMP="$DATA/$ID/.ship-brief.promote.$$"
+  if ! awk -v task_file="$PROMOTE_TASK_TMP" '
+    $0 == "{TASK}" {
+      found = 1
+      while ((getline line < task_file) > 0) print line
+      close(task_file)
+      next
+    }
+    { print }
+    END { if (!found) exit 1 }
+  ' "$PROMOTE_BRIEF" > "$PROMOTE_SHIP_TMP"; then
+    rm -f -- "$PROMOTE_SHIP_TMP" "$PROMOTE_BRIEF"
+    if [ "$PROMOTE_BRIEF_BACKED_UP" -eq 1 ]; then
+      mv -- "$PROMOTE_BRIEF_BACKUP" "$PROMOTE_BRIEF"
+      PROMOTE_BRIEF_BACKED_UP=0
+    fi
+    echo "error: could not restore scout $ID task context in the ship brief" >&2
+    exit 1
+  fi
+  mv -- "$PROMOTE_SHIP_TMP" "$PROMOTE_BRIEF"
+  PROMOTE_SHIP_TMP=
+  rm -f -- "$PROMOTE_TASK_TMP"
+  PROMOTE_TASK_TMP=
 fi
 if ! printf 'Target-project approved base: ref=%s; sha=%s\n' \
   "$PROMOTE_BASE_REF" "$PROMOTE_BASE_SHA" >> "$PROMOTE_BRIEF"; then

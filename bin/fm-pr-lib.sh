@@ -506,7 +506,7 @@ fm_pr_self_review_report_valid() {
         if ($0 == "Finding summary: none") finding_summary = 1
         if (index($0, "Finding: ") == 1) {
           finding_entries++
-          if (substr($0, length("Finding: ") + 1) !~ /^severity=(error|warning|info); path=[A-Za-z0-9._\/-]+:[1-9][0-9]*; evidence=[^;[:space:]][^;]*[[:space:]][^;[:space:]]; consequence=[^;[:space:]][^;]*[[:space:]][^;[:space:]]; fix=[^;[:space:]][^;]*[[:space:]][^;[:space:]]$/) bad = 1
+          if (substr($0, length("Finding: ") + 1) !~ /^severity=(error|warning|info); path=[^;[:space:]][^;]*:[1-9][0-9]*; evidence=[^;[:space:]][^;]*[[:space:]][^;[:space:]]; consequence=[^;[:space:]][^;]*[[:space:]][^;[:space:]]; fix=[^;[:space:]][^;]*[[:space:]][^;[:space:]]$/) bad = 1
         }
       }
       if (expected == 3) {
@@ -588,7 +588,7 @@ fm_pr_self_review_report_valid() {
       n = split(value, parts, "; ")
       if (n != 5 || parts[1] != "reviewed") return 0
       if (parts[2] !~ /^files=[^;[:space:]][^;]*$/ || parts[2] !~ /[\/.]/) return 0
-      if (parts[3] !~ /^evidence=[A-Za-z0-9._\/-]+:[1-9][0-9]* sha256=[0-9a-f]+ [^;[:space:]][^;]*$/) return 0
+      if (parts[3] !~ /^evidence=[^;[:space:]][^;]*:[1-9][0-9]* sha256=[0-9a-f]+ [^;[:space:]][^;]*$/) return 0
       for (i = 4; i <= 5; i++) {
         if (parts[i] !~ /^(evidence|consequence|fix)=[^;[:space:]][^;]*$/) return 0
         if (parts[i] !~ /=[^;[:space:]][^;]*[[:space:]][^;[:space:]]/) return 0
@@ -630,8 +630,18 @@ EOF
   actual_changed_path_count=$(printf '%s\n' "$actual_changed_paths" | awk 'NF { count++ } END { print count + 0 }') || return 1
   [ -z "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] || return 1
   [ -z "$(git -C "$substrate_root" status --porcelain 2>/dev/null)" ] || return 1
+  fm_pr_review_path_syntax_valid() {
+    local candidate=$1
+    case "$candidate" in
+      ''|/*|*';'*|*,*) return 1 ;;
+    esac
+    case "/$candidate/" in
+      */../*|*/./*) return 1 ;;
+    esac
+    return 0
+  }
   local line finding_path finding_file finding_line surface_files surface_file review_root
-  local surface_evidence evidence_ref evidence_file evidence_line evidence_hash line_content actual_evidence_hash surface_review_files surface_evidence_files changed_path surface_name
+  local surface_evidence evidence_ref evidence_rest evidence_file evidence_line evidence_hash line_content actual_evidence_hash surface_review_files surface_evidence_files changed_path surface_name
   surface_review_files=
   surface_evidence_files=
   fm_pr_review_file_valid() {
@@ -655,9 +665,7 @@ EOF
     finding_path=${finding_path%%; evidence=*}
     finding_file=${finding_path%:*}
     finding_line=${finding_path##*:}
-    case "$finding_file" in
-      ''|/*|*..*|*[!A-Za-z0-9._/-]*) return 1 ;;
-    esac
+    fm_pr_review_path_syntax_valid "$finding_file" || return 1
     [ "$finding_line" -ge 1 ] 2>/dev/null || return 1
     fm_pr_review_file_valid "$finding_file" || return 1
   done < <(awk '/^Finding: / { print }' "$report")
@@ -666,9 +674,7 @@ EOF
     surface_files=${surface_files%%; evidence=*}
     [ -n "$surface_files" ] || return 1
     while IFS= read -r surface_file || [ -n "$surface_file" ]; do
-      case "$surface_file" in
-        ''|/*|*..*|*[!A-Za-z0-9._/-]*) return 1 ;;
-      esac
+      fm_pr_review_path_syntax_valid "$surface_file" || return 1
       fm_pr_review_file_valid "$surface_file" || return 1
       surface_review_files="$surface_review_files,$surface_file,"
     done < <(printf '%s\n' "$surface_files" | tr ',' '\n')
@@ -735,14 +741,13 @@ EOF
     surface_files=${surface_files%%; evidence=*}
     surface_evidence=${line#*; evidence=}
     surface_evidence=${surface_evidence%%; consequence=*}
-    evidence_ref=${surface_evidence%% *}
-    evidence_hash=${surface_evidence#* sha256=}
+    evidence_ref=${surface_evidence%% sha256=*}
+    evidence_rest=${surface_evidence#"$evidence_ref" }
+    evidence_hash=${evidence_rest#sha256=}
     evidence_hash=${evidence_hash%% *}
     evidence_file=${evidence_ref%:*}
     evidence_line=${evidence_ref##*:}
-    case "$evidence_file" in
-      ''|/*|*..*|*[!A-Za-z0-9._/-]*) return 1 ;;
-    esac
+    fm_pr_review_path_syntax_valid "$evidence_file" || return 1
     surface_name=$(printf '%s' "${line%%:*}" | tr '[:upper:]' '[:lower:]') || return 1
     fm_pr_review_surface_path_valid "$surface_name" "$evidence_file" || return 1
     [ "$evidence_line" -ge 1 ] 2>/dev/null || return 1

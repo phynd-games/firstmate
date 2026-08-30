@@ -264,8 +264,12 @@ cmd_sync() {
   # Inherited config is host-local material, so an untracked config directory
   # must not make an otherwise clean code checkout look dirty. Tracked config
   # edits and every other untracked path remain a sync refusal.
-  dirty=$(git -C "$target" status --porcelain 2>/dev/null | awk '
-    $1 == "??" && ($2 == "config" || $2 == "config/") { next }
+  config_exempt=0
+  if [ -d "$target/config" ] && [ ! -L "$target/config" ]; then
+    config_exempt=1
+  fi
+  dirty=$(git -C "$target" status --porcelain 2>/dev/null | awk -v config_exempt="$config_exempt" '
+    config_exempt && $1 == "??" && ($2 == "config" || $2 == "config/") { next }
     $0 != "?? .fm-secondmate-home" { print; exit }
   ')
   [ -z "$dirty" ] || die "remote secondmate checkout is dirty; sync skipped"

@@ -439,7 +439,7 @@ run_merge_entry() {
 }
 
 test_pr_ready_requires_durable_self_review() {
-  local dir report rc fixture_digest
+  local dir report rc fixture_digest delivery_digest
   dir=$(make_case self-review-required)
   write_task_meta "$dir"
   report="$dir/home/data/task-a/pr-self-review.md"
@@ -689,6 +689,19 @@ PY
 
   sed -i.bak 's/^review_base_ref=fm\/m1-001-provenance-validator$/review_base_ref=main/' "$dir/home/state/task-a.meta"
   rm -f "$dir/home/state/task-a.meta.bak"
+  printf '#!/usr/bin/env bash\nspaced evidence\n' > "$dir/wt/bin/fm-pr spaced.sh"
+  git -C "$dir/wt" add -- 'bin/fm-pr spaced.sh'
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm spaced-path
+  write_self_review_report "$dir/home" task-a
+  delivery_digest=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '1p' | fm_pr_sha256_stream)
+  sed -i.bak "s#evidence=bin/fm-pr-create.sh:2 sha256=[0-9a-f]*#evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest#" "$report"
+  rm -f "$report.bak"
+  spaced_digest=$(sed -n '2p' "$dir/wt/bin/fm-pr spaced.sh" | fm_pr_sha256_stream)
+  sed -i.bak "s#^Authority: .*#Authority: reviewed; files=bin/fm-pr-check.sh,bin/fm-pr spaced.sh; evidence=bin/fm-pr spaced.sh:2 sha256=$spaced_digest delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing.#" "$report"
+  rm -f "$report.bak"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/110 >/dev/null \
+    || fail "PR-ready path rejected a changed file with spaces"
+  rm -f "$dir/home/state/task-a.check.sh" "$dir/home/state/task-a.pr-poll" "$dir/home/state/task-a.pr-poll-registration"
   write_self_review_report "$dir/home" task-a
   rm -f "$dir/home/state/task-a.check.sh" "$dir/home/state/task-a.pr-poll" "$dir/home/state/task-a.pr-poll-registration"
   printf 'uncommitted substrate change\n' >> "$dir/substrate/fixture.txt"

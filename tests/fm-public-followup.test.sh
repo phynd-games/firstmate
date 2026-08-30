@@ -2143,10 +2143,22 @@ test_x_request_teardown_warns_when_final_unposted() {
 }
 
 test_secondmate_promotion_uses_teardown_parent_resolution() {
-  local parent stale child remote_child out
+  local parent stale child remote_child out repo wt base id
   parent=$(make_home promote-parent)
   stale=$(make_home promote-stale-parent)
   child=$(make_home promote-child relay-off)
+  for id in promote-conflict promote-legacy; do
+    repo="$child/projects/$id-repo"
+    wt="$child/projects/$id-wt"
+    fm_git_worktree "$repo" "$wt" "$id"
+    base=$(git -C "$wt" rev-parse main)
+    mkdir -p "$child/data/$id"
+    printf 'Scout task context for %s.\n' "$id" > "$child/data/$id/brief.md"
+    printf 'Target-project approved base: ref=main; sha=%s\n' "$base" >> "$child/data/$id/brief.md"
+    fm_write_meta "$child/state/$id.meta" \
+      "window=firstmate:fm-$id" "kind=scout" \
+      "worktree=$wt" "project=$repo"
+  done
   printf '%s\n' mate > "$child/.fm-secondmate-home"
   printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' \
     "$stale" > "$child/.fm-secondmate-parent"
@@ -2161,8 +2173,6 @@ test_secondmate_promotion_uses_teardown_parent_resolution() {
   chmod 600 "$parent/state/public-followup/registry/pf-valid" \
     "$stale/state/public-followup/registry/pf-stale"
 
-  fm_write_meta "$child/state/promote-conflict.meta" \
-    "window=firstmate:fm-promote-conflict" "kind=scout"
   out=$(PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
     FM_STATE_OVERRIDE="$child/state" FM_PUBLIC_FOLLOWUP_PRIMARY_HOME="$parent" \
     "$PROMOTE" promote-conflict --mode local-only --yolo off 2>&1) \
@@ -2175,8 +2185,6 @@ test_secondmate_promotion_uses_teardown_parent_resolution() {
     "a stale durable parent must not produce a rechain hint"
 
   rm -f "$child/.fm-secondmate-parent"
-  fm_write_meta "$child/state/promote-legacy.meta" \
-    "window=firstmate:fm-promote-legacy" "kind=scout"
   out=$(PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
     FM_STATE_OVERRIDE="$child/state" FM_PUBLIC_FOLLOWUP_PRIMARY_HOME="$parent" \
     "$PROMOTE" promote-legacy --mode local-only --yolo off 2>&1) \
@@ -2187,12 +2195,20 @@ test_secondmate_promotion_uses_teardown_parent_resolution() {
     "legacy parent recovery must print the rechain hint"
 
   remote_child=$(make_home promote-remote-child relay-off)
+  repo="$remote_child/projects/promote-remote-repo"
+  wt="$remote_child/projects/promote-remote-wt"
+  fm_git_worktree "$repo" "$wt" promote-remote
+  base=$(git -C "$wt" rev-parse main)
+  mkdir -p "$remote_child/data/promote-remote"
+  printf 'Scout task context for promote-remote.\n' > "$remote_child/data/promote-remote/brief.md"
+  printf 'Target-project approved base: ref=main; sha=%s\n' "$base" >> "$remote_child/data/promote-remote/brief.md"
   printf '%s\n' remote-mate > "$remote_child/.fm-secondmate-home"
   printf 'schema=fm-secondmate-parent.v1\nroute=remote\nparent_host=remote.example\n' \
     > "$remote_child/.fm-secondmate-parent"
   printf 'FMX_PAIRING_TOKEN=child-local-token\n' > "$remote_child/.env"
   fm_write_meta "$remote_child/state/promote-remote.meta" \
-    "window=firstmate:fm-promote-remote" "kind=scout"
+    "window=firstmate:fm-promote-remote" "kind=scout" \
+    "worktree=$wt" "project=$repo"
   out=$(PATH="$remote_child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$remote_child" \
     FM_STATE_OVERRIDE="$remote_child/state" \
     "$PROMOTE" promote-remote --mode local-only --yolo off 2>&1) \
