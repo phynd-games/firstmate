@@ -331,6 +331,25 @@ assert_absent "$HOME2B/state/.herdr-supervisor" "a live away owner hosts no supe
 pass "away mode defers only to a live identity-matched daemon"
 
 # =============================================================================
+# 2c. A live away-daemon pid without matching identity is occupied, not free.
+# =============================================================================
+HOME2C=$(new_home ambiguous-afk)
+make_arm_stub "$HOME2C/arm.sh" ok
+fm_write_meta "$HOME2C/state/ambiguous-afk-task.meta" "window=firstmate:fm-ambiguous-afk-task"
+: > "$HOME2C/state/.afk"
+sleep 300 &
+AFK_AMBIGUOUS_PID=$!
+mkdir -p "$HOME2C/state/.supervise-daemon.lock"
+printf '%s\n' "$AFK_AMBIGUOUS_PID" > "$HOME2C/state/.supervise-daemon.lock/pid"
+out=$(run_supervisor "$HOME2C" "$FAKEBIN" ensure 2>&1)
+kill "$AFK_AMBIGUOUS_PID" 2>/dev/null || true
+wait "$AFK_AMBIGUOUS_PID" 2>/dev/null || true
+assert_contains "$out" "quarantined" "an ambiguous away lock defers the supervisor"
+assert_absent "$HOME2C/state/.herdr-supervisor" "an ambiguous away owner hosts no supervisor"
+assert_present "$HOME2C/state/.herdr-supervisor-alarm" "an ambiguous away lock leaves a durable alarm"
+pass "away mode treats a live daemon with unknown identity as occupied"
+
+# =============================================================================
 # 3. A loaded Pi primary extension owns continuity; the supervisor stands down.
 #    This is the negative control for the incident: when the extension IS
 #    loaded, this new machinery must stay entirely out of the way.
@@ -713,6 +732,10 @@ assert_absent "$HOME13B/fakestate/closed-workspaces" \
 assert_absent "$HOME13B/state/.herdr-supervisor" "a partial establish leaves no live record"
 assert_grep "wPART" "$HOME13B/state/.herdr-supervisor-alarm" \
   "the alarm names the workspace that may have been orphaned"
+assert_grep "workspace=wPART" "$HOME13B/state/.herdr-supervisor-pending-cleanup" \
+  "the pending cleanup receipt preserves the returned workspace id"
+assert_grep "tab=wPART:t1" "$HOME13B/state/.herdr-supervisor-pending-cleanup" \
+  "the pending cleanup receipt preserves the returned tab id"
 [ "$(cat "$HOME13B/arm.count" 2>/dev/null || echo 0)" = 0 ] \
   || fail "a partial establish armed the watcher anyway"
 pass "a partial Herdr create response is refused and names its possible orphan"

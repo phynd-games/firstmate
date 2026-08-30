@@ -28,10 +28,12 @@ batched digest rather than per-wake injections.
    Pick the right path:
    - **Harness WITH a native in-pane tracked-background tool** (e.g. claude's
      background bash, grok's background tool): first run
-     `bin/fm-afk-launch.sh start-native`, then run
-     `FM_AFK_STATE_PREPARED=1 bin/fm-afk-start.sh` through that native tool.
+     `FM_AFK_NATIVE_TRACKED=1 bin/fm-afk-launch.sh start-native` through that
+     native tool. This single tracked process prepares lifecycle state and execs
+     the common daemon entry while retaining the supervision claim through
+     daemon proof.
      This is a deliberate no-separate-terminal exception because the harness-hosted job creates no terminal or layout mutation, and a shell launcher cannot invoke a harness-native background tool.
-     The launcher still owns lifecycle state and records the no-terminal mode, while the daemon inherits and auto-discovers the captain pane.
+     The daemon inherits and auto-discovers the captain pane.
      If the native launch fails, run `bin/fm-afk-launch.sh stop` to roll back the prepared lifecycle.
      Do not wrap it in `nohup ... &` (Codex/herdr can reap fire-and-forget shell children after a tool call returns).
    - **Harness WITHOUT one** (e.g. pi): run `bin/fm-afk-launch.sh start`. It is
@@ -44,7 +46,7 @@ batched digest rather than per-wake injections.
      shrinks the captain's pane (docs/herdr-backend.md "Away-mode supervisor
      support").
    Both paths share `bin/fm-afk-start.sh` as the daemon entry.
-   The native path tells it that the launcher already prepared lifecycle state; the terminal-backed path lets the entry perform its existing state setup inside the new terminal.
+   The native path prepares lifecycle state and execs the common daemon entry in the same tracked process; the terminal-backed path lets the entry perform its existing state setup inside the new terminal.
    It exits immediately if the identity-backed daemon lock already names a live process, otherwise it execs `bin/fm-supervise-daemon.sh` in the foreground.
    The daemon is **presence-gated**: it injects escalations only while
    `state/.afk` exists, and stays quiet otherwise.

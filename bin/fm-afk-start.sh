@@ -38,7 +38,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 FM_AFK_STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 FM_AFK_LOCK="$FM_AFK_STATE/.supervise-daemon.lock"
 FM_SUPERVISION_CLAIM="$FM_AFK_STATE/.supervision-claim.lock"
-FM_AFK_DAEMON="$FM_AFK_START_DIR/fm-supervise-daemon.sh"
+FM_AFK_DAEMON="${FM_AFK_DAEMON_OVERRIDE:-$FM_AFK_START_DIR/fm-supervise-daemon.sh}"
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$FM_AFK_START_DIR/fm-wake-lib.sh"
@@ -97,11 +97,27 @@ daemon_lock_pid() {
 }
 
 daemon_lock_held_by_live_daemon() {
-  local owner pid
-  owner=$(daemon_lock_owner) || return 1
+  [ "$(daemon_lock_state)" = live ]
+}
+
+daemon_lock_state() {
+  local owner pid recorded_identity current_identity
+  owner=$(daemon_lock_owner 2>/dev/null || true)
+  [ -n "$owner" ] || { printf 'absent\n'; return 0; }
   pid=$(cat "$owner/pid" 2>/dev/null || true)
-  fm_pid_alive "$pid" || return 1
-  daemon_pid_matches "$pid" "$owner"
+  [ -n "$pid" ] || { printf 'ambiguous\n'; return 0; }
+  if ! fm_pid_alive "$pid"; then
+    printf 'stale\n'
+    return 0
+  fi
+  recorded_identity=$(cat "$owner/pid-identity" 2>/dev/null || true)
+  current_identity=$(fm_pid_identity "$pid" 2>/dev/null || true)
+  if [ -n "$recorded_identity" ] && [ -n "$current_identity" ] \
+    && [ "$current_identity" = "$recorded_identity" ]; then
+    printf 'live\n'
+  else
+    printf 'ambiguous\n'
+  fi
 }
 
 fm_afk_flag_write() {  # <state-dir>
