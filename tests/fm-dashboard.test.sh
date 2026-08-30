@@ -23,10 +23,12 @@ containment_available() {
       ;;
     Darwin)
       command -v sandbox-exec >/dev/null 2>&1 || return 1
-      sandbox-exec -p '(version 1) (allow default) (deny network-inbound)' \
+      if sandbox-exec -p '(version 1) (allow default) (deny network-inbound)' \
         python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0))' \
-        >/dev/null 2>&1
-      [ "$?" -ne 0 ]
+        >/dev/null 2>&1; then
+        return 1
+      fi
+      return 0
       ;;
     *) return 1 ;;
   esac
@@ -225,7 +227,8 @@ test_a_symlinked_status_log_is_refused_and_disclosed() {
 test_the_dashboard_skips_remote_evidence_in_local_only_mode() {
   local home payload
   home=$(make_home local-only-remote)
-  printf '#!/usr/bin/env bash\nprintf remote-call >> "$FM_HOME/remote-call.log"\nexit 1\n' \
+  printf '%s\n' '#!/usr/bin/env bash' \
+    "printf remote-call >> \"\$FM_HOME/remote-call.log\"" 'exit 1' \
     > "$home/fakebin/ssh"
   chmod +x "$home/fakebin/ssh"
   fm_write_meta "$home/state/remote-one.meta" \

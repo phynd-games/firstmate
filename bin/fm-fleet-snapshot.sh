@@ -381,23 +381,23 @@ crew_state_json() {  # <id>
 snapshot_herdr_target_state() {  # <target> <expected-label>
   fm_run_timed "$FM_SNAPSHOT_HERDR_TIMEOUT" env \
     FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" \
-    bash -c '
-      . "$1"
+    bash -c "
+      . \"\$1\"
       fm_backend_source herdr || exit 1
-      fm_backend_herdr_target_shape_valid "$2" || exit 1
-      fm_backend_herdr_pane_presence_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"
-    ' snapshot-herdr-target "$SCRIPT_DIR/fm-backend.sh" "$1" "$2"
+      fm_backend_herdr_target_shape_valid \"\$2\" || exit 1
+      fm_backend_herdr_pane_presence_state \"\$FM_BACKEND_HERDR_SESSION\" \"\$FM_BACKEND_HERDR_PANE\"
+    " snapshot-herdr-target "$SCRIPT_DIR/fm-backend.sh" "$1" "$2"
 }
 
 snapshot_herdr_agent_alive() {  # <target>
   fm_run_timed "$FM_SNAPSHOT_HERDR_TIMEOUT" env \
     FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" \
-    bash -c '
-      . "$1"
+    bash -c "
+      . \"\$1\"
       fm_backend_source herdr || exit 1
-      fm_backend_herdr_target_shape_valid "$2" || exit 1
-      fm_backend_agent_alive herdr "$2"
-    ' snapshot-herdr-agent "$SCRIPT_DIR/fm-backend.sh" "$1"
+      fm_backend_herdr_target_shape_valid \"\$2\" || exit 1
+      fm_backend_agent_alive herdr \"\$2\"
+    " snapshot-herdr-agent "$SCRIPT_DIR/fm-backend.sh" "$1"
 }
 
 status_event_json() {  # <status-log>
@@ -594,7 +594,7 @@ task_json_lines() {
   set -o pipefail
   local meta id kind harness model effort mode yolo project worktree home projects spawn_gen backend target status_log report_path
   local remote_host remote_root remote_state remote_rc remote_home_present remote_unavailable remote_reason
-  local pr pr_source event_json current_json endpoint_exists endpoint_state endpoint_rc agent_alive meta_json status_json report_json worktree_json home_json
+  local pr pr_source event_json current_json endpoint_exists endpoint_state agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
   local open_decisions_tsv open_decisions_json
 

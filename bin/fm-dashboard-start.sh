@@ -374,14 +374,14 @@ herdr_cli() {  # <herdr-args...>
     herdr_ready || return 1
     fm_run_timed "$FM_DASHBOARD_HERDR_TIMEOUT" env \
       FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="${FM_ROOT_OVERRIDE:-$FM_ROOT}" \
-      bash -c '
-        . "$1"
+      bash -c "
+        . \"\$1\"
         fm_backend_source herdr || exit 1
         shift
-        session=$1
+        session=\$1
         shift
-        fm_backend_herdr_cli "$session" "$@"
-      ' dashboard-herdr-call "$SCRIPT_DIR/fm-backend.sh" "$(herdr_session)" "$@"
+        fm_backend_herdr_cli \"\$session\" \"\$@\"
+      " dashboard-herdr-call "$SCRIPT_DIR/fm-backend.sh" "$(herdr_session)" "$@"
   fi
 }
 
@@ -477,11 +477,11 @@ pane_state() {  # <pane-id> <session> <workspace> <tab>
   if [ -z "$FM_DASHBOARD_HERDR_CLI" ]; then
     out=$(fm_run_timed "$FM_DASHBOARD_HERDR_TIMEOUT" env \
       FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="${FM_ROOT_OVERRIDE:-$FM_ROOT}" \
-      bash -c '
-        . "$1"
+      bash -c "
+        . \"\$1\"
         fm_backend_source herdr || exit 1
-        fm_backend_herdr_pane_presence_state "$2" "$3" "$4" "$5"
-      ' dashboard-pane-presence "$SCRIPT_DIR/fm-backend.sh" \
+        fm_backend_herdr_pane_presence_state \"\$2\" \"\$3\" \"\$4\" \"\$5\"
+      " dashboard-pane-presence "$SCRIPT_DIR/fm-backend.sh" \
       "$session" "$pane" "$workspace" "$tab" 2>/dev/null) || out=unknown
     case "$out" in
       dead) printf 'gone' ;;
@@ -958,7 +958,7 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
   STARTED_TAB_LABEL=$label
   STARTED_PANE_PARENT_WORKSPACE=
   STARTED_PANE_PARENT_TAB=
-  STARTED_STAGE=workspace-list
+  STARTED_STAGE='workspace-list'
   STARTED_WORKSPACE=; STARTED_TAB=; STARTED_PANE=
   STARTED_WORKSPACE_CREATE_REQUEST="session:$STARTED_SESSION;label:$STARTED_WORKSPACE_LABEL;cwd:$FM_HOME"
   STARTED_WORKSPACE_IDENTITY="$STARTED_WORKSPACE_CREATE_REQUEST"
@@ -981,7 +981,7 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
   [ -z "$ws" ] || herdr_workspace_id_valid "$ws" || return 1
   if [ -z "$ws" ]; then
     workspace_created=1
-    STARTED_STAGE=workspace-create
+    STARTED_STAGE='workspace-create'
     startup_journal_write || return 1
     out=$(herdr_cli workspace create --cwd "$FM_HOME" --label "$label" --no-focus 2>/dev/null) || :
     ws=$(printf '%s' "$out" | jq -er '
@@ -1003,7 +1003,7 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
   fi
   STARTED_WORKSPACE=$ws
   STARTED_WORKSPACE_IDENTITY="id:$ws"
-  STARTED_STAGE=tab-create
+  STARTED_STAGE='tab-create'
   STARTED_PANE_PARENT_WORKSPACE=$ws
   STARTED_TAB_CREATE_REQUEST="workspace:$ws;label:$STARTED_TAB_LABEL;cwd:$FM_HOME"
   STARTED_TAB_IDENTITY="$STARTED_TAB_CREATE_REQUEST"
@@ -1025,7 +1025,7 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
   [ -n "$STARTED_TAB" ] && STARTED_TAB_IDENTITY="id:$STARTED_TAB"
   [ -n "$STARTED_PANE" ] && STARTED_PANE_IDENTITY="id:$STARTED_PANE"
   STARTED_PANE_PARENT_TAB=${STARTED_TAB:-}
-  STARTED_STAGE=tab-response
+  STARTED_STAGE='tab-response'
   startup_journal_write || return 1
   [ -n "$STARTED_TAB" ] || STARTED_TAB=$(recover_tab "$ws" "$label") || return 1
   herdr_tab_id_valid "$ws" "$STARTED_TAB" || return 1
@@ -1034,16 +1034,16 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
   STARTED_PANE_PARENT_TAB=$STARTED_TAB
   STARTED_PANE_CREATE_REQUEST="workspace:$ws;tab:$STARTED_TAB;role:root-pane;label:$STARTED_LABEL"
   [ -n "$STARTED_PANE" ] || STARTED_PANE_IDENTITY="$STARTED_PANE_CREATE_REQUEST"
-  STARTED_STAGE=pane-response
+  STARTED_STAGE='pane-response'
   startup_journal_write || return 1
   [ -n "$STARTED_PANE" ] || STARTED_PANE=$(recover_pane "$ws" "$STARTED_TAB") || return 1
   herdr_pane_id_valid "$ws" "$STARTED_TAB" "$STARTED_PANE" || return 1
   herdr_pane_in_scope "$STARTED_SESSION" "$ws" "$STARTED_TAB" "$STARTED_PANE" || return 1
   [ -n "$STARTED_PANE" ] && STARTED_PANE_IDENTITY="id:$STARTED_PANE"
-  STARTED_STAGE=pane-identity
+  STARTED_STAGE='pane-identity'
   startup_journal_write || return 1
   [ "$(pane_state "$STARTED_PANE" "$STARTED_SESSION" "$ws" "$STARTED_TAB")" = open ] || return 1
-  STARTED_STAGE=pane-run
+  STARTED_STAGE='pane-run'
   startup_journal_write || return 1
   # `env` carries this home explicitly: the pane inherits the Herdr server's
   # environment, not this shell's, so an inherited FM_HOME cannot be assumed.

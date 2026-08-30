@@ -29,10 +29,12 @@ containment_available() {
       ;;
     Darwin)
       command -v sandbox-exec >/dev/null 2>&1 || return 1
-      sandbox-exec -p '(version 1) (allow default) (deny network-inbound)' \
+      if sandbox-exec -p '(version 1) (allow default) (deny network-inbound)' \
         python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0))' \
-        >/dev/null 2>&1
-      [ "$?" -ne 0 ]
+        >/dev/null 2>&1; then
+        return 1
+      fi
+      return 0
       ;;
     *) return 1 ;;
   esac
@@ -347,7 +349,7 @@ test_a_drip_request_hits_an_absolute_http_deadline() {
   out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FAKE_HERDR_STATE="$home/herdr" \
     FM_DASHBOARD_BUILD_TIMEOUT=2 FM_DASHBOARD_PORT="$port" "$START" ensure 2>&1) \
     || fail "ensure failed: $out"
-  python3 - "$port" <<'PY'
+  python3 - "$port" <<'PY' || fail "a drip request was not bounded by an absolute deadline"
 import socket
 import sys
 import time
@@ -367,7 +369,6 @@ finally:
 if not closed or time.monotonic() - started > 9:
     raise SystemExit(1)
 PY
-  [ "$?" -eq 0 ] || fail "a drip request was not bounded by an absolute deadline"
   pass "a drip request is closed by the absolute HTTP deadline"
 }
 
