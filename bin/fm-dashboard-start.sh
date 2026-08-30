@@ -397,6 +397,12 @@ herdr_ready() {
   return 0
 }
 
+herdr_id_valid() {  # <id>
+  case "$1" in
+    ''|*[!A-Za-z0-9._:@+-]*) return 1 ;;
+  esac
+}
+
 # open | gone | unknown. The distinction matters: a failing pane read is
 # evidence the pane is gone ONLY when Herdr itself is still answering.
 # Otherwise it is evidence of nothing, and treating it as "gone" would drop a
@@ -839,7 +845,8 @@ recover_workspace() {  # <label>
   out=$(herdr_cli workspace list 2>/dev/null) || return 1
   printf '%s' "$out" | jq -er --arg label "$label" '
     [.result.workspaces[]? | select(.label == $label) | .workspace_id]
-    | select(length == 1) | .[0]'
+    | select(length == 1) | .[0]
+    | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._:@+-]*$"))'
 }
 
 recover_tab() {  # <workspace> <label>
@@ -847,7 +854,8 @@ recover_tab() {  # <workspace> <label>
   out=$(herdr_cli tab list --workspace "$workspace" 2>/dev/null) || return 1
   printf '%s' "$out" | jq -er --arg label "$label" '
     [.result.tabs[]? | select(.label == $label) | .tab_id]
-    | select(length == 1) | .[0]'
+    | select(length == 1) | .[0]
+    | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._:@+-]*$"))'
 }
 
 recover_pane() {  # <workspace> <tab>
@@ -855,7 +863,8 @@ recover_pane() {  # <workspace> <tab>
   out=$(herdr_cli pane list --workspace "$workspace" 2>/dev/null) || return 1
   printf '%s' "$out" | jq -er --arg tab "$tab" '
     [.result.panes[]? | select(.tab_id == $tab) | .pane_id]
-    | select(length == 1) | .[0]'
+    | select(length == 1) | .[0]
+    | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._:@+-]*$"))'
 }
 
 start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
@@ -884,21 +893,26 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
     (.result.workspaces | type) == "array"
     and all(.result.workspaces[]; type == "object"
       and (.workspace_id | type == "string")
-      and (.workspace_id | length > 0))
+      and (.workspace_id | test("^[A-Za-z0-9][A-Za-z0-9._:@+-]*$")))
   ' >/dev/null 2>&1 || return 1
   ws=$(printf '%s' "$out" | jq -r '.result.workspaces[0].workspace_id // empty' 2>/dev/null)
+  [ -z "$ws" ] || herdr_id_valid "$ws" || return 1
   if [ -z "$ws" ]; then
     STARTED_STAGE=workspace-create
     startup_journal_write || return 1
     out=$(herdr_cli workspace create --cwd "$FM_HOME" --label "$label" --no-focus 2>/dev/null) || :
-    ws=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
-    if [ -n "$ws" ]; then
+    ws=$(printf '%s' "$out" | jq -er '
+      .result.workspace.workspace_id
+      | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._:@+-]*$"))
+    ' 2>/dev/null) || ws=
+    if [ -n "$ws" ] && herdr_id_valid "$ws"; then
       STARTED_WORKSPACE=$ws
       STARTED_WORKSPACE_IDENTITY="id:$ws"
     fi
     startup_journal_write || return 1
     [ -n "$ws" ] || ws=$(recover_workspace "$label") || return 1
   fi
+  herdr_id_valid "$ws" || return 1
   STARTED_WORKSPACE=$ws
   STARTED_WORKSPACE_IDENTITY="id:$ws"
   STARTED_STAGE=tab-create
@@ -910,8 +924,16 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
   startup_journal_write || return 1
   out=$(herdr_cli tab create --workspace "$ws" --cwd "$FM_HOME" \
     --label "$label" --no-focus 2>/dev/null) || :
-  STARTED_TAB=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
-  STARTED_PANE=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
+  STARTED_TAB=$(printf '%s' "$out" | jq -er '
+    .result.tab.tab_id
+    | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._:@+-]*$"))
+  ' 2>/dev/null) || STARTED_TAB=
+  STARTED_PANE=$(printf '%s' "$out" | jq -er '
+    .result.root_pane.pane_id
+    | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._:@+-]*$"))
+  ' 2>/dev/null) || STARTED_PANE=
+  [ -z "$STARTED_TAB" ] || herdr_id_valid "$STARTED_TAB" || STARTED_TAB=
+  [ -z "$STARTED_PANE" ] || herdr_id_valid "$STARTED_PANE" || STARTED_PANE=
   [ -n "$STARTED_TAB" ] && STARTED_TAB_IDENTITY="id:$STARTED_TAB"
   [ -n "$STARTED_PANE" ] && STARTED_PANE_IDENTITY="id:$STARTED_PANE"
   STARTED_PANE_PARENT_TAB=${STARTED_TAB:-}

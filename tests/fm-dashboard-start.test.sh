@@ -349,8 +349,16 @@ test_a_timed_out_build_kills_its_descendant_group() {
 set -u
 marker="${FM_DASHBOARD_DESCENDANT_MARKER:?}"
 if [ ! -e "$marker" ]; then
-  sleep 30 &
-  printf '%s\n' "$!" > "$marker"
+  MARKER="$marker" python3 -c '
+import os
+import subprocess
+import time
+
+child = subprocess.Popen(["sleep", "30"], start_new_session=True)
+with open(os.environ["MARKER"], "w", encoding="utf-8") as marker:
+    marker.write(str(child.pid) + "\n")
+time.sleep(30)
+'
 fi
 sleep 30
 SH
@@ -436,6 +444,20 @@ test_a_new_pane_response_is_verified_before_running_the_dashboard() {
   [ ! -e "$home/state/.dashboard-owner" ] \
     || fail "startup published an owner after an unverified pane response"
   pass "startup verifies the exact pane identity before running the dashboard"
+}
+
+test_a_malformed_workspace_identity_is_not_used_for_creation() {
+  local home port out
+  home=$(make_home malformed-workspace)
+  port=$(free_port)
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FAKE_HERDR_STATE="$home/herdr" \
+    FAKE_HERDR_MALFORMED_ID=workspace FM_DASHBOARD_PORT="$port" "$START" ensure 2>&1) \
+    || fail "startup failed while recovering a malformed workspace response: $out"
+  [ "$(sed -n 's/^workspace=//p' "$home/state/.dashboard-owner")" = w1 ] \
+    || fail "startup published the malformed workspace identity"
+  [ ! -e "$home/herdr/tabs/7:t1.label" ] \
+    || fail "startup used the malformed workspace identity for tab creation"
+  pass "startup rejects malformed Herdr identities before lifecycle use"
 }
 
 test_a_foreign_listener_is_a_collision_not_an_adoption() {
@@ -633,6 +655,7 @@ test_stop_preserves_an_owner_without_complete_proof
 test_owner_lifecycle_uses_the_recorded_herdr_session
 test_a_mismatched_pane_identity_is_unknown_and_preserved
 test_a_new_pane_response_is_verified_before_running_the_dashboard
+test_a_malformed_workspace_identity_is_not_used_for_creation
 test_a_foreign_listener_is_a_collision_not_an_adoption
 test_a_dashboard_for_another_home_is_not_adopted
 test_no_url_is_printed_when_readiness_cannot_be_proven

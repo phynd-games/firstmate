@@ -990,6 +990,7 @@ HTTP_IO_TIMEOUT = 5
 HTTP_REQUEST_TIMEOUT = int(os.environ["FM_DASHBOARD_BUILD_TIMEOUT"]) + HTTP_IO_TIMEOUT
 MAX_CLIENTS = 10
 MAX_PAGE_BUILDS = 8
+BUILD_CLEANUP_GRACE = 0.5
 # Only the DIGEST of the owner token reaches this process, and only the digest
 # is ever published. A caller proves it started this exact server for this
 # exact home by hashing the token it holds privately and comparing; the token
@@ -1002,6 +1003,68 @@ HEALTH = json.dumps({
     "owner": OWNER_DIGEST,
     "ready": True,
 }).encode() + b"\n"
+
+
+def process_snapshot():
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,ppid=,pgid="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=0.5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    processes = {}
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 3:
+            continue
+        try:
+            pid, ppid, pgid = (int(field) for field in fields)
+        except ValueError:
+            continue
+        processes[pid] = (ppid, pgid)
+    return processes
+
+
+def process_tree_snapshot(root):
+    processes = process_snapshot()
+    children = {}
+    for pid, (ppid, _pgid) in processes.items():
+        children.setdefault(ppid, []).append(pid)
+    pids = {root}
+    pending = [root]
+    while pending:
+        parent = pending.pop()
+        for child in children.get(parent, ()):
+            if child not in pids:
+                pids.add(child)
+                pending.append(child)
+    groups = {processes[pid][1] for pid in pids if pid in processes}
+    return pids, groups
+
+
+def kill_process_tree(root, signum, known_pids=(), known_groups=()):
+    pids, groups = process_tree_snapshot(root)
+    pids.update(known_pids)
+    groups.update(known_groups)
+    groups.discard(0)
+    groups.discard(os.getpgrp())
+    for pgid in sorted(groups):
+        try:
+            os.killpg(pgid, signum)
+        except OSError:
+            pass
+    for pid in sorted(pids, reverse=True):
+        if pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, signum)
+        except OSError:
+            pass
 
 
 class DeadlineReader:
@@ -1146,27 +1209,17 @@ class Handler(BaseHTTPRequestHandler):
                 except subprocess.TimeoutExpired as exc:
                     stdout = exc.output or b""
                     stderr = exc.stderr or b""
+                    build_pids, build_groups = process_tree_snapshot(build.pid)
+                    kill_process_tree(build.pid, signal.SIGTERM, build_pids, build_groups)
                     try:
-                        os.killpg(build.pid, signal.SIGTERM)
-                    except OSError:
+                        build.wait(timeout=BUILD_CLEANUP_GRACE)
+                    except subprocess.TimeoutExpired:
                         pass
+                    kill_process_tree(build.pid, signal.SIGKILL, build_pids, build_groups)
                     try:
-                        if self.request_time_left() > 0:
-                            stdout, stderr = build.communicate(
-                                timeout=min(1, self.request_time_left())
-                            )
-                    except subprocess.TimeoutExpired as term_exc:
-                        stdout = term_exc.output or stdout
-                        stderr = term_exc.stderr or stderr
-                    try:
-                        os.killpg(build.pid, signal.SIGKILL)
-                    except OSError:
+                        build.wait(timeout=BUILD_CLEANUP_GRACE)
+                    except subprocess.TimeoutExpired:
                         pass
-                    if build.poll() is None:
-                        try:
-                            build.wait(timeout=min(0.5, max(0, self.request_time_left())))
-                        except subprocess.TimeoutExpired:
-                            pass
                     for stream in (build.stdout, build.stderr):
                         if stream is not None:
                             stream.close()

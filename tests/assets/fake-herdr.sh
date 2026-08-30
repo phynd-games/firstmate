@@ -86,6 +86,10 @@ case "${1:-}:${2:-}" in
     printf 'w1\n' > "$STATE/workspace"
     printf '%s\n' "$LABEL" > "$STATE/workspace.label"
     lost_response "workspace create" && exit 1
+    if [ "${FAKE_HERDR_MALFORMED_ID:-}" = workspace ]; then
+      printf '{"result":{"workspace":{"workspace_id":7}}}\n'
+      exit 0
+    fi
     printf '{"result":{"workspace":{"workspace_id":"w1"}}}\n'
     ;;
   tab:list)
