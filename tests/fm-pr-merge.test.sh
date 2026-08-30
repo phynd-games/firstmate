@@ -106,6 +106,7 @@ make_case() {
   git -C "$case_dir/wt" add fixture.txt
   git -C "$case_dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
   git -C "$case_dir/wt" branch -M main
+  git -C "$case_dir/wt" remote add origin https://github.com/example/repo.git
   git -C "$case_dir/wt" checkout -qb fm/task-x1
   printf 'reviewed surface\n' >> "$case_dir/wt/fixture.txt"
   git -C "$case_dir/wt" add fixture.txt
@@ -124,7 +125,8 @@ make_case() {
   target_repository=$(cd "$case_dir/wt" && pwd -P)
   substrate_head=$(git -C "$case_dir/substrate" rev-parse HEAD)
   empty_digest=$(printf '' | fm_pr_sha256_stream)
-  printf '%s\n' "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$case_dir/home/data/task-x1/brief.md"
+  printf '%s\n' "- Firstmate substrate root: \`$case_dir/substrate\`" \
+    "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$case_dir/home/data/task-x1/brief.md"
   printf '%s\n' \
     'Self-review report: firstmate-pr-self-review.v1' \
     'Task id: task-x1' \
@@ -163,7 +165,7 @@ make_case() {
   fm_write_meta "$case_dir/state/task-x1.meta" \
     "window=fm-task-x1" \
     "worktree=$case_dir/wt" \
-    "project=$case_dir/project" \
+    "project=$case_dir/wt" \
     'review_base_ref=main' \
     "review_base_sha=$base_head" \
     "kind=ship" \
@@ -181,7 +183,8 @@ make_case() {
 # gh-axi mock recording every invocation to a log file, and gh mock answering
 # headRefOid for fm-pr-check.sh's pr_head lookup. Args: case_dir head_sha
 add_gh_mocks() {
-  local case_dir=$1 head=$2
+  local case_dir=$1 head
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
@@ -201,6 +204,7 @@ case "\${1:-} \${2:-}" in
   "pr view")
     case " \$* " in
       *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
+      *baseRefName*) printf '%s\n' "\${FM_TEST_GH_BASE:-main}" ; exit 0 ;;
     esac
     ;;
   "api graphql")
@@ -221,6 +225,7 @@ SH
 # real merge failure is distinguishable from the recording step.
 add_gh_mocks_merge_fails() {
   local case_dir=$1
+  add_gh_mocks "$case_dir" ""
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
@@ -229,21 +234,6 @@ case "${1:-} ${2:-}" in
   esac
   exit 0
 SH
-  cat > "$case_dir/fakebin/gh" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
-case "${1:-} ${2:-}" in
-  "api graphql")
-    cat "$FM_TEST_GH_OUTCOME"
-    exit 0
-    ;;
-  api\ *)
-    cat "$FM_TEST_GH_RULES"
-    exit 0
-    ;;
-esac
-exit 0
-SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
 }
 
@@ -251,7 +241,8 @@ SH
 # outcome read, so a merge call that returned success is followed by a live
 # state nothing can prove. Args: case_dir head_sha
 add_gh_mock_outcome_read_fails() {
-  local case_dir=$1 head=$2
+  local case_dir=$1 head
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
   cat > "$case_dir/fakebin/gh" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "\$FM_TEST_GH_LOG"
@@ -259,6 +250,7 @@ case "\${1:-} \${2:-}" in
   "pr view")
     case " \$* " in
       *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
+      *baseRefName*) printf '%s\n' "\${FM_TEST_GH_BASE:-main}" ; exit 0 ;;
     esac
     ;;
   "api graphql")
@@ -448,7 +440,7 @@ write_github_outcome() {
 }
 
 test_verified_merge_records_pr_and_head() {
-  local case_dir rc
+  local case_dir rc head
   case_dir=$(make_case records-before-merge)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" deadbeefcafefeed0000000000000000deadbeef
@@ -459,11 +451,12 @@ test_verified_merge_records_pr_and_head() {
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
 
   expect_code 0 "$rc" "records-before-merge: fm-pr-merge should succeed"
   assert_grep 'pr=https://github.com/example/repo/pull/9' "$case_dir/state/task-x1.meta" \
     "records-before-merge: pr= was not recorded"
-  assert_grep 'pr_head=deadbeefcafefeed0000000000000000deadbeef' "$case_dir/state/task-x1.meta" \
+  assert_grep "pr_head=$head" "$case_dir/state/task-x1.meta" \
     "records-before-merge: pr_head= was not recorded"
   grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "records-before-merge: gh-axi pr merge was not invoked with number, --repo, and default --squash"

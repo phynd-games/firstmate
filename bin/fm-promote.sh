@@ -187,7 +187,12 @@ if [ -e "$PROMOTE_BRIEF" ]; then
     exit 1
   fi
   if [ ! -s "$PROMOTE_TASK_TMP" ]; then
-    cp -- "$PROMOTE_BRIEF" "$PROMOTE_TASK_TMP"
+    if ! grep -v '^Target-project approved base:' "$PROMOTE_BRIEF" > "$PROMOTE_TASK_TMP"; then
+      rm -f -- "$PROMOTE_TASK_TMP"
+      PROMOTE_TASK_TMP=
+      echo "error: could not preserve scout $ID task context" >&2
+      exit 1
+    fi
   fi
   chmod 600 "$PROMOTE_TASK_TMP"
   mv -- "$PROMOTE_BRIEF" "$PROMOTE_BRIEF_BACKUP"

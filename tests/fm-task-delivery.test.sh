@@ -32,7 +32,7 @@ make_home() {  # <name> [<registry-line>...]
   projects="$TMP_ROOT/$name/projects"
   fakebin="$TMP_ROOT/$name/bin"
   mkdir -p "$home/data" "$home/state" "$home/config" "$projects/proj" "$fakebin"
-  printf '#!/bin/sh\nexit 1\n' > "$fakebin/tmux"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "${FM_TEST_TMUX_LOG:?}"\nexit 1\n' > "$fakebin/tmux"
   chmod +x "$fakebin/tmux"
   if [ "$#" -gt 0 ]; then
     printf '%s\n' "$@" > "$home/data/projects.md"
@@ -55,7 +55,7 @@ run_spawn() {  # <home> <fakebin> <spawn-args...>
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$TMP_ROOT/projects-unused" FM_CONFIG_OVERRIDE="$home/config" \
-    FM_SPAWN_NO_GUARD=1 FM_BACKEND=tmux PATH="$fakebin:$PATH" \
+    FM_SPAWN_NO_GUARD=1 FM_BACKEND=tmux FM_TEST_TMUX_LOG="$home/tmux.log" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" 2>&1
 }
 
@@ -144,6 +144,22 @@ EOF
   assert_contains "$out" "records no delivery contract line" "a legacy brief did not warn about its missing contract"
   assert_not_contains "$out" "delivery mismatch" "a legacy brief was treated as a mismatch"
   pass "fm-spawn: the brief's recorded mode and the spawn's explicit mode must agree"
+}
+
+test_ship_spawn_rejects_missing_base_before_endpoint_creation() {
+  local rec home proj fakebin out status
+  rec=$(make_home base-preflight)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  write_brief "$home" base-preflight-c1 no-mistakes
+  out=$(run_spawn "$home" "$fakebin" base-preflight-c1 "$proj" claude --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a ship spawn without an approved base should exit non-zero"
+  assert_contains "$out" "brief $home/data/base-preflight-c1/brief.md has no approved target base" \
+    "missing-base refusal did not identify the brief"
+  [ ! -s "$home/tmux.log" ] || fail "missing-base validation created a backend endpoint before refusing"
+  pass "fm-spawn: missing approved bases fail before endpoint creation"
 }
 
 # The registry is the captain's standing posture, so dropping below its rigor is
@@ -252,6 +268,8 @@ test_promote_requires_and_records_the_delivery_contract() {
   assert_grep 'Firstmate substrate launch SHA:' "$home/data/promote-d1/brief.md" "promotion did not install the substrate launch evidence"
   assert_grep 'Target-project approved base: ref=main;' "$home/data/promote-d1/brief.md" "promotion did not record the approved base in the ship brief"
   assert_contains "$(cat "$home/data/promote-d1/brief.md")" "Scout brief." "promotion did not preserve the scout task context"
+  [ "$(grep -c '^Target-project approved base:' "$home/data/promote-d1/brief.md")" = 1 ] \
+    || fail "promotion emitted more than one approved target base"
   assert_not_contains "$out" 'reset to a clean default-branch base' "promotion still instructed a default-base reset"
   assert_contains "$out" "ship instructions for mode=direct-PR" "promotion hint did not carry the decided mode"
   [ "$(grep -c '^mode=' "$meta")" = 1 ] || fail "promotion left more than one mode= line in the task record"

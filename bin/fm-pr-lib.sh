@@ -429,6 +429,24 @@ fm_pr_substrate_launch_sha() {
   printf '%s\n' "$value"
 }
 
+fm_pr_substrate_root_from_brief() {
+  local brief=$1 root count actual_root git_root
+  [ -f "$brief" ] && [ ! -L "$brief" ] || return 1
+  count=$(grep -c '^- Firstmate substrate root: `.*`$' "$brief" || true)
+  [ "$count" = 1 ] || return 1
+  root=$(sed -n 's/^- Firstmate substrate root: `\(.*\)`$/\1/p' "$brief")
+  case "$root" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ -d "$root" ] && [ ! -L "$root" ] || return 1
+  actual_root=$(cd "$root" && pwd -P) || return 1
+  git_root=$(git -C "$root" rev-parse --show-toplevel 2>/dev/null || true)
+  [ -n "$git_root" ] || return 1
+  [ "$(cd "$git_root" && pwd -P)" = "$actual_root" ] || return 1
+  printf '%s\n' "$actual_root"
+}
+
 fm_pr_sha256_stream() {
   if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 | awk '{print $1}'

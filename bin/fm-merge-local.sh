@@ -17,7 +17,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
-SUBSTRATE_ROOT="${FM_SUBSTRATE_ROOT_OVERRIDE:-$FM_ROOT}"
+SUBSTRATE_ROOT=
 "$FM_ROOT/bin/fm-guard.sh" || true
 # Role partition: landing local-only work is MAIN-owned; the Pi supervision
 # branch reports readiness and never lands (contract: bin/fm-lease-lib.sh;
@@ -31,6 +31,11 @@ SUBSTRATE_ROOT="${FM_SUBSTRATE_ROOT_OVERRIDE:-$FM_ROOT}"
 fm_lease_forbid_branch "local-only landing (fm-merge-local)"
 ID=${1:?usage: fm-merge-local.sh <task-id>}
 fm_pr_task_id_valid "$ID" || { echo "error: invalid local-only task" >&2; exit 2; }
+SUBSTRATE_ROOT=$(fm_pr_substrate_root_from_brief "$DATA/$ID/brief.md" || true)
+[ -n "$SUBSTRATE_ROOT" ] || {
+  echo "error: local-only task has no authoritative Firstmate substrate root" >&2
+  exit 1
+}
 META="$STATE/$ID.meta"
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
 META_LOCK=$(fm_meta_lock_path "$META") || exit 1

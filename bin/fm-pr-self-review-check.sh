@@ -8,7 +8,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
-SUBSTRATE_ROOT="${FM_SUBSTRATE_ROOT_OVERRIDE:-$FM_ROOT}"
+SUBSTRATE_ROOT=
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
@@ -24,6 +24,11 @@ case "$MODE" in
   no-mistakes|direct-PR|local-only) ;;
   *) echo "error: invalid self-review delivery mode" >&2; exit 2 ;;
 esac
+SUBSTRATE_ROOT=$(fm_pr_substrate_root_from_brief "$DATA/$ID/brief.md" || true)
+[ -n "$SUBSTRATE_ROOT" ] || {
+  echo "error: self-review check requires the authoritative Firstmate substrate root" >&2
+  exit 1
+}
 
 META="$STATE/$ID.meta"
 [ -f "$META" ] && [ ! -L "$META" ] && [ "$(fm_pr_file_link_count "$META")" = 1 ] || {

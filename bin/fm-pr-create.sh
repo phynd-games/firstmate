@@ -16,7 +16,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}}"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
-SUBSTRATE_ROOT="${FM_SUBSTRATE_ROOT_OVERRIDE:-$FM_ROOT}"
+SUBSTRATE_ROOT=
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
@@ -24,6 +24,11 @@ SUBSTRATE_ROOT="${FM_SUBSTRATE_ROOT_OVERRIDE:-$FM_ROOT}"
 # shellcheck source=bin/fm-lease-lib.sh
 . "$SCRIPT_DIR/fm-lease-lib.sh"
 fm_pr_task_id_valid "$ID" || { echo "error: invalid direct PR task" >&2; exit 2; }
+SUBSTRATE_ROOT=$(fm_pr_substrate_root_from_brief "$DATA/$ID/brief.md" || true)
+[ -n "$SUBSTRATE_ROOT" ] || {
+  echo "error: direct PR task has no authoritative Firstmate substrate root" >&2
+  exit 1
+}
 META="$STATE/$ID.meta"
 [ -f "$META" ] && [ ! -L "$META" ] || {
   echo "error: task metadata is unavailable" >&2

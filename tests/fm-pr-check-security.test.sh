@@ -107,7 +107,8 @@ make_case() {
   git -C "$dir/substrate" add fixture.txt
   git -C "$dir/substrate" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
   substrate_head=$(git -C "$dir/substrate" rev-parse HEAD)
-  printf '%s\n' "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$dir/home/data/task-a/brief.md"
+  printf '%s\n' "- Firstmate substrate root: \`$dir/substrate\`" \
+    "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$dir/home/data/task-a/brief.md"
   cat > "$fake_root/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'guard\n' >> "$FM_TEST_GUARD_LOG"
@@ -189,7 +190,8 @@ write_task_meta() {
   target_head=$(git -C "$dir/wt" rev-parse HEAD)
   base_head=$(git -C "$dir/wt" rev-parse main)
   mkdir -p "$dir/home/data/$id"
-  printf '%s\n' "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$dir/home/data/$id/brief.md"
+  printf '%s\n' "- Firstmate substrate root: \`$dir/substrate\`" \
+    "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$dir/home/data/$id/brief.md"
   fm_write_meta "$dir/home/state/$id.meta" \
     "window=firstmate:fm-$id" \
     "endpoint_task_id=$id" \
@@ -232,7 +234,8 @@ write_self_review_report() {
   substrate_head=$(git -C "$substrate_root" rev-parse HEAD)
   empty_digest=$(printf '' | fm_pr_sha256_stream)
   mkdir -p "$home/data/$id"
-  printf '%s\n' "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$home/data/$id/brief.md"
+  printf '%s\n' "- Firstmate substrate root: \`$substrate_root\`" \
+    "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$home/data/$id/brief.md"
   printf '%s\n' \
     'Self-review report: firstmate-pr-self-review.v1' \
     "Task id: $id" \
@@ -662,7 +665,7 @@ PY
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "forge base mismatch left a runnable poll"
   run_check_entry "$dir" task-a https://github.com/o/r/pull/103 >/dev/null \
     || fail "PR-ready path rejected a valid durable self-review report"
-  FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" FM_HOME="$dir/home" "$SELF_REVIEW_CHECK" task-a no-mistakes >/dev/null \
+  FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" "$SELF_REVIEW_CHECK" task-a no-mistakes >/dev/null \
     || fail "shared self-review check rejected a valid durable self-review report"
   fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
     || fail "valid self-review report did not permit a valid PR poll"

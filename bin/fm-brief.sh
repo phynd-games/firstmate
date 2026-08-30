@@ -443,6 +443,10 @@ DOD=${DOD%$'\n'}
 SELF_REVIEW_SKILL="$FM_ROOT/.agents/skills/firstmate-pr-self-review/SKILL.md"
 [ -f "$SELF_REVIEW_SKILL" ] || { echo "error: required PR self-review skill is missing: $SELF_REVIEW_SKILL" >&2; exit 1; }
 SELF_REVIEW_REPORT="$DATA/$ID/pr-self-review.md"
+SUBSTRATE_ROOT=$(cd "$FM_ROOT" && pwd -P) || {
+  echo "error: cannot resolve the Firstmate substrate root at $FM_ROOT" >&2
+  exit 1
+}
 SUBSTRATE_LAUNCH_SHA=$(git -C "$FM_ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || {
   echo "error: cannot resolve the Firstmate substrate launch SHA at $FM_ROOT" >&2
   exit 1
@@ -505,8 +509,8 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 Before reporting implementation ready for validation, PR creation, or local landing, read and follow \`$SELF_REVIEW_SKILL\`.
 Write its findings-first durable report to exactly \`$SELF_REVIEW_REPORT\`.
 Use these pinned substrate inputs for the skill's separate Firstmate substrate review:
-- Firstmate substrate root: \`$FM_ROOT\`
 - Firstmate substrate launch SHA: \`$SUBSTRATE_LAUNCH_SHA\`
+- Firstmate substrate root: \`$SUBSTRATE_ROOT\`
 Review the complete target-project diff and the separate Firstmate substrate diff with exact base/head evidence.
 This self-review adds no reviewer, delivery, approval, or merge authority; the selected delivery path below remains authoritative.
 

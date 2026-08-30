@@ -1727,6 +1727,30 @@ real_path_or_raw() {  # <path>
   fi
 }
 
+REVIEW_BASE_REF=
+REVIEW_BASE_SHA=
+if [ "$KIND" = ship ]; then
+  if [ "$RELAUNCH" -eq 1 ]; then
+    REVIEW_BASE=$(fm_pr_review_base_from_meta "$RELAUNCH_META") || {
+      echo "error: task $ID has no valid approved target base to preserve across relaunch" >&2
+      exit 1
+    }
+  elif REVIEW_BASE=$(fm_pr_review_base_from_brief "$BRIEF"); then
+    :
+  else
+    REVIEW_BASE_STATUS=$?
+    if [ "$REVIEW_BASE_STATUS" -eq 2 ]; then
+      echo "error: brief $BRIEF has no approved target base" >&2
+    else
+      echo "error: brief $BRIEF has an invalid or ambiguous approved target base" >&2
+    fi
+    exit 1
+  fi
+  IFS="$(printf '\t')" read -r REVIEW_BASE_REF REVIEW_BASE_SHA <<EOF
+$REVIEW_BASE
+EOF
+fi
+
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
 # a herdr spawn goes through the version-gated, workspace-per-HOME,
@@ -2378,30 +2402,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
 
   validate_spawn_worktree "treehouse get" "$T"
 fi
-REVIEW_BASE_REF=
-REVIEW_BASE_SHA=
 if [ "$KIND" = ship ]; then
-  if [ "$RELAUNCH" -eq 1 ]; then
-    REVIEW_BASE=$(fm_pr_review_base_from_meta "$RELAUNCH_META") || {
-      echo "error: task $ID has no valid approved target base to preserve across relaunch" >&2
-      exit 1
-    }
-  elif REVIEW_BASE=$(fm_pr_review_base_from_brief "$BRIEF"); then
-    :
-  else
-    REVIEW_BASE_STATUS=$?
-    if [ "$REVIEW_BASE_STATUS" -eq 2 ]; then
-      echo "error: brief $BRIEF has no approved target base" >&2
-    else
-      echo "error: brief $BRIEF has an invalid or ambiguous approved target base" >&2
-    fi
-    exit 1
-  fi
-  if [ -n "$REVIEW_BASE" ]; then
-    IFS="$(printf '\t')" read -r REVIEW_BASE_REF REVIEW_BASE_SHA <<EOF
-$REVIEW_BASE
-EOF
-  fi
   if [ "$RELAUNCH" -eq 1 ]; then
     RESOLVED_REVIEW_BASE=$(git -C "$WT" rev-parse --verify "$REVIEW_BASE_REF^{commit}" 2>/dev/null) || {
       echo "error: task's approved target base is unavailable" >&2

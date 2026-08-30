@@ -93,6 +93,8 @@ test_fm_home_parameterization() {
   substrate_sha=$(git -C "$substrate_root" rev-parse HEAD)
   sed -i.bak "s/^- Firstmate substrate launch SHA: .*/- Firstmate substrate launch SHA: \`$substrate_sha\`/" "$home_one/data/task-a/brief.md"
   rm -f "$home_one/data/task-a/brief.md.bak"
+  sed -i.bak "s#^- Firstmate substrate root: .*#- Firstmate substrate root: \`$substrate_root\`#" "$home_one/data/task-a/brief.md"
+  rm -f "$home_one/data/task-a/brief.md.bak"
   empty_digest=$(printf '' | fm_pr_sha256_stream)
   printf '%s\n' \
     'Self-review report: firstmate-pr-self-review.v1' \
