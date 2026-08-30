@@ -578,7 +578,13 @@ collect_wakes() {  # -> JSON object on stdout
   fi
   total=$(wc -l < "$DASH_REAL" 2>/dev/null | tr -d '[:space:]')
   case "$total" in ''|*[!0-9]*) total=0 ;; esac
-  tail -n "$FM_DASHBOARD_WAKES" "$DASH_REAL" 2>/dev/null > "$tail_file" || : > "$tail_file"
+  if ! tail -n "$FM_DASHBOARD_WAKES" "$DASH_REAL" 2>/dev/null > "$tail_file"; then
+    note_degraded 'wake queue' "$DASH_REAL" 'could not read bounded tail'
+    jq -cn \
+      '{records:[], total:0, shown:0, truncated:0, available:false,
+        reason:"could not read bounded tail"}'
+    return 0
+  fi
   # Fields are tab-separated and each was sanitized of tabs by the queue writer
   # (fm-wake-lib.sh's fm_wake_clean_field), so a record that does not split into
   # five fields is a hand-edited or torn line and is surfaced as malformed
@@ -615,8 +621,13 @@ collect_events() {  # <snapshot-file> -> JSON array on stdout
     fi
     total=$(wc -l < "$DASH_REAL" 2>/dev/null | tr -d '[:space:]')
     case "$total" in ''|*[!0-9]*) total=0 ;; esac
-    tail -n "$FM_DASHBOARD_EVENT_LINES" "$DASH_REAL" 2>/dev/null > "$tail_file" \
-      || : > "$tail_file"
+    if ! tail -n "$FM_DASHBOARD_EVENT_LINES" "$DASH_REAL" 2>/dev/null > "$tail_file"; then
+      note_degraded "status log for $id" "$DASH_REAL" 'could not read bounded tail'
+      jq -cn --arg id "$id" --arg path "$DASH_REAL" \
+        '{task_id:$id, path:$path, readable:false, reason:"could not read bounded tail",
+          total:0, shown:0, truncated:0, lines:[]}' >> "$out"
+      continue
+    fi
     : > "$triples"
     while IFS= read -r line; do
       verb=$(status_line_verb "$line")
@@ -1092,7 +1103,8 @@ def cleanup_process_tree(build):
     for signum in (signal.SIGTERM, signal.SIGKILL):
         deadline = time.monotonic() + BUILD_CLEANUP_GRACE
         while time.monotonic() < deadline:
-            pids, groups = process_tree_snapshot(build.pid)
+            processes = process_snapshot()
+            pids, groups = process_tree_snapshot(build.pid, processes)
             if pids is None:
                 proven = False
             else:
@@ -1106,6 +1118,38 @@ def cleanup_process_tree(build):
             remaining = deadline - time.monotonic()
             if remaining > 0:
                 time.sleep(min(PROCESS_CLEANUP_POLL, remaining))
+    remaining_pids = set()
+    remaining_groups = set()
+    verify_deadline = time.monotonic() + BUILD_CLEANUP_GRACE
+    while time.monotonic() < verify_deadline:
+        processes = process_snapshot()
+        if processes is None:
+            proven = False
+            break
+        remaining_pids = {pid for pid in known_pids if pid in processes}
+        remaining_groups = {
+            pgid for pid, (_ppid, pgid) in processes.items()
+            if pgid in known_groups
+        }
+        if not remaining_pids and not remaining_groups:
+            break
+        signal_process_tree(remaining_pids, remaining_groups, signal.SIGKILL)
+        try:
+            build.wait(timeout=PROCESS_CLEANUP_POLL)
+        except subprocess.TimeoutExpired:
+            pass
+        time.sleep(PROCESS_CLEANUP_POLL)
+    processes = process_snapshot()
+    if processes is None:
+        proven = False
+    else:
+        remaining_pids = {pid for pid in known_pids if pid in processes}
+        remaining_groups = {
+            pgid for pid, (_ppid, pgid) in processes.items()
+            if pgid in known_groups
+        }
+        if remaining_pids or remaining_groups:
+            proven = False
     try:
         build.wait(timeout=BUILD_CLEANUP_GRACE)
     except subprocess.TimeoutExpired:

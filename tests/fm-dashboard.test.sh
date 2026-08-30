@@ -159,6 +159,26 @@ test_status_lines_keep_their_recorded_verb_and_note() {
   pass "status lines keep the verb and note their own classifier assigns"
 }
 
+test_tail_collection_failure_is_disclosed_as_unavailable() {
+  local home payload real_tail
+  home=$(make_home tail-failure)
+  printf 'working: still here\n' > "$home/state/worker-one.status"
+  printf '1750000000\t7\tcheck\tworker-one\tstill queued\n' > "$home/state/.wake-queue"
+  real_tail=$(command -v tail)
+  printf '#!/usr/bin/env bash\ncase "$*" in *worker-one.status*|*.wake-queue*) exit 1;; esac\nexec %q "$@"\n' \
+    "$real_tail" > "$home/fakebin/tail"
+  chmod +x "$home/fakebin/tail"
+  payload=$(run_dash "$home" json) || fail "the dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '
+    .events[0].readable == false
+    and .events[0].reason == "could not read bounded tail"
+    and .supervision.wakes.available == false
+    and .supervision.wakes.reason == "could not read bounded tail"
+    and ([.degraded[] | select(.reason == "could not read bounded tail")] | length) == 2' >/dev/null \
+    || fail "a failed bounded tail was rendered as healthy empty evidence"
+  pass "tail collection failures remain explicit unavailable evidence"
+}
+
 test_a_symlinked_status_log_is_refused_and_disclosed() {
   local home payload
   home=$(make_home symlink-status)
@@ -626,6 +646,7 @@ test_a_worker_carries_its_recorded_model_and_effort
 test_a_missing_status_log_is_reported_not_degraded
 test_event_history_is_bounded_and_discloses_what_it_dropped
 test_status_lines_keep_their_recorded_verb_and_note
+test_tail_collection_failure_is_disclosed_as_unavailable
 test_a_symlinked_status_log_is_refused_and_disclosed
 test_the_dashboard_skips_remote_evidence_in_local_only_mode
 test_a_report_symlinked_out_of_the_home_never_reaches_the_page
