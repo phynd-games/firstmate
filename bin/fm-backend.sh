@@ -832,10 +832,19 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # Mirrors fm-crew-state.sh's pane_readable check; exists here as one shared
 # primitive so callers that only need a fast alive/dead read (recovery
 # digests, the session-start fleet digest) do not re-derive it inline.
+fm_backend_tmux_target_shape_valid() {  # <target>
+  local target=${1:-}
+  case "$target" in
+    ''|:*|*:|*:*:*|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+  esac
+  return 0
+}
+
 fm_backend_target_exists() {  # <backend> <target> [expected-label]
   local backend=$1 target=$2 expected_label=${3:-} session pane
   case "$backend" in
     tmux)
+      fm_backend_tmux_target_shape_valid "$target" || return 1
       tmux display-message -p -t "$target" '#{pane_id}' >/dev/null 2>&1
       ;;
     herdr)
@@ -875,6 +884,7 @@ fm_backend_target_confirmed_absent() {  # <backend> <target> [expected-label]
   local backend=$1 target=$2 expected_label=${3:-} expected_title windows workspaces panes
   case "$backend" in
     tmux)
+      fm_backend_tmux_target_shape_valid "$target" || return 1
       windows=$(tmux list-windows -a -F '#{session_name}:#{window_name}' 2>/dev/null) || return 1
       printf '%s\n' "$windows" | grep -Fxq "$target" && return 1
       return 0
@@ -921,6 +931,7 @@ fm_backend_target_state() {  # <backend> <target> [expected-label] -> present|ab
   case "$backend" in
     tmux)
       fm_backend_source tmux || { printf 'unknown'; return 0; }
+      fm_backend_tmux_target_shape_valid "$target" || { printf 'unknown'; return 0; }
       tmux list-sessions >/dev/null 2>&1 || { printf 'unknown'; return 0; }
       if fm_backend_target_exists "$backend" "$target" "$expected_label"; then
         printf 'present'

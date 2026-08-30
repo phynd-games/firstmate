@@ -535,6 +535,42 @@ test_a_herdr_backed_snapshot_times_out_its_local_probe() {
   pass "Herdr-backed snapshot probes are bounded and preserve unknown evidence"
 }
 
+test_a_malformed_tmux_endpoint_is_unknown_not_absent() {
+  local home payload
+  home=$(make_home malformed-tmux-endpoint)
+  fm_write_meta "$home/state/worker-one.meta" \
+    "window=firstmate:fm-worker-one:extra" \
+    "endpoint_task_id=worker-one" \
+    "worktree=$home/wt" \
+    "project=$home/project" \
+    "harness=claude" \
+    "model=opus" \
+    "effort=xhigh" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "yolo=off" \
+    "backend=tmux"
+  cat > "$home/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  list-sessions) exit 0 ;;
+  display-message) exit 1 ;;
+  list-windows) printf 'firstmate:other\n' ;;
+esac
+exit 0
+SH
+  chmod +x "$home/fakebin/tmux"
+  payload=$(run_dash "$home" json) || fail "the dashboard refused a malformed endpoint instead of preserving it"
+  printf '%s' "$payload" | jq -e '
+    .snapshot.tasks
+    | map(select(.id == "worker-one"))
+    | length == 1
+    and .[0].endpoint.exists == null
+    and .[0].endpoint.status == "unknown"' >/dev/null \
+    || fail "a malformed tmux endpoint was rendered as confirmed absence"
+  pass "a malformed tmux endpoint remains unknown instead of absent"
+}
+
 test_initial_serve_build_is_bounded_before_binding() {
   local home port out real_jq
   home=$(make_home bounded-initial-build)
@@ -600,5 +636,6 @@ test_a_symlinked_evidence_root_is_refused_before_reading_it
 test_a_symlinked_task_metadata_is_not_silently_dropped
 test_a_symlinked_watcher_heartbeat_is_not_reported_as_healthy
 test_a_herdr_backed_snapshot_times_out_its_local_probe
+test_a_malformed_tmux_endpoint_is_unknown_not_absent
 test_initial_serve_build_is_bounded_before_binding
 test_direct_json_build_is_bounded
