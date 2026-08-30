@@ -836,6 +836,8 @@ fm_backend_tmux_target_shape_valid() {  # <target>
   local target=${1:-}
   case "$target" in
     ''|:*|*:|*:*:*|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+    *:*) ;;
+    *) return 1 ;;
   esac
   return 0
 }

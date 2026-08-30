@@ -498,6 +498,25 @@ test_render_refuses_an_unrepresentable_wake_epoch() {
   pass "render refuses a wake epoch outside the JavaScript date range"
 }
 
+test_render_refuses_an_unsafe_integer() {
+  local home out status=0
+  home=$(make_home unsafe-integer)
+  run_dash "$home" json > "$home/valid.json" || fail "the valid payload fixture could not be composed"
+  jq '
+    .reports = (.reports
+      | .total = 9007199254740992
+      | .shown = 0
+      | .truncated = 9007199254740992
+      | .records = [])
+  ' "$home/valid.json" > "$home/invalid.json" || fail "the unsafe integer fixture could not be written"
+  out=$(run_dash "$home" render "$home/invalid.json" --out "$home/page.html" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "render accepted an integer outside JavaScript's safe range"
+  assert_contains "$out" "not a complete readable" \
+    "the unsafe integer refusal did not identify the unusable payload"
+  [ ! -e "$home/page.html" ] || fail "an unsafe integer render still published a page"
+  pass "render refuses integers outside JavaScript's safe range"
+}
+
 test_a_bare_output_filename_is_published_in_the_current_directory() {
   local home
   home=$(make_home bare-output)
@@ -600,11 +619,14 @@ test_a_malformed_herdr_endpoint_is_unknown_not_absent() {
     "worktree=$home/wt" \
     "project=$home/project" \
     "harness=claude" \
-    "kind=ship" \
+    "kind=secondmate" \
     "backend=herdr"
   cat > "$home/fakebin/herdr" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2"}}}'
+case "$*" in
+  *"agent get"*) printf '%s\n' '{"result":{"agent":{"agent_status":"working"}}}' ;;
+  *) printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2:extra"}}}' ;;
+esac
 SH
   chmod +x "$home/fakebin/herdr"
   payload=$(run_dash "$home" json) || fail "the dashboard refused a malformed Herdr endpoint"
@@ -613,6 +635,7 @@ SH
     | map(select(.id == "herdr-one"))
     | length == 1
     and .[0].endpoint.exists == null
+    and .[0].endpoint.agent_alive == "unknown"
     and .[0].endpoint.status == "unknown"' >/dev/null \
     || fail "a malformed Herdr endpoint was rendered as confirmed absence"
   pass "a malformed Herdr endpoint remains unknown instead of absent"
@@ -622,7 +645,7 @@ test_a_malformed_tmux_endpoint_is_unknown_not_absent() {
   local home payload
   home=$(make_home malformed-tmux-endpoint)
   fm_write_meta "$home/state/worker-one.meta" \
-    "window=firstmate:fm-worker-one:extra" \
+    "window=worker-one" \
     "endpoint_task_id=worker-one" \
     "worktree=$home/wt" \
     "project=$home/project" \
@@ -920,6 +943,7 @@ test_the_dashboard_refuses_when_the_fleet_snapshot_fails
 test_the_dashboard_refuses_an_invalid_bound_or_port
 test_render_refuses_an_incomplete_dashboard_document
 test_render_refuses_an_unrepresentable_wake_epoch
+test_render_refuses_an_unsafe_integer
 test_a_bare_output_filename_is_published_in_the_current_directory
 test_an_absolute_output_outside_the_home_is_refused
 test_a_symlinked_output_parent_is_refused

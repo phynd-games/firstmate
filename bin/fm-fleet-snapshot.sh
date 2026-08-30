@@ -395,6 +395,7 @@ snapshot_herdr_agent_alive() {  # <target>
     bash -c '
       . "$1"
       fm_backend_source herdr || exit 1
+      fm_backend_herdr_target_shape_valid "$2" || exit 1
       fm_backend_agent_alive herdr "$2"
     ' snapshot-herdr-agent "$SCRIPT_DIR/fm-backend.sh" "$1"
 }

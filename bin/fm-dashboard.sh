@@ -159,7 +159,7 @@ payload_is_valid() {  # <payload-file>
   jq -e --arg expected_home "$FM_HOME" '
     def has_type($o; $k; $t): ($o | has($k)) and ($o[$k] | type == $t);
     def has_nullable($o; $k; $t): ($o | has($k)) and (($o[$k] == null) or ($o[$k] | type == $t));
-    def nonneg_int: if type == "number" then isfinite and floor == . and . >= 0 else false end;
+    def nonneg_int: if type == "number" then isfinite and floor == . and . >= 0 and . <= 9007199254740991 else false end;
     def safe_epoch:
       type == "number" and isfinite and floor == .
       and . >= -8640000000000 and . <= 8640000000000;
