@@ -1193,12 +1193,7 @@ while :; do
   # parent reports, observe backend busy/idle turn completion, send one recovery
   # repost after grace, and escalate once if the recovery turn is also missed.
   # No conversation scraping; unresolved records are never silently expired.
-  if fm_pending_reply_tick "$STATE"; then
-    :
-  else
-    pending_reply_rc=$?
-    exit "$pending_reply_rc"
-  fi
+  fm_pending_reply_tick "$STATE" || true
 
   # A live secondmate endpoint does not prove that its own wake loop is alive.
   # Observe the foreign queue before the rest of this cycle so an aged row wakes

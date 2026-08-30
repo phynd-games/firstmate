@@ -180,7 +180,7 @@ cmd_route() {
 
 cmd_launch() {
   local id=$1 harness=$2 model=$3 effort=$4 selected_backend=$5 traceparent=${6:-}
-  local current meta out herdr_session
+  local current current_rc meta out herdr_session refusal
 
   validate_id "$id"
   validate_home "$id"
@@ -205,7 +205,13 @@ cmd_launch() {
   meta=$(meta_path "$id")
   if [ -f "$meta" ]; then
     remote_endpoint_require "$id"
-    current=$(fm_backend_agent_state "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null || printf 'unreadable\n')
+    if current=$(fm_backend_agent_state "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET"); then
+      :
+    else
+      current_rc=$?
+      [ "$current_rc" -eq 2 ] && return 1
+      current=unreadable
+    fi
     case "$current" in
       alive)
         print_route "$id"
@@ -227,6 +233,11 @@ cmd_launch() {
     FM_STATE_OVERRIDE="$CONTROL_STATE" FM_DATA_OVERRIDE="$CONTROL_DATA" \
     FM_CONFIG_OVERRIDE="$TARGET_HOME/config" FM_SKIP_SECONDMATE_INHERIT=1 \
     "$SCRIPT_DIR/fm-spawn.sh" "${ARGS[@]}" 2>&1); then
+    refusal=$(printf '%s\n' "$out" | sed -n '/^REFUSED: /p' | sed -n '1p')
+    if [ -n "$refusal" ]; then
+      printf '%s\n' "$refusal" >&2
+      return 1
+    fi
     [ -z "$out" ] || printf '%s\n' "$out" >&2
     die "remote host-local secondmate launch failed"
   fi
