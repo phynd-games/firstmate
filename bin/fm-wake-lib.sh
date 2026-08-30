@@ -393,6 +393,17 @@ fm_lock_claim_blocked_by_steal() {
   return 0
 }
 
+fm_lock_pending_supervision_handoff() {
+  local lockdir=$1 state
+  case "$lockdir" in
+    */.supervision-claim.lock)
+      state=${lockdir%/.supervision-claim.lock}
+      fm_supervision_claim_pending "$state"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 fm_lock_claim() {
   local lockdir=$1 ownerdir=$2 allowed_steal_owner=${3:-} mypid back
   mypid=${BASHPID:-$$}
@@ -840,7 +851,10 @@ fm_lock_try_acquire() {
       return 1
     fi
     if [ "$current_identity" != "$lock_identity" ]; then
-      :
+      if fm_lock_pending_supervision_handoff "$lockdir"; then
+        FM_LOCK_HELD_PID=$pid
+        return 1
+      fi
     elif [ "${BASH_SUBSHELL:-0}" -ne 0 ]; then
       FM_LOCK_HELD_PID=$pid
       return 1
@@ -866,6 +880,10 @@ fm_lock_try_acquire() {
     current_identity=$(fm_pid_identity "$pid" 2>/dev/null || true)
     if [ -z "$lock_identity" ] || [ -z "$current_identity" ] \
       || [ "$current_identity" = "$lock_identity" ]; then
+      FM_LOCK_HELD_PID=$pid
+      return 1
+    fi
+    if fm_lock_pending_supervision_handoff "$lockdir"; then
       FM_LOCK_HELD_PID=$pid
       return 1
     fi
@@ -1035,6 +1053,38 @@ fm_supervision_claim_pending() {
   esac
   now=$(date +%s) || return 1
   [ "$deadline" -gt "$now" ]
+}
+
+fm_supervision_claim_pending_reclaim() {
+  local state=$1 pending="$1/.supervision-claim.pending" deadline now
+  fm_lock_owned_by_current "$state/.supervision-claim.lock" || return 1
+  [ -f "$pending" ] || return 0
+  read -r deadline < "$pending" || return 1
+  case "$deadline" in
+    ''|*[!0-9]*) rm -f -- "$pending"; return $? ;;
+  esac
+  now=$(date +%s) || return 1
+  if [ "$deadline" -le "$now" ]; then
+    rm -f -- "$pending"
+  fi
+}
+
+fm_supervision_claim_refresh() {
+  local state=$1 lock="$1/.supervision-claim.lock" owner pid identity recorded
+  fm_supervision_claim_pending "$state" || return 1
+  if [ -L "$lock" ]; then
+    owner=$(fm_lock_link_owner "$lock" 2>/dev/null || true)
+  else
+    owner=$lock
+  fi
+  [ -d "$owner" ] || return 1
+  pid=$(cat "$owner/pid" 2>/dev/null || true)
+  [ "$pid" = "${BASHPID:-$$}" ] || return 1
+  identity=$(fm_pid_identity "$pid" 2>/dev/null) || return 1
+  [ -n "$identity" ] || return 1
+  printf '%s\n' "$identity" > "$owner/pid-identity" 2>/dev/null || return 1
+  recorded=$(cat "$owner/pid-identity" 2>/dev/null || true)
+  [ "$recorded" = "$identity" ]
 }
 
 fm_supervision_claim_pending_clear() {

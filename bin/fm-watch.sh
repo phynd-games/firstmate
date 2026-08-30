@@ -839,10 +839,10 @@ procevent_surface_after_output() {
 }
 
 procevent_surface_queued() {
-  local key reason
+  local key reason queue_lock_tries=${FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES:-100}
   PROCEVENT_SURFACED=
   [ -s "$FM_WAKE_QUEUE" ] || return 0
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  fm_lock_acquire_bounded "$FM_WAKE_QUEUE_LOCK" "$queue_lock_tries" || return 1
   while IFS= read -r key; do
     case "$key" in procevent:*) ;; *) continue ;; esac
     [ -e "$(procevent_surfaced_marker "$key")" ] && continue
@@ -1212,7 +1212,10 @@ while :; do
   fi
   # Then deliver any queued-but-unsurfaced result, including one a runner
   # published while this watcher was between cycles.
-  procevent_surface_queued
+  procevent_surface_queued || {
+    echo "watcher: wake-queue lock could not be acquired within its bounded retry window" >&2
+    exit 1
+  }
 
   # A process-event result carries richer adapter-owned wake context than the
   # generic recovery reason, so give that owner first refusal.
