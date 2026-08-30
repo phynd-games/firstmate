@@ -92,6 +92,7 @@ LIVE="$STATE/.herdr-supervisor-live"
 LIVE_LOCK="$STATE/.herdr-supervisor-live.lock"
 LAUNCHER="$STATE/.herdr-supervisor-launch.sh"
 PENDING="$STATE/.herdr-supervisor-pending-cleanup"
+AWAY_AMBIGUOUS="$STATE/.herdr-away-daemon-ambiguous"
 QUARANTINE_PREFIX="$STATE/.herdr-supervisor-quarantine"
 RECORD_LOCK="$STATE/.herdr-supervisor.lock"
 HEARTBEAT="$STATE/.herdr-supervisor-heartbeat"
@@ -323,6 +324,24 @@ pending_put() {  # <generation> <session> <socket> <workspace> <tab> <pane> [soc
   fi
 }
 
+pending_record_create_ids() {  # <workspace> <tab> <pane>
+  local workspace=$1 tab=$2 pane=$3 tmp
+  [ -f "$PENDING" ] || return 1
+  tmp="$PENDING.create-response.${BASHPID:-$$}"
+  if ! awk '!/^(workspace|tab|pane|create_state)=/' "$PENDING" > "$tmp" 2>/dev/null \
+    || ! {
+      printf 'workspace=%s\n' "$workspace"
+      printf 'tab=%s\n' "$tab"
+      printf 'pane=%s\n' "$pane"
+      printf 'create_state=creating\n'
+    } >> "$tmp" 2>/dev/null \
+    || ! chmod 600 "$tmp" 2>/dev/null \
+    || ! mv -f "$tmp" "$PENDING" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+}
+
 pending_begin_create() {  # <generation> <session> <socket> <socket-identity> <label> <cwd>
   local generation=$1 session=$2 socket=$3 socket_identity=$4 label=$5 cwd=$6 tmp
   tmp="$PENDING.tmp.${BASHPID:-$$}"
@@ -395,7 +414,7 @@ pending_restore_record() {
 }
 
 pending_resolve_creation() {
-  local generation session socket socket_identity label list matches workspace count
+  local generation session socket socket_identity label list matches workspace count tab pane
   generation=$(pending_get generation || printf '')
   session=$(pending_get herdr_session || printf '')
   socket=$(pending_get herdr_socket || printf '')
@@ -412,7 +431,11 @@ pending_resolve_creation() {
   count=$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d '[:space:]')
   [ "$count" = 1 ] || return 1
   workspace=$(printf '%s\n' "$matches" | sed -n '1p')
-  pending_put "$generation" "$session" "$socket" "$workspace" unknown unknown "$socket_identity"
+  tab=$(pending_get tab || printf unknown)
+  pane=$(pending_get pane || printf unknown)
+  [ -n "$tab" ] || tab=unknown
+  [ -n "$pane" ] || pane=unknown
+  pending_put "$generation" "$session" "$socket" "$workspace" "$tab" "$pane" "$socket_identity"
 }
 
 mint_generation() {
@@ -720,6 +743,7 @@ hs_config_preference() {
 # this home right now. Only positive, durable evidence counts; the absence of
 # evidence is never read as the presence of an owner.
 harness_owner_provable() {
+  local away_state away_pid away_owner away_recorded away_current away_key
   HS_DEFER_REASON=
   if fm_supervision_claim_held_by_other "$SUPERVISION_CLAIM"; then
     HS_DEFER_REASON="another continuity owner is completing its ownership claim"
@@ -729,12 +753,35 @@ harness_owner_provable() {
     HS_DEFER_REASON="a native away-mode owner is completing its ownership handoff"
     return 0
   fi
-  if [ -e "$STATE/.afk" ] && (
-    . "$SCRIPT_DIR/fm-afk-start.sh" >/dev/null 2>&1
-    daemon_lock_held_by_live_daemon
-  ); then
-    HS_DEFER_REASON="away mode is active and its daemon owns supervision"
-    return 0
+  if [ -e "$STATE/.afk" ]; then
+    away_state=$(
+      . "$SCRIPT_DIR/fm-afk-start.sh" >/dev/null 2>&1
+      daemon_lock_state
+    )
+    case "$away_state" in
+      live)
+        rm -f "$AWAY_AMBIGUOUS" 2>/dev/null || true
+        HS_DEFER_REASON="away mode is active and its daemon owns supervision"
+        return 0
+        ;;
+      ambiguous)
+        away_owner=$(
+          . "$SCRIPT_DIR/fm-afk-start.sh" >/dev/null 2>&1
+          daemon_lock_owner 2>/dev/null || true
+        )
+        away_pid=$(cat "$away_owner/pid" 2>/dev/null || printf '')
+        away_recorded=$(cat "$away_owner/pid-identity" 2>/dev/null || printf '')
+        away_current=$(fm_pid_identity "$away_pid" 2>/dev/null || printf '')
+        away_key="${away_pid:-unknown}:${away_recorded:-missing}:${away_current:-unknown}"
+        if [ "$(cat "$AWAY_AMBIGUOUS" 2>/dev/null || printf '')" != "$away_key" ]; then
+          printf '%s\n' "$away_key" > "$AWAY_AMBIGUOUS" 2>/dev/null || true
+          escalate "away mode has an ambiguous live daemon lock; refusing a second continuity owner"
+        fi
+        HS_DEFER_REASON="away mode has an ambiguous live daemon lock; continuity is quarantined"
+        return 0
+        ;;
+      *) rm -f "$AWAY_AMBIGUOUS" 2>/dev/null || true ;;
+    esac
   fi
   if fm_pi_extension_owns_supervision "$STATE" "$FM_ROOT" 2>/dev/null; then
     HS_DEFER_REASON="the Pi primary extension owns watcher continuity"
@@ -972,6 +1019,8 @@ establish() {  # <reason>
   if [ -z "$workspace" ] || [ -z "$tab" ] || [ -z "$pane" ]; then
     detail="Herdr returned an incomplete workspace-create response (workspace='${workspace:-none}' tab='${tab:-none}' pane='${pane:-none}'), so no supervisor pane could be created"
     detail="$detail; the pending create intent remains for exact-label reconciliation"
+    pending_record_create_ids "${workspace:-}" "${tab:-}" "${pane:-}" || \
+      detail="$detail; returned resource ids could not be persisted"
     record_clear || true
     escalate "$detail"
     echo "herdr-supervisor: FAILED - Herdr returned an incomplete workspace-create response" >&2

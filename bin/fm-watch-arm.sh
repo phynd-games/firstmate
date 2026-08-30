@@ -523,7 +523,11 @@ stop_child_bounded() {
     2) return 1 ;;
   esac
   current=$(fm_pid_identity "$child" 2>/dev/null || true)
-  [ -n "$child_identity" ] && [ "$current" = "$child_identity" ] || return 1
+  if [ -z "$child_identity" ]; then
+    [ -n "$current" ] || return 1
+    child_identity=$current
+  fi
+  [ "$current" = "$child_identity" ] || return 1
   kill -TERM "$child" 2>/dev/null || true
   while [ "$i" -lt 20 ]; do
     child_status
@@ -556,12 +560,22 @@ stop_child_bounded() {
   wait "$child" 2>/dev/null || true
 }
 cleanup_child() {
-  local status=0
-  stop_child_bounded || status=1
-  if [ "$status" -eq 0 ] && [ -n "$child_out" ]; then
+  local status
+  while :; do
+    if stop_child_bounded; then
+      break
+    fi
+    child_status
+    status=$?
+    case "$status" in
+      0) wait "$child" 2>/dev/null || true; break ;;
+      1|2) sleep 0.05 ;;
+    esac
+  done
+  if [ -n "$child_out" ]; then
     rm -f "$child_out" 2>/dev/null || true
   fi
-  return "$status"
+  return 0
 }
 
 # shellcheck disable=SC2329 # Invoked indirectly by the signal traps below.

@@ -27,8 +27,8 @@
 #                              just refreshes state/.afk; a recorded-but-dead
 #                              terminal is reconciled (closed by id) first.
 #   fm-afk-launch.sh start-native
-#                              Prepare lifecycle state for a harness-native
-#                              background job and record that no terminal exists.
+#                              Prepare lifecycle state and exec the daemon in
+#                              the same harness-native tracked background job.
 #   fm-afk-launch.sh stop      Correct-ordered exit: SIGTERM the daemon so its
 #                              cleanup flushes WHILE state/.afk is still present,
 #                              wait for it, close the recorded terminal by exact
@@ -559,6 +559,10 @@ fm_afk_launch_start_native() {
     fm_afk_launch_log "return catch-up is still pending; run bin/fm-afk-return.sh check before re-entering away mode"
     return 1
   fi
+  if [ "${FM_AFK_NATIVE_TRACKED:-0}" != 1 ]; then
+    fm_afk_launch_log "native away-mode launch must run as one harness-tracked process"
+    return 1
+  fi
   if daemon_lock_held_by_live_daemon; then
     fm_afk_launch_record_validate_if_present || return 1
     fm_afk_launch_flag_write || return 1
@@ -594,6 +598,17 @@ fm_afk_launch_start_native() {
     fm_afk_launch_restore_backup "$backup" "$had_afk" || result=1
   else
     rm -rf "$backup" || result=1
+  fi
+  if [ "$result" -eq 0 ]; then
+    if ! fm_afk_launch_lock_release; then
+      fm_afk_launch_log "failed to release the launcher lifecycle lock before daemon exec"
+      result=1
+    else
+      trap - EXIT INT TERM
+      export FM_AFK_STATE_PREPARED=1 FM_AFK_HANDOFF=1 FM_SUPERVISION_CLAIM_HELD=1
+      fm_afk_start_main
+      result=$?
+    fi
   fi
   return "$result"
 }
