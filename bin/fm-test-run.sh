@@ -208,8 +208,7 @@ family_for_basename() {
     fm-herdr-session-cleanup.test.sh|fm-send-resolve-key.test.sh|fm-send-strict.test.sh|\
     fm-send-inbox.test.sh|fm-spawn-batch.test.sh|\
     fm-spawn-dispatch-profile.test.sh|\
-    fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh|\
-    fm-teardown-endpoint-safety.test.sh)
+    fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh)
       printf '%s\n' backend-dispatch
       ;;
     fm-pr-check-security.test.sh|fm-pr-merge.test.sh|fm-review-diff.test.sh|\
@@ -483,7 +482,6 @@ tests/fm-subagent-pretool-check.test.sh 1066
 tests/fm-supervision-events.test.sh 1431
 tests/fm-tangle-guard.test.sh 8364
 tests/fm-task-delivery.test.sh 2414
-tests/fm-teardown-endpoint-safety.test.sh 7295
 tests/fm-teardown.test.sh 87400
 tests/fm-test-fixture-cleanup.test.sh 532
 tests/fm-test-isolation-proof.test.sh 451

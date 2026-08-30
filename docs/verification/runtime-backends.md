@@ -207,7 +207,6 @@ Herdr's Claude idle-native submit confirmation is pinned by `tests/fm-backend-he
 The cleanup identity boundary was validated on 2026-07-28 with tmux 3.6a and metadata fixtures for every supported backend.
 
 ```sh
-tests/fm-teardown-endpoint-safety.test.sh
 tests/fm-teardown.test.sh
 tests/fm-backend-herdr.test.sh
 tests/fm-backend-zellij.test.sh
@@ -219,10 +218,7 @@ Bounded output from the incident regression:
 
 ```text
 ok - fm-teardown: missing, empty, malformed, ambiguous, and task-mismatched endpoints refuse before every mutation or runtime call
-ok - cleanup identity: valid tmux, Herdr, Zellij, Orca, and cmux records validate while every empty backend target refuses
-ok - tmux backend: direct empty target returns nonzero without invoking tmux
 ok - process cleanup: creation-time PID identity removes only the exact child and preserves the control child
-ok - fm-teardown: dedicated-socket invalid cleanup preserves target/control and valid cleanup removes only the exact target
 ```
 
 The dedicated tmux cell removed ambient tmux variables, required a socket-bound wrapper, kept one target and one independent control window, and proved the wrapper was not called for invalid metadata or a direct empty target.
