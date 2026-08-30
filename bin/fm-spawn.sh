@@ -948,7 +948,10 @@ fi
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
 if [ "$RELAUNCH" -eq 1 ] && [ -f "$STATE/$ID.meta" ] && [ -n "$(fm_meta_get "$STATE/$ID.meta" remote_host)" ]; then
-  fm_backend_validate_remote_meta "$STATE/$ID.meta" "$ID" || exit 1
+  if ! fm_backend_validate_remote_task_endpoint "$STATE/$ID.meta" "$ID" fm-remote; then
+    fm_backend_refuse_remote_task_endpoint "$STATE/$ID.meta" "$ID"
+    exit 1
+  fi
 fi
 if [ "$RELAUNCH" -eq 1 ] && [ -f "$STATE/$ID.meta" ] && [ -z "$(fm_meta_get "$STATE/$ID.meta" remote_host)" ]; then
   fm_backend_validate_task_endpoint "$STATE/$ID.meta" "$ID" || exit 1

@@ -1390,7 +1390,7 @@ fm_pending_reply_tick() {  # <state-dir>
             return 2
             ;;
         esac
-        fm_backend_validate_remote_meta "$meta" "$task_id" >/dev/null 2>&1 || return 2
+        fm_backend_validate_remote_task_endpoint "$meta" "$task_id" fm-remote >/dev/null 2>&1 || return 2
         target="remote:$task_id"
         sm_home=
       else

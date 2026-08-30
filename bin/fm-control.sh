@@ -286,7 +286,10 @@ fi
 # operator about a correctly configured remote route. Name the placement
 # instead, using the same `remote_host` signal bin/fm-send.sh routes on.
 if [ -n "$(fm_meta_get "$META" remote_host)" ]; then
-  fm_backend_validate_remote_meta "$META" "$ID" || exit 1
+  if ! fm_backend_validate_remote_task_endpoint "$META" "$ID" fm-remote; then
+    fm_backend_refuse_remote_task_endpoint "$META" "$ID"
+    exit 1
+  fi
   die "task $ID is a remotely placed secondmate on $(fm_meta_get "$META" remote_host); its agent runs outside this home, so no lifecycle action here could verify that it interrupted, stopped, or came back. Drive its lifecycle on that host, and reconcile it through the secondmate recovery path rather than this plane"
 fi
 

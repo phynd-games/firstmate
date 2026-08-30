@@ -27,8 +27,7 @@ if [ -n "$REMOTE_META" ] && [ -n "$(fm_meta_get "$REMOTE_META" remote_host)" ]; 
   REMOTE_ID=${REMOTE_ID%.meta}
   REMOTE_HOST=$(fm_meta_get "$REMOTE_META" remote_host)
   fm_backend_validate_remote_task_endpoint "$REMOTE_META" "$REMOTE_ID" fm-remote || {
-    fm_backend_policy_refuse "task $REMOTE_ID remote endpoint record" herdr \
-      "Repair or explicitly migrate this remote task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+    fm_backend_refuse_remote_task_endpoint "$REMOTE_META" "$REMOTE_ID"
     exit 1
   }
   "$SCRIPT_DIR/fm-guard.sh" || true

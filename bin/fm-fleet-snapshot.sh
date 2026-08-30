@@ -458,7 +458,7 @@ task_json_lines() {
       backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
       case "$backend" in
         herdr)
-          if ! fm_backend_validate_remote_meta "$meta" "$id" >/dev/null 2>&1; then
+          if ! fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote >/dev/null 2>&1; then
             remote_identity_valid=2
             backend="invalid:$backend"
           fi

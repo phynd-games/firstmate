@@ -462,9 +462,15 @@ fm_backend_meta_exact_value() {  # <meta-file> <key>
 }
 
 fm_backend_validate_remote_meta() {  # <meta-file> <task-id>
+  local meta=$1 id=$2 expected_session=${3:-fm-remote}
+  fm_backend_validate_remote_task_endpoint "$meta" "$id" "$expected_session" && return 0
+  fm_backend_refuse_remote_task_endpoint "$meta" "$id"
+  return 1
+}
+
+fm_backend_refuse_remote_task_endpoint() {  # <meta-file> <task-id>
   local meta=$1 id=$2 backend
-  backend=$(fm_backend_meta_exact_value "$meta" remote_backend 2>/dev/null || true)
-  [ "$backend" = "$FM_BACKEND_ACTIVE" ] && return 0
+  backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
   if [ -n "$backend" ]; then
     fm_backend_policy_refuse "task $id remote endpoint record $meta (remote_backend=$backend)" "$backend" \
       "Retire or explicitly migrate this remote task record through docs/configuration.md \"Legacy task records\"."

@@ -121,7 +121,7 @@ while IFS='|' read -r id home _window meta; do
   fi
   remote_host=$(fm_meta_get "$meta" remote_host)
   if [ -n "$remote_host" ]; then
-    if ! fm_backend_validate_remote_meta "$meta" "$id" >/dev/null 2>&1; then
+    if ! fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote >/dev/null 2>&1; then
       printf 'secondmate %s (%s:%s): skipped - legacy remote backend record; see docs/configuration.md "Legacy task records"\n' "$id" "$remote_host" "$home"
       continue
     fi

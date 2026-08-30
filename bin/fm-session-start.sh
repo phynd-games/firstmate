@@ -839,7 +839,7 @@ for meta in "$STATE"/*.meta; do
       remote_backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
       case "$remote_backend" in
         herdr)
-          if fm_backend_validate_remote_meta "$meta" "$id" >/dev/null 2>&1; then
+          if fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote >/dev/null 2>&1; then
             printf 'endpoint: remote record, read-only (backend=%s host=%s)\n' "$remote_backend" "$(fm_meta_get "$meta" remote_host)"
           else
             printf 'endpoint: remote record invalid, read-only (backend=%s host=%s); repair or explicitly migrate it through docs/configuration.md "Legacy task records"\n' "$remote_backend" "$(fm_meta_get "$meta" remote_host)"
