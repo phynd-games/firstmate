@@ -476,6 +476,15 @@ startup_journal_get() {  # <key>
   sed -n "s/^$1=//p" "$JOURNAL" 2>/dev/null | head -1
 }
 
+startup_workspace_identity() {
+  if [ -n "${STARTED_WORKSPACE:-}" ]; then
+    printf 'id:%s' "$STARTED_WORKSPACE"
+  else
+    printf 'session:%s;label:%s;cwd:%s' "${STARTED_SESSION:-}" \
+      "${STARTED_WORKSPACE_LABEL:-}" "$FM_HOME"
+  fi
+}
+
 startup_journal_write() {
   local tmp
   startup_state_boundary_safe || return 1
@@ -491,6 +500,9 @@ startup_journal_write() {
     printf 'session=%s\n' "${STARTED_SESSION:-}"
     printf 'workspace=%s\n' "${STARTED_WORKSPACE:-unknown}"
     printf 'workspace_id_state=%s\n' "$( [ -n "${STARTED_WORKSPACE:-}" ] && printf known || printf unknown )"
+    printf 'workspace_identity=%s\n' "$(startup_workspace_identity)"
+    printf 'workspace_create_request=session:%s;label:%s;cwd:%s\n' \
+      "${STARTED_SESSION:-}" "${STARTED_WORKSPACE_LABEL:-}" "$FM_HOME"
     printf 'workspace_locator=session:%s;label:%s\n' "${STARTED_SESSION:-}" "${STARTED_WORKSPACE_LABEL:-}"
     printf 'tab=%s\n' "${STARTED_TAB:-unknown}"
     printf 'tab_id_state=%s\n' "$( [ -n "${STARTED_TAB:-}" ] && printf known || printf unknown )"
@@ -546,6 +558,14 @@ quarantine_write() {  # <reason> <session> <workspace> <tab> <pane> <port> <dige
     printf 'session=%s\n' "$2"
     printf 'workspace=%s\n' "${3:-unknown}"
     printf 'workspace_id_state=%s\n' "$( [ -n "$3" ] && printf known || printf unknown )"
+    if [ -n "${3:-}" ]; then
+      printf 'workspace_identity=id:%s\n' "$3"
+    else
+      printf 'workspace_identity=session:%s;label:%s;cwd:%s\n' \
+        "${STARTED_SESSION:-}" "${STARTED_WORKSPACE_LABEL:-}" "$FM_HOME"
+    fi
+    printf 'workspace_create_request=session:%s;label:%s;cwd:%s\n' \
+      "${STARTED_SESSION:-}" "${STARTED_WORKSPACE_LABEL:-}" "$FM_HOME"
     printf 'tab=%s\n' "${4:-unknown}"
     printf 'tab_id_state=%s\n' "$( [ -n "$4" ] && printf known || printf unknown )"
     printf 'pane=%s\n' "${5:-unknown}"

@@ -730,13 +730,12 @@ task_json_lines() {
             *) endpoint_exists=null ;;
           esac
         else
-          fm_backend_target_exists "$backend" "$target" "fm-$id" >/dev/null 2>&1
-          endpoint_rc=$?
-          if [ "$endpoint_rc" -eq 0 ]; then
-            endpoint_exists=true
-          else
-            endpoint_exists=false
-          fi
+          endpoint_state=$(fm_backend_target_state "$backend" "$target" "fm-$id" 2>/dev/null || printf unknown)
+          case "$endpoint_state" in
+            present) endpoint_exists=true ;;
+            absent) endpoint_exists=false ;;
+            *) endpoint_exists=null ;;
+          esac
         fi
       fi
       if [ "$kind" = secondmate ] && [ -n "$target" ]; then

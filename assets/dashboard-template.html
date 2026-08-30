@@ -452,6 +452,12 @@ __FM_DASHBOARD_DATA__
       return obj(o) && Object.prototype.hasOwnProperty.call(o, k)
         && (o[k] === null || typeof o[k] === t);
     }
+    function nonnegInt(v) { return Number.isSafeInteger(v) && v >= 0; }
+    function boundedCounts(v) {
+      return obj(v) && nonnegInt(v.total) && nonnegInt(v.shown)
+        && nonnegInt(v.truncated) && v.shown <= v.total
+        && v.truncated === v.total - v.shown;
+    }
     function pathRef(v) {
       return obj(v) && nullable(v, "path", "string") && nullable(v, "present", "boolean");
     }
@@ -510,15 +516,14 @@ __FM_DASHBOARD_DATA__
     function event(v) {
       return field(v, "task_id", "string") && field(v, "path", "string")
         && field(v, "readable", "boolean") && nullable(v, "reason", "string")
-        && typeof v.total === "number" && typeof v.shown === "number"
-        && typeof v.truncated === "number" && Array.isArray(v.lines)
+        && boundedCounts(v) && Array.isArray(v.lines) && v.shown === v.lines.length
         && v.lines.every(function (x) { return field(x, "verb", "string")
           && field(x, "note", "string") && field(x, "raw", "string"); });
     }
     function report(v) {
       return field(v, "id", "string") && field(v, "path", "string")
         && field(v, "readable", "boolean") && nullable(v, "reason", "string")
-        && typeof v.bytes === "number" && field(v, "truncated", "boolean")
+        && nonnegInt(v.bytes) && field(v, "truncated", "boolean")
         && nullable(v, "modified", "string") && field(v, "body", "string");
     }
     function wake(v) {
@@ -546,10 +551,15 @@ __FM_DASHBOARD_DATA__
         && Array.isArray(v.queued) && v.queued.every(evidence)
         && Array.isArray(v.landed) && v.landed.every(evidence)
         && Array.isArray(v.endpoints) && v.endpoints.every(evidence)
-        && obj(v.counts) && field(v.counts, "active_children", "number")
-        && field(v.counts, "decisions_open", "number") && field(v.counts, "holds", "number")
-        && field(v.counts, "queued", "number") && field(v.counts, "landed", "number")
-        && field(v.counts, "endpoints", "number") && Array.isArray(v.omitted)
+        && obj(v.counts) && nonnegInt(v.counts.active_children)
+        && nonnegInt(v.counts.decisions_open) && nonnegInt(v.counts.holds)
+        && nonnegInt(v.counts.queued) && nonnegInt(v.counts.landed)
+        && nonnegInt(v.counts.endpoints)
+        && v.counts.active_children >= v.active_children.length
+        && v.counts.decisions_open >= v.decisions_open.length
+        && v.counts.holds >= v.holds.length && v.counts.queued >= v.queued.length
+        && v.counts.landed >= v.landed.length && v.counts.endpoints >= v.endpoints.length
+        && Array.isArray(v.omitted)
         && v.omitted.every(evidence) && obj(v.parent_event) && obj(v.terminal_evidence)
         && field(v, "contradiction", "boolean");
     }
@@ -566,10 +576,9 @@ __FM_DASHBOARD_DATA__
       && field(s, "main_inventory", "object") && field(s.main_inventory, "valid", "boolean")
       && nullable(s.main_inventory, "reason", "string") && Array.isArray(s.main_inventory.orphan_in_flight)
       && s.main_inventory.orphan_in_flight.every(function (x) { return typeof x === "string"; })
-      && obj(s.secondmate_current) && typeof s.secondmate_current.total === "number"
-      && typeof s.secondmate_current.shown === "number"
-      && typeof s.secondmate_current.truncated === "number"
+      && boundedCounts(s.secondmate_current)
       && Array.isArray(s.secondmate_current.records)
+      && s.secondmate_current.shown === s.secondmate_current.records.length
       && s.secondmate_current.records.every(secondmate)
       && obj(s.secondmate_landed) && Array.isArray(s.secondmate_landed.records)
       && s.secondmate_landed.records.every(evidence)
@@ -584,12 +593,12 @@ __FM_DASHBOARD_DATA__
       && field(sup, "reason", "string") && field(sup, "beacon_present", "boolean")
       && nullable(sup, "beacon_age_seconds", "number") && field(sup, "away_mode", "boolean")
       && field(sup, "recovery_marker", "boolean") && obj(wakes)
-      && typeof wakes.total === "number" && typeof wakes.shown === "number"
-      && typeof wakes.truncated === "number" && typeof wakes.available === "boolean"
+      && boundedCounts(wakes) && typeof wakes.available === "boolean"
       && nullable(wakes, "reason", "string") && Array.isArray(wakes.records)
+      && wakes.shown === wakes.records.length
       && wakes.records.every(wake) && Array.isArray(d.events) && d.events.every(event)
-      && obj(reports) && typeof reports.total === "number" && typeof reports.shown === "number"
-      && typeof reports.truncated === "number" && Array.isArray(reports.records)
+      && obj(reports) && boundedCounts(reports) && Array.isArray(reports.records)
+      && reports.shown === reports.records.length
       && reports.records.every(report)
       && obj(usage) && obj(usage.budget) && field(usage.budget, "available", "boolean")
       && nullable(usage.budget, "reason", "string")

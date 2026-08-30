@@ -870,6 +870,59 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
   esac
 }
 
+fm_backend_target_state() {  # <backend> <target> [expected-label] -> present|absent|unknown
+  local backend=$1 target=$2 expected_label=${3:-} session sessions
+  case "$backend" in
+    tmux)
+      fm_backend_source tmux || { printf 'unknown'; return 0; }
+      tmux list-sessions >/dev/null 2>&1 || { printf 'unknown'; return 0; }
+      if fm_backend_target_exists "$backend" "$target" "$expected_label"; then
+        printf 'present'
+      else
+        printf 'absent'
+      fi
+      ;;
+    zellij)
+      fm_backend_source zellij || { printf 'unknown'; return 0; }
+      session=${target%%:*}
+      sessions=$(zellij list-sessions --short --no-formatting 2>/dev/null) || {
+        printf 'unknown'
+        return 0
+      }
+      printf '%s\n' "$sessions" | grep -qxF "$session" || { printf 'absent'; return 0; }
+      if fm_backend_target_exists "$backend" "$target" "$expected_label"; then
+        printf 'present'
+      else
+        printf 'unknown'
+      fi
+      ;;
+    cmux)
+      fm_backend_source cmux || { printf 'unknown'; return 0; }
+      [ "$(fm_backend_cmux_ping_state 2>/dev/null || true)" = ok ] || {
+        printf 'unknown'
+        return 0
+      }
+      if fm_backend_target_exists "$backend" "$target" "$expected_label"; then
+        printf 'present'
+      else
+        printf 'absent'
+      fi
+      ;;
+    orca)
+      fm_backend_source orca || { printf 'unknown'; return 0; }
+      fm_backend_orca_runtime_check >/dev/null 2>&1 || { printf 'unknown'; return 0; }
+      if fm_backend_target_exists "$backend" "$target" "$expected_label"; then
+        printf 'present'
+      else
+        printf 'absent'
+      fi
+      ;;
+    *)
+      printf 'unknown'
+      ;;
+  esac
+}
+
 # fm_backend_agent_state: the single recovery-grade agent/endpoint state
 # contract. It is deliberately richer than fm_backend_target_exists's cheap
 # pane-presence read and prints exactly one of:

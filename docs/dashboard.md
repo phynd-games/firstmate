@@ -37,7 +37,7 @@ bin/fm-dashboard.sh path                    # this home's stable page path
 
 ## It starts itself
 
-Every firstmate session start brings the dashboard up and prints its URL:
+On a writable firstmate session, a successful dashboard startup brings the dashboard up and prints its verified URL:
 
 ```
 DASHBOARD
@@ -46,6 +46,7 @@ FIRSTMATE_DASHBOARD_URL=http://127.0.0.1:8787/
 ```
 
 `bin/fm-dashboard-start.sh` owns that, and `bin/fm-session-start.sh` calls it.
+Read-only sessions, blocked starts, and unconfirmed ownership continue without printing a URL.
 The server runs inside a Herdr pane created for it, so the process is always attributable to a pane Herdr tracks; there is no tmux path and nothing is ever launched with `&`, `nohup`, or `disown`.
 
 **The URL is a promise, not a guess.** It is printed only after this command has proven, in order: the owner record, that the listener is bound on `127.0.0.1`, the exact port, that the pane still exists, and that the process answering that port is this dashboard for this home.

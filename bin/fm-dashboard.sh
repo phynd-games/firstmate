@@ -159,6 +159,12 @@ payload_is_valid() {  # <payload-file>
   jq -e '
     def has_type($o; $k; $t): ($o | has($k)) and ($o[$k] | type == $t);
     def has_nullable($o; $k; $t): ($o | has($k)) and (($o[$k] == null) or ($o[$k] | type == $t));
+    def nonneg_int: if type == "number" then isfinite and floor == . and . >= 0 else false end;
+    def bounded_counts:
+      type == "object" and has_type(.; "total"; "number")
+      and has_type(.; "shown"; "number") and has_type(.; "truncated"; "number")
+      and (.total | nonneg_int) and (.shown | nonneg_int) and (.truncated | nonneg_int)
+      and (.shown <= .total) and (.truncated == (.total - .shown));
     def path_ref($v):
       ($v | type == "object" and has_nullable(.; "path"; "string")
        and has_nullable(.; "present"; "boolean"));
@@ -219,14 +225,15 @@ payload_is_valid() {  # <payload-file>
     def event:
       type == "object" and has_type(.; "task_id"; "string") and has_type(.; "path"; "string")
       and has_type(.; "readable"; "boolean") and has_nullable(.; "reason"; "string")
-      and has_type(.; "total"; "number") and has_type(.; "shown"; "number")
-      and has_type(.; "truncated"; "number") and has_type(.; "lines"; "array")
+      and bounded_counts and has_type(.; "lines"; "array")
+      and (.shown == (.lines | length))
       and all(.lines[]; type == "object" and has_type(.; "verb"; "string")
         and has_type(.; "note"; "string") and has_type(.; "raw"; "string"));
     def report:
       type == "object" and has_type(.; "id"; "string") and has_type(.; "path"; "string")
       and has_type(.; "readable"; "boolean") and has_nullable(.; "reason"; "string")
-      and has_type(.; "bytes"; "number") and has_type(.; "truncated"; "boolean")
+      and has_type(.; "bytes"; "number") and (.bytes | nonneg_int)
+      and has_type(.; "truncated"; "boolean")
       and has_nullable(.; "modified"; "string") and has_type(.; "body"; "string");
     def wake:
       type == "object" and has_nullable(.; "epoch"; "number") and has_nullable(.; "seq"; "string")
@@ -255,10 +262,16 @@ payload_is_valid() {  # <payload-file>
       and has_type(.; "landed"; "array") and all(.landed[]; evidence)
       and has_type(.; "endpoints"; "array") and all(.endpoints[]; evidence)
       and has_type(.; "counts"; "object")
-      and has_type(.counts; "active_children"; "number")
-      and has_type(.counts; "decisions_open"; "number")
-      and has_type(.counts; "holds"; "number") and has_type(.counts; "queued"; "number")
-      and has_type(.counts; "landed"; "number") and has_type(.counts; "endpoints"; "number")
+      and has_type(.counts; "active_children"; "number") and (.counts.active_children | nonneg_int)
+      and has_type(.counts; "decisions_open"; "number") and (.counts.decisions_open | nonneg_int)
+      and has_type(.counts; "holds"; "number") and (.counts.holds | nonneg_int)
+      and has_type(.counts; "queued"; "number") and (.counts.queued | nonneg_int)
+      and has_type(.counts; "landed"; "number") and (.counts.landed | nonneg_int)
+      and has_type(.counts; "endpoints"; "number") and (.counts.endpoints | nonneg_int)
+      and (.counts.active_children >= (.active_children | length))
+      and (.counts.decisions_open >= (.decisions_open | length))
+      and (.counts.holds >= (.holds | length)) and (.counts.queued >= (.queued | length))
+      and (.counts.landed >= (.landed | length)) and (.counts.endpoints >= (.endpoints | length))
       and has_type(.; "omitted"; "array") and all(.omitted[]; evidence)
       and has_type(.; "parent_event"; "object") and has_type(.; "terminal_evidence"; "object")
       and has_type(.; "contradiction"; "boolean");
@@ -280,10 +293,9 @@ payload_is_valid() {  # <payload-file>
       and has_type(.main_inventory; "orphan_in_flight"; "array")
       and all(.main_inventory.orphan_in_flight[]; type == "string")
       and has_type(.; "secondmate_current"; "object")
-      and has_type(.secondmate_current; "total"; "number")
-      and has_type(.secondmate_current; "shown"; "number")
-      and has_type(.secondmate_current; "truncated"; "number")
+      and (.secondmate_current | bounded_counts)
       and has_type(.secondmate_current; "records"; "array")
+      and (.secondmate_current.shown == (.secondmate_current.records | length))
       and all(.secondmate_current.records[]; secondmate)
       and has_type(.; "secondmate_landed"; "object")
       and has_type(.secondmate_landed; "records"; "array")
@@ -306,17 +318,16 @@ payload_is_valid() {  # <payload-file>
     and has_nullable(.supervision; "beacon_age_seconds"; "number")
     and has_type(.supervision; "away_mode"; "boolean") and has_type(.supervision; "recovery_marker"; "boolean")
     and has_type(.supervision; "wakes"; "object")
-    and has_type(.supervision.wakes; "total"; "number")
-    and has_type(.supervision.wakes; "shown"; "number")
-    and has_type(.supervision.wakes; "truncated"; "number")
+    and (.supervision.wakes | bounded_counts)
     and has_type(.supervision.wakes; "available"; "boolean")
     and has_nullable(.supervision.wakes; "reason"; "string")
     and has_type(.supervision.wakes; "records"; "array")
+    and (.supervision.wakes.shown == (.supervision.wakes.records | length))
     and all(.supervision.wakes.records[]; wake)
     and has_type(.; "events"; "array") and all(.events[]; event)
     and has_type(.; "reports"; "object")
-    and has_type(.reports; "total"; "number") and has_type(.reports; "shown"; "number")
-    and has_type(.reports; "truncated"; "number") and has_type(.reports; "records"; "array")
+    and (.reports | bounded_counts) and has_type(.reports; "records"; "array")
+    and (.reports.shown == (.reports.records | length))
     and all(.reports.records[]; report)
     and has_type(.; "usage"; "object") and has_type(.usage; "budget"; "object")
     and has_type(.usage.budget; "available"; "boolean") and has_nullable(.usage.budget; "reason"; "string")
@@ -366,10 +377,6 @@ snapshot_is_valid() {  # <snapshot-file>
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-classify-lib.sh"  # status_line_verb / status_line_note
-# shellcheck source=bin/fm-wake-lib.sh
-# shellcheck disable=SC1091
-. "$SCRIPT_DIR/fm-wake-lib.sh"  # fm_watcher_supervision_verdict, fm_path_age
-
 TMP=
 cleanup() { [ -n "$TMP" ] && rm -rf -- "$TMP"; }
 trap cleanup EXIT INT TERM
@@ -405,6 +412,10 @@ inside_roots() {  # <resolved-path>
     *) return 1 ;;
   esac
 }
+
+# shellcheck source=bin/fm-wake-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-wake-lib.sh"  # fm_watcher_supervision_verdict, fm_path_age
 
 safe_file() {  # <path> -> 0 with DASH_REAL set, else 1 with DASH_REASON set
   local p=$1 dir base real
@@ -941,6 +952,7 @@ command_serve() {
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -981,7 +993,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def release_client_slot(self):
         if not self.client_slot_released:
-            self.server.client_slots.release()
+            self.server.release_admission(self.request)
             self.client_slot_released = True
 
     def finish(self):
@@ -1070,18 +1082,41 @@ class BoundedHTTPServer(ThreadingMixIn, HTTPServer):
     def __init__(self, server_address, handler_class):
         super().__init__(server_address, handler_class)
         self.build_lock = threading.Lock()
-        self.client_slots = threading.BoundedSemaphore(MAX_CLIENTS)
+        self.client_slots = threading.BoundedSemaphore(MAX_CLIENTS - 1)
+        self.health_slots = threading.BoundedSemaphore(1)
+        self.admission_lock = threading.Lock()
+        self.admissions = {}
         self.page_slots = threading.BoundedSemaphore(MAX_PAGE_BUILDS)
 
     def process_request(self, request, client_address):
-        if not self.client_slots.acquire(False):
+        try:
+            previous_timeout = request.gettimeout()
+            request.settimeout(0.0)
+            first_line = request.recv(4096, socket.MSG_PEEK).split(b"\r\n", 1)[0]
+        except (BlockingIOError, OSError):
+            first_line = b""
+        finally:
+            try:
+                request.settimeout(previous_timeout)
+            except (UnboundLocalError, OSError):
+                pass
+        slot = self.health_slots if first_line.startswith(b"GET /healthz ") else self.client_slots
+        if not slot.acquire(False):
             request.close()
             return
+        with self.admission_lock:
+            self.admissions[id(request)] = slot
         try:
             super().process_request(request, client_address)
         except BaseException:
-            self.client_slots.release()
+            self.release_admission(request)
             raise
+
+    def release_admission(self, request):
+        with self.admission_lock:
+            slot = self.admissions.pop(id(request), None)
+        if slot is not None:
+            slot.release()
 
     def process_request_thread(self, request, client_address):
         super().process_request_thread(request, client_address)
