@@ -599,6 +599,31 @@ PY
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "reusable surface evidence left a runnable poll"
 
   write_self_review_report "$dir/home" task-a
+  security_digest=$(self_review_line_digest "$dir" bin/fm-pr-lib.sh)
+  python3 - "$report" "$security_digest" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+security_digest = sys.argv[2]
+text = report.read_text(encoding="utf-8")
+text = re.sub(
+    r"(?m)^Authority: .*",
+    "Authority: reviewed; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-lib.sh:2 sha256=" + security_digest + " delivery owner remains no-mistakes; consequence=surface evidence must stay associated; fix=reject cross-surface substitution.",
+    text,
+    count=1,
+)
+report.write_text(text, encoding="utf-8")
+PY
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted cross-surface evidence substitution"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "cross-surface evidence substitution left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
   python3 - "$report" "$dir/wt" <<'PY'
 import hashlib
 import pathlib

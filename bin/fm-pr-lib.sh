@@ -754,13 +754,15 @@ EOF
     done < <(printf '%s\n' "$surface_files" | tr ',' '\n')
   done < <(awk '/^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): / { print }' "$report")
   fm_pr_review_surface_file_valid() {
-    local candidate=$1 listed encoded_candidate
+    local candidate=$1 allowed_files listed encoded_candidate
+    allowed_files=${2-$surface_review_files}
     encoded_candidate=$(fm_pr_review_path_encode "$candidate") || return 1
     while IFS= read -r listed || [ -n "$listed" ]; do
+      fm_pr_review_path_syntax_valid "$listed" || return 1
+      listed=$FM_PR_REVIEW_PATH
+      listed=$(fm_pr_review_path_encode "$listed") || return 1
       [ "$listed" = "$encoded_candidate" ] && return 0
-    done <<EOF
-$surface_review_files
-EOF
+    done < <(printf '%s\n' "$allowed_files" | tr ',' '\n')
     return 1
   }
   fm_pr_changed_path_valid() {
@@ -840,7 +842,7 @@ EOF
     case "$evidence_hash" in
       *[!0-9a-f]*) return 1 ;;
     esac
-    fm_pr_review_surface_file_valid "$evidence_file" || return 1
+    fm_pr_review_surface_file_valid "$evidence_file" "$surface_files" || return 1
     fm_pr_changed_path_valid "$evidence_file" || return 1
     fm_pr_review_changed_line_valid "$evidence_file" "$evidence_line" || return 1
     if [ -f "$worktree/$evidence_file" ] && [ ! -L "$worktree/$evidence_file" ] \
