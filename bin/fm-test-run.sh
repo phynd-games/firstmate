@@ -222,14 +222,11 @@ family_for_basename() {
     fm-fleet-snapshot-view.test.sh)
       printf '%s\n' snapshot-bearings
       ;;
-    fm-backend-cmux.test.sh|fm-backend-cmux-smoke.test.sh)
+    fm-backend-cmux-smoke.test.sh)
       printf '%s\n' cmux
       ;;
-    fm-backend-zellij.test.sh|fm-backend-zellij-smoke.test.sh)
+    fm-backend-zellij-smoke.test.sh)
       printf '%s\n' zellij
-      ;;
-    fm-backend-orca.test.sh)
-      printf '%s\n' orca
       ;;
     *)
       printf '%s\n' unclassified
@@ -390,12 +387,9 @@ tests/fm-afk-pi-herdr-return-e2e.test.sh 66
 tests/fm-afk-return.test.sh 3974
 tests/fm-ask-user-authority.test.sh 83
 tests/fm-backend-cmux-smoke.test.sh 30
-tests/fm-backend-cmux.test.sh 3351
 tests/fm-backend-herdr-focus-flash-e2e.test.sh 21
-tests/fm-backend-orca.test.sh 14681
 tests/fm-backend-tmux-smoke.test.sh 361
 tests/fm-backend-zellij-smoke.test.sh 22
-tests/fm-backend-zellij.test.sh 8297
 tests/fm-backend.test.sh 17169
 tests/fm-backlog-handoff.test.sh 4157
 tests/fm-bearings-board.test.sh 3385

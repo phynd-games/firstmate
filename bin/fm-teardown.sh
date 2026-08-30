@@ -2319,10 +2319,11 @@ FMEOF
 }
 
 teardown_herdr_require_prerequisites() {  # <task-id>
-  local task_id=$1 prerequisite
-  if ! fm_backend_source herdr "teardown prerequisites" "" setup; then
-    echo "error: herdr teardown prerequisites are unavailable for $task_id; nothing was changed - restore the adapter and rerun teardown" >&2
-    return 1
+  local task_id=$1 prerequisite source_rc=0
+  fm_backend_source herdr "teardown prerequisites" "" setup || source_rc=$?
+  if [ "$source_rc" -ne 0 ]; then
+    [ "$source_rc" -eq 2 ] || echo "error: herdr teardown prerequisites are unavailable for $task_id; nothing was changed - restore the adapter and rerun teardown" >&2
+    return "$source_rc"
   fi
   for prerequisite in \
     fm_backend_herdr_parse_target \
@@ -2349,14 +2350,14 @@ teardown_herdr_require_prerequisites() {  # <task-id>
 
 teardown_herdr_preflight_target() {  # <target> <task-id>
   local target=$1 task_id=$2 session pane presence lock_path verified_lock_path lock_session held_path attempt
-  teardown_herdr_require_prerequisites "$task_id" || return 1
+  teardown_herdr_require_prerequisites "$task_id" || return $?
   if ! fm_backend_herdr_parse_target "$target"; then
     echo "error: herdr endpoint $target for $task_id could not be parsed exactly; nothing was changed - repair the endpoint metadata and rerun teardown" >&2
     return 1
   fi
   session=$FM_BACKEND_HERDR_SESSION
   pane=$FM_BACKEND_HERDR_PANE
-  fm_backend_herdr_capability_preflight "teardown endpoint $task_id" "$session" || return 1
+  fm_backend_herdr_capability_preflight "teardown endpoint $task_id" "$session" || return $?
   presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane")
   case "$presence" in
     dead|present) ;;

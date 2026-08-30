@@ -475,6 +475,30 @@ fm_backend_validate_remote_meta() {  # <meta-file> <task-id>
   return 1
 }
 
+fm_backend_validate_remote_task_endpoint() {  # <meta-file> <task-id> [expected-session]
+  local meta=$1 id=$2 expected_session=${3:-}
+  local backend binding recorded_session target target_session pane
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  case "$id" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  backend=$(fm_backend_meta_exact_value "$meta" remote_backend 2>/dev/null || true)
+  [ "$backend" = "$FM_BACKEND_ACTIVE" ] || return 1
+  binding=$(fm_backend_meta_exact_value "$meta" endpoint_task_id 2>/dev/null || true)
+  [ "$binding" = "$id" ] || return 1
+  recorded_session=$(fm_backend_meta_exact_value "$meta" remote_herdr_session 2>/dev/null || true)
+  [ -n "$recorded_session" ] || return 1
+  [ -z "$expected_session" ] || [ "$recorded_session" = "$expected_session" ] || return 1
+  fm_backend_endpoint_atom_valid "$recorded_session" || return 1
+  target=$(fm_backend_meta_exact_value "$meta" remote_target 2>/dev/null || true)
+  [ -n "$target" ] || return 1
+  target_session=${target%%:*}
+  pane=${target#*:}
+  [ "$target_session" = "$recorded_session" ] || return 1
+  [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
+  fm_backend_endpoint_atom_valid "${pane//:/_}" || return 1
+  FM_BACKEND_VALIDATED_BACKEND=$backend
+  FM_BACKEND_VALIDATED_TARGET=$target
+}
+
 fm_backend_herdr_capability_check() {  # <origin>
   local origin=$1 detail
   if detail=$(fm_backend_herdr_version_check 2>&1); then

@@ -71,8 +71,8 @@ remote_endpoint_load() {
   REMOTE_ENDPOINT_ERROR=
   REMOTE_ENDPOINT_FAILURE=endpoint-refused
   REMOTE_ENDPOINT_META=$(meta_path "$id")
-  if ! fm_backend_validate_task_endpoint "$REMOTE_ENDPOINT_META" "$id" 2>/dev/null; then
-    case "$(fm_backend_meta_recorded_backend "$REMOTE_ENDPOINT_META" 2>/dev/null || true)" in
+  if ! fm_backend_validate_remote_task_endpoint "$REMOTE_ENDPOINT_META" "$id" "$REMOTE_HERDR_SESSION" 2>/dev/null; then
+    case "$(fm_backend_meta_recorded_backend "$REMOTE_ENDPOINT_META" remote_backend 2>/dev/null || true)" in
       ''|absent|ambiguous|herdr) ;;
       *) REMOTE_ENDPOINT_FAILURE=legacy-record ;;
     esac
@@ -86,7 +86,7 @@ remote_endpoint_load() {
     REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint is recorded on backend '$REMOTE_ENDPOINT_BACKEND', expected 'herdr'; refusing access until it is explicitly migrated"
     return 1
   fi
-  herdr_session=$(fm_backend_meta_exact_value "$REMOTE_ENDPOINT_META" herdr_session 2>/dev/null || true)
+  herdr_session=$(fm_backend_meta_exact_value "$REMOTE_ENDPOINT_META" remote_herdr_session 2>/dev/null || true)
   if [ "$herdr_session" != "$REMOTE_HERDR_SESSION" ]; then
     REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint is recorded in Herdr session '${herdr_session:-missing}', expected '$REMOTE_HERDR_SESSION'; refusing access until it is explicitly migrated"
     return 1
@@ -120,7 +120,7 @@ remote_endpoint_refuse() {
       printf '%s\n' "$REMOTE_ENDPOINT_ERROR" >&2
       ;;
     legacy-record)
-      recorded=$(fm_backend_meta_recorded_backend "$REMOTE_ENDPOINT_META" 2>/dev/null || true)
+      recorded=$(fm_backend_meta_recorded_backend "$REMOTE_ENDPOINT_META" remote_backend 2>/dev/null || true)
       fm_backend_policy_refuse "remote secondmate $id endpoint record" "$recorded" \
         "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
       ;;
