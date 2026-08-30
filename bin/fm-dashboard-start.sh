@@ -454,9 +454,9 @@ herdr_pane_in_scope() {  # <session> <workspace-id> <tab-id> <pane-id>
   out=$(HERDR_SESSION_OVERRIDE="$session" herdr_cli pane get "$pane" 2>/dev/null) || return 1
   printf '%s' "$out" | jq -e --arg workspace "$workspace" --arg tab "$tab" --arg pane "$pane" '
     (.result.pane | type) == "object"
-    and .pane_id == $pane
-    and .workspace_id == $workspace
-    and .tab_id == $tab
+    and .result.pane.pane_id == $pane
+    and .result.pane.workspace_id == $workspace
+    and .result.pane.tab_id == $tab
   ' >/dev/null 2>&1
 }
 

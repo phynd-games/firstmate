@@ -45,7 +45,11 @@ payload() {
         tasks: [],
         scout_reports: [],
         main_inventory: {valid: true, reason: null, orphan_in_flight: []},
-        secondmate_current: {records: [], total: 0, shown: 0, truncated: 0},
+        secondmate_current: {
+          registry: {path: "/homes/sample/data/secondmates.md", present: false,
+                     available: true, complete: true, reason: null},
+          records: [], total: 0, shown: 0, truncated: 0
+        },
         secondmate_landed: {records: [], truncated: [], unreadable: [], partial: []},
         secondmate_guidance: {note: ""}
       },
