@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -479,8 +480,20 @@ def validate_source_bytes(
     _string(document["title"], "$.title", errors)
     _string(document["generated"], "$.generated", errors, DATE)
     declared_count = document["task_count"]
-    if type(declared_count) is not int or declared_count < 1:
+    if isinstance(declared_count, bool) or not isinstance(declared_count, (int, float)):
+        declared_count_valid = False
+    elif isinstance(declared_count, float):
+        declared_count_valid = (
+            math.isfinite(declared_count)
+            and declared_count >= 1
+            and declared_count.is_integer()
+        )
+    else:
+        declared_count_valid = declared_count >= 1
+    if not declared_count_valid:
         errors.add("schema.type", "$.task_count", "expected positive integer")
+    else:
+        declared_count = int(declared_count)
 
     epics = document["epics"]
     flat_tasks = document["tasks"]
@@ -589,7 +602,7 @@ def validate_source_bytes(
                 errors.add("representation.mismatch", f"{flat_locations[task_id]}.{field}", f"nested and flat values differ for {task_id}.{field}")
 
     actual_count = len(flat_tasks)
-    if type(declared_count) is int and declared_count != actual_count:
+    if declared_count_valid and declared_count != actual_count:
         errors.add("count.declared", "$.task_count", f"declared {declared_count}, found {actual_count} flat tasks")
     if len(nested_records) != actual_count:
         errors.add("count.representations", "$.epics", f"found {len(nested_records)} unique nested tasks and {actual_count} flat task entries")

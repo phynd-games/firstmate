@@ -53,6 +53,8 @@ if mode == "nested-mismatch":
     doc["epics"][0]["tasks"][0][1] = "Changed only in nested form"
 elif mode == "count-mismatch":
     doc["task_count"] = 120
+elif mode == "integral-float-count":
+    doc["task_count"] = 121.0
 elif mode == "duplicate-id":
     doc["tasks"][1]["id"] = doc["tasks"][0]["id"]
 elif mode == "unknown-dependency":
@@ -130,6 +132,17 @@ test_known_source_graph() {
   json_assert "$report" "r['graph']['roots'] == ['E0.01', 'E5.01'] and r['graph']['nested_flat_equal'] is True" "root or representation facts differ"
   json_assert "$report" "r['graph']['acceptance_reachability']['covered_task_count'] == 88 and r['graph']['acceptance_reachability']['uncovered_task_count'] == 33" "acceptance reachability facts differ"
   pass "known source reproduces 121 tasks, 8 epics, 193 edges, 0 cycles, 26 waves, and two roots"
+}
+
+test_integral_float_task_count() {
+  local fixture="$TMP_ROOT/source-integral-float-count.json" report="$TMP_ROOT/source-integral-float-count-report.json" sha
+  mutate_source integral-float-count "$fixture"
+  sha=$(sha256_file "$fixture")
+  "$CLI" validate-source --source "$fixture" --expected-sha256 "$sha" >"$report" \
+    || fail "schema-valid integral JSON task count should validate"
+  json_assert "$report" "r['valid'] is True and r['graph']['declared_task_count'] == 121" \
+    "integral JSON number task count should match runtime semantics"
+  pass "integral JSON number task counts normalize consistently with the published schema"
 }
 
 test_provenance_rejection() {
@@ -418,6 +431,7 @@ test_read_only_execution() {
 
 test_schema_interface
 test_known_source_graph
+test_integral_float_task_count
 test_provenance_rejection
 test_public_api_rejects_malformed_arguments
 test_malformed_source_fixtures

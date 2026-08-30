@@ -273,6 +273,23 @@ test_promote_requires_and_records_the_delivery_contract() {
   assert_not_contains "$out" 'reset to a clean default-branch base' "promotion still instructed a default-base reset"
   assert_contains "$out" "ship instructions for mode=direct-PR" "promotion hint did not carry the decided mode"
   [ "$(grep -c '^mode=' "$meta")" = 1 ] || fail "promotion left more than one mode= line in the task record"
+
+  git -C "$proj" branch approved-base "$base_sha"
+  git -C "$proj" push --quiet origin approved-base
+  git -C "$wt" update-ref -d refs/remotes/origin/approved-base
+  mkdir -p "$home/data/promote-fetch"
+  printf 'Scout brief for fetched base.\nTarget-project approved base: ref=origin/approved-base; sha=%s\n' \
+    "$base_sha" > "$home/data/promote-fetch/brief.md"
+  fm_write_meta "$home/state/promote-fetch.meta" \
+    "window=fm-promote-fetch" "kind=scout" "worktree=$wt"
+  [ "$(git -C "$wt" show-ref --verify --quiet refs/remotes/origin/approved-base; echo $?)" = 1 ] \
+    || fail "promotion fixture unexpectedly had the approved remote-tracking ref"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-fetch --mode local-only --yolo off 2>&1)
+  status=$?
+  expect_code 0 "$status" "promotion should fetch an approved base absent from the scout worktree"
+  assert_grep 'kind=ship' "$home/state/promote-fetch.meta" "fetched-base promotion did not complete"
+  assert_grep 'review_base_ref=origin/approved-base' "$home/state/promote-fetch.meta" \
+    "fetched-base promotion changed the approved ref"
   pass "fm-promote: promotion requires the delivery contract and records it exactly once"
 }
 

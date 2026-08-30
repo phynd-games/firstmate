@@ -415,6 +415,21 @@ fm_pr_review_base_branch() {
   printf '%s\n' "$branch"
 }
 
+fm_pr_review_base_resolve() {
+  local worktree=$1 approved_ref=$2 approved_sha=$3 branch remote_ref resolved
+  [ -d "$worktree" ] && [ ! -L "$worktree" ] || return 1
+  fm_pr_head_valid "$approved_sha" || return 1
+  branch=$(fm_pr_review_base_branch "$approved_ref") || return 1
+  remote_ref="refs/remotes/origin/$branch"
+  resolved=$(git -C "$worktree" rev-parse --verify --quiet "$remote_ref^{commit}" 2>/dev/null || true)
+  if [ "$resolved" != "$approved_sha" ]; then
+    git -C "$worktree" fetch --quiet origin "+refs/heads/$branch:$remote_ref" || return 1
+    resolved=$(git -C "$worktree" rev-parse --verify --quiet "$remote_ref^{commit}" 2>/dev/null) || return 1
+  fi
+  [ "$resolved" = "$approved_sha" ] || return 1
+  printf 'origin/%s\n' "$branch"
+}
+
 fm_pr_substrate_launch_sha() {
   local data=$1 id=$2 brief value count
   fm_pr_task_id_valid "$id" || return 1

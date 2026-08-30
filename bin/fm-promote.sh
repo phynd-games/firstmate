@@ -161,14 +161,11 @@ fi
 IFS="$(printf '\t')" read -r PROMOTE_BASE_REF PROMOTE_BASE_SHA <<EOF
 $PROMOTE_BASE
 EOF
-PROMOTE_RESOLVED_BASE=$(git -C "$PROMOTE_WT" rev-parse --verify "$PROMOTE_BASE_REF^{commit}" 2>/dev/null) || {
+PROMOTE_RESOLVED_BASE=$(fm_pr_review_base_resolve "$PROMOTE_WT" "$PROMOTE_BASE_REF" "$PROMOTE_BASE_SHA") || {
   echo "error: scout $ID's approved target base is unavailable" >&2
   exit 1
 }
-[ "$PROMOTE_BASE_SHA" = "$PROMOTE_RESOLVED_BASE" ] || {
-  echo "error: scout $ID's approved target base ref and SHA disagree" >&2
-  exit 1
-}
+[ -n "$PROMOTE_RESOLVED_BASE" ] || { echo "error: scout $ID's approved target base is unavailable" >&2; exit 1; }
 
 if [ -e "$PROMOTE_BRIEF" ]; then
   [ -f "$PROMOTE_BRIEF" ] || {

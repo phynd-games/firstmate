@@ -1819,56 +1819,20 @@ EOF
 }
 
 freshen_spawn_worktree_base() {  # <worktree> [<approved-ref> <approved-sha>]
-  local worktree=$1 approved_ref=${2-} approved_sha=${3-} default target expected actual status resolved remote_ref
+  local worktree=$1 approved_ref=${2-} approved_sha=${3-} default target expected actual status
   SPAWN_FRESHEN_APPROVED_REF=$approved_ref
-  if ! git -C "$worktree" fetch --quiet origin; then
-    echo "error: could not fetch origin for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
-    return 1
-  fi
   if [ -n "$approved_ref" ]; then
-    target=$approved_ref
     expected=$approved_sha
-    resolved=$(git -C "$worktree" rev-parse --verify --quiet "$target^{commit}" 2>/dev/null || true)
-    if [ "$resolved" != "$expected" ]; then
-      case "$target" in
-        origin/*)
-          remote_ref=${target#origin/}
-          git -C "$worktree" fetch --quiet origin "+refs/heads/$remote_ref:refs/remotes/origin/$remote_ref" || {
-            echo "error: could not fetch approved base '$target' for pooled worktree '$worktree'" >&2
-            return 1
-          }
-          ;;
-        refs/remotes/origin/*)
-          remote_ref=${target#refs/remotes/origin/}
-          git -C "$worktree" fetch --quiet origin "+refs/heads/$remote_ref:refs/remotes/origin/$remote_ref" || {
-            echo "error: could not fetch approved base '$target' for pooled worktree '$worktree'" >&2
-            return 1
-          }
-          ;;
-        refs/heads/*)
-          remote_ref=${target#refs/heads/}
-          git -C "$worktree" fetch --quiet origin "+refs/heads/$remote_ref:refs/remotes/origin/$remote_ref" || {
-            echo "error: could not fetch approved base '$target' for pooled worktree '$worktree'" >&2
-            return 1
-          }
-          target="origin/$remote_ref"
-          ;;
-        *)
-          remote_ref=$target
-          git -C "$worktree" fetch --quiet origin "+refs/heads/$remote_ref:refs/remotes/origin/$remote_ref" || {
-            echo "error: could not fetch approved base '$target' for pooled worktree '$worktree'" >&2
-            return 1
-          }
-          target="origin/$remote_ref"
-          ;;
-      esac
-      resolved=$(git -C "$worktree" rev-parse --verify --quiet "$target^{commit}" 2>/dev/null || true)
-    fi
-    [ "$resolved" = "$expected" ] || {
-      echo "error: approved base '$target' does not resolve to its recorded SHA for pooled worktree '$worktree'" >&2
+    target=$(fm_pr_review_base_resolve "$worktree" "$approved_ref" "$approved_sha") || {
+      echo "error: approved base '$approved_ref' does not resolve to its recorded SHA for pooled worktree '$worktree'" >&2
       return 1
     }
+    [ -n "$target" ] || return 1
   else
+    if ! git -C "$worktree" fetch --quiet origin; then
+      echo "error: could not fetch origin for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+      return 1
+    fi
     if ! git -C "$worktree" remote set-head origin --auto >/dev/null 2>&1; then
       echo "error: could not resolve origin's current default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
       return 1
