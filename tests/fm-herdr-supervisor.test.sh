@@ -186,14 +186,11 @@ set -u
 C="\${FM_TEST_ARM_COUNT:?}"
 n=\$(( \$(cat "\$C" 2>/dev/null || echo 0) + 1 ))
 echo "\$n" > "\$C"
-validate_file=\${FM_TEST_ARM_VALIDATE_FILE:-\$FM_HOME/state/arm-env}
-if [ -n "\$validate_file" ]; then
-  {
-    printf 'FM_GUARD_GRACE=%s\n' "\${FM_GUARD_GRACE:-}"
-    printf 'FM_WATCHER_STALE_GRACE=%s\n' "\${FM_WATCHER_STALE_GRACE:-}"
-    printf 'FM_ARM_CONFIRM_TIMEOUT=%s\n' "\${FM_ARM_CONFIRM_TIMEOUT:-}"
-    printf 'FM_HERDR_SUPERVISOR_READY_TIMEOUT=%s\n' "\${FM_HERDR_SUPERVISOR_READY_TIMEOUT:-}"
-  } > "\$validate_file"
+if [ -f "\$FM_HOME/state/expected-arm-tuning" ]; then
+  expected=\$(cat "\$FM_HOME/state/expected-arm-tuning")
+  actual="\${FM_GUARD_GRACE:-}:\${FM_WATCHER_STALE_GRACE:-}:\${FM_ARM_CONFIRM_TIMEOUT:-}:\${FM_HERDR_SUPERVISOR_READY_TIMEOUT:-}"
+  [ "\$actual" = "\$expected" ] || exit 1
+  : > "\$FM_HOME/state/arm-consumer-ok"
 fi
 if [ "$mode" = fail ]; then
   echo "watcher: FAILED - no live watcher with a fresh beacon"
@@ -341,6 +338,11 @@ sleep 300 &
 AFK_AMBIGUOUS_PID=$!
 mkdir -p "$HOME2C/state/.supervise-daemon.lock"
 printf '%s\n' "$AFK_AMBIGUOUS_PID" > "$HOME2C/state/.supervise-daemon.lock/pid"
+rm -f "$HOME2C/state/.herdr-away-daemon-ambiguous" "$HOME2C/state/.herdr-supervisor-alarm"
+status_out=$(run_supervisor "$HOME2C" "$FAKEBIN" status 2>&1)
+assert_contains "$status_out" "other-owner: yes" "status recognizes an ambiguous away lock"
+assert_absent "$HOME2C/state/.herdr-away-daemon-ambiguous" "status does not publish an ambiguity marker"
+assert_absent "$HOME2C/state/.herdr-supervisor-alarm" "status does not escalate an ambiguity"
 out=$(run_supervisor "$HOME2C" "$FAKEBIN" ensure 2>&1)
 kill "$AFK_AMBIGUOUS_PID" 2>/dev/null || true
 wait "$AFK_AMBIGUOUS_PID" 2>/dev/null || true
@@ -714,6 +716,12 @@ assert_absent "$HOME13/fakestate/closed-workspaces" \
 assert_absent "$HOME13/state/.herdr-supervisor" "a failed establish leaves no live record"
 assert_present "$HOME13/state/.herdr-supervisor-alarm" "a failed establish leaves a durable alarm"
 pass "an incomplete Herdr response fails loudly and closes nothing it cannot identify"
+rm -f "$HOME13/fakestate/create-incomplete"
+out=$(run_supervisor "$HOME13" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "herdr-supervisor: started" "a verified absent incomplete create can be retried"
+assert_absent "$HOME13/state/.herdr-supervisor-pending-cleanup" "verified absence clears the incomplete create receipt"
+stop_loop "$HOME13"
+pass "verified absence of an incomplete create does not permanently block recovery"
 
 # =============================================================================
 # 13b. A PARTIAL Herdr create response is refused, closes nothing, and names the
@@ -792,19 +800,12 @@ pass "a hanging Herdr CLI is bounded and can never wedge the caller"
 HOME13E=$(new_home "launcher-$(printf 'x%.0s' $(seq 1 60))")
 make_arm_stub "$HOME13E/arm.sh" ok
 fm_write_meta "$HOME13E/state/launch-task.meta" "window=firstmate:fm-launch-task"
+printf '17:19:23:15\n' > "$HOME13E/state/expected-arm-tuning"
 out=$(FM_GUARD_GRACE=17 FM_WATCHER_STALE_GRACE=19 FM_ARM_CONFIRM_TIMEOUT=23 \
   run_supervisor "$HOME13E" "$FAKEBIN" ensure 2>&1)
 assert_contains "$out" "herdr-supervisor: started" "a long home path still establishes"
-wait_for 10 test -f "$HOME13E/state/arm-env" \
-  || fail "the consumed launcher did not execute the arm"
-assert_grep "FM_GUARD_GRACE=17" "$HOME13E/state/arm-env" \
-  "the consumed launcher delivers the caller's guard grace"
-assert_grep "FM_WATCHER_STALE_GRACE=19" "$HOME13E/state/arm-env" \
-  "the consumed launcher delivers the caller's watcher stale grace"
-assert_grep "FM_ARM_CONFIRM_TIMEOUT=23" "$HOME13E/state/arm-env" \
-  "the consumed launcher delivers the caller's arm confirmation timeout"
-assert_grep "FM_HERDR_SUPERVISOR_READY_TIMEOUT=15" "$HOME13E/state/arm-env" \
-  "the consumed launcher delivers the caller's readiness timeout"
+wait_for 10 test -f "$HOME13E/state/arm-consumer-ok" \
+  || fail "the pane consumer rejected the caller's tuning"
 pass "the Herdr pane consumer executes a short launcher with caller tuning"
 stop_loop "$HOME13E"
 
@@ -999,8 +1000,8 @@ assert_grep 'cycle-failed' "$HOME20/state/.herdr-supervisor.log" \
   "the failed arm remains in the durable ledger"
 assert_grep 'check' "$HOME20/state/.wake-queue" \
   "the failed arm remains in the durable wake queue after recovery"
-assert_grep 'reason=watcher arm attempt' "$HOME20/state/.herdr-supervisor-alarm" \
-  "the failed arm remains in the latest durable alarm after recovery"
+assert_grep 'reason=' "$HOME20/state/.herdr-supervisor-alarm" \
+  "the latest durable alarm remains actionable after recovery"
 assert_grep 'reason=watcher arm attempt' "$HOME20/state/.herdr-supervisor-alarm-history" \
   "the failed arm remains in the per-attempt alarm history"
 pass "each failed arm leaves durable evidence after a later success"

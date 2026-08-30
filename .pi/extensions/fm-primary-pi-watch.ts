@@ -485,7 +485,7 @@ export default function (pi: ExtensionAPI) {
   function scheduleRetry(owner: SessionGeneration, message: string, predecessorArmPid: string): void {
     if (!generationIsLive(owner) || owner.child || owner.retryTimer) return;
     const ownership = lockOwnership();
-    if (ownership !== "owned") {
+    if (ownership === "other") {
       surfaceFailure(owner, `watcher: FAILED - Pi extension cannot restore continuity because this session no longer owns the lock\n${message}`);
       return;
     }
@@ -499,10 +499,24 @@ export default function (pi: ExtensionAPI) {
       if (!generationIsLive(owner)) return;
       const result = startArm(owner, predecessorArmPid);
       if (!result.ok) {
-        surfaceFailure(owner, `watcher: FAILED - Pi extension could not launch a continuity retry\n${result.message}`);
+        if (lockOwnership() === "other") {
+          surfaceFailure(owner, `watcher: FAILED - Pi extension could not launch a continuity retry\n${result.message}`);
+        } else {
+          scheduleRetry(owner, result.message, predecessorArmPid);
+        }
       }
     }, retryDelay(owner.retryFailures));
     owner.retryTimer = timer;
+  }
+
+  function armForLifecycle(owner: SessionGeneration, reason: string): void {
+    const result = startArm(owner);
+    if (result.ok || !generationIsLive(owner)) return;
+    if (lockOwnership() === "other") {
+      surfaceFailure(owner, `watcher: FAILED - Pi extension could not arm after ${reason}\n${result.message}`);
+      return;
+    }
+    scheduleRetry(owner, result.message, "");
   }
 
   function startArm(owner: SessionGeneration, predecessorArmPid = ""): ArmResult {
@@ -635,6 +649,13 @@ export default function (pi: ExtensionAPI) {
     if (generation.stopping) generation = createGeneration();
     activateGeneration(generation);
     markLoaded();
+    armForLifecycle(generation, "session start");
+  });
+  pi.on?.("session_compact", () => {
+    armForLifecycle(generation, "session compaction");
+  });
+  pi.on?.("agent_settled", () => {
+    armForLifecycle(generation, "session idle");
   });
   pi.on?.("session_shutdown", () => {
     clearMarkerRetry();

@@ -56,6 +56,10 @@ echo "$n" > "$COUNT_FILE"
 if [ -f "$RESP/$n.exit" ]; then
   exit "$(cat "$RESP/$n.exit")"
 fi
+if [ "${1:-}" = server ] && [ -n "${FM_HERDR_SERVER_DELAY:-}" ]; then
+  [ -z "${FM_HERDR_SERVER_PID_FILE:-}" ] || printf '%s\n' "$$" > "$FM_HERDR_SERVER_PID_FILE"
+  exec sleep "$FM_HERDR_SERVER_DELAY"
+fi
 [ -f "$RESP/$n.out" ] && cat "$RESP/$n.out"
 exit 0
 SH
@@ -522,6 +526,35 @@ test_container_ensure_starts_server_and_workspace() {
   assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp'$'\x1f''--label'$'\x1f''firstmate' \
     "container_ensure did not create the firstmate workspace with the given cwd"
   pass "fm_backend_herdr_container_ensure: version-gates, starts the server, ensures the firstmate workspace, echoes session:workspace_id + the seeded default tab id"
+}
+
+test_server_ensure_does_not_wait_for_a_long_lived_server_in_command_substitution() {
+  local dir log resp fb out caller_pid server_pid i
+  dir="$TMP_ROOT/server-command-substitution"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"server":{"running":false}}\n' > "$resp/1.out"
+  printf '{"server":{"running":true}}\n' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out="$dir/out"
+  (
+    PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+      FM_HERDR_SCRIPT_STATUS=1 FM_HERDR_SERVER_DELAY=30 FM_HERDR_SERVER_PID_FILE="$dir/server.pid" \
+      bash -c '. "$0/bin/backends/herdr.sh"; result=$(fm_backend_herdr_server_ensure fmtest); printf "result=%s\n" "$result"' "$ROOT"
+  ) > "$out" 2>&1 &
+  caller_pid=$!
+  for i in $(seq 1 50); do
+    [ -f "$out" ] && break
+    sleep 0.1
+  done
+  if [ ! -f "$out" ]; then
+    kill "$caller_pid" 2>/dev/null || true
+    wait "$caller_pid" 2>/dev/null || true
+    fail "server_ensure remained blocked inside command substitution"
+  fi
+  server_pid=$(cat "$dir/server.pid" 2>/dev/null || printf '')
+  [ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null || true
+  wait "$caller_pid" 2>/dev/null || true
+  assert_contains "$(cat "$out")" "result=" "server_ensure completed through command substitution"
+  pass "fm_backend_herdr_server_ensure: does not wait for the long-lived server child inside command substitution"
 }
 
 test_container_ensure_reuses_existing_workspace() {
@@ -4446,6 +4479,7 @@ test_workspace_ensure_refuses_an_ambiguous_label_with_no_launcher
 test_workspace_ensure_other_home_ignores_the_launcher_identity
 test_container_ensure_refuses_an_ambiguous_home_label
 test_container_ensure_starts_server_and_workspace
+test_server_ensure_does_not_wait_for_a_long_lived_server_in_command_substitution
 test_container_ensure_reuses_existing_workspace
 test_container_ensure_creates_with_no_focus_flag
 test_container_ensure_uses_secondmate_home_label
