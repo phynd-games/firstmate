@@ -1350,6 +1350,7 @@ test_pi_established_empty_close_honors_retry_limit() {
   log="$TMP_ROOT/pi-established-empty-close.log"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
   install_pi_watch_extension_fixture "$repo"
+  cp "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-session-lock-lib.sh" "$repo/bin/"
   plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
@@ -1387,6 +1388,8 @@ const rows = existsSync(process.env.FM_ARM_LOG)
   : [];
 if (rows.length !== 3) throw new Error(`retry limit launched ${rows.length} arm cycles: ${rows.join(" | ")}`);
 if (!prompt.includes("after 2 retries")) throw new Error(`retry exhaustion was not surfaced: ${prompt}`);
+const queue = readFileSync(`${process.env.FM_HOME}/state/.wake-queue`, "utf8");
+if (!queue.includes("\tcheck\tpi-watch-arm\t")) throw new Error(`retry exhaustion was not durably queued: ${queue}`);
 EOF
 )
   status=$?

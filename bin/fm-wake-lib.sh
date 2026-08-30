@@ -212,29 +212,21 @@ fm_pi_extension_loaded() {
 }
 
 # fm_pi_extension_owns_supervision <state> <root>
-# True when a LIVE Pi session owns supervision continuity for this home: both
-# primary extensions are loaded at their current on-disk builds by the process
-# recorded in this home's session lock, and that process is still alive.
-# Requiring the turn-end guard extension too is deliberate - it is the structural
-# backstop that catches a cycle the watch extension failed to restore, so a home
-# missing it has no benign hand-off to tolerate.
+# True when a LIVE Pi session owns supervision continuity for this home: any
+# primary extension loaded at its current on-disk build by the process recorded
+# in this home's session lock, with that process still alive.
 fm_pi_extension_owns_supervision() {
-  local state=$1 root=$2 lock session_pid lock_identity current_identity pair source marker version
+  local state=$1 root=$2 lock pair source marker version
   lock="$state/.lock"
   for pair in \
     "fm-primary-pi-watch.ts:.pi-watch-extension-loaded" \
     "fm-primary-turnend-guard.ts:.pi-turnend-extension-loaded"; do
     source=${pair%%:*}
     marker=${pair#*:}
-    version=$(fm_pi_extension_version "$root/.pi/extensions/$source") || return 1
-    fm_pi_extension_loaded "$state/$marker" "$version" "$lock" || return 1
+    version=$(fm_pi_extension_version "$root/.pi/extensions/$source") || continue
+    fm_pi_extension_loaded "$state/$marker" "$version" "$lock" && return 0
   done
-  session_pid=$(sed -n '1p' "$lock" 2>/dev/null)
-  lock_identity=$(sed -n '1p' "$state/.lock-pid-identity" 2>/dev/null)
-  [ -n "$lock_identity" ] || return 1
-  current_identity=$(fm_pid_identity "$session_pid" 2>/dev/null) || return 1
-  [ "$current_identity" = "$lock_identity" ] || return 1
-  fm_harness_pid_alive "$session_pid"
+  return 1
 }
 
 # fm_watcher_supervision_verdict <state> <watch-path> [grace] [home] [root]
@@ -772,6 +764,8 @@ _fm_recovery_marker_reopen_announced() {
 
 fm_recovery_transition() {
   local marker=$1 action=$2 target=${3:-} value=${4:-}
+  local expected_pid=${5:-} expected_identity=${6:-} steal_held=${7:-0}
+  local steal acquired_steal=0 actual_pid actual_identity current_identity
   case "$action" in
     publish)
       _fm_recovery_marker_publish "$marker" "${target:-downtime}"
@@ -788,7 +782,11 @@ fm_recovery_transition() {
     release-lock)
       [ -n "$target" ] || return 1
       _fm_recovery_marker_publish "$marker" "${value:-downtime}" || return 1
+      steal="$target.steal"
+      fm_lock_try_acquire "$steal" || return 1
+      acquired_steal=1
       fm_lock_release "$target"
+      fm_lock_release "$steal"
       ;;
     release-lock-existing)
       [ -n "$target" ] || return 1
@@ -798,13 +796,46 @@ fm_recovery_transition() {
         fm_lock_release "$lock"
         return 1
       fi
+      steal="$target.steal"
+      fm_lock_try_acquire "$steal" || {
+        fm_lock_release "$lock"
+        return 1
+      }
+      acquired_steal=1
       fm_lock_release "$target"
+      fm_lock_release "$steal"
       fm_lock_release "$lock"
       ;;
     clear-stale-lock)
-      [ -n "$target" ] || return 1
+      [ -n "$target" ] && [ -n "$expected_pid" ] || return 1
       _fm_recovery_marker_publish "$marker" "${value:-downtime}" || return 1
-      fm_lock_remove_path "$target"
+      steal="$target.steal"
+      if [ "$steal_held" -ne 1 ]; then
+        fm_lock_try_acquire "$steal" || return 1
+        acquired_steal=1
+      fi
+      if [ -n "$expected_pid" ]; then
+        actual_pid=$(cat "$target/pid" 2>/dev/null || true)
+        actual_identity=$(cat "$target/pid-identity" 2>/dev/null || true)
+        if [ "$actual_pid" != "$expected_pid" ] || [ "$actual_identity" != "$expected_identity" ]; then
+          [ "$acquired_steal" -eq 1 ] && fm_lock_release "$steal"
+          return 3
+        fi
+        if fm_pid_alive "$actual_pid"; then
+          current_identity=$(fm_pid_identity "$actual_pid" 2>/dev/null || true)
+          if [ -z "$current_identity" ] || [ -z "$expected_identity" ] \
+            || [ "$current_identity" = "$expected_identity" ]; then
+            [ "$acquired_steal" -eq 1 ] && fm_lock_release "$steal"
+            return 3
+          fi
+        fi
+      fi
+      fm_lock_remove_path "$target" || {
+        [ "$acquired_steal" -eq 1 ] && fm_lock_release "$steal"
+        return 1
+      }
+      [ "$acquired_steal" -eq 1 ] && fm_lock_release "$steal"
+      return 0
       ;;
     *) return 2 ;;
   esac
