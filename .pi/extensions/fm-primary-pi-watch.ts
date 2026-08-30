@@ -678,6 +678,7 @@ export default function (pi: ExtensionAPI) {
       FM_ROOT_OVERRIDE: fmRoot,
       FM_CONFIG_OVERRIDE: config,
       FM_WATCH_ARM_SCRIPT: armScript,
+      FM_WATCH_ARM_CLAIM_REQUIRED: "1",
       FM_WATCH_PREDECESSOR_ARM_PID: predecessorArmPid,
       ...watcherRestartContract(),
     };
