@@ -556,9 +556,14 @@ __FM_DASHBOARD_DATA__
         && nullable(v, "modified", "string") && field(v, "body", "string");
     }
     function wake(v) {
+      function safeEpoch(value) {
+        return typeof value === "number" && isFinite(value) && Math.floor(value) === value
+          && value >= -8640000000000 && value <= 8640000000000;
+      }
       return nullable(v, "epoch", "number") && nullable(v, "seq", "string")
         && nullable(v, "kind", "string") && nullable(v, "key", "string")
         && field(v, "payload", "string") && field(v, "malformed", "boolean")
+        && (v.epoch === null || safeEpoch(v.epoch))
         && (v.malformed || (field(v, "epoch", "number") && field(v, "seq", "string")
           && field(v, "kind", "string") && field(v, "key", "string")));
     }

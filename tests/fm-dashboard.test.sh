@@ -462,6 +462,26 @@ test_render_refuses_an_incomplete_dashboard_document() {
   pass "render refuses an incomplete dashboard document"
 }
 
+test_render_refuses_an_unrepresentable_wake_epoch() {
+  local home out status=0
+  home=$(make_home invalid-wake-epoch)
+  run_dash "$home" json > "$home/valid.json" || fail "the valid payload fixture could not be composed"
+  jq '
+    .supervision.wakes = (.supervision.wakes
+      | .total = 1
+      | .shown = 1
+      | .truncated = 0
+      | .records = [{epoch:1e308, seq:"1", kind:"check", key:"worker-one",
+                    payload:"unrepresentable", malformed:false}])
+  ' "$home/valid.json" > "$home/invalid.json" || fail "the invalid payload fixture could not be written"
+  out=$(run_dash "$home" render "$home/invalid.json" --out "$home/page.html" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "render accepted an unrepresentable wake epoch"
+  assert_contains "$out" "not a complete readable" \
+    "the wake epoch refusal did not identify the unusable payload"
+  [ ! -e "$home/page.html" ] || fail "an invalid wake epoch still published a page"
+  pass "render refuses a wake epoch outside the JavaScript date range"
+}
+
 test_a_bare_output_filename_is_published_in_the_current_directory() {
   local home
   home=$(make_home bare-output)
@@ -664,6 +684,7 @@ test_the_build_refuses_a_template_without_a_data_slot
 test_the_dashboard_refuses_when_the_fleet_snapshot_fails
 test_the_dashboard_refuses_an_invalid_bound_or_port
 test_render_refuses_an_incomplete_dashboard_document
+test_render_refuses_an_unrepresentable_wake_epoch
 test_a_bare_output_filename_is_published_in_the_current_directory
 test_an_absolute_output_outside_the_home_is_refused
 test_a_symlinked_output_parent_is_refused

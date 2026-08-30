@@ -160,6 +160,9 @@ payload_is_valid() {  # <payload-file>
     def has_type($o; $k; $t): ($o | has($k)) and ($o[$k] | type == $t);
     def has_nullable($o; $k; $t): ($o | has($k)) and (($o[$k] == null) or ($o[$k] | type == $t));
     def nonneg_int: if type == "number" then isfinite and floor == . and . >= 0 else false end;
+    def safe_epoch:
+      type == "number" and isfinite and floor == .
+      and . >= -8640000000000 and . <= 8640000000000;
     def bounded_counts:
       type == "object" and has_type(.; "total"; "number")
       and has_type(.; "shown"; "number") and has_type(.; "truncated"; "number")
@@ -267,8 +270,9 @@ payload_is_valid() {  # <payload-file>
       type == "object" and has_nullable(.; "epoch"; "number") and has_nullable(.; "seq"; "string")
       and has_nullable(.; "kind"; "string") and has_nullable(.; "key"; "string")
       and has_type(.; "payload"; "string") and has_type(.; "malformed"; "boolean")
+      and (.epoch == null or (.epoch | safe_epoch))
       and (if .malformed then true else
-        has_type(.; "epoch"; "number") and has_type(.; "seq"; "string")
+        (.epoch | safe_epoch) and has_type(.; "seq"; "string")
         and has_type(.; "kind"; "string") and has_type(.; "key"; "string")
       end);
     def evidence: type == "object";
@@ -1041,7 +1045,11 @@ def process_snapshot():
             pid, ppid, pgid = (int(field) for field in fields)
         except ValueError:
             return None
-        processes[pid] = (ppid, pgid)
+        try:
+            sid = os.getsid(pid)
+        except OSError:
+            continue
+        processes[pid] = (ppid, pgid, sid)
     return processes
 
 
@@ -1049,17 +1057,17 @@ def process_tree_snapshot(root, processes=None):
     if processes is None:
         processes = process_snapshot()
     if processes is None:
-        return None, None
+        return None, None, None
     if root not in processes:
         try:
             os.kill(root, 0)
         except ProcessLookupError:
-            return {root}, set()
+            return {root}, set(), set()
         except OSError:
-            return None, None
-        return None, None
+            return None, None, None
+        return None, None, None
     children = {}
-    for pid, (ppid, _pgid) in processes.items():
+    for pid, (ppid, _pgid, _sid) in processes.items():
         children.setdefault(ppid, []).append(pid)
     pids = {root}
     pending = [root]
@@ -1070,7 +1078,18 @@ def process_tree_snapshot(root, processes=None):
                 pids.add(child)
                 pending.append(child)
     groups = {processes[pid][1] for pid in pids if pid in processes}
-    return pids, groups
+    sessions = {processes[pid][2] for pid in pids if pid in processes}
+    return pids, groups, sessions
+
+
+def process_scope_snapshot(processes, known_pids, known_groups, known_sessions):
+    pids = {
+        pid for pid, (_ppid, pgid, sid) in processes.items()
+        if pid in known_pids or pgid in known_groups or sid in known_sessions
+    }
+    groups = {processes[pid][1] for pid in pids}
+    sessions = {processes[pid][2] for pid in pids}
+    return pids, groups, sessions
 
 
 def signal_process_tree(pids, groups, signum):
@@ -1095,8 +1114,14 @@ def signal_process_tree(pids, groups, signum):
 def cleanup_process_tree(build):
     known_pids = {build.pid}
     known_groups = set()
+    known_sessions = set()
+    observed_root = False
     try:
         known_groups.add(os.getpgid(build.pid))
+    except OSError:
+        pass
+    try:
+        known_sessions.add(os.getsid(build.pid))
     except OSError:
         pass
     proven = True
@@ -1104,12 +1129,21 @@ def cleanup_process_tree(build):
         deadline = time.monotonic() + BUILD_CLEANUP_GRACE
         while time.monotonic() < deadline:
             processes = process_snapshot()
-            pids, groups = process_tree_snapshot(build.pid, processes)
+            pids, groups, sessions = process_tree_snapshot(build.pid, processes)
             if pids is None:
                 proven = False
             else:
+                observed_root = observed_root or build.pid in pids
                 known_pids.update(pids)
                 known_groups.update(groups)
+                known_sessions.update(sessions)
+            if processes is not None:
+                scoped_pids, scoped_groups, scoped_sessions = process_scope_snapshot(
+                    processes, known_pids, known_groups, known_sessions
+                )
+                known_pids.update(scoped_pids)
+                known_groups.update(scoped_groups)
+                known_sessions.update(scoped_sessions)
             signal_process_tree(known_pids, known_groups, signum)
             try:
                 build.wait(timeout=min(PROCESS_CLEANUP_POLL, max(0, deadline - time.monotonic())))
@@ -1120,18 +1154,17 @@ def cleanup_process_tree(build):
                 time.sleep(min(PROCESS_CLEANUP_POLL, remaining))
     remaining_pids = set()
     remaining_groups = set()
+    remaining_sessions = set()
     verify_deadline = time.monotonic() + BUILD_CLEANUP_GRACE
     while time.monotonic() < verify_deadline:
         processes = process_snapshot()
         if processes is None:
             proven = False
             break
-        remaining_pids = {pid for pid in known_pids if pid in processes}
-        remaining_groups = {
-            pgid for pid, (_ppid, pgid) in processes.items()
-            if pgid in known_groups
-        }
-        if not remaining_pids and not remaining_groups:
+        remaining_pids, remaining_groups, remaining_sessions = process_scope_snapshot(
+            processes, known_pids, known_groups, known_sessions
+        )
+        if not remaining_pids and not remaining_groups and not remaining_sessions:
             break
         signal_process_tree(remaining_pids, remaining_groups, signal.SIGKILL)
         try:
@@ -1143,18 +1176,16 @@ def cleanup_process_tree(build):
     if processes is None:
         proven = False
     else:
-        remaining_pids = {pid for pid in known_pids if pid in processes}
-        remaining_groups = {
-            pgid for pid, (_ppid, pgid) in processes.items()
-            if pgid in known_groups
-        }
-        if remaining_pids or remaining_groups:
+        remaining_pids, remaining_groups, remaining_sessions = process_scope_snapshot(
+            processes, known_pids, known_groups, known_sessions
+        )
+        if remaining_pids or remaining_groups or remaining_sessions:
             proven = False
     try:
         build.wait(timeout=BUILD_CLEANUP_GRACE)
     except subprocess.TimeoutExpired:
         proven = False
-    return proven and build.poll() is not None
+    return proven and observed_root and build.poll() is not None
 
 
 def health_body(server):
