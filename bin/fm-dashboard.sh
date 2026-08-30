@@ -1124,7 +1124,7 @@ def cleanup_process_tree(build):
         known_sessions.add(os.getsid(build.pid))
     except OSError:
         pass
-    proven = True
+    proven = False
     for signum in (signal.SIGTERM, signal.SIGKILL):
         deadline = time.monotonic() + BUILD_CLEANUP_GRACE
         while time.monotonic() < deadline:

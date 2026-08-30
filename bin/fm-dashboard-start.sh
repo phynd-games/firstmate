@@ -182,8 +182,8 @@ dashboard_process_identity() {  # <pid> -> stable process-start identity
     printf 'proc:%s:%s' "$start" "$command_hash"
     return 0
   fi
-  start=$(ps -p "$pid" -o lstart= 2>/dev/null | sed -n '1p') || return 1
-  command=$(ps -p "$pid" -o command= 2>/dev/null | sed -n '1p') || return 1
+  start=$(command -p ps -p "$pid" -o lstart= 2>/dev/null | sed -n '1p') || return 1
+  command=$(command -p ps -p "$pid" -o command= 2>/dev/null | sed -n '1p') || return 1
   [ -n "$start" ] && [ -n "$command" ] || return 1
   command_hash=$(printf '%s' "$command" | digest_of) || return 1
   printf 'ps:%s:%s' "$start" "$command_hash"
@@ -197,7 +197,7 @@ dashboard_process_command() {  # <pid>
     printf '%s' "$command"
     return 0
   fi
-  command=$(ps -p "$pid" -o command= 2>/dev/null | sed -n '1p') || return 1
+  command=$(command -p ps -p "$pid" -o command= 2>/dev/null | sed -n '1p') || return 1
   [ -n "$command" ] || return 1
   printf '%s' "$command"
 }
@@ -1161,25 +1161,16 @@ command_ensure() {
   return 0
 }
 
-command_status() {
-  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
-  if ! dashboard_lock_acquire_wait; then
-    blocked "another dashboard lifecycle operation held the lock for ${FM_DASHBOARD_LOCK_WAIT}s"
-    return 1
-  fi
+command_status_report() {
   if [ -L "$RECORD" ]; then
     printf 'DASHBOARD_BLOCKED: the dashboard owner record is a symlink and was not read\n'
-    dashboard_lock_release >/dev/null 2>&1
     return 1
   fi
   if [ ! -f "$RECORD" ]; then
     printf 'dashboard: no owner recorded for this home\n'
-    dashboard_lock_release >/dev/null 2>&1
     return 0
   fi
   printf 'dashboard: recorded owner\n'
-  # -E: BSD sed has no BRE alternation, so the portable form is ERE.
-  # The owner token is deliberately not among the printed keys.
   sed -nE 's/^(schema|home|session|workspace|tab|pane|port|url|started)=/  \1: /p' "$RECORD"
   if record_is_live; then
     printf '  live: yes\n'
@@ -1187,8 +1178,24 @@ command_status() {
   else
     printf '  live: no - the recorded owner could not be proven\n'
   fi
-  dashboard_lock_release >/dev/null 2>&1
   return 0
+}
+
+command_status_read_only() {
+  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  command_status_report
+}
+
+command_status() {
+  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  if ! dashboard_lock_acquire_wait; then
+    blocked "another dashboard lifecycle operation held the lock for ${FM_DASHBOARD_LOCK_WAIT}s"
+    return 1
+  fi
+  command_status_report
+  local rc=$?
+  dashboard_lock_release >/dev/null 2>&1
+  return "$rc"
 }
 
 command_stop() {
@@ -1257,6 +1264,7 @@ command_stop() {
 case "${1-}" in
   ensure) shift; command_ensure "$@" ;;
   status) shift; command_status "$@" ;;
+  status-read-only) shift; command_status_read_only "$@" ;;
   stop) shift; command_stop "$@" ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;

@@ -909,7 +909,7 @@ stage dashboard
 section "DASHBOARD"
 if [ "$READ_ONLY" -eq 1 ]; then
   printf 'not started (read-only session) - bringing the dashboard up needs the fleet lock.\n'
-  "$SCRIPT_DIR/fm-dashboard-start.sh" status 2>&1 || true
+  "$SCRIPT_DIR/fm-dashboard-start.sh" status-read-only 2>&1 || true
 else
   "$SCRIPT_DIR/fm-dashboard-start.sh" ensure 2>&1 || true
 fi

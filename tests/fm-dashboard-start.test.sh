@@ -688,6 +688,23 @@ test_status_reports_without_changing_anything() {
   pass "status reports the owner without changing anything or leaking the token"
 }
 
+test_read_only_status_probe_does_not_write_a_lifecycle_lock() {
+  local home port out
+  home=$(make_home read-only-status-probe)
+  port=$(free_port)
+  chmod 0500 "$home/state"
+  out=$(start "$home" "$port" status-read-only) || {
+    chmod 0700 "$home/state"
+    fail "the read-only status probe required writable lifecycle state: $out"
+  }
+  chmod 0700 "$home/state"
+  assert_contains "$out" "no owner recorded" \
+    "the read-only status probe did not report the empty owner state"
+  [ ! -e "$home/state/.dashboard-start.lock" ] \
+    || fail "the read-only status probe created a lifecycle lock"
+  pass "the read-only status probe reports state without writing a lifecycle lock"
+}
+
 test_stop_closes_the_pane_and_releases_the_port() {
   local home port out
   home=$(make_home stop)
@@ -733,4 +750,5 @@ test_a_torn_lock_with_a_reused_pid_is_recovered
 test_failed_cleanup_is_quarantined_before_retry
 test_no_free_port_blocks_without_a_url
 test_status_reports_without_changing_anything
+test_read_only_status_probe_does_not_write_a_lifecycle_lock
 test_stop_closes_the_pane_and_releases_the_port
