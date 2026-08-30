@@ -106,13 +106,13 @@ test_fm_home_parameterization() {
     "Substrate changed files: $empty_digest" \
     'Substrate diff: no substrate diff' \
     '# Surface review' \
-    'Authority: reviewed; files=bin/fm-pr-check.sh; evidence=no-mistakes owns delivery; consequence=readiness is non-authorizing; fix=retain one delivery owner.' \
-    'Security: reviewed; files=bin/fm-pr-lib.sh; evidence=private report is validated; consequence=tampering is refused; fix=retain identity checks.' \
-    'Path: reviewed; files=bin/fm-pr-check.sh; evidence=task path is bound; consequence=wrong worktrees refuse; fix=retain path validation.' \
-    'Failure: reviewed; files=bin/fm-operational-input.sh; evidence=unknown versions refuse; consequence=legacy downgrade is blocked; fix=retain fail-closed parsing.' \
-    'Tests: reviewed; files=tests/fm-secondmate-safety.test.sh; evidence=public interface executes; consequence=fixture drift is visible; fix=retain focused coverage.' \
-    'Documentation: reviewed; files=bin/fm-brief.sh; evidence=brief records launch SHA; consequence=substrate scope is durable; fix=retain generated contract.' \
-    'Delivery: reviewed; files=bin/fm-pr-create.sh; evidence=PR creation checks reports; consequence=direct bypasses refuse; fix=retain shared boundary.' \
+    'Authority: reviewed; files=README.md; evidence=README.md:1 sha256=e117f7fbd34b82da4d017718ab301a011feaded00b60333eda002cbdf093ae1f no-mistakes owns delivery; consequence=readiness is non-authorizing; fix=retain one delivery owner.' \
+    'Security: reviewed; files=README.md; evidence=README.md:1 sha256=e117f7fbd34b82da4d017718ab301a011feaded00b60333eda002cbdf093ae1f private report is validated; consequence=tampering is refused; fix=retain identity checks.' \
+    'Path: reviewed; files=README.md; evidence=README.md:1 sha256=e117f7fbd34b82da4d017718ab301a011feaded00b60333eda002cbdf093ae1f task path is bound; consequence=wrong worktrees refuse; fix=retain path validation.' \
+    'Failure: reviewed; files=README.md; evidence=README.md:1 sha256=e117f7fbd34b82da4d017718ab301a011feaded00b60333eda002cbdf093ae1f unknown versions refuse; consequence=legacy downgrade is blocked; fix=retain fail-closed parsing.' \
+    'Tests: reviewed; files=README.md; evidence=README.md:1 sha256=e117f7fbd34b82da4d017718ab301a011feaded00b60333eda002cbdf093ae1f public interface executes; consequence=fixture drift is visible; fix=retain focused coverage.' \
+    'Documentation: reviewed; files=README.md; evidence=README.md:1 sha256=e117f7fbd34b82da4d017718ab301a011feaded00b60333eda002cbdf093ae1f brief records launch SHA; consequence=substrate scope is durable; fix=retain generated contract.' \
+    'Delivery: reviewed; files=README.md; evidence=README.md:1 sha256=e117f7fbd34b82da4d017718ab301a011feaded00b60333eda002cbdf093ae1f PR creation checks reports; consequence=direct bypasses refuse; fix=retain shared boundary.' \
     '# Verification' \
     'Command: fm-pr-check.sh task-a https://github.com/example/repo/pull/1' \
     'Result: passed' \

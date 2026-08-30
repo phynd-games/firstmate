@@ -139,13 +139,13 @@ make_case() {
     "Substrate changed files: $empty_digest" \
     'Substrate diff: no substrate diff' \
     '# Surface review' \
-    'Authority: reviewed; files=bin/fm-pr-check.sh,bin/fm-pr-lib.sh; evidence=delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing.' \
-    'Security: reviewed; files=bin/fm-pr-lib.sh,tests/fm-pr-check-security.test.sh; evidence=private report identity is checked; consequence=tampering is refused; fix=preserve single-link mode checks.' \
-    'Path: reviewed; files=bin/fm-pr-check.sh,bin/fm-pr-self-review-check.sh; evidence=task paths are validated; consequence=path traversal is rejected; fix=retain canonical task boundaries.' \
-    'Failure: reviewed; files=bin/fm-pr-lib.sh,bin/fm-operational-input.sh; evidence=malformed inputs fail closed; consequence=no fallback authority is granted; fix=keep deterministic refusal.' \
-    'Tests: reviewed; files=tests/fm-pr-check-security.test.sh,tests/fm-pr-merge.test.sh; evidence=public boundary cases execute; consequence=regressions are visible; fix=retain negative coverage.' \
-    'Documentation: reviewed; files=.agents/skills/firstmate-pr-self-review/SKILL.md,bin/fm-brief.sh; evidence=generated contracts name exact evidence; consequence=workers have durable requirements; fix=keep docs aligned.' \
-    'Delivery: reviewed; files=bin/fm-pr-create.sh,bin/fm-merge-local.sh; evidence=readiness paths invoke the shared check; consequence=direct bypasses refuse; fix=preserve no-mistakes authority.' \
+    'Authority: reviewed; files=fixture.txt; evidence=fixture.txt:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing.' \
+    'Security: reviewed; files=fixture.txt; evidence=fixture.txt:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f private report identity is checked; consequence=tampering is refused; fix=preserve single-link mode checks.' \
+    'Path: reviewed; files=fixture.txt; evidence=fixture.txt:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f task paths are validated; consequence=path traversal is rejected; fix=retain canonical task boundaries.' \
+    'Failure: reviewed; files=fixture.txt; evidence=fixture.txt:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f malformed inputs fail closed; consequence=no fallback authority is granted; fix=keep deterministic refusal.' \
+    'Tests: reviewed; files=fixture.txt; evidence=fixture.txt:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f public boundary cases execute; consequence=regressions are visible; fix=retain negative coverage.' \
+    'Documentation: reviewed; files=fixture.txt; evidence=fixture.txt:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f generated contracts name exact evidence; consequence=workers have durable requirements; fix=keep docs aligned.' \
+    'Delivery: reviewed; files=fixture.txt; evidence=fixture.txt:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f readiness paths invoke the shared check; consequence=direct bypasses refuse; fix=preserve no-mistakes authority.' \
     '# Verification' \
     'Command: focused PR-ready boundary test' \
     'Result: passed' \

@@ -588,7 +588,8 @@ fm_pr_self_review_report_valid() {
       n = split(value, parts, "; ")
       if (n != 5 || parts[1] != "reviewed") return 0
       if (parts[2] !~ /^files=[^;[:space:]][^;]*$/ || parts[2] !~ /[\/.]/) return 0
-      for (i = 3; i <= 5; i++) {
+      if (parts[3] !~ /^evidence=[A-Za-z0-9._\/-]+:[1-9][0-9]* sha256=[0-9a-f]+ [^;[:space:]][^;]*$/) return 0
+      for (i = 4; i <= 5; i++) {
         if (parts[i] !~ /^(evidence|consequence|fix)=[^;[:space:]][^;]*$/) return 0
         if (parts[i] !~ /=[^;[:space:]][^;]*[[:space:]][^;[:space:]]/) return 0
         if (length(parts[i]) < 12 || parts[i] ~ /=(none|n\/a|x|todo|tbd)$/) return 0
@@ -627,6 +628,7 @@ EOF
   [ -z "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] || return 1
   [ -z "$(git -C "$substrate_root" status --porcelain 2>/dev/null)" ] || return 1
   local line finding_path finding_file finding_line surface_files surface_file review_root
+  local surface_evidence evidence_ref evidence_file evidence_line evidence_hash line_content actual_evidence_hash
   fm_pr_review_file_valid() {
     local review_file=$1
     for review_root in "$worktree" "$substrate_root"; do
@@ -658,6 +660,39 @@ EOF
       esac
       fm_pr_review_file_valid "$surface_file" || return 1
     done < <(printf '%s\n' "$surface_files" | tr ',' '\n')
+  done < <(awk '/^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): / { print }' "$report")
+  while IFS= read -r line || [ -n "$line" ]; do
+    actual_evidence_hash=
+    surface_files=${line#*files=}
+    surface_files=${surface_files%%; evidence=*}
+    surface_evidence=${line#*; evidence=}
+    surface_evidence=${surface_evidence%%; consequence=*}
+    evidence_ref=${surface_evidence%% *}
+    evidence_hash=${surface_evidence#* sha256=}
+    evidence_hash=${evidence_hash%% *}
+    evidence_file=${evidence_ref%:*}
+    evidence_line=${evidence_ref##*:}
+    case "$evidence_file" in
+      ''|/*|*..*|*[!A-Za-z0-9._/-]*) return 1 ;;
+    esac
+    [ "$evidence_line" -ge 1 ] 2>/dev/null || return 1
+    [ "${#evidence_hash}" -eq 64 ] || return 1
+    case "$evidence_hash" in
+      *[!0-9a-f]*) return 1 ;;
+    esac
+    case ",$surface_files," in
+      *,"$evidence_file",*) ;;
+      *) return 1 ;;
+    esac
+    for review_root in "$worktree" "$substrate_root"; do
+      if [ -f "$review_root/$evidence_file" ] && [ ! -L "$review_root/$evidence_file" ] \
+        && git -C "$review_root" ls-files --error-unmatch -- "$evidence_file" >/dev/null 2>&1; then
+        line_content=$(awk -v target="$evidence_line" 'NR == target { print; found = 1; exit } END { if (!found) exit 1 }' "$review_root/$evidence_file") || continue
+        actual_evidence_hash=$(printf '%s\n' "$line_content" | fm_pr_sha256_stream) || return 1
+        [ "$actual_evidence_hash" = "$evidence_hash" ] && break
+      fi
+    done
+    [ "$actual_evidence_hash" = "$evidence_hash" ] || return 1
   done < <(awk '/^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): / { print }' "$report")
   local actual_substrate_head actual_substrate_changed empty_digest
   actual_substrate_head=$(git -C "$substrate_root" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1

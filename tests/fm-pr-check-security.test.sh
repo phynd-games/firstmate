@@ -79,11 +79,13 @@ make_case() {
   git -C "$dir/wt" config user.email fmtest@example.invalid
   printf 'fixture\n' > "$dir/wt/fixture.txt"
   mkdir -p "$dir/wt/bin" "$dir/wt/tests" "$dir/wt/.agents/skills/firstmate-pr-self-review"
-  touch "$dir/wt/bin/fm-pr-check.sh" "$dir/wt/bin/fm-pr-lib.sh" \
-    "$dir/wt/bin/fm-pr-self-review-check.sh" "$dir/wt/bin/fm-operational-input.sh" \
-    "$dir/wt/bin/fm-pr-create.sh" "$dir/wt/bin/fm-merge-local.sh" "$dir/wt/bin/fm-brief.sh" \
-    "$dir/wt/tests/fm-pr-check-security.test.sh" "$dir/wt/tests/fm-pr-merge.test.sh" \
-    "$dir/wt/.agents/skills/firstmate-pr-self-review/SKILL.md"
+  for fixture_file in \
+    bin/fm-pr-check.sh bin/fm-pr-lib.sh bin/fm-pr-self-review-check.sh \
+    bin/fm-operational-input.sh bin/fm-pr-create.sh bin/fm-merge-local.sh \
+    bin/fm-brief.sh tests/fm-pr-check-security.test.sh tests/fm-pr-merge.test.sh \
+    .agents/skills/firstmate-pr-self-review/SKILL.md; do
+    printf 'fixture\n' > "$dir/wt/$fixture_file"
+  done
   git -C "$dir/wt" remote add origin https://github.com/o/r.git
   git -C "$dir/wt" add fixture.txt bin tests .agents
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
@@ -222,13 +224,13 @@ write_self_review_report() {
     "Substrate changed files: $empty_digest" \
     'Substrate diff: no substrate diff' \
     '# Surface review' \
-    'Authority: reviewed; files=bin/fm-pr-check.sh,bin/fm-pr-lib.sh; evidence=delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing.' \
-    'Security: reviewed; files=bin/fm-pr-lib.sh,tests/fm-pr-check-security.test.sh; evidence=private report identity is checked; consequence=tampering is refused; fix=preserve single-link mode checks.' \
-    'Path: reviewed; files=bin/fm-pr-check.sh,bin/fm-pr-self-review-check.sh; evidence=task paths are validated; consequence=path traversal is rejected; fix=retain canonical task boundaries.' \
-    'Failure: reviewed; files=bin/fm-pr-lib.sh,bin/fm-operational-input.sh; evidence=malformed inputs fail closed; consequence=no fallback authority is granted; fix=keep deterministic refusal.' \
-    'Tests: reviewed; files=tests/fm-pr-check-security.test.sh,tests/fm-pr-merge.test.sh; evidence=public boundary cases execute; consequence=regressions are visible; fix=retain negative coverage.' \
-    'Documentation: reviewed; files=.agents/skills/firstmate-pr-self-review/SKILL.md,bin/fm-brief.sh; evidence=generated contracts name exact evidence; consequence=workers have durable requirements; fix=keep docs aligned.' \
-    'Delivery: reviewed; files=bin/fm-pr-create.sh,bin/fm-merge-local.sh; evidence=readiness paths invoke the shared check; consequence=direct bypasses refuse; fix=preserve no-mistakes authority.' \
+    'Authority: reviewed; files=bin/fm-pr-check.sh,bin/fm-pr-lib.sh; evidence=bin/fm-pr-check.sh:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing.' \
+    'Security: reviewed; files=bin/fm-pr-lib.sh,tests/fm-pr-check-security.test.sh; evidence=bin/fm-pr-lib.sh:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f private report identity is checked; consequence=tampering is refused; fix=preserve single-link mode checks.' \
+    'Path: reviewed; files=bin/fm-pr-check.sh,bin/fm-pr-self-review-check.sh; evidence=bin/fm-pr-check.sh:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f task paths are validated; consequence=path traversal is rejected; fix=retain canonical task boundaries.' \
+    'Failure: reviewed; files=bin/fm-pr-lib.sh,bin/fm-operational-input.sh; evidence=bin/fm-pr-lib.sh:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f malformed inputs fail closed; consequence=no fallback authority is granted; fix=keep deterministic refusal.' \
+    'Tests: reviewed; files=tests/fm-pr-check-security.test.sh,tests/fm-pr-merge.test.sh; evidence=tests/fm-pr-check-security.test.sh:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f public boundary cases execute; consequence=regressions are visible; fix=retain negative coverage.' \
+    'Documentation: reviewed; files=.agents/skills/firstmate-pr-self-review/SKILL.md,bin/fm-brief.sh; evidence=.agents/skills/firstmate-pr-self-review/SKILL.md:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f generated contracts name exact evidence; consequence=workers have durable requirements; fix=keep docs aligned.' \
+    'Delivery: reviewed; files=bin/fm-pr-create.sh,bin/fm-merge-local.sh; evidence=bin/fm-pr-create.sh:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f readiness paths invoke the shared check; consequence=direct bypasses refuse; fix=preserve no-mistakes authority.' \
     '# Verification' \
     'Command: focused PR-ready boundary test' \
     'Result: passed' \
@@ -533,6 +535,16 @@ PY
   set -e
   [ "$rc" -ne 0 ] || fail "PR-ready path accepted filler surface evidence"
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "filler surface evidence left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  sed -i.bak 's/^Authority: .*/Authority: reviewed; files=bin\/fm-pr-lib.sh; evidence=bin\/fm-pr-lib.sh:1 sha256=0000000000000000000000000000000000000000000000000000000000000000 delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing./' "$report"
+  rm -f "$report.bak"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/109 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted lexical evidence with a false line digest"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "false line digest left a runnable poll"
 
   write_self_review_report "$dir/home" task-a
   chmod 0600 "$report"
