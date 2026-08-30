@@ -478,6 +478,20 @@ test_render_refuses_an_incomplete_dashboard_document() {
   pass "render refuses an incomplete dashboard document"
 }
 
+test_render_refuses_an_invalid_generated_timestamp() {
+  local home out status=0
+  home=$(make_home invalid-generated-timestamp)
+  run_dash "$home" json > "$home/valid.json" || fail "the valid payload fixture could not be composed"
+  jq '.generated = "not-a-date"' "$home/valid.json" > "$home/invalid.json" \
+    || fail "the invalid payload fixture could not be written"
+  out=$(run_dash "$home" render "$home/invalid.json" --out "$home/page.html" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "render accepted an invalid generated timestamp"
+  assert_contains "$out" "not a complete readable" \
+    "the timestamp refusal did not identify the unusable payload"
+  [ ! -e "$home/page.html" ] || fail "an invalid generated timestamp still published a page"
+  pass "render refuses an invalid generated timestamp"
+}
+
 test_render_refuses_an_unrepresentable_wake_epoch() {
   local home out status=0
   home=$(make_home invalid-wake-epoch)
@@ -942,6 +956,7 @@ test_the_build_refuses_a_template_without_a_data_slot
 test_the_dashboard_refuses_when_the_fleet_snapshot_fails
 test_the_dashboard_refuses_an_invalid_bound_or_port
 test_render_refuses_an_incomplete_dashboard_document
+test_render_refuses_an_invalid_generated_timestamp
 test_render_refuses_an_unrepresentable_wake_epoch
 test_render_refuses_an_unsafe_integer
 test_a_bare_output_filename_is_published_in_the_current_directory

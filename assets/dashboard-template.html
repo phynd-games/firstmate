@@ -455,6 +455,11 @@ __FM_DASHBOARD_DATA__
         && (o[k] === null || typeof o[k] === t);
     }
     function nonnegInt(v) { return Number.isSafeInteger(v) && v >= 0; }
+    function validTimestamp(v) {
+      if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(v)) return false;
+      var epoch = Date.parse(v);
+      return isFinite(epoch) && epoch >= -8640000000000000 && epoch <= 8640000000000000;
+    }
     function boundedCounts(v) {
       return obj(v) && nonnegInt(v.total) && nonnegInt(v.shown)
         && nonnegInt(v.truncated) && v.shown <= v.total
@@ -597,8 +602,8 @@ __FM_DASHBOARD_DATA__
         && v.omitted.every(evidence) && obj(v.parent_event) && obj(v.terminal_evidence)
         && field(v, "contradiction", "boolean");
     }
-    return field(d, "generated", "string") && field(d, "fm_home", "string")
-      && obj(s) && s.schema === "fm-fleet-snapshot.v1" && field(s, "generated", "string")
+    return validTimestamp(d.generated) && field(d, "fm_home", "string")
+      && obj(s) && s.schema === "fm-fleet-snapshot.v1" && validTimestamp(s.generated)
       && obj(s.roots) && field(s.roots, "state", "string") && field(s.roots, "data", "string")
       && field(s.roots, "config", "string") && field(s.roots, "projects", "string")
       && obj(b) && field(b, "path", "string") && field(b, "present", "boolean")
@@ -670,7 +675,10 @@ __FM_DASHBOARD_DATA__
   var degraded = arr(data.degraded);
 
   var NOW = Date.parse(data.generated);
-  if (!isFinite(NOW)) NOW = Date.now();
+  if (!isFinite(NOW)) {
+    renderError("Its generated timestamp is invalid.");
+    return;
+  }
 
   function stampIso(epochSeconds) {
     if (typeof epochSeconds !== "number" || !isFinite(epochSeconds)) return "-";

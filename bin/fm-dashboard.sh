@@ -163,6 +163,12 @@ payload_is_valid() {  # <payload-file>
     def safe_epoch:
       type == "number" and isfinite and floor == .
       and . >= -8640000000000 and . <= 8640000000000;
+    def valid_timestamp:
+      if type != "string" then false
+      elif (test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") | not) then false
+      else (try fromdateiso8601 catch null) as $epoch
+        | $epoch != null and $epoch >= -8640000000000 and $epoch <= 8640000000000
+      end;
     def bounded_counts:
       type == "object" and has_type(.; "total"; "number")
       and has_type(.; "shown"; "number") and has_type(.; "truncated"; "number")
@@ -347,7 +353,7 @@ payload_is_valid() {  # <payload-file>
       and has_type(.; "secondmate_guidance"; "object")
       and has_type(.secondmate_guidance; "note"; "string");
     (.schema == "fm-dashboard.v1")
-    and ((.generated | type) == "string")
+    and (.generated | valid_timestamp)
     and ((.fm_home | type) == "string")
     and (.fm_home == $expected_home)
     and (.snapshot | snapshot)
@@ -385,8 +391,14 @@ payload_is_valid() {  # <payload-file>
 
 snapshot_is_valid() {  # <snapshot-file>
   jq -e '
+    def valid_timestamp:
+      if type != "string" then false
+      elif (test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") | not) then false
+      else (try fromdateiso8601 catch null) as $epoch
+        | $epoch != null and $epoch >= -8640000000000 and $epoch <= 8640000000000
+      end;
     (.schema == "fm-fleet-snapshot.v1")
-    and ((.generated | type) == "string")
+    and (.generated | valid_timestamp)
     and ((.fm_home | type) == "string")
     and ((.roots | type) == "object")
     and ((.roots.state | type) == "string")
