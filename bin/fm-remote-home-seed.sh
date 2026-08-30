@@ -157,37 +157,39 @@ done < "$BRIEF" > "$TMP/charter.remote"
 PROJECTS_CSV=
 : > "$TMP/project.records"
 PROJECT_INDEX=0
-for project in "${PROJECT_NAMES[@]}"; do
-  ORIGIN=${PROJECT_ORIGINS[$PROJECT_INDEX]}
-  PROJECT_INDEX=$((PROJECT_INDEX + 1))
-  MODE_LINE=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-project-mode.sh" "$project")
-  read -r MODE _ <<EOF
+if [ "$NO_PROJECTS" -eq 0 ]; then
+  for project in "${PROJECT_NAMES[@]}"; do
+    ORIGIN=${PROJECT_ORIGINS[$PROJECT_INDEX]}
+    PROJECT_INDEX=$((PROJECT_INDEX + 1))
+    MODE_LINE=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-project-mode.sh" "$project")
+    read -r MODE _ <<EOF
 $MODE_LINE
 EOF
-  case "$MODE" in
-    no-mistakes|direct-PR) ;;
-    local-only) die "project $project is local-only and cannot be provisioned remotely" ;;
-    *) die "project $project has unsupported delivery mode: $MODE" ;;
-  esac
-  # An origin named on the command line is authoritative. Reading one from a
-  # clone this home happens to have is only a convenience for the already-cloned
-  # case; it is never a reason to create one.
-  if [ -z "$ORIGIN" ] && [ -d "$PROJECTS/$project/.git" ]; then
-    ORIGIN=$(git -C "$PROJECTS/$project" remote get-url origin 2>/dev/null || true)
-  fi
-  [ -n "$ORIGIN" ] \
-    || die "project $project has no origin; pass $project=<origin-url> so the remote host can clone it"
-  fm_project_origin_safe "$ORIGIN" \
-    || die "project $project origin is not an accepted clone URL: $ORIGIN"
-  REGISTRY_LINE=$(awk -v p="$project" '$1 == "-" && $2 == p { print; exit }' "$DATA/projects.md" 2>/dev/null || true)
-  [ -n "$REGISTRY_LINE" ] || die "project $project has no registry record"
-  NAME_B64=$(printf '%s' "$project" | encode)
-  ORIGIN_B64=$(printf '%s' "$ORIGIN" | encode)
-  PROJECT_REG_B64=$(printf '%s' "$REGISTRY_LINE" | encode)
-  MODE_B64=$(printf '%s' "$MODE" | encode)
-  printf 'project=%s|%s|%s|%s\n' "$NAME_B64" "$ORIGIN_B64" "$PROJECT_REG_B64" "$MODE_B64" >> "$TMP/project.records"
-  PROJECTS_CSV="${PROJECTS_CSV}${PROJECTS_CSV:+, }$project"
-done
+    case "$MODE" in
+      no-mistakes|direct-PR) ;;
+      local-only) die "project $project is local-only and cannot be provisioned remotely" ;;
+      *) die "project $project has unsupported delivery mode: $MODE" ;;
+    esac
+    # An origin named on the command line is authoritative. Reading one from a
+    # clone this home happens to have is only a convenience for the already-cloned
+    # case; it is never a reason to create one.
+    if [ -z "$ORIGIN" ] && [ -d "$PROJECTS/$project/.git" ]; then
+      ORIGIN=$(git -C "$PROJECTS/$project" remote get-url origin 2>/dev/null || true)
+    fi
+    [ -n "$ORIGIN" ] \
+      || die "project $project has no origin; pass $project=<origin-url> so the remote host can clone it"
+    fm_project_origin_safe "$ORIGIN" \
+      || die "project $project origin is not an accepted clone URL: $ORIGIN"
+    REGISTRY_LINE=$(awk -v p="$project" '$1 == "-" && $2 == p { print; exit }' "$DATA/projects.md" 2>/dev/null || true)
+    [ -n "$REGISTRY_LINE" ] || die "project $project has no registry record"
+    NAME_B64=$(printf '%s' "$project" | encode)
+    ORIGIN_B64=$(printf '%s' "$ORIGIN" | encode)
+    PROJECT_REG_B64=$(printf '%s' "$REGISTRY_LINE" | encode)
+    MODE_B64=$(printf '%s' "$MODE" | encode)
+    printf 'project=%s|%s|%s|%s\n' "$NAME_B64" "$ORIGIN_B64" "$PROJECT_REG_B64" "$MODE_B64" >> "$TMP/project.records"
+    PROJECTS_CSV="${PROJECTS_CSV}${PROJECTS_CSV:+, }$project"
+  done
+fi
 
 {
   printf 'schema=fm-remote-home-provision.v1\n'

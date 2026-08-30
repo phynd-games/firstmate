@@ -261,7 +261,15 @@ cmd_sync() {
   validate_id "$id"
   validate_home "$id"
   target=$TARGET_HOME
-  dirty=$(git -C "$target" status --porcelain 2>/dev/null | awk '$0 != "?? .fm-secondmate-home" { print; exit }')
+  # The home owns ignored operational state, and a remote fixture may also
+  # materialize inherited config files as untracked paths when the code root
+  # was created without that local directory. Only tracked edits can make a
+  # code fast-forward unsafe; never overwrite those edits, but do not let
+  # home-local untracked material block an otherwise safe sync.
+  dirty=$(git -C "$target" diff --quiet HEAD -- 2>/dev/null || printf 'tracked changes\n')
+  if [ -z "$dirty" ] && ! git -C "$target" diff --cached --quiet 2>/dev/null; then
+    dirty='staged tracked changes'
+  fi
   [ -z "$dirty" ] || die "remote secondmate checkout is dirty; sync skipped"
   head=$(git -C "$FM_ROOT" rev-parse HEAD 2>/dev/null) || die "remote code root HEAD is unreadable"
   current=$(git -C "$target" rev-parse HEAD 2>/dev/null) || die "remote home HEAD is unreadable"

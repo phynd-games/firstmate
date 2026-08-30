@@ -833,7 +833,16 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # primitive so callers that only need a fast alive/dead read (recovery
 # digests, the session-start fleet digest) do not re-derive it inline.
 fm_backend_tmux_target_shape_valid() {  # <target>
-  local target=${1:-}
+  local target=${1:-} pane_id
+  case "$target" in
+    %*)
+      pane_id=${target#%}
+      case "$pane_id" in
+        ''|*[!0-9]*) return 1 ;;
+      esac
+      return 0
+      ;;
+  esac
   case "$target" in
     ''|:*|*:|*:*:*|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
     *:*) ;;

@@ -80,7 +80,10 @@ MD
 }
 
 file_mode() {  # <path> -> octal permission bits, portably
-  stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1" 2>/dev/null
+  case "$(uname -s)" in
+    Darwin) stat -f %Lp "$1" 2>/dev/null ;;
+    *) stat -c %a "$1" 2>/dev/null ;;
+  esac
 }
 
 run_dash() {  # <home> <args...>
