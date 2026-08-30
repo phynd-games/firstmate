@@ -234,6 +234,14 @@ test_promote_requires_and_records_the_delivery_contract() {
 
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-d1 --mode direct-PR --yolo on 2>&1)
   status=$?
+  [ "$status" -ne 0 ] || fail "promotion without an approved target base should exit non-zero"
+  assert_contains "$out" "has no approved target base" "promote did not refuse a missing approved target base"
+  assert_grep 'kind=scout' "$meta" "missing-base promotion changed the task record"
+
+  printf 'Target-project approved base: ref=main; sha=%s\n' "$base_sha" >> "$home/data/promote-d1/brief.md"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-d1 --mode direct-PR --yolo on 2>&1)
+  status=$?
   expect_code 0 "$status" "a promotion carrying both flags should succeed"
   assert_grep 'kind=ship' "$meta" "promotion did not restore ship teardown protection"
   assert_grep 'review_base_ref=main' "$meta" "promotion did not freeze the approved target base ref"

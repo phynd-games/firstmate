@@ -35,7 +35,13 @@ META="$STATE/$ID.meta"
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
 META_LOCK=$(fm_meta_lock_path "$META") || exit 1
 META_LOCK_HELD=0
+DELIVERY_LOCK=
+DELIVERY_LOCK_HELD=0
 merge_local_cleanup() {
+  if [ "$DELIVERY_LOCK_HELD" = 1 ]; then
+    fm_lock_release "$DELIVERY_LOCK" || true
+    DELIVERY_LOCK_HELD=0
+  fi
   if [ "$META_LOCK_HELD" = 1 ]; then
     fm_lock_release "$META_LOCK" || true
     META_LOCK_HELD=0
@@ -45,6 +51,9 @@ trap merge_local_cleanup EXIT
 trap 'exit 1' HUP INT TERM
 fm_lock_acquire_wait "$META_LOCK"
 META_LOCK_HELD=1
+DELIVERY_LOCK=$(fm_pr_delivery_lock_path "$STATE" "$ID") || exit 1
+fm_lock_acquire_wait "$DELIVERY_LOCK"
+DELIVERY_LOCK_HELD=1
 
 PROJ=$(grep '^project=' "$META" | cut -d= -f2-)
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)

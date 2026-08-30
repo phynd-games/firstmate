@@ -19,6 +19,8 @@ SUBSTRATE_ROOT="${FM_SUBSTRATE_ROOT_OVERRIDE:-$FM_ROOT}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-lease-lib.sh
+. "$SCRIPT_DIR/fm-lease-lib.sh"
 
 if [ "$#" -ne 2 ]; then
   echo "error: invalid PR check request" >&2
@@ -45,9 +47,16 @@ fi
 META_TMP=
 META_LOCK=
 META_LOCK_HELD=0
+DELIVERY_LOCK=
+DELIVERY_LOCK_HELD=0
 pr_check_cleanup() {
   fm_pr_poll_cleanup
   [ -z "$META_TMP" ] || rm -f -- "$META_TMP"
+  if [ "$DELIVERY_LOCK_HELD" = 1 ]; then
+    fm_lease_guard_release || true
+    DELIVERY_LOCK_HELD=0
+  fi
+  [ -z "$DELIVERY_LOCK" ] || fm_lock_release "$DELIVERY_LOCK" || true
   if [ "$META_LOCK_HELD" = 1 ]; then
     fm_lock_release "$META_LOCK" || true
     META_LOCK_HELD=0
@@ -58,6 +67,10 @@ trap 'exit 1' HUP INT TERM
 META_LOCK=$(fm_meta_lock_path "$META") || exit 1
 fm_lock_acquire_wait "$META_LOCK"
 META_LOCK_HELD=1
+DELIVERY_LOCK=$(fm_pr_delivery_lock_path "$STATE" "$ID") || exit 1
+fm_lock_acquire_wait "$DELIVERY_LOCK"
+fm_lease_guard "$ID" "PR-ready publication (fm-pr-check)"
+DELIVERY_LOCK_HELD=1
 [ -f "$META" ] && [ ! -L "$META" ] && [ "$(fm_pr_file_link_count "$META")" = 1 ] \
   || { echo "error: task metadata is unavailable" >&2; exit 1; }
 KIND_COUNT=$(grep -c '^kind=' "$META" || true)
@@ -88,6 +101,10 @@ REVIEW_BASE=$(fm_pr_review_base_from_meta "$META" || true)
 IFS="$(printf '\t')" read -r REVIEW_BASE_REF REVIEW_BASE_SHA <<EOF
 $REVIEW_BASE
 EOF
+REVIEW_BASE_BRANCH=$(fm_pr_review_base_branch "$REVIEW_BASE_REF") || {
+  echo "error: PR-ready task metadata has no branch-shaped approved target base" >&2
+  exit 1
+}
 WT=$(grep '^worktree=' "$META" | cut -d= -f2- || true)
 [ -n "$WT" ] && [ -d "$WT" ] && [ ! -L "$WT" ] && command -v git >/dev/null 2>&1 || {
   echo "error: PR-ready task worktree is unavailable" >&2
@@ -100,6 +117,11 @@ fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH" || {
 REVIEW_HEAD=$(git -C "$WT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
 fm_pr_head_valid "$REVIEW_HEAD" || {
   echo "error: PR-ready task worktree has no valid HEAD" >&2
+  exit 1
+}
+SUBSTRATE_HEAD=$(git -C "$SUBSTRATE_ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
+fm_pr_head_valid "$SUBSTRATE_HEAD" || {
+  echo "error: PR-ready substrate has no valid HEAD" >&2
   exit 1
 }
 SUBSTRATE_LAUNCH_SHA=$(fm_pr_substrate_launch_sha "$DATA" "$ID" || true)
@@ -141,6 +163,10 @@ if [ "$PROVIDER" = github ]; then
     echo "error: GitHub PR head could not be verified" >&2
     exit 1
   }
+  REMOTE_BASE=$(cd "$WT" && gh pr view "$URL" --json baseRefName -q .baseRefName 2>/dev/null) || {
+    echo "error: GitHub PR base could not be verified" >&2
+    exit 1
+  }
 else
   command -v glab >/dev/null 2>&1 || { echo "error: GitLab MR head could not be verified" >&2; exit 1; }
   GITLAB_PROJECT_URL="https://$HOST/$PROJECT_PATH"
@@ -151,9 +177,16 @@ else
   REMOTE_HEAD=$(printf '%s\n' "$GITLAB_JSON" | sed \
     -e 's/.*"head_sha"[[:space:]]*:[[:space:]]*"\([0-9a-f][0-9a-f]*\)".*/\1/p' \
     -e 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-f][0-9a-f]*\)".*/\1/p' | head -1)
+  REMOTE_BASE=$(printf '%s\n' "$GITLAB_JSON" | sed \
+    -e 's/.*"target_branch"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    -e 's/.*"target_branch_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
 fi
 fm_pr_head_valid "$REMOTE_HEAD" && [ "$REMOTE_HEAD" = "$REVIEW_HEAD" ] || {
   echo "error: forge PR/MR head does not match the reviewed worktree head" >&2
+  exit 1
+}
+[ "$REMOTE_BASE" = "$REVIEW_BASE_BRANCH" ] || {
+  echo "error: forge PR/MR base does not match the approved target base" >&2
   exit 1
 }
 PR_HEAD=$REMOTE_HEAD
@@ -161,6 +194,8 @@ PR_HEAD=$REMOTE_HEAD
 FINAL_REVIEW_HEAD=$(git -C "$WT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
 [ "$FINAL_REVIEW_HEAD" = "$REVIEW_HEAD" ] \
   && [ "$(fm_pr_sha256 "$REPORT")" = "$REPORT_HASH" ] \
+  && [ "$(git -C "$SUBSTRATE_ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)" = "$SUBSTRATE_HEAD" ] \
+  && [ -z "$(git -C "$SUBSTRATE_ROOT" status --porcelain 2>/dev/null)" ] \
   && fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH" || {
   echo "error: reviewed PR-ready inputs changed before publication" >&2
   exit 1
@@ -172,6 +207,8 @@ fm_pr_poll_prepare "$STATE" "$ID" "$PROVIDER" "$URL" "$HOST" "$PROJECT_PATH" "$N
 FINAL_REVIEW_HEAD=$(git -C "$WT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
 [ "$FINAL_REVIEW_HEAD" = "$REVIEW_HEAD" ] \
   && [ "$(fm_pr_sha256 "$REPORT")" = "$REPORT_HASH" ] \
+  && [ "$(git -C "$SUBSTRATE_ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)" = "$SUBSTRATE_HEAD" ] \
+  && [ -z "$(git -C "$SUBSTRATE_ROOT" status --porcelain 2>/dev/null)" ] \
   && fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH" || {
   echo "error: reviewed PR-ready inputs changed before publication" >&2
   exit 1
@@ -209,6 +246,8 @@ fm_pr_poll_publish_prepared || {
   echo "error: could not publish PR poll" >&2
   exit 1
 }
+fm_lease_guard_release
+DELIVERY_LOCK_HELD=0
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
 printf 'armed: state/%s.check.sh\n' "$ID"

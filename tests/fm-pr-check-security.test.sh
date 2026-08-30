@@ -116,6 +116,7 @@ case "${1:-} ${2:-}" in
 esac
 case " $* " in
   *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}" ;;
+  *" baseRefName "*) printf '%s\n' "${FM_TEST_GH_BASE:-main}" ;;
   *" state "*)
     [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
     [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"
@@ -155,7 +156,8 @@ printf '%s\n' "$*" >> "$FM_TEST_GLAB_LOG"
       printf '{\n'
       exit 0
     fi
-    printf '{"diff_refs":{"head_sha":"%s"}}\n' "${FM_TEST_GLAB_HEAD:-0123456789abcdef0123456789abcdef01234567}"
+    printf '{"diff_refs":{"head_sha":"%s"},"target_branch":"%s"}\n' \
+      "${FM_TEST_GLAB_HEAD:-0123456789abcdef0123456789abcdef01234567}" "${FM_TEST_GLAB_BASE:-main}"
     exit 0
     ;;
 esac
@@ -534,6 +536,12 @@ PY
 
   write_self_review_report "$dir/home" task-a
   chmod 0600 "$report"
+  set +e
+  FM_TEST_GH_BASE=other run_check_entry "$dir" task-a https://github.com/o/r/pull/103 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a forge base different from the approved base"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "forge base mismatch left a runnable poll"
   run_check_entry "$dir" task-a https://github.com/o/r/pull/103 >/dev/null \
     || fail "PR-ready path rejected a valid durable self-review report"
   FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" FM_HOME="$dir/home" "$SELF_REVIEW_CHECK" task-a no-mistakes >/dev/null \
@@ -546,7 +554,8 @@ PY
   rm -f "$report.bak"
   sed -i.bak 's/^review_base_ref=main$/review_base_ref=fm\/m1-001-provenance-validator/' "$dir/home/state/task-a.meta"
   rm -f "$dir/home/state/task-a.meta.bak"
-  run_check_entry "$dir" task-a https://github.com/o/r/pull/105 >/dev/null \
+  FM_TEST_GH_BASE=fm/m1-001-provenance-validator \
+    run_check_entry "$dir" task-a https://github.com/o/r/pull/105 >/dev/null \
     || fail "PR-ready path rejected a task-approved non-default base"
 
   sed -i.bak 's/^review_base_ref=fm\/m1-001-provenance-validator$/review_base_ref=main/' "$dir/home/state/task-a.meta"
@@ -582,8 +591,18 @@ test_direct_pr_creation_requires_self_review() {
   write_self_review_report "$dir/home" task-a
   run_create_entry "$dir" task-a --title accepted >/dev/null \
     || fail "direct PR creation rejected a valid self-review report"
-  grep -qxF "pr create --repo o/r --head fm/task-a --title accepted" "$dir/gh-axi.log" \
+  grep -qxF "pr create --repo o/r --head fm/task-a --base main --title accepted" "$dir/gh-axi.log" \
     || fail "direct PR creation did not forward arguments after validation"
+  set +e
+  run_create_entry "$dir" task-a --base other --title rejected > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "direct PR creation accepted a base override"
+  set +e
+  run_create_entry "$dir" task-a --hostname forge.example --title rejected > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "direct PR creation accepted a hostname override"
   set +e
   run_create_entry "$dir" task-a --repo attacker/repo --title rejected > "$dir/stdout" 2> "$dir/stderr"
   rc=$?

@@ -1820,6 +1820,14 @@ freshen_spawn_worktree_base() {  # <worktree> [<approved-ref> <approved-sha>]
             return 1
           }
           ;;
+        refs/heads/*)
+          remote_ref=${target#refs/heads/}
+          git -C "$worktree" fetch --quiet origin "+refs/heads/$remote_ref:refs/remotes/origin/$remote_ref" || {
+            echo "error: could not fetch approved base '$target' for pooled worktree '$worktree'" >&2
+            return 1
+          }
+          target="origin/$remote_ref"
+          ;;
         *)
           remote_ref=$target
           git -C "$worktree" fetch --quiet origin "+refs/heads/$remote_ref:refs/remotes/origin/$remote_ref" || {

@@ -151,15 +151,8 @@ else
   PROMOTE_BASE=
 fi
 if [ -z "$PROMOTE_BASE" ]; then
-  PROMOTE_BASE_REF=$(fm_pr_default_branch "$PROMOTE_WT") || {
-    echo "error: could not resolve scout $ID's approved target base" >&2
-    exit 1
-  }
-  PROMOTE_BASE_SHA=$(git -C "$PROMOTE_WT" rev-parse --verify "$PROMOTE_BASE_REF^{commit}" 2>/dev/null) || {
-    echo "error: could not resolve scout $ID's approved target base commit" >&2
-    exit 1
-  }
-  PROMOTE_BASE=$(printf '%s\t%s\n' "$PROMOTE_BASE_REF" "$PROMOTE_BASE_SHA")
+  echo "error: scout $ID has no approved target base; promotion refuses a moving default" >&2
+  exit 1
 fi
 IFS="$(printf '\t')" read -r PROMOTE_BASE_REF PROMOTE_BASE_SHA <<EOF
 $PROMOTE_BASE

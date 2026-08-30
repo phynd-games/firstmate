@@ -226,7 +226,10 @@ fm_operational_versioned_envelope_shape() {  # <message>
     *) return 1 ;;
   esac
   kind=${envelope%%": "*}
-  fm_operational_kind_is_current "$kind"
+  case "$kind" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  return 0
 }
 
 fm_message_from_firstmate() {  # <message>

@@ -340,6 +340,13 @@ fm_pr_self_review_report_path() {
   printf '%s/%s/pr-self-review.md\n' "$data" "$id"
 }
 
+fm_pr_delivery_lock_path() {
+  local state=$1 id=$2
+  fm_pr_task_id_valid "$id" || return 1
+  [ -d "$state" ] && [ ! -L "$state" ] || return 1
+  printf '%s/.delivery-%s.lock\n' "$state" "$id"
+}
+
 fm_pr_default_branch() {
   local repo=$1 ref branch
   [ -d "$repo" ] && [ ! -L "$repo" ] || return 1
@@ -391,6 +398,21 @@ EOF
   esac
   fm_pr_head_valid "$sha" || return 1
   printf '%s\t%s\n' "$ref" "$sha"
+}
+
+fm_pr_review_base_branch() {
+  local ref=${1-} branch
+  case "$ref" in
+    origin/*) branch=${ref#origin/} ;;
+    refs/remotes/origin/*) branch=${ref#refs/remotes/origin/} ;;
+    refs/heads/*) branch=${ref#refs/heads/} ;;
+    refs/*) return 1 ;;
+    *) branch=$ref ;;
+  esac
+  case "$branch" in
+    ''|[-.]*|*..*|*@\{*|*[!A-Za-z0-9._/-]*) return 1 ;;
+  esac
+  printf '%s\n' "$branch"
 }
 
 fm_pr_substrate_launch_sha() {
