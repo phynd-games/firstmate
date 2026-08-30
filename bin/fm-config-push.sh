@@ -66,8 +66,6 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 SECONDMATES_MD="$DATA/secondmates.md"
 
-"$SCRIPT_DIR/fm-guard.sh" || true
-
 # shellcheck source=bin/fm-ff-lib.sh
 . "$SCRIPT_DIR/fm-ff-lib.sh"
 # shellcheck source=bin/fm-backend.sh
@@ -78,6 +76,35 @@ SECONDMATES_MD="$DATA/secondmates.md"
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 # shellcheck source=bin/fm-secondmate-nudge-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-nudge-lib.sh"
+
+config_push_validate_primary_backend() {
+  local line value
+  if [ -f "$CONFIG/backend" ]; then
+    line=
+    while IFS= read -r value || [ -n "$value" ]; do
+      value=$(printf '%s' "$value" | tr -d '[:space:]')
+      if [ -n "$value" ]; then
+        line=$value
+        break
+      fi
+    done < "$CONFIG/backend"
+    if [ -z "$line" ]; then
+      fm_backend_policy_refuse "$CONFIG/backend (present but empty)" "" \
+        "Declare Herdr explicitly in config/backend or with FM_BACKEND=herdr, then verify the named session with 'herdr status --json'."
+      return 1
+    fi
+    if [ "$line" != herdr ]; then
+      fm_backend_policy_refuse "$CONFIG/backend" "$line" \
+        "Declare Herdr explicitly in config/backend or with FM_BACKEND=herdr, then verify the named session with 'herdr status --json'."
+      return 1
+    fi
+  fi
+  fm_backend_name >/dev/null
+}
+
+config_push_validate_primary_backend || exit 1
+
+"$SCRIPT_DIR/fm-guard.sh" || true
 
 print_item_report() {
   local report=$1 item status reason

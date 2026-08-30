@@ -1942,8 +1942,7 @@ fm_backend_herdr_pane_presence_state() {  # <session> <pane_id>
     [ "$code" = "pane_not_found" ] && { printf 'dead'; return 0; }
     case "$code" in
       internal_error|temporarily_unavailable|busy)
-        printf 'unknown'
-        return 0
+        return 2
         ;;
     esac
     fm_backend_herdr_native_failure_rc "$out"
@@ -2711,7 +2710,7 @@ fm_backend_herdr_native_failure_rc() {
 # process's cwd instead, which is what changes when `treehouse get` enters its
 # worktree subshell - confirmed live against a real treehouse acquisition.
 fm_backend_herdr_current_path() {  # <target>
-  local ready_rc=0 out native_rc
+  local ready_rc=0 out native_rc code
   fm_backend_herdr_target_ready "$1" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
   if out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane get "$FM_BACKEND_HERDR_PANE" 2>&1); then
@@ -2728,7 +2727,21 @@ fm_backend_herdr_current_path() {  # <target>
     [ "$native_rc" -eq 1 ] && return 1
     return 2
   fi
-  printf '%s' "$out" | jq -r '.result.pane.foreground_cwd // empty' 2>/dev/null
+  code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)
+  [ -z "$code" ] || return 2
+  if ! printf '%s' "$out" | jq -e --arg pane "$FM_BACKEND_HERDR_PANE" '
+    (.result.pane | type) == "object"
+    and .result.pane.pane_id == $pane
+    and (.result.pane.foreground_cwd | type) == "string"
+    and (.result.pane.foreground_cwd | length) > 0
+  ' >/dev/null 2>&1; then
+    return 2
+  fi
+  printf '%s' "$out" | jq -er '.result.pane.foreground_cwd' 2>/dev/null
+}
+
+fm_backend_herdr_send_response_ok() {
+  [ -z "$1" ]
 }
 
 # fm_backend_herdr_send_text_line: send one line of TEXT then submit,
@@ -2740,7 +2753,7 @@ fm_backend_herdr_send_text_line() {  # <target> <text>
   fm_backend_herdr_target_ready "$1" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
   if out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane run "$FM_BACKEND_HERDR_PANE" "$2" 2>&1); then
-    [ -z "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ] && return 0
+    fm_backend_herdr_send_response_ok "$out" && return 0
   fi
   fm_backend_herdr_native_failure_rc "$out"
   native_rc=$?
@@ -2757,7 +2770,7 @@ fm_backend_herdr_send_literal() {  # <target> <text>
   fm_backend_herdr_target_ready "$1" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
   if out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane send-text "$FM_BACKEND_HERDR_PANE" "$2" 2>&1); then
-    [ -z "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ] && return 0
+    fm_backend_herdr_send_response_ok "$out" && return 0
   fi
   fm_backend_herdr_native_failure_rc "$out"
   native_rc=$?
@@ -2790,7 +2803,7 @@ fm_backend_herdr_send_key() {  # <target> <key>
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
   key=$(fm_backend_herdr_normalize_key "$2")
   if out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane send-keys "$FM_BACKEND_HERDR_PANE" "$key" 2>&1); then
-    [ -z "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ] && return 0
+    fm_backend_herdr_send_response_ok "$out" && return 0
   fi
   fm_backend_herdr_native_failure_rc "$out"
   native_rc=$?
@@ -3257,7 +3270,8 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
       fi
       fm_backend_herdr_projection_focus_restore "$session" "$before" "task kill" || true
       [ "$workspace_presence_rc" -eq 2 ] && return 2
-      return 0
+      [ "$close_failed" -eq 0 ] && return 0
+      return 1
     fi
   fi
   if fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane"; then
@@ -3265,7 +3279,7 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
   fi
   close_rc=$?
   [ "$close_rc" -eq 2 ] && return 2
-  return 0
+  return 1
 }
 
 fm_backend_herdr_kill() {  # <target>
@@ -3292,12 +3306,11 @@ fm_backend_herdr_kill() {  # <target>
     local kill_rc=0
     fm_backend_herdr_kill_serialized "$session" "$pane" || kill_rc=$?
     fm_lock_release "$lock_path" || true
-    if [ "$kill_rc" -eq 2 ]; then
-      return 2
-    fi
-    return 0
+    [ "$kill_rc" -eq 0 ] && return 0
+    return "$kill_rc"
   else
     echo "warning: herdr task kill could not acquire its session presentation lock; refusing an unlocked pane close" >&2
+    return 1
   fi
 }
 

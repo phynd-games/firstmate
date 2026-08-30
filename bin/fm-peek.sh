@@ -30,6 +30,21 @@ if [ -n "$REMOTE_META" ] && [ -n "$(fm_meta_get "$REMOTE_META" remote_host)" ]; 
     fm_backend_refuse_remote_task_endpoint "$REMOTE_META" "$REMOTE_ID"
     exit 1
   }
+  remote_preflight_output= remote_preflight_rc=0
+  if remote_preflight_output=$("$SCRIPT_DIR/fm-on.sh" "$REMOTE_ID" \
+    fm-remote-secondmate-control.sh route "$REMOTE_ID" < /dev/null 2>&1); then
+    :
+  else
+    remote_preflight_rc=$?
+    remote_refusal=$(printf '%s\n' "$remote_preflight_output" | sed -n '/^REFUSED: /{p;q;}')
+    if [ -n "$remote_refusal" ]; then
+      printf '%s\n' "$remote_refusal" >&2
+    else
+      printf 'error: could not verify the remote pane of %s on %s through Herdr (host unreachable or capability unreadable; the mate is not thereby dead)\n' \
+        "$REMOTE_ID" "$REMOTE_HOST" >&2
+    fi
+    exit "$remote_preflight_rc"
+  fi
   remote_guard_output=$("$SCRIPT_DIR/fm-guard.sh" 2>&1 || true)
   case "$N" in ''|*[!0-9]*|0) N=40 ;; esac
   [ "$N" -le 100 ] || N=100

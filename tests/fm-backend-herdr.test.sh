@@ -148,6 +148,17 @@ case "$cmd $sub" in
   "pane list")
     jq_state --arg w "$ws" '{result:{panes:[.tabs[]|select(.workspace_id==$w)|{pane_id:.pane_id, tab_id:.tab_id}]}}'
     ;;
+  "pane get")
+    pane=\${3:-}
+    if [ "$(jq_state -r --arg p "$pane" '[.tabs[]|select(.pane_id==$p)]|length')" = 0 ]; then
+      printf '{"error":{"code":"pane_not_found","message":"pane %s not found"}}\n' "$pane"
+    else
+      jq_state --arg p "$pane" '
+        ([.tabs[] | select(.pane_id == $p)][0]) as $tab
+        | {result:{pane:{pane_id:$tab.pane_id,tab_id:$tab.tab_id,workspace_id:$tab.workspace_id}}}
+      '
+    fi
+    ;;
   "pane close")
     pane=${3:-}
     jq_state --arg p "$pane" '.tabs |= [.[]|select(.pane_id != $p)]' | save
@@ -1820,7 +1831,7 @@ test_projection_close_transient_prompt_helper_settles_then_uses_pane_death() {
   pass "herdr presentation cleanup: a transient prompt helper settles into the pane-death path instead of the plain close"
 }
 
-test_projection_close_death_escalates_sigkill_after_sighup_survival() {
+test_projection_close_death_stops_on_capability_failure() {
   local dir log resp fb out status bgpid
   dir="$TMP_ROOT/close-death-escalate"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -1833,11 +1844,6 @@ test_projection_close_death_escalates_sigkill_after_sighup_survival() {
   bash -c 'trap "" HUP; sleep 300' & bgpid=$!
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
   printf '%s\n' '{"error":{"code":"internal_error","message":"transient failure"}}' > "$resp/8.out"
-  printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2"}}}' > "$resp/9.out"
-  death_process_info_fixture w2:p2 "$bgpid" > "$resp/10.out"
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/11.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/12.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/13.out"
   make_death_lab "$dir" "$bgpid"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -1846,14 +1852,12 @@ test_projection_close_death_escalates_sigkill_after_sighup_survival() {
     FM_BACKEND_HERDR_DEATH_CLOSE_POLLS=2 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w2:p2' "$ROOT" 2>&1)
   status=$?
-  [ "$status" -eq 0 ] || fail "a SIGHUP-surviving shell should be finished by the SIGKILL escalation: $out"
-  assert_not_contains "$(cat "$log")" $'pane\x1fclose' "the SIGKILL escalation used the focus-unsafe explicit close"
-  if kill -0 "$bgpid" 2>/dev/null; then
-    kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
-    fail "the SIGKILL escalation left the trapped shell alive"
-  fi
+  [ "$status" -eq 2 ] || fail "an unhealthy Herdr read should stop pane removal with capability failure: $out"
+  assert_not_contains "$(cat "$log")" $'pane\x1fclose' "an unhealthy Herdr read triggered a focus-unsafe explicit close"
+  kill -0 "$bgpid" 2>/dev/null || fail "an unhealthy Herdr read terminated the pane's shell"
+  kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
   wait "$bgpid" 2>/dev/null || true
-  pass "herdr presentation cleanup: a SIGHUP-surviving shell is escalated to SIGKILL before giving up"
+  pass "herdr presentation cleanup: an unhealthy Herdr read stops before escalation or close"
 }
 
 test_projection_close_death_failure_falls_back_to_plain_close() {
@@ -2141,7 +2145,7 @@ test_kill_refuses_when_presentation_lock_is_unavailable() {
       fm_backend_herdr_kill fmtest:w2:p2
     ' 2>&1)
     status=$?
-    [ "$status" -eq 0 ] || fail "$mode presentation lock refusal changed best-effort kill status: $status"
+    [ "$status" -eq 1 ] || fail "$mode presentation lock refusal returned an unexpected status: $status"
     [ ! -s "$dir/cli.log" ] || fail "$mode presentation lock refusal still mutated Herdr: $(cat "$dir/cli.log")"
     assert_contains "$out" "refusing an unlocked pane close" \
       "$mode presentation lock refusal did not report the deferred close"
@@ -2918,7 +2922,7 @@ test_send_key_normalizes_and_targets_pane() {
   pass "fm_backend_herdr_send_key: normalizes the key and targets the right pane"
 }
 
-test_kill_is_best_effort() {
+test_kill_refuses_unconfirmed_close() {
   local dir log resp fb
   dir="$TMP_ROOT/kill"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '1\n' > "$resp/1.exit"
@@ -2932,9 +2936,9 @@ test_kill_is_best_effort() {
       fm_lock_release() { return 0; }
       fm_backend_herdr_kill default:w1:p2
     ' "$ROOT"
-  expect_code 0 $? "kill must be best-effort (never fail even when the pane close call itself fails)"
+  expect_code 1 $? "kill must refuse when the pane close cannot be confirmed"
   assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p2' "kill did not call pane close on the right pane"
-  pass "fm_backend_herdr_kill: calls pane close and stays best-effort on failure"
+  pass "fm_backend_herdr_kill: refuses when pane removal is unconfirmed"
 }
 
 test_current_path_reads_cwd() {
@@ -2943,7 +2947,7 @@ test_current_path_reads_cwd() {
   # Verified pitfall (herdr-verification-p2.md): .result.pane.cwd is frozen at
   # pane-creation time and never updates; .foreground_cwd tracks the live
   # running process (e.g. a treehouse get subshell) and is what must be read.
-  printf '{"result":{"pane":{"cwd":"/tmp/pane-creation-dir","foreground_cwd":"/tmp/fake-worktree"}}}\n' > "$resp/1.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2","cwd":"/tmp/pane-creation-dir","foreground_cwd":"/tmp/fake-worktree"}}}\n' > "$resp/1.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_current_path default:w1:p2' "$ROOT" )
@@ -3517,7 +3521,7 @@ test_send_text_submit_confirms_blocked_after_enter() {
   local dir log resp fb out enter_count
   dir="$TMP_ROOT/submit-blocked"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
-  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/3.out"
+  : > "$resp/3.out"
   printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/4.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
@@ -3871,6 +3875,7 @@ SH
 
   : > "$log"
   : > "$resp/.count"
+  : > "$resp/1.out"
   PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$neutral" FM_HOME="$neutral" FM_STATE_OVERRIDE="$state" \
     FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     "$ROOT/bin/fm-send.sh" default:w1:p2 --key Escape >/dev/null 2>&1
@@ -4477,7 +4482,7 @@ test_projection_close_ambiguous_positions_fall_back_to_plain_close
 test_projection_close_move_failure_falls_back_to_plain_close
 test_projection_close_busy_pane_falls_back_to_plain_close
 test_projection_close_transient_prompt_helper_settles_then_uses_pane_death
-test_projection_close_death_escalates_sigkill_after_sighup_survival
+test_projection_close_death_stops_on_capability_failure
 test_projection_close_death_failure_falls_back_to_plain_close
 test_projection_close_death_still_restores_a_stolen_focus
 test_projection_close_death_never_sigkills_a_reused_pid
@@ -4512,7 +4517,7 @@ test_capture_calls_pane_read
 test_capture_works_around_small_lines_bug
 test_capture_preserves_pane_read_failure
 test_send_key_normalizes_and_targets_pane
-test_kill_is_best_effort
+test_kill_refuses_unconfirmed_close
 test_current_path_reads_cwd
 test_busy_state_working_maps_to_busy
 test_busy_state_done_and_blocked_map_to_idle
