@@ -2681,9 +2681,8 @@ fm_backend_herdr_parse_target() {  # <target>
 
 fm_backend_herdr_target_ready() {  # <target>
   fm_backend_herdr_parse_target "$1" || return 1
-  local ready_rc=0
-  fm_backend_herdr_server_ensure "$FM_BACKEND_HERDR_SESSION" || ready_rc=$?
-  return "$ready_rc"
+  fm_backend_herdr_session_capability_check "$FM_BACKEND_HERDR_SESSION" || return 2
+  return 0
 }
 
 fm_backend_herdr_native_failure_rc() {

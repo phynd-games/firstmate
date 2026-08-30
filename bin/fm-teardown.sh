@@ -2322,8 +2322,8 @@ FMEOF
 }
 
 teardown_herdr_require_prerequisites() {  # <task-id>
-  local task_id=$1 prerequisite source_rc=0
-  fm_backend_source herdr "teardown prerequisites" "" setup || source_rc=$?
+  local task_id=$1 session=$2 prerequisite source_rc=0
+  fm_backend_source herdr "teardown prerequisites for $task_id" "$session" || source_rc=$?
   if [ "$source_rc" -ne 0 ]; then
     [ "$source_rc" -eq 2 ] || echo "error: herdr teardown prerequisites are unavailable for $task_id; nothing was changed - restore the adapter and rerun teardown" >&2
     return "$source_rc"
@@ -2353,11 +2353,14 @@ teardown_herdr_require_prerequisites() {  # <task-id>
 
 teardown_herdr_preflight_target() {  # <target> <task-id>
   local target=$1 task_id=$2 session pane presence lock_path verified_lock_path lock_session held_path attempt
-  teardown_herdr_require_prerequisites "$task_id" || return $?
-  if ! fm_backend_herdr_parse_target "$target"; then
+  session=${target%%:*}
+  pane=${target#*:}
+  if [ -z "$session" ] || [ -z "$pane" ] || [ "$pane" = "$target" ]; then
     echo "error: herdr endpoint $target for $task_id could not be parsed exactly; nothing was changed - repair the endpoint metadata and rerun teardown" >&2
     return 1
   fi
+  teardown_herdr_require_prerequisites "$task_id" "$session" || return $?
+  fm_backend_herdr_parse_target "$target" || return 1
   session=$FM_BACKEND_HERDR_SESSION
   pane=$FM_BACKEND_HERDR_PANE
   fm_backend_herdr_capability_preflight "teardown endpoint $task_id" "$session" || return $?
@@ -2435,7 +2438,7 @@ preflight_firstmate_home_herdr_children() {  # <home>
 }
 
 cleanup_firstmate_home_children() {
-  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen
+  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen child_kill_rc child_gone_rc
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
@@ -2464,8 +2467,27 @@ cleanup_firstmate_home_children() {
           echo "error: herdr session presentation lock is not held for child $child_id; retaining that child's durable identity records and stopping forced cleanup" >&2
           return 1
         fi
-        fm_backend_herdr_kill_serialized "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true
-        if ! fm_backend_herdr_endpoint_confirmed_gone "$child_t"; then
+        if fm_backend_herdr_kill_serialized "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null; then
+          child_kill_rc=0
+        else
+          child_kill_rc=$?
+        fi
+        if [ "$child_kill_rc" -eq 2 ]; then
+          fm_backend_policy_refuse "teardown Herdr endpoint for child $child_id" herdr \
+            "The verified Herdr session became unavailable during cleanup. Repair Herdr, then verify the named session with 'herdr status --json'."
+          return 2
+        fi
+        if fm_backend_herdr_endpoint_confirmed_gone "$child_t"; then
+          child_gone_rc=0
+        else
+          child_gone_rc=$?
+        fi
+        if [ "$child_gone_rc" -eq 2 ]; then
+          fm_backend_policy_refuse "teardown Herdr endpoint for child $child_id" herdr \
+            "The verified Herdr session became unavailable while confirming cleanup. Repair Herdr, then verify the named session with 'herdr status --json'."
+          return 2
+        fi
+        if [ "$child_gone_rc" -ne 0 ]; then
           echo "error: herdr pane $child_t for child $child_id is not confirmed gone; retaining that child's durable identity records and stopping forced cleanup" >&2
           return 1
         fi
@@ -2779,7 +2801,16 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   fi
 elif [ "$BACKEND" = herdr ]; then
   if teardown_herdr_session_lock_held "$TEARDOWN_HERDR_SESSION"; then
-    fm_backend_herdr_kill_serialized "$TEARDOWN_HERDR_SESSION" "$TEARDOWN_HERDR_PANE" 2>/dev/null || true
+    if fm_backend_herdr_kill_serialized "$TEARDOWN_HERDR_SESSION" "$TEARDOWN_HERDR_PANE" 2>/dev/null; then
+      kill_rc=0
+    else
+      kill_rc=$?
+    fi
+    if [ "$kill_rc" -eq 2 ]; then
+      fm_backend_policy_refuse "teardown Herdr endpoint for task $ID" herdr \
+        "The verified Herdr session became unavailable during teardown. Repair Herdr, then verify the named session with 'herdr status --json'."
+      exit 1
+    fi
   else
     echo "warning: herdr session presentation lock path is unavailable; skipping the pane close rather than closing unlocked" >&2
   fi
@@ -2803,12 +2834,21 @@ fi
 # presence, missing or malformed endpoint identity, and missing confirmation
 # machinery all refuse.
 if [ "$BACKEND" = herdr ]; then
-  fm_backend_source herdr || true
   if ! declare -F fm_backend_herdr_endpoint_confirmed_gone >/dev/null 2>&1; then
     echo "error: herdr endpoint confirmation is unavailable for $ID; retaining every durable task record" >&2
     exit 1
   fi
-  if ! fm_backend_herdr_endpoint_confirmed_gone "$T"; then
+  if fm_backend_herdr_endpoint_confirmed_gone "$T"; then
+    gone_rc=0
+  else
+    gone_rc=$?
+  fi
+  if [ "$gone_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "teardown Herdr endpoint for task $ID" herdr \
+      "The verified Herdr session became unavailable while confirming teardown. Repair Herdr, then verify the named session with 'herdr status --json'."
+    exit 1
+  fi
+  if [ "$gone_rc" -ne 0 ]; then
     echo "error: herdr pane $T for $ID is not confirmed gone after its close was refused, skipped, or failed; retaining every durable task record - rerun teardown once the close can run under the session lock" >&2
     exit 1
   fi

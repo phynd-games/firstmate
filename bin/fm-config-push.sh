@@ -78,7 +78,11 @@ SECONDMATES_MD="$DATA/secondmates.md"
 . "$SCRIPT_DIR/fm-secondmate-nudge-lib.sh"
 
 config_push_validate_primary_backend() {
-  local line value
+  local line value selected session filtered item
+  selected=$(fm_backend_name) || return 1
+  [ "$selected" = "$FM_BACKEND_ACTIVE" ] || return 1
+  session=${HERDR_SESSION:-default}
+  fm_backend_source herdr "config push primary" "$session" || return 1
   if [ -f "$CONFIG/backend" ]; then
     line=
     while IFS= read -r value || [ -n "$value" ]; do
@@ -88,18 +92,20 @@ config_push_validate_primary_backend() {
         break
       fi
     done < "$CONFIG/backend"
-    if [ -z "$line" ]; then
-      fm_backend_policy_refuse "$CONFIG/backend (present but empty)" "" \
-        "Declare Herdr explicitly in config/backend or with FM_BACKEND=herdr, then verify the named session with 'herdr status --json'."
-      return 1
-    fi
-    if [ "$line" != herdr ]; then
-      fm_backend_policy_refuse "$CONFIG/backend" "$line" \
-        "Declare Herdr explicitly in config/backend or with FM_BACKEND=herdr, then verify the named session with 'herdr status --json'."
-      return 1
+    if [ "${FM_BACKEND:-}" = "$FM_BACKEND_ACTIVE" ] && [ "$line" != "$FM_BACKEND_ACTIVE" ]; then
+      filtered=
+      for item in $FM_INHERITABLE_CONFIG; do
+        [ "$item" = backend ] && continue
+        if [ -n "$filtered" ]; then
+          filtered="$filtered $item"
+        else
+          filtered=$item
+        fi
+      done
+      FM_INHERITABLE_CONFIG=$filtered
+      export FM_INHERITABLE_CONFIG
     fi
   fi
-  fm_backend_name >/dev/null
 }
 
 config_push_validate_primary_backend || exit 1
