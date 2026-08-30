@@ -821,13 +821,14 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 
 # fm_backend_target_exists: cheap, READ-ONLY existence check - does the
 # recorded TARGET endpoint still exist on BACKEND? Never starts a server or
-# session: for herdr this deliberately queries the pane directly instead of
+# session: for Herdr this deliberately queries the pane directly instead of
 # going through fm_backend_herdr_target_ready (which auto-starts the herdr
 # server as a side effect via fm_backend_herdr_server_ensure - fine for an
 # operation that is about to use the pane, wrong for a passive liveness
-# probe). A gone tmux window or an unqueryable herdr pane (server down, pane
-# closed), missing zellij pane, or unreadable Orca terminal simply fails, which
-# IS "does not exist" for this purpose.
+# probe). A gone tmux window, an unqueryable Herdr pane, a missing zellij pane,
+# or an unreadable Orca terminal simply fails this cheap probe; target-state
+# callers must perform a backend-specific absence confirmation before reporting
+# absent.
 # Mirrors fm-crew-state.sh's pane_readable check; exists here as one shared
 # primitive so callers that only need a fast alive/dead read (recovery
 # digests, the session-start fleet digest) do not re-derive it inline.
@@ -870,6 +871,51 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
   esac
 }
 
+fm_backend_target_confirmed_absent() {  # <backend> <target> [expected-label]
+  local backend=$1 target=$2 expected_label=${3:-} expected_title windows workspaces panes
+  case "$backend" in
+    tmux)
+      windows=$(tmux list-windows -a -F '#{session_name}:#{window_name}' 2>/dev/null) || return 1
+      printf '%s\n' "$windows" | grep -Fxq "$target" && return 1
+      return 0
+      ;;
+    cmux)
+      fm_backend_source cmux || return 1
+      fm_backend_cmux_parse_target "$target" || return 1
+      workspaces=$(fm_backend_cmux_cli workspace list --json --id-format uuids 2>/dev/null) || return 1
+      printf '%s' "$workspaces" | jq -e '
+        (.workspaces | type) == "array"
+        and all(.workspaces[]; type == "object" and (.id | type) == "string")
+      ' >/dev/null 2>&1 || return 1
+      if ! printf '%s' "$workspaces" | jq -e --arg id "$FM_BACKEND_CMUX_WORKSPACE" \
+        'any(.workspaces[]; .id == $id)' >/dev/null 2>&1; then
+        if [ -n "$expected_label" ]; then
+          expected_title=$(fm_backend_cmux_scoped_title "$expected_label")
+          printf '%s' "$workspaces" | jq -e --arg title "$expected_title" \
+            'any(.workspaces[]; .title == $title)' >/dev/null 2>&1 && return 1
+        fi
+        return 0
+      fi
+      panes=$(fm_backend_cmux_cli list-panes --workspace "$FM_BACKEND_CMUX_WORKSPACE" \
+        --json --id-format uuids 2>/dev/null) || return 1
+      printf '%s' "$panes" | jq -e '
+        (.panes | type) == "array"
+        and all(.panes[]; type == "object" and ((.surface_ids // []) | type) == "array")
+      ' >/dev/null 2>&1 || return 1
+      printf '%s' "$panes" | jq -e --arg id "$FM_BACKEND_CMUX_SURFACE" \
+        'any(.panes[]; (.surface_ids // []) | index($id))' >/dev/null 2>&1 && return 1
+      return 0
+      ;;
+    orca)
+      fm_backend_source orca || return 1
+      [ "$(fm_backend_orca_target_state "$target")" = absent ]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 fm_backend_target_state() {  # <backend> <target> [expected-label] -> present|absent|unknown
   local backend=$1 target=$2 expected_label=${3:-} session sessions
   case "$backend" in
@@ -878,8 +924,10 @@ fm_backend_target_state() {  # <backend> <target> [expected-label] -> present|ab
       tmux list-sessions >/dev/null 2>&1 || { printf 'unknown'; return 0; }
       if fm_backend_target_exists "$backend" "$target" "$expected_label"; then
         printf 'present'
-      else
+      elif fm_backend_target_confirmed_absent "$backend" "$target" "$expected_label"; then
         printf 'absent'
+      else
+        printf 'unknown'
       fi
       ;;
     zellij)
@@ -904,8 +952,10 @@ fm_backend_target_state() {  # <backend> <target> [expected-label] -> present|ab
       }
       if fm_backend_target_exists "$backend" "$target" "$expected_label"; then
         printf 'present'
-      else
+      elif fm_backend_target_confirmed_absent "$backend" "$target" "$expected_label"; then
         printf 'absent'
+      else
+        printf 'unknown'
       fi
       ;;
     orca)
@@ -913,8 +963,10 @@ fm_backend_target_state() {  # <backend> <target> [expected-label] -> present|ab
       fm_backend_orca_runtime_check >/dev/null 2>&1 || { printf 'unknown'; return 0; }
       if fm_backend_target_exists "$backend" "$target" "$expected_label"; then
         printf 'present'
-      else
+      elif fm_backend_target_confirmed_absent "$backend" "$target" "$expected_label"; then
         printf 'absent'
+      else
+        printf 'unknown'
       fi
       ;;
     *)

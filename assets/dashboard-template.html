@@ -458,6 +458,32 @@ __FM_DASHBOARD_DATA__
         && nonnegInt(v.truncated) && v.shown <= v.total
         && v.truncated === v.total - v.shown;
     }
+    function usageBudget(v) {
+      if (!obj(v) || !field(v, "available", "boolean")
+          || !nullable(v, "reason", "string")
+          || !nullable(v, "effective_budget_tokens", "number")
+          || !nullable(v, "total_estimated_tokens", "number")
+          || !nullable(v, "status", "string") || !Array.isArray(v.files)) return false;
+      if (!v.files.every(function (x) {
+        return field(x, "file", "string") && nullable(x, "bytes", "number")
+          && (x.bytes === null || nonnegInt(x.bytes))
+          && nullable(x, "estimated_tokens", "number")
+          && (x.estimated_tokens === null || nonnegInt(x.estimated_tokens))
+          && field(x, "status", "string");
+      })) return false;
+      if (!v.available) return v.effective_budget_tokens === null
+        && v.total_estimated_tokens === null && v.status === null && v.files.length === 0;
+      if (!nonnegInt(v.effective_budget_tokens) || !nonnegInt(v.total_estimated_tokens)
+          || (v.status !== "within-budget" && v.status !== "over-budget")) return false;
+      var estimates = v.files.map(function (x) { return x.estimated_tokens; });
+      if (estimates.some(function (x) { return x === null; })) return false;
+      var estimatesConsistent = estimates.length === 0 || v.total_estimated_tokens ===
+        estimates.reduce(function (sum, x) { return sum + x; }, 0);
+      return estimatesConsistent
+        && (v.status === "within-budget"
+          ? v.total_estimated_tokens <= v.effective_budget_tokens
+          : v.total_estimated_tokens > v.effective_budget_tokens);
+    }
     function pathRef(v) {
       return obj(v) && nullable(v, "path", "string") && nullable(v, "present", "boolean");
     }
@@ -600,14 +626,7 @@ __FM_DASHBOARD_DATA__
       && obj(reports) && boundedCounts(reports) && Array.isArray(reports.records)
       && reports.shown === reports.records.length
       && reports.records.every(report)
-      && obj(usage) && obj(usage.budget) && field(usage.budget, "available", "boolean")
-      && nullable(usage.budget, "reason", "string")
-      && nullable(usage.budget, "effective_budget_tokens", "number")
-      && nullable(usage.budget, "total_estimated_tokens", "number")
-      && nullable(usage.budget, "status", "string") && Array.isArray(usage.budget.files)
-      && usage.budget.files.every(function (x) { return field(x, "file", "string")
-        && nullable(x, "bytes", "number") && nullable(x, "estimated_tokens", "number")
-        && field(x, "status", "string"); }) && Array.isArray(usage.agents)
+      && obj(usage) && usageBudget(usage.budget) && Array.isArray(usage.agents)
       && usage.agents.every(function (x) { return field(x, "task_id", "string")
         && field(x, "kind", "string") && field(x, "harness", "string")
         && nullable(x, "model", "string") && nullable(x, "effort", "string")
@@ -1038,10 +1057,16 @@ __FM_DASHBOARD_DATA__
       + " - " + dash(ep.target) + " (" + dash(t.backend) + ")";
     if (t.kind === "secondmate") epText += " - agent " + dash(ep.agent_alive);
     kvRow(kv, "endpoint", epText, true);
-    if (t.remote) kvRow(kv, "remote", dash(t.remote.host) + ":" + dash(t.remote.root), true);
     var paths = t.paths || {};
-    var loc = (paths.home && paths.home.path) || (paths.worktree && paths.worktree.path) || null;
-    kvRow(kv, "local copy", loc, true);
+    if (t.remote) {
+      kvRow(kv, "remote", dash(t.remote.host) + ":" + dash(t.remote.root), true);
+      kvRow(kv, "remote evidence", dash(t.remote.evidence || "unavailable")
+        + (t.remote.reason ? " - " + dash(t.remote.reason) : ""), true);
+      kvRow(kv, "local copy", "not read in local-only mode", true);
+    } else {
+      var loc = (paths.home && paths.home.path) || (paths.worktree && paths.worktree.path) || null;
+      kvRow(kv, "local copy", loc, true);
+    }
     txt(kv, "span", "cp-kv__k", "pr");
     var prCell = add(kv, el("span", "cp-kv__v cp-kv__v--mono"));
     if (t.pr && t.pr.url) {

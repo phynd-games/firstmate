@@ -165,6 +165,33 @@ payload_is_valid() {  # <payload-file>
       and has_type(.; "shown"; "number") and has_type(.; "truncated"; "number")
       and (.total | nonneg_int) and (.shown | nonneg_int) and (.truncated | nonneg_int)
       and (.shown <= .total) and (.truncated == (.total - .shown));
+    def usage_budget:
+      type == "object" and has_type(.; "available"; "boolean")
+      and has_nullable(.; "reason"; "string")
+      and has_nullable(.; "effective_budget_tokens"; "number")
+      and has_nullable(.; "total_estimated_tokens"; "number")
+      and has_nullable(.; "status"; "string") and has_type(.; "files"; "array")
+      and all(.files[]; type == "object" and has_type(.; "file"; "string")
+        and has_nullable(.; "bytes"; "number")
+        and (if .bytes == null then true else (.bytes | nonneg_int) end)
+        and has_nullable(.; "estimated_tokens"; "number")
+        and (if .estimated_tokens == null then true else (.estimated_tokens | nonneg_int) end)
+        and has_type(.; "status"; "string"))
+      and (if .available then
+        (.effective_budget_tokens | nonneg_int)
+        and (.total_estimated_tokens | nonneg_int)
+        and (.status == "within-budget" or .status == "over-budget")
+        and (([.files[] | .estimated_tokens] | map(select(. != null))) as $est
+          | if (.files | length) == 0 then true
+            else ($est | length) == (.files | length)
+              and .total_estimated_tokens == ($est | add)
+            end)
+        and (if .status == "within-budget" then .total_estimated_tokens <= .effective_budget_tokens
+             else .total_estimated_tokens > .effective_budget_tokens end)
+      else
+        .effective_budget_tokens == null and .total_estimated_tokens == null
+        and .status == null and (.files | length) == 0
+      end);
     def path_ref($v):
       ($v | type == "object" and has_nullable(.; "path"; "string")
        and has_nullable(.; "present"; "boolean"));
@@ -330,13 +357,7 @@ payload_is_valid() {  # <payload-file>
     and (.reports.shown == (.reports.records | length))
     and all(.reports.records[]; report)
     and has_type(.; "usage"; "object") and has_type(.usage; "budget"; "object")
-    and has_type(.usage.budget; "available"; "boolean") and has_nullable(.usage.budget; "reason"; "string")
-    and has_nullable(.usage.budget; "effective_budget_tokens"; "number")
-    and has_nullable(.usage.budget; "total_estimated_tokens"; "number")
-    and has_nullable(.usage.budget; "status"; "string") and has_type(.usage.budget; "files"; "array")
-    and all(.usage.budget.files[]; type == "object" and has_type(.; "file"; "string")
-      and has_nullable(.; "bytes"; "number") and has_nullable(.; "estimated_tokens"; "number")
-      and has_type(.; "status"; "string"))
+    and (.usage.budget | usage_budget)
     and has_type(.usage; "agents"; "array")
     and all(.usage.agents[]; type == "object" and has_type(.; "task_id"; "string")
       and has_type(.; "kind"; "string") and has_type(.; "harness"; "string")

@@ -78,6 +78,7 @@ HEALTH_SCHEMA=fm-dashboard-health.v1
 RECORD="$STATE/.dashboard-owner"
 LOG="$STATE/.dashboard-start.log"
 LOCK="$STATE/.dashboard-start.lock"
+LOCK_IDENTITY="$LOCK/identity"
 QUARANTINE="$STATE/.dashboard-quarantine"
 JOURNAL="$STATE/.dashboard-startup"
 LOG_MAX_LINES=200
@@ -100,6 +101,12 @@ STARTED_TAB_LABEL=
 STARTED_PANE_PARENT_WORKSPACE=
 STARTED_PANE_PARENT_TAB=
 STARTED_STAGE=
+STARTED_WORKSPACE_IDENTITY=
+STARTED_WORKSPACE_CREATE_REQUEST=
+STARTED_TAB_IDENTITY=
+STARTED_TAB_CREATE_REQUEST=
+STARTED_PANE_IDENTITY=
+STARTED_PANE_CREATE_REQUEST=
 
 STARTUP_PATH_REASON=
 STARTUP_HOME_REAL=$(cd "$FM_HOME" 2>/dev/null && pwd -P || printf '%s' "$FM_HOME")
@@ -134,6 +141,7 @@ startup_state_boundary_safe() {
   startup_path_safe "$RECORD" || return 1
   startup_path_safe "$LOG" || return 1
   startup_path_safe "$LOCK" || return 1
+  startup_path_safe "$LOCK_IDENTITY" || return 1
   startup_path_safe "$QUARANTINE" || return 1
   startup_path_safe "$JOURNAL" || return 1
   return 0
@@ -164,13 +172,31 @@ validate_bound FM_DASHBOARD_HERDR_TIMEOUT "$FM_DASHBOARD_HERDR_TIMEOUT"
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 DASHBOARD_LOCK_HELD=0
+dashboard_process_identity() {  # <pid> -> stable process-start identity
+  local pid=$1 start command command_hash
+  if [ -r "/proc/$pid/stat" ]; then
+    start=$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null) || return 1
+    command=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null) || return 1
+    [ -n "$start" ] && [ -n "$command" ] || return 1
+    command_hash=$(printf '%s' "$command" | digest_of) || return 1
+    printf 'proc:%s:%s' "$start" "$command_hash"
+    return 0
+  fi
+  start=$(ps -p "$pid" -o lstart= 2>/dev/null | sed -n '1p') || return 1
+  command=$(ps -p "$pid" -o command= 2>/dev/null | sed -n '1p') || return 1
+  [ -n "$start" ] && [ -n "$command" ] || return 1
+  command_hash=$(printf '%s' "$command" | digest_of) || return 1
+  printf 'ps:%s:%s' "$start" "$command_hash"
+}
+
 dashboard_lock_try_acquire() {
-  local pid current mtime now age entry
+  local pid current current_identity stored_identity mtime now age entry
   DASHBOARD_LOCK_HELD=0
   [ ! -L "$LOCK" ] || return 1
   if ! mkdir -m 700 "$LOCK" 2>/dev/null; then
     [ -d "$LOCK" ] && [ ! -L "$LOCK" ] || return 1
     [ ! -L "$LOCK/pid" ] || return 1
+    [ ! -L "$LOCK_IDENTITY" ] || return 1
     pid=$(cat "$LOCK/pid" 2>/dev/null || true)
     case "$pid" in
       '')
@@ -188,23 +214,44 @@ dashboard_lock_try_acquire() {
         ;;
       *[!0-9]*) return 1 ;;
     esac
-    kill -0 "$pid" 2>/dev/null && return 1
-    rm -f -- "$LOCK/pid" 2>/dev/null || return 1
+    if kill -0 "$pid" 2>/dev/null; then
+      stored_identity=$(cat "$LOCK_IDENTITY" 2>/dev/null || true)
+      [ -n "$stored_identity" ] || return 1
+      current_identity=$(dashboard_process_identity "$pid" 2>/dev/null || true)
+      [ -n "$current_identity" ] || return 1
+      [ "$stored_identity" = "$current_identity" ] && return 1
+    fi
+    rm -f -- "$LOCK/pid" "$LOCK_IDENTITY" 2>/dev/null || return 1
     rmdir "$LOCK" 2>/dev/null || return 1
     return 1
   fi
-  [ ! -L "$LOCK/pid" ] || {
+  [ ! -L "$LOCK/pid" ] && [ ! -L "$LOCK_IDENTITY" ] || {
     rmdir "$LOCK" 2>/dev/null || true
     return 1
   }
   current=${BASHPID:-$$}
+  current_identity=$(dashboard_process_identity "$current" 2>/dev/null || true)
+  [ -n "$current_identity" ] || {
+    rmdir "$LOCK" 2>/dev/null || true
+    return 1
+  }
   printf '%s\n' "$current" > "$LOCK/pid" 2>/dev/null || {
     rm -f -- "$LOCK/pid" 2>/dev/null || true
     rmdir "$LOCK" 2>/dev/null || true
     return 1
   }
+  printf '%s\n' "$current_identity" > "$LOCK_IDENTITY" 2>/dev/null || {
+    rm -f -- "$LOCK/pid" "$LOCK_IDENTITY" 2>/dev/null || true
+    rmdir "$LOCK" 2>/dev/null || true
+    return 1
+  }
+  chmod 600 "$LOCK_IDENTITY" 2>/dev/null || {
+    rm -f -- "$LOCK/pid" "$LOCK_IDENTITY" 2>/dev/null || true
+    rmdir "$LOCK" 2>/dev/null || true
+    return 1
+  }
   chmod 600 "$LOCK/pid" 2>/dev/null || {
-    rm -f -- "$LOCK/pid" 2>/dev/null || true
+    rm -f -- "$LOCK/pid" "$LOCK_IDENTITY" 2>/dev/null || true
     rmdir "$LOCK" 2>/dev/null || true
     return 1
   }
@@ -213,13 +260,16 @@ dashboard_lock_try_acquire() {
 }
 
 dashboard_lock_release() {
-  local pid current
+  local pid current stored_identity current_identity
   [ "$DASHBOARD_LOCK_HELD" -eq 1 ] || return 0
-  [ -d "$LOCK" ] && [ ! -L "$LOCK" ] && [ ! -L "$LOCK/pid" ] || return 0
+  [ -d "$LOCK" ] && [ ! -L "$LOCK" ] && [ ! -L "$LOCK/pid" ] && [ ! -L "$LOCK_IDENTITY" ] || return 0
   pid=$(cat "$LOCK/pid" 2>/dev/null || true)
   current=${BASHPID:-$$}
-  [ "$pid" = "$current" ] || return 0
-  rm -f -- "$LOCK/pid" 2>/dev/null || return 1
+  stored_identity=$(cat "$LOCK_IDENTITY" 2>/dev/null || true)
+  current_identity=$(dashboard_process_identity "$current" 2>/dev/null || true)
+  [ "$pid" = "$current" ] && [ -n "$stored_identity" ] \
+    && [ "$stored_identity" = "$current_identity" ] || return 0
+  rm -f -- "$LOCK/pid" "$LOCK_IDENTITY" 2>/dev/null || return 1
   rmdir "$LOCK" 2>/dev/null || return 1
   DASHBOARD_LOCK_HELD=0
   return 0
@@ -477,6 +527,10 @@ startup_journal_get() {  # <key>
 }
 
 startup_workspace_identity() {
+  if [ -n "${STARTED_WORKSPACE_IDENTITY:-}" ]; then
+    printf '%s' "$STARTED_WORKSPACE_IDENTITY"
+    return 0
+  fi
   if [ -n "${STARTED_WORKSPACE:-}" ]; then
     printf 'id:%s' "$STARTED_WORKSPACE"
   else
@@ -501,14 +555,17 @@ startup_journal_write() {
     printf 'workspace=%s\n' "${STARTED_WORKSPACE:-unknown}"
     printf 'workspace_id_state=%s\n' "$( [ -n "${STARTED_WORKSPACE:-}" ] && printf known || printf unknown )"
     printf 'workspace_identity=%s\n' "$(startup_workspace_identity)"
-    printf 'workspace_create_request=session:%s;label:%s;cwd:%s\n' \
-      "${STARTED_SESSION:-}" "${STARTED_WORKSPACE_LABEL:-}" "$FM_HOME"
+    printf 'workspace_create_request=%s\n' "${STARTED_WORKSPACE_CREATE_REQUEST:-session:${STARTED_SESSION:-};label:${STARTED_WORKSPACE_LABEL:-};cwd:$FM_HOME}"
     printf 'workspace_locator=session:%s;label:%s\n' "${STARTED_SESSION:-}" "${STARTED_WORKSPACE_LABEL:-}"
     printf 'tab=%s\n' "${STARTED_TAB:-unknown}"
     printf 'tab_id_state=%s\n' "$( [ -n "${STARTED_TAB:-}" ] && printf known || printf unknown )"
+    printf 'tab_identity=%s\n' "${STARTED_TAB_IDENTITY:-workspace:${STARTED_PANE_PARENT_WORKSPACE:-unknown};label:${STARTED_TAB_LABEL:-};cwd:$FM_HOME}"
+    printf 'tab_create_request=%s\n' "${STARTED_TAB_CREATE_REQUEST:-workspace:${STARTED_PANE_PARENT_WORKSPACE:-unknown};label:${STARTED_TAB_LABEL:-};cwd:$FM_HOME}"
     printf 'tab_locator=workspace:%s;label:%s\n' "${STARTED_PANE_PARENT_WORKSPACE:-unknown}" "${STARTED_TAB_LABEL:-}"
     printf 'pane=%s\n' "${STARTED_PANE:-unknown}"
     printf 'pane_id_state=%s\n' "$( [ -n "${STARTED_PANE:-}" ] && printf known || printf unknown )"
+    printf 'pane_identity=%s\n' "${STARTED_PANE_IDENTITY:-workspace:${STARTED_PANE_PARENT_WORKSPACE:-unknown};tab:${STARTED_PANE_PARENT_TAB:-unknown};role:root-pane;label:${STARTED_LABEL:-}}"
+    printf 'pane_create_request=%s\n' "${STARTED_PANE_CREATE_REQUEST:-workspace:${STARTED_PANE_PARENT_WORKSPACE:-unknown};tab:${STARTED_PANE_PARENT_TAB:-unknown};role:root-pane;label:${STARTED_LABEL:-}}"
     printf 'pane_locator=workspace:%s;tab:%s\n' "${STARTED_PANE_PARENT_WORKSPACE:-unknown}" "${STARTED_PANE_PARENT_TAB:-unknown}"
     printf 'port=%s\n' "${STARTUP_TRANSACTION_PORT:-}"
     printf 'digest=%s\n' "${STARTUP_TRANSACTION_DIGEST:-}"
@@ -530,14 +587,20 @@ startup_journal_load() {
     STARTED_WORKSPACE=$(startup_journal_get workspace)
     [ "$STARTED_WORKSPACE" = unknown ] && STARTED_WORKSPACE=
   }
+  [ -n "${STARTED_WORKSPACE_IDENTITY:-}" ] || STARTED_WORKSPACE_IDENTITY=$(startup_journal_get workspace_identity)
+  [ -n "${STARTED_WORKSPACE_CREATE_REQUEST:-}" ] || STARTED_WORKSPACE_CREATE_REQUEST=$(startup_journal_get workspace_create_request)
   [ -n "${STARTED_TAB:-}" ] || {
     STARTED_TAB=$(startup_journal_get tab)
     [ "$STARTED_TAB" = unknown ] && STARTED_TAB=
   }
+  [ -n "${STARTED_TAB_IDENTITY:-}" ] || STARTED_TAB_IDENTITY=$(startup_journal_get tab_identity)
+  [ -n "${STARTED_TAB_CREATE_REQUEST:-}" ] || STARTED_TAB_CREATE_REQUEST=$(startup_journal_get tab_create_request)
   [ -n "${STARTED_PANE:-}" ] || {
     STARTED_PANE=$(startup_journal_get pane)
     [ "$STARTED_PANE" = unknown ] && STARTED_PANE=
   }
+  [ -n "${STARTED_PANE_IDENTITY:-}" ] || STARTED_PANE_IDENTITY=$(startup_journal_get pane_identity)
+  [ -n "${STARTED_PANE_CREATE_REQUEST:-}" ] || STARTED_PANE_CREATE_REQUEST=$(startup_journal_get pane_create_request)
 }
 
 startup_journal_drop() { rm -f -- "$JOURNAL"; }
@@ -559,17 +622,20 @@ quarantine_write() {  # <reason> <session> <workspace> <tab> <pane> <port> <dige
     printf 'workspace=%s\n' "${3:-unknown}"
     printf 'workspace_id_state=%s\n' "$( [ -n "$3" ] && printf known || printf unknown )"
     if [ -n "${3:-}" ]; then
-      printf 'workspace_identity=id:%s\n' "$3"
+      printf 'workspace_identity=%s\n' "${STARTED_WORKSPACE_IDENTITY:-id:$3}"
     else
-      printf 'workspace_identity=session:%s;label:%s;cwd:%s\n' \
-        "${STARTED_SESSION:-}" "${STARTED_WORKSPACE_LABEL:-}" "$FM_HOME"
+      printf 'workspace_identity=%s\n' \
+        "${STARTED_WORKSPACE_IDENTITY:-session:${STARTED_SESSION:-};label:${STARTED_WORKSPACE_LABEL:-};cwd:$FM_HOME}"
     fi
-    printf 'workspace_create_request=session:%s;label:%s;cwd:%s\n' \
-      "${STARTED_SESSION:-}" "${STARTED_WORKSPACE_LABEL:-}" "$FM_HOME"
+    printf 'workspace_create_request=%s\n' "${STARTED_WORKSPACE_CREATE_REQUEST:-session:${STARTED_SESSION:-};label:${STARTED_WORKSPACE_LABEL:-};cwd:$FM_HOME}"
     printf 'tab=%s\n' "${4:-unknown}"
     printf 'tab_id_state=%s\n' "$( [ -n "$4" ] && printf known || printf unknown )"
+    printf 'tab_identity=%s\n' "${STARTED_TAB_IDENTITY:-workspace:${STARTED_PANE_PARENT_WORKSPACE:-unknown};label:${STARTED_TAB_LABEL:-};cwd:$FM_HOME}"
+    printf 'tab_create_request=%s\n' "${STARTED_TAB_CREATE_REQUEST:-workspace:${STARTED_PANE_PARENT_WORKSPACE:-unknown};label:${STARTED_TAB_LABEL:-};cwd:$FM_HOME}"
     printf 'pane=%s\n' "${5:-unknown}"
     printf 'pane_id_state=%s\n' "$( [ -n "$5" ] && printf known || printf unknown )"
+    printf 'pane_identity=%s\n' "${STARTED_PANE_IDENTITY:-workspace:${STARTED_PANE_PARENT_WORKSPACE:-unknown};tab:${STARTED_PANE_PARENT_TAB:-unknown};role:root-pane;label:${STARTED_LABEL:-}}"
+    printf 'pane_create_request=%s\n' "${STARTED_PANE_CREATE_REQUEST:-workspace:${STARTED_PANE_PARENT_WORKSPACE:-unknown};tab:${STARTED_PANE_PARENT_TAB:-unknown};role:root-pane;label:${STARTED_LABEL:-}}"
     printf 'workspace_locator=session:%s;label:%s\n' "${STARTED_SESSION:-}" "${STARTED_WORKSPACE_LABEL:-}"
     printf 'tab_locator=workspace:%s;label:%s\n' "${STARTED_PANE_PARENT_WORKSPACE:-unknown}" "${STARTED_TAB_LABEL:-}"
     printf 'pane_locator=workspace:%s;tab:%s\n' "${STARTED_PANE_PARENT_WORKSPACE:-unknown}" "${STARTED_PANE_PARENT_TAB:-unknown}"
@@ -767,6 +833,12 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
   STARTED_PANE_PARENT_TAB=
   STARTED_STAGE=workspace-list
   STARTED_WORKSPACE=; STARTED_TAB=; STARTED_PANE=
+  STARTED_WORKSPACE_CREATE_REQUEST="session:$STARTED_SESSION;label:$STARTED_WORKSPACE_LABEL;cwd:$FM_HOME"
+  STARTED_WORKSPACE_IDENTITY="$STARTED_WORKSPACE_CREATE_REQUEST"
+  STARTED_TAB_CREATE_REQUEST=
+  STARTED_TAB_IDENTITY=
+  STARTED_PANE_CREATE_REQUEST=
+  STARTED_PANE_IDENTITY=
   startup_journal_write || return 1
   # Reuse the session's first workspace when it has one, so a normal firstmate
   # session gains a tab rather than a whole new workspace; create one only when
@@ -784,26 +856,40 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
     startup_journal_write || return 1
     out=$(herdr_cli workspace create --cwd "$FM_HOME" --label "$label" --no-focus 2>/dev/null) || :
     ws=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
-    [ -n "$ws" ] && STARTED_WORKSPACE=$ws
+    if [ -n "$ws" ]; then
+      STARTED_WORKSPACE=$ws
+      STARTED_WORKSPACE_IDENTITY="id:$ws"
+    fi
     startup_journal_write || return 1
     [ -n "$ws" ] || ws=$(recover_workspace "$label") || return 1
   fi
   STARTED_WORKSPACE=$ws
+  STARTED_WORKSPACE_IDENTITY="id:$ws"
   STARTED_STAGE=tab-create
   STARTED_PANE_PARENT_WORKSPACE=$ws
+  STARTED_TAB_CREATE_REQUEST="workspace:$ws;label:$STARTED_TAB_LABEL;cwd:$FM_HOME"
+  STARTED_TAB_IDENTITY="$STARTED_TAB_CREATE_REQUEST"
+  STARTED_PANE_CREATE_REQUEST="workspace:$ws;tab:pending;role:root-pane;label:$STARTED_LABEL"
+  STARTED_PANE_IDENTITY="$STARTED_PANE_CREATE_REQUEST"
   startup_journal_write || return 1
   out=$(herdr_cli tab create --workspace "$ws" --cwd "$FM_HOME" \
     --label "$label" --no-focus 2>/dev/null) || :
   STARTED_TAB=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   STARTED_PANE=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
+  [ -n "$STARTED_TAB" ] && STARTED_TAB_IDENTITY="id:$STARTED_TAB"
+  [ -n "$STARTED_PANE" ] && STARTED_PANE_IDENTITY="id:$STARTED_PANE"
   STARTED_PANE_PARENT_TAB=${STARTED_TAB:-}
   STARTED_STAGE=tab-response
   startup_journal_write || return 1
   [ -n "$STARTED_TAB" ] || STARTED_TAB=$(recover_tab "$ws" "$label") || return 1
+  [ -n "$STARTED_TAB" ] && STARTED_TAB_IDENTITY="id:$STARTED_TAB"
   STARTED_PANE_PARENT_TAB=$STARTED_TAB
+  STARTED_PANE_CREATE_REQUEST="workspace:$ws;tab:$STARTED_TAB;role:root-pane;label:$STARTED_LABEL"
+  [ -n "$STARTED_PANE" ] || STARTED_PANE_IDENTITY="$STARTED_PANE_CREATE_REQUEST"
   STARTED_STAGE=pane-response
   startup_journal_write || return 1
   [ -n "$STARTED_PANE" ] || STARTED_PANE=$(recover_pane "$ws" "$STARTED_TAB") || return 1
+  [ -n "$STARTED_PANE" ] && STARTED_PANE_IDENTITY="id:$STARTED_PANE"
   STARTED_STAGE=pane-run
   startup_journal_write || return 1
   # `env` carries this home explicitly: the pane inherits the Herdr server's
