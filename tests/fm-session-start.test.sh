@@ -2470,6 +2470,25 @@ dashboard_world_path() {  # <fakebin>
   printf '%s' "$1:$jq_dir:$BASE_PATH"
 }
 
+dashboard_containment_available() {
+  case "$(uname -s)" in
+    Linux)
+      command -v unshare >/dev/null 2>&1 || return 1
+      unshare --pid --fork --mount-proc --kill-child=9 true >/dev/null 2>&1
+      ;;
+    Darwin)
+      command -v sandbox-exec >/dev/null 2>&1 || return 1
+      if sandbox-exec -p '(version 1) (allow default) (deny network-inbound)' \
+        python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0))' \
+        >/dev/null 2>&1; then
+        return 1
+      fi
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 reclaim_dashboard_panes() {  # <herdr-state-dir>
   local pidfile pid
   for pidfile in "$1"/panes/*.pid; do
@@ -2485,6 +2504,10 @@ test_session_start_brings_up_the_dashboard_and_prints_a_proven_url() {
   command -v jq >/dev/null 2>&1 || { pass "skip: jq not found (dashboard startup)"; return 0; }
   command -v python3 >/dev/null 2>&1 || { pass "skip: python3 not found (dashboard startup)"; return 0; }
   command -v curl >/dev/null 2>&1 || { pass "skip: curl not found (dashboard startup)"; return 0; }
+  dashboard_containment_available || {
+    pass "skip: dashboard serve process containment unavailable on this host"
+    return 0
+  }
   rec=$(new_world dashboard-up)
   IFS='|' read -r root home fakebin <<EOF
 $rec
