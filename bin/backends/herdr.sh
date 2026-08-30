@@ -1470,25 +1470,16 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
 # NOT auto-start the server, so this must run before any workspace/tab/pane
 # call. Bounded poll for the server to report running.
 fm_backend_herdr_server_ensure() {  # <session>
-  local session=$1 running out status i
-  status=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null) || {
-    echo "error: could not read herdr server status for session '$session'; refusing to start or use an unverified server" >&2
-    return 1
-  }
+  local session=$1 running status i
+  status=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null) || return 2
   running=$(printf '%s' "$status" | jq -r '.server.running // empty' 2>/dev/null) || running=
   case "$running" in
     true)
-      fm_backend_herdr_server_status_healthy "$status" || {
-        echo "error: herdr server for session '$session' is unhealthy or below the verified protocol floor; refusing to use it" >&2
-        return 1
-      }
+      fm_backend_herdr_server_status_healthy "$status" || return 2
       return 0
       ;;
     false) ;;
-    *)
-      echo "error: herdr server status for session '$session' is unreadable; refusing to start or use an unverified server" >&2
-      return 1
-      ;;
+    *) return 2 ;;
   esac
   ( fm_backend_herdr_cli "$session" server >/dev/null 2>&1 & ) || return 1
   for i in $(seq 1 20); do
@@ -1496,8 +1487,7 @@ fm_backend_herdr_server_ensure() {  # <session>
     fm_backend_herdr_server_status_healthy "$status" && return 0
     sleep 0.5
   done
-  echo "error: herdr server for session '$session' did not report running within 10s" >&2
-  return 1
+  return 2
 }
 
 # fm_backend_herdr_workspace_find_all: EVERY workspace id inside <session>
@@ -1844,7 +1834,19 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace> [<launcher-
   local cwd=${1:-$PWD} relationship=${2:-launcher-home} session label status
   fm_backend_herdr_version_check || return 1
   session=$(fm_backend_herdr_session)
-  fm_backend_herdr_server_ensure "$session" || return 1
+  local server_rc
+  if fm_backend_herdr_server_ensure "$session"; then
+    server_rc=0
+  else
+    server_rc=$?
+  fi
+  if [ "$server_rc" -ne 0 ]; then
+    if [ "$server_rc" -eq 2 ] && declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
+      fm_backend_policy_refuse "Herdr container session $session" herdr \
+        "The native Herdr server capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'."
+    fi
+    return 1
+  fi
   if ! fm_backend_herdr_session_capability_check "$session" >/dev/null 2>&1; then
     if declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
       fm_backend_policy_refuse "Herdr container session $session" herdr \

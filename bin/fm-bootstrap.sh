@@ -760,7 +760,11 @@ secondmate_liveness_one() {  # <meta> <id>
       return 0
     fi
     if [ "$remote_rc" -ne 0 ]; then
-      echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote endpoint probe unreadable on $remote_host"
+      case "$remote_rc" in
+        2) echo "SECONDMATE_LIVENESS: secondmate $id: skipped: Herdr capability is unavailable on $remote_host; repair Herdr and verify with herdr status --json" ;;
+        3) echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote endpoint metadata was refused as read-only on $remote_host; migrate or retire it explicitly" ;;
+        *) echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote endpoint probe unreadable on $remote_host" ;;
+      esac
       return 0
     fi
     agent_state=$(printf '%s\n' "$out" | tail -1)

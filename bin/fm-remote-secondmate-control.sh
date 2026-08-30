@@ -137,9 +137,14 @@ state_value() { # <id> [--typed]; prints recovery-grade state
   [ -f "$meta" ] && [ ! -L "$meta" ] || { printf 'missing\n'; return 0; }
   if ! remote_endpoint_load "$id"; then
     remote_endpoint_refuse "$id" || true
-    [ "$typed" = --typed ] || fm_backend_policy_legacy_lane || return 1
-    printf '%s\n' "$REMOTE_ENDPOINT_FAILURE"
-    return 0
+    if [ "$typed" = --typed ]; then
+      case "$REMOTE_ENDPOINT_FAILURE" in
+        capability-failure) return 2 ;;
+        legacy-record|endpoint-refused) return 3 ;;
+        *) return 1 ;;
+      esac
+    fi
+    return 1
   fi
   if state=$(fm_backend_agent_state "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null); then
     printf '%s\n' "$state"

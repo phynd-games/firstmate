@@ -575,7 +575,19 @@ task_json_lines() {
         esac
       else
         endpoint_exists=null
-        agent_alive=unknown
+        case "$remote_rc" in
+          2)
+            endpoint_status=capability-failure
+            agent_alive=capability-failure
+            ;;
+          3)
+            endpoint_status=refused
+            agent_alive=not_checked
+            ;;
+          *)
+            agent_alive=unknown
+            ;;
+        esac
       fi
     elif [ -n "$remote_host" ]; then
       endpoint_exists=null

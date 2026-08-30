@@ -1058,7 +1058,7 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # primitive so callers that only need a fast alive/dead read (recovery
 # digests, the session-start fleet digest) do not re-derive it inline.
 fm_backend_target_exists() {  # <backend> <target> [expected-label]
-  local backend=$1 target=$2 expected_label=${3:-} session pane
+  local backend=$1 target=$2 expected_label=${3:-} session pane pane_out pane_rc pane_error_code
   # The tmux arm below calls the tmux CLI directly rather than through
   # fm_backend_source, so the invariant is enforced here explicitly: a retained
   # legacy backend is refused before any runtime command runs.
@@ -1080,7 +1080,19 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
       # flag on top, so this check is correctly scoped even when the caller's
       # own ambient session (e.g. the primary firstmate's default session) is
       # a DIFFERENT one than the target's.
-      fm_backend_herdr_cli "$session" pane get "$pane" >/dev/null 2>&1
+      if pane_out=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>&1); then
+        pane_rc=0
+      else
+        pane_rc=$?
+      fi
+      pane_error_code=$(printf '%s' "$pane_out" | jq -r '.error.code // empty' 2>/dev/null || true)
+      if [ "$pane_rc" -eq 0 ] && [ -z "$pane_error_code" ]; then
+        return 0
+      fi
+      [ "$pane_error_code" = pane_not_found ] && return 1
+      fm_backend_policy_refuse "Herdr target $target" herdr \
+        "The verified Herdr session became unavailable while reading the endpoint. Repair Herdr, then verify with 'herdr status --json'."
+      return 2
       ;;
     zellij)
       fm_backend_source zellij || return 1

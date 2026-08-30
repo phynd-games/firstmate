@@ -335,11 +335,11 @@ fm_send_resolve_target() {  # <raw-target>
       RESOLUTION_TRIED="meta=$meta; placement=remote"
       return 0
     fi
-    # A legacy (absent or non-herdr) record refuses here by name, once, and the
-    # steer is never delivered (AGENTS.md hard rule 6).
-    backend=$(fm_backend_of_meta "$meta") || return 1
+    id=$(fm_send_id_from_meta "$meta")
+    fm_backend_validate_task_endpoint "$meta" "$id" || return 1
+    backend=$FM_BACKEND_VALIDATED_BACKEND
     RESOLUTION_TRIED="meta=$meta; backend=from-meta"
-    target=$(fm_backend_target_of_meta "$meta")
+    target=$FM_BACKEND_VALIDATED_TARGET
     if [ -z "$target" ]; then
       echo "error: no backend target recorded in $meta (tried $RESOLUTION_TRIED)" >&2
       return 1
@@ -377,8 +377,10 @@ fm_send_resolve_target() {  # <raw-target>
 
   meta=$(fm_backend_meta_for_window "$raw" "$STATE" 2>/dev/null || true)
   if [ -n "$meta" ]; then
-    TARGET_BACKEND=$(fm_backend_of_meta "$meta") || return 1
-    target=$(fm_backend_target_of_meta "$meta")
+    id=$(fm_send_id_from_meta "$meta")
+    fm_backend_validate_task_endpoint "$meta" "$id" || return 1
+    TARGET_BACKEND=$FM_BACKEND_VALIDATED_BACKEND
+    target=$FM_BACKEND_VALIDATED_TARGET
     if [ -z "$target" ]; then
       echo "error: no backend target recorded in $meta (tried explicit target '$raw' via recorded window/terminal; backend=from-meta)" >&2
       return 1
