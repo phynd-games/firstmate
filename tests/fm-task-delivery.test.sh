@@ -309,6 +309,82 @@ test_promote_requires_and_records_the_delivery_contract() {
   pass "fm-promote: promotion requires the delivery contract and records it exactly once"
 }
 
+test_promote_rejects_unfilled_scout_without_mutation() {
+  local home meta brief out status proj wt base_sha
+  home="$TMP_ROOT/promote-unfilled/home"
+  proj="$TMP_ROOT/promote-unfilled/proj"
+  wt="$TMP_ROOT/promote-unfilled/wt"
+  mkdir -p "$home/state" "$home/data/promote-unfilled"
+  fm_git_worktree "$proj" "$wt" "task-promote-unfilled"
+  base_sha=$(git -C "$wt" rev-parse HEAD)
+  brief="$home/data/promote-unfilled/brief.md"
+  meta="$home/state/promote-unfilled.meta"
+  {
+    printf 'You are a crewmate.\n\n# Task\n{TASK}\n\n# Setup\n'
+    printf 'Target-project approved base: ref=main; sha=%s\n' "$base_sha"
+  } > "$brief"
+  printf 'window=fm-promote-unfilled\nkind=scout\nworktree=%s\n' "$wt" > "$meta"
+  cp "$brief" "$brief.before"
+  cp "$meta" "$meta.before"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" \
+    promote-unfilled --mode local-only --yolo off 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "promotion of an unfilled scout brief should fail"
+  assert_contains "$out" "unfilled {TASK} placeholder" \
+    "unfilled scout refusal did not identify the placeholder"
+  cmp -s "$brief.before" "$brief" || fail "unfilled promotion changed the scout brief"
+  cmp -s "$meta.before" "$meta" || fail "unfilled promotion changed task metadata"
+  [ -z "$(find "$home/data/promote-unfilled" -name '.scout-brief.promote.*' -print -quit)" ] \
+    || fail "unfilled promotion left a brief backup behind"
+  pass "fm-promote: unfilled scout placeholders fail before mutation"
+}
+
+test_promote_restores_scout_when_metadata_publication_fails() {
+  local home meta brief out status proj wt base_sha fakebin real_mv
+  home="$TMP_ROOT/promote-rollback/home"
+  proj="$TMP_ROOT/promote-rollback/proj"
+  wt="$TMP_ROOT/promote-rollback/wt"
+  fakebin="$TMP_ROOT/promote-rollback/fakebin"
+  mkdir -p "$home/state" "$home/data/promote-rollback" "$fakebin"
+  fm_git_worktree "$proj" "$wt" "task-promote-rollback"
+  base_sha=$(git -C "$wt" rev-parse HEAD)
+  brief="$home/data/promote-rollback/brief.md"
+  meta="$home/state/promote-rollback.meta"
+  {
+    printf 'Scout task context.\n'
+    printf 'Target-project approved base: ref=main; sha=%s\n' "$base_sha"
+  } > "$brief"
+  printf 'window=fm-promote-rollback\nkind=scout\nworktree=%s\n' "$wt" > "$meta"
+  cp "$brief" "$brief.before"
+  cp "$meta" "$meta.before"
+  real_mv=$(command -v mv)
+  cat > "$fakebin/mv" <<'SH'
+#!/bin/sh
+last=
+for arg do last=$arg; done
+if [ "$last" = "${FM_TEST_PROMOTE_META:-}" ] && [ "${FM_TEST_FAIL_PROMOTE_META_MV:-0}" = 1 ]; then
+  exit 1
+fi
+exec "$FM_TEST_REAL_MV" "$@"
+SH
+  chmod +x "$fakebin/mv"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_TEST_REAL_MV="$real_mv" FM_TEST_PROMOTE_META="$meta" \
+    FM_TEST_FAIL_PROMOTE_META_MV=1 PATH="$fakebin:$PATH" "$PROMOTE" \
+    promote-rollback --mode local-only --yolo off 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "metadata publication failure should fail promotion"
+  assert_contains "$out" "the scout brief was restored" \
+    "metadata publication failure did not report brief restoration"
+  cmp -s "$brief.before" "$brief" || fail "metadata failure did not restore the scout brief"
+  cmp -s "$meta.before" "$meta" || fail "metadata failure changed the scout metadata"
+  [ -z "$(find "$home/data/promote-rollback" -name '.scout-brief.promote.*' -print -quit)" ] \
+    || fail "metadata failure left a brief backup behind"
+  pass "fm-promote: metadata publication failure rolls back the brief"
+}
+
 # The registry parser survives for the mechanical consumers only. It accepts the
 # conditional policy, maps it to its most rigorous leg for them, and exposes the
 # raw annotation for the one caller that must tell a policy from a flat mode.
@@ -349,5 +425,7 @@ test_spawn_refuses_a_brief_mode_mismatch
 test_spawn_notices_a_rigor_downgrade_against_the_registry
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
+test_promote_rejects_unfilled_scout_without_mutation
+test_promote_restores_scout_when_metadata_publication_fails
 test_project_mode_maps_the_conditional_policy
 echo "# all fm-task-delivery tests passed"

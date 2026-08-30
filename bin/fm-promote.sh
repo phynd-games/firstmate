@@ -89,11 +89,21 @@ META_LOCK_HELD=0
 TMP=
 PROMOTE_TASK_TMP=
 PROMOTE_SHIP_TMP=
+PROMOTE_BRIEF_BACKED_UP=0
+promote_restore_scout_brief() {
+  [ "$PROMOTE_BRIEF_BACKED_UP" -eq 1 ] || return 0
+  rm -f -- "$PROMOTE_BRIEF" || return 1
+  mv -- "$PROMOTE_BRIEF_BACKUP" "$PROMOTE_BRIEF" || return 1
+  PROMOTE_BRIEF_BACKED_UP=0
+}
 promote_cleanup() {
   local status=$?
   [ -z "$TMP" ] || rm -f -- "$TMP" 2>/dev/null || true
   [ -z "$PROMOTE_TASK_TMP" ] || rm -f -- "$PROMOTE_TASK_TMP" 2>/dev/null || true
   [ -z "$PROMOTE_SHIP_TMP" ] || rm -f -- "$PROMOTE_SHIP_TMP" 2>/dev/null || true
+  if [ "$status" -ne 0 ] && [ "$PROMOTE_BRIEF_BACKED_UP" -eq 1 ]; then
+    promote_restore_scout_brief || true
+  fi
   if [ "$META_LOCK_HELD" = 1 ]; then
     META_LOCK_HELD=0
     fm_lock_release "$META_LOCK" || true
@@ -192,17 +202,19 @@ if [ -e "$PROMOTE_BRIEF" ]; then
     fi
   fi
   chmod 600 "$PROMOTE_TASK_TMP"
+  if grep -Fqx '{TASK}' "$PROMOTE_TASK_TMP"; then
+    rm -f -- "$PROMOTE_TASK_TMP"
+    PROMOTE_TASK_TMP=
+    echo "error: scout $ID's brief still contains the unfilled {TASK} placeholder" >&2
+    exit 1
+  fi
   mv -- "$PROMOTE_BRIEF" "$PROMOTE_BRIEF_BACKUP"
   PROMOTE_BRIEF_BACKED_UP=1
 fi
 if ! FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" \
   FM_STATE_OVERRIDE="$STATE" "$FM_ROOT/bin/fm-brief.sh" "$ID" "$PROMOTE_PROJECT" \
   --mode "$MODE" >/dev/null; then
-  rm -f -- "$PROMOTE_BRIEF"
-  if [ "$PROMOTE_BRIEF_BACKED_UP" -eq 1 ]; then
-    mv -- "$PROMOTE_BRIEF_BACKUP" "$PROMOTE_BRIEF"
-    PROMOTE_BRIEF_BACKED_UP=0
-  fi
+  promote_restore_scout_brief || true
   echo "error: could not install the ship brief for promoted scout $ID" >&2
   exit 1
 fi
@@ -219,10 +231,7 @@ if [ -n "$PROMOTE_TASK_TMP" ]; then
     END { if (!found) exit 1 }
   ' "$PROMOTE_BRIEF" > "$PROMOTE_SHIP_TMP"; then
     rm -f -- "$PROMOTE_SHIP_TMP" "$PROMOTE_BRIEF"
-    if [ "$PROMOTE_BRIEF_BACKED_UP" -eq 1 ]; then
-      mv -- "$PROMOTE_BRIEF_BACKUP" "$PROMOTE_BRIEF"
-      PROMOTE_BRIEF_BACKED_UP=0
-    fi
+    promote_restore_scout_brief || true
     echo "error: could not restore scout $ID task context in the ship brief" >&2
     exit 1
   fi
@@ -233,19 +242,10 @@ if [ -n "$PROMOTE_TASK_TMP" ]; then
 fi
 if ! printf 'Target-project approved base: ref=%s; sha=%s\n' \
   "$PROMOTE_BASE_REF" "$PROMOTE_BASE_SHA" >> "$PROMOTE_BRIEF"; then
-  rm -f -- "$PROMOTE_BRIEF"
-  if [ "$PROMOTE_BRIEF_BACKED_UP" -eq 1 ]; then
-    mv -- "$PROMOTE_BRIEF_BACKUP" "$PROMOTE_BRIEF"
-    PROMOTE_BRIEF_BACKED_UP=0
-  fi
+  promote_restore_scout_brief || true
   echo "error: could not record the approved target base in promoted scout $ID's brief" >&2
   exit 1
 fi
-if [ "$PROMOTE_BRIEF_BACKED_UP" -eq 1 ]; then
-  rm -f -- "$PROMOTE_BRIEF_BACKUP"
-  PROMOTE_BRIEF_BACKED_UP=0
-fi
-
 TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
 grep -v -e '^kind=' -e '^review_base_ref=' -e '^review_base_sha=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"
 {
@@ -255,8 +255,17 @@ grep -v -e '^kind=' -e '^review_base_ref=' -e '^review_base_sha=' -e '^mode=' -e
   echo "mode=$MODE"
   echo "yolo=$YOLO"
 } >> "$TMP"
-mv "$TMP" "$META"
+if ! mv "$TMP" "$META"; then
+  if promote_restore_scout_brief; then
+    echo "error: could not publish promoted scout $ID metadata; the scout brief was restored" >&2
+  else
+    echo "error: could not publish promoted scout $ID metadata or restore the scout brief; recovery backup remains at $PROMOTE_BRIEF_BACKUP" >&2
+  fi
+  exit 1
+fi
 TMP=
+PROMOTE_BRIEF_BACKED_UP=0
+rm -f -- "$PROMOTE_BRIEF_BACKUP" 2>/dev/null || true
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
 
