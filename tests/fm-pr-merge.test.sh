@@ -149,13 +149,13 @@ make_case() {
     "Substrate changed files: $empty_digest" \
     'Substrate diff: no substrate diff' \
     '# Surface review' \
-    "Authority: reviewed; surface=authority; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest changed hunk evidence; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing." \
-    "Security: reviewed; surface=security; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest changed hunk evidence; consequence=tampering is refused; fix=preserve single-link mode checks." \
-    "Path: reviewed; surface=path; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest changed hunk evidence; consequence=path traversal is rejected; fix=retain canonical task boundaries." \
-    "Failure: reviewed; surface=failure; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest changed hunk evidence; consequence=no fallback authority is granted; fix=keep deterministic refusal." \
-    "Tests: reviewed; surface=tests; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest changed hunk evidence; consequence=regressions are visible; fix=retain negative coverage." \
-    "Documentation: reviewed; surface=documentation; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest changed hunk evidence; consequence=workers have durable requirements; fix=keep docs aligned." \
-    "Delivery: reviewed; surface=delivery; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest changed hunk evidence; consequence=direct bypasses refuse; fix=preserve no-mistakes authority." \
+    "Authority: reviewed; surface=authority; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=reference=fixture.txt:2 review cannot authorize delivery; fix=reference=fixture.txt:2 keep this boundary non-authorizing." \
+    "Security: reviewed; surface=security; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=reference=fixture.txt:2 tampering is refused; fix=reference=fixture.txt:2 preserve single-link mode checks." \
+    "Path: reviewed; surface=path; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=reference=fixture.txt:2 path traversal is rejected; fix=reference=fixture.txt:2 retain canonical task boundaries." \
+    "Failure: reviewed; surface=failure; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=reference=fixture.txt:2 no fallback authority is granted; fix=reference=fixture.txt:2 keep deterministic refusal." \
+    "Tests: reviewed; surface=tests; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=reference=fixture.txt:2 regressions are visible; fix=reference=fixture.txt:2 retain negative coverage." \
+    "Documentation: reviewed; surface=documentation; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=reference=fixture.txt:2 workers have durable requirements; fix=reference=fixture.txt:2 keep docs aligned." \
+    "Delivery: reviewed; surface=delivery; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=reference=fixture.txt:2 direct bypasses refuse; fix=reference=fixture.txt:2 preserve no-mistakes authority." \
     '# Verification' \
     'Command: focused PR-ready boundary test' \
     'Result: passed' \

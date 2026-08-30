@@ -258,13 +258,13 @@ write_self_review_report() {
     "Substrate changed files: $empty_digest" \
     'Substrate diff: no substrate diff' \
     '# Surface review' \
-    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:2 sha256=$authority_digest changed hunk evidence; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing." \
-    "Security: reviewed; surface=security; files=bin/fm-pr-lib.sh; evidence=bin/fm-pr-lib.sh:2 sha256=$security_digest changed hunk evidence; consequence=tampering is refused; fix=preserve single-link mode checks." \
-    "Path: reviewed; surface=path; files=bin/fm-pr-self-review-check.sh; evidence=bin/fm-pr-self-review-check.sh:2 sha256=$path_digest changed hunk evidence; consequence=path traversal is rejected; fix=retain canonical task boundaries." \
-    "Failure: reviewed; surface=failure; files=bin/fm-operational-input.sh; evidence=bin/fm-operational-input.sh:2 sha256=$failure_digest changed hunk evidence; consequence=no fallback authority is granted; fix=keep deterministic refusal." \
-    "Tests: reviewed; surface=tests; files=tests/fm-pr-check-security.test.sh; evidence=tests/fm-pr-check-security.test.sh:2 sha256=$tests_digest changed hunk evidence; consequence=regressions are visible; fix=retain negative coverage." \
-    "Documentation: reviewed; surface=documentation; files=.agents/skills/firstmate-pr-self-review/SKILL.md; evidence=.agents/skills/firstmate-pr-self-review/SKILL.md:2 sha256=$documentation_digest changed hunk evidence; consequence=workers have durable requirements; fix=keep docs aligned." \
-    "Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:2 sha256=$delivery_digest changed hunk evidence; consequence=direct bypasses refuse; fix=preserve no-mistakes authority." \
+    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:2 sha256=$authority_digest hunk=bin/fm-pr-check.sh:2; consequence=reference=bin/fm-pr-check.sh:2 review cannot authorize delivery; fix=reference=bin/fm-pr-check.sh:2 keep this boundary non-authorizing." \
+    "Security: reviewed; surface=security; files=bin/fm-pr-lib.sh; evidence=bin/fm-pr-lib.sh:2 sha256=$security_digest hunk=bin/fm-pr-lib.sh:2; consequence=reference=bin/fm-pr-lib.sh:2 tampering is refused; fix=reference=bin/fm-pr-lib.sh:2 preserve single-link mode checks." \
+    "Path: reviewed; surface=path; files=bin/fm-pr-self-review-check.sh; evidence=bin/fm-pr-self-review-check.sh:2 sha256=$path_digest hunk=bin/fm-pr-self-review-check.sh:2; consequence=reference=bin/fm-pr-self-review-check.sh:2 path traversal is rejected; fix=reference=bin/fm-pr-self-review-check.sh:2 retain canonical task boundaries." \
+    "Failure: reviewed; surface=failure; files=bin/fm-operational-input.sh; evidence=bin/fm-operational-input.sh:2 sha256=$failure_digest hunk=bin/fm-operational-input.sh:2; consequence=reference=bin/fm-operational-input.sh:2 no fallback authority is granted; fix=reference=bin/fm-operational-input.sh:2 keep deterministic refusal." \
+    "Tests: reviewed; surface=tests; files=tests/fm-pr-check-security.test.sh; evidence=tests/fm-pr-check-security.test.sh:2 sha256=$tests_digest hunk=tests/fm-pr-check-security.test.sh:2; consequence=reference=tests/fm-pr-check-security.test.sh:2 regressions are visible; fix=reference=tests/fm-pr-check-security.test.sh:2 retain negative coverage." \
+    "Documentation: reviewed; surface=documentation; files=.agents/skills/firstmate-pr-self-review/SKILL.md; evidence=.agents/skills/firstmate-pr-self-review/SKILL.md:2 sha256=$documentation_digest hunk=.agents/skills/firstmate-pr-self-review/SKILL.md:2; consequence=reference=.agents/skills/firstmate-pr-self-review/SKILL.md:2 workers have durable requirements; fix=reference=.agents/skills/firstmate-pr-self-review/SKILL.md:2 keep docs aligned." \
+    "Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:2 sha256=$delivery_digest hunk=bin/fm-pr-create.sh:2; consequence=reference=bin/fm-pr-create.sh:2 direct bypasses refuse; fix=reference=bin/fm-pr-create.sh:2 preserve no-mistakes authority." \
     '# Verification' \
     'Command: focused PR-ready boundary test' \
     'Result: passed' \
@@ -563,7 +563,7 @@ PY
 
   write_self_review_report "$dir/home" task-a
   fixture_digest=$(printf 'fixture\n' | fm_pr_sha256_stream)
-  sed -i.bak "s#^Authority: .*#Authority: reviewed; surface=authority; files=fixture.txt; evidence=fixture.txt:1 sha256=$fixture_digest changed hunk evidence; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing.#" "$report"
+  sed -i.bak "s#^Authority: .*#Authority: reviewed; surface=authority; files=fixture.txt; evidence=fixture.txt:1 sha256=$fixture_digest hunk=fixture.txt:1; consequence=reference=fixture.txt:1 review cannot authorize delivery; fix=reference=fixture.txt:1 keep this boundary non-authorizing.#" "$report"
   rm -f "$report.bak"
   set +e
   run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
@@ -586,7 +586,7 @@ digest = hashlib.sha256(line).hexdigest()
 text = report.read_text(encoding="utf-8")
 text = re.sub(
     r"(?m)^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): (.*?; evidence=)[^;]+;",
-    lambda match: match.group(1) + ": " + match.group(2) + "bin/fm-pr-check.sh:2 sha256=" + digest + " shared changed-file evidence;",
+    lambda match: match.group(1) + ": " + match.group(2) + "bin/fm-pr-check.sh:2 sha256=" + digest + " hunk=bin/fm-pr-check.sh:2; consequence=reference=bin/fm-pr-check.sh:2 shared changed-file evidence; fix=reference=bin/fm-pr-check.sh:2 retain the exact surface binding.",
     text,
 )
 report.write_text(text, encoding="utf-8")
@@ -610,7 +610,7 @@ security_digest = sys.argv[2]
 text = report.read_text(encoding="utf-8")
 text = re.sub(
     r"(?m)^Authority: .*",
-    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-lib.sh:2 sha256=" + security_digest + " changed hunk evidence; consequence=surface evidence must stay associated; fix=reject cross-surface substitution.",
+    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-lib.sh:2 sha256=" + security_digest + " hunk=bin/fm-pr-lib.sh:2; consequence=reference=bin/fm-pr-lib.sh:2 surface evidence must stay associated; fix=reference=bin/fm-pr-lib.sh:2 reject cross-surface substitution.",
     text,
     count=1,
 )
@@ -647,7 +647,7 @@ for surface, relative in paths.items():
     digest = hashlib.sha256(line).hexdigest()
     text = re.sub(
         rf"(?m)^{surface}: reviewed; surface=[^;]+; files=[^;]+; evidence=[^;]+;",
-        f"{surface}: reviewed; surface={surface.lower()}; files={relative}; evidence={relative}:2 sha256={digest} changed hunk evidence;",
+        f"{surface}: reviewed; surface={surface.lower()}; files={relative}; evidence={relative}:2 sha256={digest} hunk={relative}:2;",
         text,
         count=1,
     )
@@ -661,7 +661,8 @@ PY
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "cross-category surface evidence left a runnable poll"
 
   write_self_review_report "$dir/home" task-a
-  sed -i.bak 's/^Authority: .*/Authority: reviewed; surface=authority; files=bin\/fm-pr-lib.sh; evidence=abcdefghijkl; consequence=abcdefghijkl; fix=abcdefghijkl/' "$report"
+  authority_digest=$(self_review_line_digest "$dir" bin/fm-pr-check.sh)
+  sed -i.bak "s#^Authority: .*#Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:2 sha256=$authority_digest hunk=bin/fm-pr-check.sh:2; consequence=reference=fixture.txt:1 arbitrary filler; fix=reference=fixture.txt:1 arbitrary filler#" "$report"
   rm -f "$report.bak"
   set +e
   run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
@@ -671,7 +672,7 @@ PY
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "filler surface evidence left a runnable poll"
 
   write_self_review_report "$dir/home" task-a
-  sed -i.bak 's/^Authority: .*/Authority: reviewed; surface=authority; files=bin\/fm-pr-lib.sh; evidence=bin\/fm-pr-lib.sh:2 sha256=0000000000000000000000000000000000000000000000000000000000000000 changed hunk evidence; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing./' "$report"
+  sed -i.bak 's/^Authority: .*/Authority: reviewed; surface=authority; files=bin\/fm-pr-lib.sh; evidence=bin\/fm-pr-lib.sh:2 sha256=0000000000000000000000000000000000000000000000000000000000000000 hunk=bin\/fm-pr-lib.sh:2; consequence=reference=bin\/fm-pr-lib.sh:2 review cannot authorize delivery; fix=reference=bin\/fm-pr-lib.sh:2 keep this boundary non-authorizing./' "$report"
   rm -f "$report.bak"
   set +e
   run_check_entry "$dir" task-a https://github.com/o/r/pull/109 > "$dir/stdout" 2> "$dir/stderr"
@@ -736,7 +737,7 @@ spaced_path, spaced_digest = sys.argv[2:4]
 text = report.read_text(encoding="utf-8")
 text = re.sub(
     r"(?m)^Authority: .*",
-    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh," + spaced_path + "; evidence=" + spaced_path + ":2 sha256=" + spaced_digest + " changed hunk evidence; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing.",
+    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh," + spaced_path + "; evidence=" + spaced_path + ":2 sha256=" + spaced_digest + " hunk=" + spaced_path + ":2; consequence=reference=" + spaced_path + ":2 review cannot authorize delivery; fix=reference=" + spaced_path + ":2 keep this boundary non-authorizing.",
     text,
     count=1,
 )
@@ -778,7 +779,7 @@ replacements = {
 for surface, (files, evidence, digest, signal, consequence, fix) in replacements.items():
     text = re.sub(
         rf"(?m)^{surface}: .*",
-        f"{surface}: reviewed; surface={surface.lower()}; files={files}; evidence={evidence}:2 sha256={digest} changed hunk evidence; consequence={consequence}; fix={fix}.",
+        f"{surface}: reviewed; surface={surface.lower()}; files={files}; evidence={evidence}:2 sha256={digest} hunk={evidence}:2; consequence=reference={evidence}:2 {consequence}; fix=reference={evidence}:2 {fix}.",
         text,
         count=1,
     )
@@ -807,7 +808,7 @@ control_surface_files, control_path, control_digest = sys.argv[2:5]
 text = report.read_text(encoding="utf-8")
 text = re.sub(
     r"(?m)^Authority: .*",
-    "Authority: reviewed; surface=authority; files=" + control_surface_files + "; evidence=" + control_path + ":1 sha256=" + control_digest + " changed hunk evidence; consequence=control-character paths remain exact; fix=keep NUL-delimited inventory handling.",
+    "Authority: reviewed; surface=authority; files=" + control_surface_files + "; evidence=" + control_path + ":1 sha256=" + control_digest + " hunk=" + control_path + ":1; consequence=reference=" + control_path + ":1 control-character paths remain exact; fix=reference=" + control_path + ":1 keep NUL-delimited inventory handling.",
     text,
     count=1,
 )
