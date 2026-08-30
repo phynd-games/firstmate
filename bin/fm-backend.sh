@@ -897,7 +897,7 @@ fm_backend_target_confirmed_absent() {  # <backend> <target> [expected-label]
       printf '%s' "$windows" | jq -e '
         type == "array"
         and all(.[]; type == "object" and (.id | type) == "string"
-          and (.id | length > 0))
+          and (.id | test("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")))
       ' >/dev/null 2>&1 || return 1
       window_ids=$(printf '%s' "$windows" | jq -r '.[].id') || return 1
       expected_title=
@@ -911,7 +911,7 @@ fm_backend_target_confirmed_absent() {  # <backend> <target> [expected-label]
         printf '%s' "$workspaces" | jq -e '
           (.workspaces | type) == "array"
           and all(.workspaces[]; type == "object" and (.id | type) == "string"
-            and (.id | length > 0))
+            and (.id | test("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")))
         ' >/dev/null 2>&1 || return 1
         if printf '%s' "$workspaces" | jq -e --arg id "$FM_BACKEND_CMUX_WORKSPACE" \
           'any(.workspaces[]; .id == $id)' >/dev/null 2>&1; then

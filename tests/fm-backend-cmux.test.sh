@@ -1023,6 +1023,21 @@ test_confirmed_absence_rejects_malformed_pane_identities() {
   pass "fm_backend_target_confirmed_absent: preserves unknown state for malformed pane identities"
 }
 
+test_confirmed_absence_rejects_malformed_inventory_identities() {
+  local dir fb status target
+  dir="$TMP_ROOT/absent-malformed-inventory"; mkdir -p "$dir/responses"
+  target="aaaaaaaa-0000-0000-0000-000000000000:bbbbbbbb-1111-1111-1111-111111111111"
+  cmux_windows_response "$dir" 1 "e1111111-0000-0000-0000-000000000000" 1
+  cmux_workspace_list_response "$dir" 2 "not-a-workspace" "other"
+  fb=$(make_cmux_fakebin "$dir")
+  PATH="$fb:$PATH" FM_CMUX_LOG="$dir/log" FM_CMUX_RESPONSES="$dir/responses" \
+    bash -c '. "$0/bin/fm-backend.sh"; fm_backend_target_confirmed_absent cmux "$1"' \
+    "$ROOT" "$target"
+  status=$?
+  [ "$status" -ne 0 ] || fail "malformed cmux inventory identities were confirmed absent"
+  pass "fm_backend_target_confirmed_absent: preserves unknown state for malformed inventory identities"
+}
+
 # --- kill: close the task workspace, adding a sibling when it is the last one -
 
 # The common case: the task workspace shares its window with at least one other
@@ -1212,6 +1227,7 @@ test_window_of_workspace_finds_window_and_count
 test_window_of_workspace_empty_when_not_found
 test_confirmed_absence_scans_all_cmux_windows
 test_confirmed_absence_rejects_malformed_pane_identities
+test_confirmed_absence_rejects_malformed_inventory_identities
 test_kill_closes_workspace_directly_when_not_last
 test_kill_adds_sibling_when_last_in_window
 test_kill_is_best_effort_when_close_workspace_fails

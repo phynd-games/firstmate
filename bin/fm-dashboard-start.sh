@@ -1109,7 +1109,11 @@ command_ensure() {
   fi
 
   startup_transaction_disarm
-  startup_journal_drop
+  if ! startup_journal_drop; then
+    blocked "the dashboard startup journal could not be removed; the owner record was kept"
+    dashboard_lock_release >/dev/null 2>&1
+    return 1
+  fi
 
   await_ready "$port" "$digest" "$STARTED_SESSION" "$STARTED_WORKSPACE" \
     "$STARTED_TAB" "$STARTED_PANE"
@@ -1231,7 +1235,11 @@ command_stop() {
       return 1
       ;;
   esac
-  record_drop
+  if ! record_drop; then
+    blocked "the dashboard pane was stopped but its owner record could not be removed; cleanup is incomplete"
+    dashboard_lock_release >/dev/null 2>&1
+    return 1
+  fi
   dashboard_lock_release >/dev/null 2>&1
   return 0
 }
