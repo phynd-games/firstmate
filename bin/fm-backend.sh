@@ -943,6 +943,7 @@ fm_backend_target_state() {  # <backend> <target> [expected-label] -> present|ab
       ;;
     zellij)
       fm_backend_source zellij || { printf 'unknown'; return 0; }
+      fm_backend_zellij_parse_target "$target" || { printf 'unknown'; return 0; }
       session=${target%%:*}
       sessions=$(zellij list-sessions --short --no-formatting 2>/dev/null) || {
         printf 'unknown'
@@ -957,6 +958,7 @@ fm_backend_target_state() {  # <backend> <target> [expected-label] -> present|ab
       ;;
     cmux)
       fm_backend_source cmux || { printf 'unknown'; return 0; }
+      fm_backend_cmux_parse_target "$target" || { printf 'unknown'; return 0; }
       [ "$(fm_backend_cmux_ping_state 2>/dev/null || true)" = ok ] || {
         printf 'unknown'
         return 0

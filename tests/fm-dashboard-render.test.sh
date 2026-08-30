@@ -29,15 +29,15 @@ new_case() {
 # with <overrides-json> merged over it, written to <home>/payload.json.
 payload() {
   local home=$1 overrides=$2 file="$1/payload.json"
-  jq -n --argjson overrides "$overrides" '
+  jq -n --arg home "$home" --argjson overrides "$overrides" '
     {
       schema: "fm-dashboard.v1",
       generated: "2026-08-01T00:10:00Z",
-      fm_home: "/homes/sample",
+      fm_home: $home,
       snapshot: {
         schema: "fm-fleet-snapshot.v1",
         generated: "2026-08-01T00:10:00Z",
-        fm_home: "/homes/sample",
+        fm_home: $home,
         roots: {state: "/homes/sample/state", data: "/homes/sample/data",
                 config: "/homes/sample/config", projects: "/homes/sample/projects"},
         backlog: {path: "/homes/sample/data/backlog.md", present: true,
@@ -450,6 +450,17 @@ test_render_refuses_available_usage_without_file_evidence() {
   pass "render refuses available usage totals that lack file evidence"
 }
 
+test_render_refuses_a_payload_that_mixes_homes() {
+  local home file out status=0
+  home=$(new_case)
+  file=$(payload "$home" '{"snapshot":{"fm_home":"/homes/other"}}')
+  out=$(FM_HOME="$home" "$DASH" render "$file" --out "$home/page.html" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "render accepted payload evidence from different homes"
+  assert_contains "$out" "complete readable" "the refusal did not identify the mixed-home payload"
+  [ ! -e "$home/page.html" ] || fail "render published a page for mixed-home evidence"
+  pass "render refuses a payload that mixes homes"
+}
+
 test_a_healthy_fleet_renders_its_counts_and_sections
 test_reconciled_state_is_labelled_apart_from_event_history
 test_a_worker_whose_event_log_was_refused_says_why
@@ -468,3 +479,4 @@ test_a_page_whose_data_is_corrupt_fails_closed
 test_render_refuses_a_payload_that_is_not_a_dashboard_document
 test_render_refuses_a_dashboard_document_with_a_null_task
 test_render_refuses_available_usage_without_file_evidence
+test_render_refuses_a_payload_that_mixes_homes

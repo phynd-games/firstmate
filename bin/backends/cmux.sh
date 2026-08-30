@@ -374,6 +374,9 @@ fm_backend_cmux_create_task() {  # <label> <cwd>
 # FM_BACKEND_CMUX_WORKSPACE and FM_BACKEND_CMUX_SURFACE for the caller.
 fm_backend_cmux_parse_target() {  # <target>
   local target=$1
+  case "$target" in
+    ''|:*|*:|*:*:*|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+  esac
   FM_BACKEND_CMUX_WORKSPACE=${target%%:*}
   FM_BACKEND_CMUX_SURFACE=${target#*:}
   [ -n "$FM_BACKEND_CMUX_WORKSPACE" ] && [ -n "$FM_BACKEND_CMUX_SURFACE" ] && [ "$FM_BACKEND_CMUX_SURFACE" != "$target" ]

@@ -571,6 +571,20 @@ SH
   pass "a malformed tmux endpoint remains unknown instead of absent"
 }
 
+test_malformed_zellij_and_cmux_endpoints_are_unknown_not_absent() {
+  local home zellij_state cmux_state
+  home=$(make_home malformed-nonherdr-endpoints)
+  zellij_state=$(bash -c '. "$1/bin/fm-backend.sh"; fm_backend_target_state zellij ":7"' _ "$ROOT") \
+    || fail "zellij target-state command failed"
+  cmux_state=$(bash -c '. "$1/bin/fm-backend.sh"; fm_backend_target_state cmux "workspace:surface:extra"' _ "$ROOT") \
+    || fail "cmux target-state command failed"
+  [ "$zellij_state" = unknown ] \
+    || fail "a malformed zellij endpoint was reported as $zellij_state"
+  [ "$cmux_state" = unknown ] \
+    || fail "a malformed cmux endpoint was reported as $cmux_state"
+  pass "malformed zellij and cmux endpoints remain unknown"
+}
+
 test_initial_serve_build_is_bounded_before_binding() {
   local home port out real_jq
   home=$(make_home bounded-initial-build)
@@ -637,5 +651,6 @@ test_a_symlinked_task_metadata_is_not_silently_dropped
 test_a_symlinked_watcher_heartbeat_is_not_reported_as_healthy
 test_a_herdr_backed_snapshot_times_out_its_local_probe
 test_a_malformed_tmux_endpoint_is_unknown_not_absent
+test_malformed_zellij_and_cmux_endpoints_are_unknown_not_absent
 test_initial_serve_build_is_bounded_before_binding
 test_direct_json_build_is_bounded

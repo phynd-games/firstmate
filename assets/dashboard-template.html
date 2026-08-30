@@ -445,6 +445,8 @@ __FM_DASHBOARD_DATA__
     var reports = d.reports;
     var usage = d.usage;
     function obj(v) { return v && typeof v === "object" && !Array.isArray(v); }
+    if (typeof d.fm_home !== "string" || !obj(s) || typeof s.fm_home !== "string"
+        || d.fm_home !== s.fm_home) return false;
     function field(o, k, t) {
       return obj(o) && Object.prototype.hasOwnProperty.call(o, k) && typeof o[k] === t;
     }

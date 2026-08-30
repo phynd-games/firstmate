@@ -272,6 +272,37 @@ PY
   pass "a stalled client cannot block the dashboard health endpoint"
 }
 
+test_health_remains_admissible_behind_incomplete_clients() {
+  local home port probe
+  home=$(make_home incomplete-clients)
+  port=$(free_port)
+  start "$home" "$port" ensure >/dev/null || fail "ensure failed"
+  probe=$(python3 - "$port" <<'PY'
+import socket
+import sys
+import time
+
+port = int(sys.argv[1])
+slow = []
+for _ in range(9):
+    sock = socket.create_connection(("127.0.0.1", port))
+    slow.append(sock)
+probe = socket.create_connection(("127.0.0.1", port))
+time.sleep(0.5)
+probe.sendall(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+probe.settimeout(2)
+response = probe.recv(256)
+print(response.decode("latin1"), end="")
+probe.close()
+for sock in slow:
+    sock.close()
+PY
+) || fail "the health probe could not pass incomplete-client saturation"
+  printf '%s' "$probe" | grep -q '200 OK' \
+    || fail "an incomplete-client admission race starved health: $probe"
+  pass "health remains admissible behind incomplete clients"
+}
+
 test_stop_preserves_an_owner_without_complete_proof() {
   local home port out
   home=$(make_home stop-unproven)
@@ -493,6 +524,7 @@ test_a_lost_tab_creation_response_is_recovered_before_reporting
 test_a_lost_workspace_creation_response_is_recovered_before_reporting
 test_lost_resource_recovery_is_quarantined_with_the_journaled_identity
 test_health_remains_responsive_while_a_client_stalls
+test_health_remains_admissible_behind_incomplete_clients
 test_stop_preserves_an_owner_without_complete_proof
 test_owner_lifecycle_uses_the_recorded_herdr_session
 test_a_mismatched_pane_identity_is_unknown_and_preserved

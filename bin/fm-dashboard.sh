@@ -156,7 +156,7 @@ evidence_root_safe data "$DATA" || fail "unsafe evidence root: $DASH_ROOT_REASON
 evidence_root_safe config "$CONFIG" || fail "unsafe evidence root: $DASH_ROOT_REASON"
 
 payload_is_valid() {  # <payload-file>
-  jq -e '
+  jq -e --arg expected_home "$FM_HOME" '
     def has_type($o; $k; $t): ($o | has($k)) and ($o[$k] | type == $t);
     def has_nullable($o; $k; $t): ($o | has($k)) and (($o[$k] == null) or ($o[$k] | type == $t));
     def nonneg_int: if type == "number" then isfinite and floor == . and . >= 0 else false end;
@@ -339,7 +339,9 @@ payload_is_valid() {  # <payload-file>
     (.schema == "fm-dashboard.v1")
     and ((.generated | type) == "string")
     and ((.fm_home | type) == "string")
+    and (.fm_home == $expected_home)
     and (.snapshot | snapshot)
+    and (.snapshot.fm_home == .fm_home)
     and ((.supervision | type) == "object")
     and has_type(.supervision; "model"; "string") and has_type(.supervision; "healthy"; "boolean")
     and has_type(.supervision; "reason"; "string") and has_type(.supervision; "beacon_present"; "boolean")
@@ -1099,15 +1101,17 @@ class Handler(BaseHTTPRequestHandler):
 
 class BoundedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
-    request_queue_size = MAX_CLIENTS
+    request_queue_size = MAX_CLIENTS + 1
 
     def __init__(self, server_address, handler_class):
         super().__init__(server_address, handler_class)
         self.build_lock = threading.Lock()
-        self.client_slots = threading.BoundedSemaphore(MAX_CLIENTS - 1)
+        self.client_slots = threading.BoundedSemaphore(MAX_CLIENTS)
         self.health_slots = threading.BoundedSemaphore(1)
+        self.pending_slot = threading.BoundedSemaphore(1)
         self.admission_lock = threading.Lock()
         self.admissions = {}
+        self.pending_request = None
         self.page_slots = threading.BoundedSemaphore(MAX_PAGE_BUILDS)
 
     def process_request(self, request, client_address):
@@ -1122,10 +1126,29 @@ class BoundedHTTPServer(ThreadingMixIn, HTTPServer):
                 request.settimeout(previous_timeout)
             except (UnboundLocalError, OSError):
                 pass
-        slot = self.health_slots if first_line.startswith(b"GET /healthz ") else self.client_slots
-        if not slot.acquire(False):
-            request.close()
-            return
+        if first_line.startswith(b"GET /healthz "):
+            slot = self.health_slots
+            if not slot.acquire(False):
+                request.close()
+                return
+        elif first_line:
+            slot = self.client_slots
+            if not slot.acquire(False):
+                request.close()
+                return
+        else:
+            slot = self.pending_slot
+            with self.admission_lock:
+                old_request = self.pending_request
+                if old_request is not None:
+                    self.admissions.pop(id(old_request), None)
+                    self.pending_request = None
+                    old_request.close()
+                    slot.release()
+                if not slot.acquire(False):
+                    request.close()
+                    return
+                self.pending_request = request
         with self.admission_lock:
             self.admissions[id(request)] = slot
         try:
@@ -1137,6 +1160,8 @@ class BoundedHTTPServer(ThreadingMixIn, HTTPServer):
     def release_admission(self, request):
         with self.admission_lock:
             slot = self.admissions.pop(id(request), None)
+            if self.pending_request is request:
+                self.pending_request = None
         if slot is not None:
             slot.release()
 
