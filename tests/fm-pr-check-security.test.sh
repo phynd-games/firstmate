@@ -761,6 +761,36 @@ report.write_text(text, encoding="utf-8")
 PY
   run_check_entry "$dir" task-a https://github.com/o/r/pull/111 >/dev/null \
     || fail "PR-ready path rejected comma, semicolon, or space in encoded paths"
+  control_path=$'.agents/control\t\n'
+  printf '%s\n' 'control evidence' > "$dir/wt/$control_path"
+  git -C "$dir/wt" add -- "$control_path"
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm control-path
+  write_self_review_report "$dir/home" task-a
+  delivery_digest=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '1p' | fm_pr_sha256_stream)
+  sed -i.bak "s#evidence=bin/fm-pr-create.sh:2 sha256=[0-9a-f]*#evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest#" "$report"
+  rm -f "$report.bak"
+  control_path=$(fm_pr_review_path_encode "$control_path")
+  control_digest=$(printf '%s\n' 'control evidence' | fm_pr_sha256_stream)
+  control_surface_files="bin/fm-pr-check.sh,$spaced_path,$comma_path,$semi_path,$control_path"
+  python3 - "$report" "$control_surface_files" "$control_path" "$control_digest" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+control_surface_files, control_path, control_digest = sys.argv[2:5]
+text = report.read_text(encoding="utf-8")
+text = re.sub(
+    r"(?m)^Authority: .*",
+    "Authority: reviewed; files=" + control_surface_files + "; evidence=" + control_path + ":1 sha256=" + control_digest + " delivery owner remains no-mistakes; consequence=control-character paths remain exact; fix=keep NUL-delimited inventory handling.",
+    text,
+    count=1,
+)
+report.write_text(text, encoding="utf-8")
+PY
+  rm -f "$report.bak"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/112 >/dev/null \
+    || fail "PR-ready path rejected a tab/newline filename"
   write_self_review_report "$dir/home" task-a
   rm -f "$dir/home/state/task-a.check.sh" "$dir/home/state/task-a.pr-poll" "$dir/home/state/task-a.pr-poll-registration"
   printf 'uncommitted substrate change\n' >> "$dir/substrate/fixture.txt"

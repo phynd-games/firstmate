@@ -670,7 +670,13 @@ EOF
   [ "$merge_base_sha" = "$actual_merge_base" ] || return 1
   actual_changed_files=$(git -C "$worktree" diff --name-status "$merge_base_sha" "$head_sha" | fm_pr_sha256_stream) || return 1
   [ "$changed_files" = "$actual_changed_files" ] || return 1
-  actual_changed_paths=$(git -C "$worktree" diff --name-only "$merge_base_sha" "$head_sha") || return 1
+  actual_changed_paths=$(
+    set -o pipefail
+    git -C "$worktree" diff --name-only -z "$merge_base_sha" "$head_sha" |
+      while IFS= read -r -d '' changed_path; do
+        fm_pr_review_path_encode "$changed_path" || exit 1
+      done
+  ) || return 1
   [ -n "$actual_changed_paths" ] || return 1
   actual_changed_path_count=$(printf '%s\n' "$actual_changed_paths" | awk 'NF { count++ } END { print count + 0 }') || return 1
   [ -z "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] || return 1
@@ -684,7 +690,7 @@ EOF
           ''|*[!0-9a-f]*) return 1 ;;
         esac
         [ $(( ${#encoded} % 2 )) -eq 0 ] || return 1
-        decoded=$(printf '%b' "$(printf '%s' "$encoded" | sed 's/../\\x&/g')") || return 1
+        printf -v decoded '%b' "$(printf '%s' "$encoded" | sed 's/../\\x&/g')" || return 1
         ;;
       ''|/*|*';'*|*,*|*:*|*[[:space:]]*) return 1 ;;
       *) decoded=$candidate ;;
@@ -742,23 +748,26 @@ EOF
       fm_pr_review_path_syntax_valid "$surface_file" || return 1
       surface_file=$FM_PR_REVIEW_PATH
       fm_pr_review_file_valid "$surface_file" || return 1
+      surface_file=$(fm_pr_review_path_encode "$surface_file") || return 1
       surface_review_files="$surface_review_files$surface_file
 "
     done < <(printf '%s\n' "$surface_files" | tr ',' '\n')
   done < <(awk '/^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): / { print }' "$report")
   fm_pr_review_surface_file_valid() {
-    local candidate=$1 listed
+    local candidate=$1 listed encoded_candidate
+    encoded_candidate=$(fm_pr_review_path_encode "$candidate") || return 1
     while IFS= read -r listed || [ -n "$listed" ]; do
-      [ "$listed" = "$candidate" ] && return 0
+      [ "$listed" = "$encoded_candidate" ] && return 0
     done <<EOF
 $surface_review_files
 EOF
     return 1
   }
   fm_pr_changed_path_valid() {
-    local candidate=$1
+    local candidate=$1 changed_path encoded_candidate
+    encoded_candidate=$(fm_pr_review_path_encode "$candidate") || return 1
     while IFS= read -r changed_path || [ -n "$changed_path" ]; do
-      [ "$candidate" = "$changed_path" ] && return 0
+      [ "$encoded_candidate" = "$changed_path" ] && return 0
     done <<EOF
 $actual_changed_paths
 EOF
@@ -803,6 +812,8 @@ EOF
       '
   }
   while IFS= read -r changed_path || [ -n "$changed_path" ]; do
+    fm_pr_review_path_syntax_valid "$changed_path" || return 1
+    changed_path=$FM_PR_REVIEW_PATH
     fm_pr_changed_path_valid "$changed_path" || return 1
     fm_pr_review_surface_file_valid "$changed_path" || return 1
   done <<EOF
@@ -840,6 +851,7 @@ EOF
       line_content=$(git -C "$worktree" show "$merge_base_sha:$evidence_file" | awk -v target="$evidence_line" 'NR == target { print; found = 1; exit } END { if (!found) exit 1 }') || return 1
       actual_evidence_hash=$(printf '%s\n' "$line_content" | fm_pr_sha256_stream) || return 1
     fi
+    evidence_file=$(fm_pr_review_path_encode "$evidence_file") || return 1
     surface_evidence_files="$surface_evidence_files$evidence_file
 "
     [ "$actual_evidence_hash" = "$evidence_hash" ] || return 1
