@@ -1628,50 +1628,6 @@ loop_wait_unknown_arm() {
   wait "$pid" 2>/dev/null || true
 }
 
-loop_arm_parent_matches() {
-  local pid=${LOOP_ARM_PID:-} parent
-  [ -n "$pid" ] || return 1
-  parent=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
-  [ "$parent" = "$LOOP_OWNER_PID" ]
-}
-
-loop_stop_unknown_arm() {
-  local pid=${LOOP_ARM_PID:-} process_state parent i=0
-  [ -n "$pid" ] && loop_arm_parent_matches || return 1
-  kill -TERM "$pid" 2>/dev/null || return 1
-  while [ "$i" -lt 20 ]; do
-    process_state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
-    if [ -z "$process_state" ] || [[ "$process_state" == Z* ]]; then
-      break
-    fi
-    sleep 0.05
-    i=$((i + 1))
-  done
-  process_state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
-  if [ -n "$process_state" ] && [[ "$process_state" != Z* ]]; then
-    parent=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
-    [ "$parent" = "$LOOP_OWNER_PID" ] || return 1
-    kill -KILL "$pid" 2>/dev/null || return 1
-    i=0
-    while [ "$i" -lt 20 ]; do
-      process_state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
-      if [ -z "$process_state" ] || [[ "$process_state" == Z* ]]; then
-        break
-      fi
-      sleep 0.05
-      i=$((i + 1))
-    done
-  fi
-  process_state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
-  [ -z "$process_state" ] || [[ "$process_state" == Z* ]] || return 1
-  wait "$pid" 2>/dev/null || true
-  LOOP_ARM_PID=
-  LOOP_ARM_IDENTITY=
-  LOOP_ARM_UNRESOLVED=0
-  LOOP_ARM_UNRESOLVED_NEXT=0
-  return 0
-}
-
 loop_stop_arm() {
   local pid=${LOOP_ARM_PID:-} current process_state i=0
   [ -n "$pid" ] || return 0
@@ -1725,7 +1681,7 @@ loop_stop_arm() {
     fi
     wait "$pid" 2>/dev/null || true
   else
-    if ! loop_stop_unknown_arm && ! loop_wait_unknown_arm; then
+    if ! loop_wait_unknown_arm; then
       LOOP_ARM_UNRESOLVED=1
       LOOP_ARM_UNRESOLVED_NEXT=$(( $(date +%s) + UNKNOWN_ARM_TIMEOUT + 1 ))
       return 1
