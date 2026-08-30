@@ -10,9 +10,10 @@
     "schema": {"const": "phynd-firstmate-m1-task-graph.v1"},
     "title": {"type": "string", "minLength": 1},
     "generated": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
-    "task_count": {"type": "integer", "minimum": 0},
+    "task_count": {"type": "integer", "minimum": 1},
     "epics": {
       "type": "array",
+      "minItems": 1,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -44,6 +45,7 @@
     },
     "tasks": {
       "type": "array",
+      "minItems": 1,
       "items": {
         "type": "object",
         "additionalProperties": false,

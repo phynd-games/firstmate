@@ -202,6 +202,15 @@ write_task_meta() {
   write_self_review_report "$dir/home" "$id"
 }
 
+self_review_line_digest() {
+  local case_dir=$1 file=$2
+  if [ -f "$case_dir/wt/$file" ]; then
+    sed -n '2p' "$case_dir/wt/$file" | fm_pr_sha256_stream
+  else
+    git -C "$case_dir/wt" show "main:$file" | sed -n '2p' | fm_pr_sha256_stream
+  fi
+}
+
 write_self_review_report() {
   local home=$1 id=$2 report case_dir target_repository target_head base_head merge_base_sha substrate_root substrate_head empty_digest changed_digest
   local authority_digest security_digest path_digest failure_digest tests_digest documentation_digest delivery_digest
@@ -212,13 +221,13 @@ write_self_review_report() {
   base_head=$(git -C "$case_dir/wt" rev-parse main)
   merge_base_sha=$(git -C "$case_dir/wt" merge-base "$base_head" "$target_head")
   changed_digest=$(git -C "$case_dir/wt" diff --name-status "$merge_base_sha" "$target_head" | fm_pr_sha256_stream)
-  authority_digest=$(sed -n '2p' "$case_dir/wt/bin/fm-pr-check.sh" | fm_pr_sha256_stream)
-  security_digest=$(sed -n '2p' "$case_dir/wt/bin/fm-pr-lib.sh" | fm_pr_sha256_stream)
-  path_digest=$(sed -n '2p' "$case_dir/wt/bin/fm-pr-self-review-check.sh" | fm_pr_sha256_stream)
-  failure_digest=$(sed -n '2p' "$case_dir/wt/bin/fm-operational-input.sh" | fm_pr_sha256_stream)
-  tests_digest=$(sed -n '2p' "$case_dir/wt/tests/fm-pr-check-security.test.sh" | fm_pr_sha256_stream)
-  documentation_digest=$(sed -n '2p' "$case_dir/wt/.agents/skills/firstmate-pr-self-review/SKILL.md" | fm_pr_sha256_stream)
-  delivery_digest=$(sed -n '2p' "$case_dir/wt/bin/fm-pr-create.sh" | fm_pr_sha256_stream)
+  authority_digest=$(self_review_line_digest "$case_dir" bin/fm-pr-check.sh)
+  security_digest=$(self_review_line_digest "$case_dir" bin/fm-pr-lib.sh)
+  path_digest=$(self_review_line_digest "$case_dir" bin/fm-pr-self-review-check.sh)
+  failure_digest=$(self_review_line_digest "$case_dir" bin/fm-operational-input.sh)
+  tests_digest=$(self_review_line_digest "$case_dir" tests/fm-pr-check-security.test.sh)
+  documentation_digest=$(self_review_line_digest "$case_dir" .agents/skills/firstmate-pr-self-review/SKILL.md)
+  delivery_digest=$(self_review_line_digest "$case_dir" bin/fm-pr-create.sh)
   substrate_root=${FM_TEST_REPORT_SUBSTRATE_ROOT:-$case_dir/substrate}
   substrate_head=$(git -C "$substrate_root" rev-parse HEAD)
   empty_digest=$(printf '' | fm_pr_sha256_stream)
@@ -561,6 +570,32 @@ PY
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "unchanged-file surface evidence left a runnable poll"
 
   write_self_review_report "$dir/home" task-a
+  python3 - "$report" "$dir/wt/bin/fm-pr-check.sh" <<'PY'
+import hashlib
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+authority = pathlib.Path(sys.argv[2])
+line = authority.read_bytes().splitlines(keepends=True)[1]
+digest = hashlib.sha256(line).hexdigest()
+text = report.read_text(encoding="utf-8")
+text = re.sub(
+    r"(?m)^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): (.*?; evidence=)[^;]+;",
+    lambda match: match.group(1) + ": " + match.group(2) + "bin/fm-pr-check.sh:2 sha256=" + digest + " shared changed-file evidence;",
+    text,
+)
+report.write_text(text, encoding="utf-8")
+PY
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted reusable evidence across all review surfaces"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "reusable surface evidence left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
   sed -i.bak 's/^Authority: .*/Authority: reviewed; files=bin\/fm-pr-lib.sh; evidence=abcdefghijkl; consequence=abcdefghijkl; fix=abcdefghijkl/' "$report"
   rm -f "$report.bak"
   set +e
@@ -594,6 +629,17 @@ PY
     || fail "shared self-review check rejected a valid durable self-review report"
   fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
     || fail "valid self-review report did not permit a valid PR poll"
+
+  rm -f "$dir/home/state/task-a.check.sh" "$dir/home/state/task-a.pr-poll" "$dir/home/state/task-a.pr-poll-registration"
+  rm "$dir/wt/bin/fm-pr-create.sh"
+  git -C "$dir/wt" add -u bin/fm-pr-create.sh
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm delete-surface
+  write_self_review_report "$dir/home" task-a
+  delivery_digest=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '1p' | fm_pr_sha256_stream)
+  sed -i.bak "s#evidence=bin/fm-pr-create.sh:2 sha256=[0-9a-f]*#evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest#" "$report"
+  rm -f "$report.bak"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/105 >/dev/null \
+    || fail "PR-ready path rejected a deleted changed-file evidence reference"
 
   git -C "$dir/wt" branch fm/m1-001-provenance-validator main
   sed -i.bak 's/Base ref: main/Base ref: fm\/m1-001-provenance-validator/' "$report"

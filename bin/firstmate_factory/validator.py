@@ -479,17 +479,21 @@ def validate_source_bytes(
     _string(document["title"], "$.title", errors)
     _string(document["generated"], "$.generated", errors, DATE)
     declared_count = document["task_count"]
-    if type(declared_count) is not int or declared_count < 0:
-        errors.add("schema.type", "$.task_count", "expected non-negative integer")
+    if type(declared_count) is not int or declared_count < 1:
+        errors.add("schema.type", "$.task_count", "expected positive integer")
 
     epics = document["epics"]
     flat_tasks = document["tasks"]
     if not isinstance(epics, list):
         errors.add("schema.type", "$.epics", "expected array")
         epics = []
+    elif not epics:
+        errors.add("schema.min-items", "$.epics", "expected at least 1 item(s)")
     if not isinstance(flat_tasks, list):
         errors.add("schema.type", "$.tasks", "expected array")
         flat_tasks = []
+    elif not flat_tasks:
+        errors.add("schema.min-items", "$.tasks", "expected at least 1 item(s)")
 
     nested_records: dict[str, dict[str, Any]] = {}
     nested_locations: dict[str, str] = {}

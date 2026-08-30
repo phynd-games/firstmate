@@ -612,7 +612,7 @@ EOF
   case "$base_ref" in
     ''|[-.]*|*..*|*@\{*|*[!A-Za-z0-9._/-]*) return 1 ;;
   esac
-  local actual_repository actual_head resolved_base actual_merge_base actual_changed_files actual_changed_paths
+  local actual_repository actual_head resolved_base actual_merge_base actual_changed_files actual_changed_paths actual_changed_path_count
   actual_repository=$(cd "$worktree" && pwd -P) || return 1
   actual_head=$(git -C "$worktree" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1
   [ "$target_repository" = "$actual_repository" ] || return 1
@@ -627,11 +627,13 @@ EOF
   [ "$changed_files" = "$actual_changed_files" ] || return 1
   actual_changed_paths=$(git -C "$worktree" diff --name-only "$merge_base_sha" "$head_sha") || return 1
   [ -n "$actual_changed_paths" ] || return 1
+  actual_changed_path_count=$(printf '%s\n' "$actual_changed_paths" | awk 'NF { count++ } END { print count + 0 }') || return 1
   [ -z "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] || return 1
   [ -z "$(git -C "$substrate_root" status --porcelain 2>/dev/null)" ] || return 1
   local line finding_path finding_file finding_line surface_files surface_file review_root
-  local surface_evidence evidence_ref evidence_file evidence_line evidence_hash line_content actual_evidence_hash surface_review_files changed_path
+  local surface_evidence evidence_ref evidence_file evidence_line evidence_hash line_content actual_evidence_hash surface_review_files surface_evidence_files changed_path
   surface_review_files=
+  surface_evidence_files=
   fm_pr_review_file_valid() {
     local review_file=$1
     for review_root in "$worktree" "$substrate_root"; do
@@ -640,6 +642,12 @@ EOF
         return 0
       fi
     done
+    if [ "$(git -C "$worktree" cat-file -t "$merge_base_sha:$review_file" 2>/dev/null)" = blob ]; then
+      return 0
+    fi
+    if [ "$(git -C "$substrate_root" cat-file -t "$substrate_base_sha:$review_file" 2>/dev/null)" = blob ]; then
+      return 0
+    fi
     return 1
   }
   while IFS= read -r line || [ -n "$line" ]; do
@@ -707,16 +715,22 @@ EOF
       *) return 1 ;;
     esac
     fm_pr_changed_path_valid "$evidence_file" || return 1
-    for review_root in "$worktree" "$substrate_root"; do
-      if [ -f "$review_root/$evidence_file" ] && [ ! -L "$review_root/$evidence_file" ] \
-        && git -C "$review_root" ls-files --error-unmatch -- "$evidence_file" >/dev/null 2>&1; then
-        line_content=$(awk -v target="$evidence_line" 'NR == target { print; found = 1; exit } END { if (!found) exit 1 }' "$review_root/$evidence_file") || continue
-        actual_evidence_hash=$(printf '%s\n' "$line_content" | fm_pr_sha256_stream) || return 1
-        [ "$actual_evidence_hash" = "$evidence_hash" ] && break
-      fi
-    done
+    if [ -f "$worktree/$evidence_file" ] && [ ! -L "$worktree/$evidence_file" ] \
+      && git -C "$worktree" ls-files --error-unmatch -- "$evidence_file" >/dev/null 2>&1; then
+      line_content=$(awk -v target="$evidence_line" 'NR == target { print; found = 1; exit } END { if (!found) exit 1 }' "$worktree/$evidence_file") || return 1
+      actual_evidence_hash=$(printf '%s\n' "$line_content" | fm_pr_sha256_stream) || return 1
+    elif [ "$(git -C "$worktree" cat-file -t "$merge_base_sha:$evidence_file" 2>/dev/null)" = blob ]; then
+      line_content=$(git -C "$worktree" show "$merge_base_sha:$evidence_file" | awk -v target="$evidence_line" 'NR == target { print; found = 1; exit } END { if (!found) exit 1 }') || return 1
+      actual_evidence_hash=$(printf '%s\n' "$line_content" | fm_pr_sha256_stream) || return 1
+    fi
+    surface_evidence_files="$surface_evidence_files,$evidence_file,"
     [ "$actual_evidence_hash" = "$evidence_hash" ] || return 1
   done < <(awk '/^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): / { print }' "$report")
+  local unique_surface_evidence_count required_surface_evidence_count
+  unique_surface_evidence_count=$(printf '%s\n' "$surface_evidence_files" | tr ',' '\n' | LC_ALL=C sort -u | awk 'NF { count++ } END { print count + 0 }') || return 1
+  required_surface_evidence_count=$actual_changed_path_count
+  [ "$required_surface_evidence_count" -le 7 ] || required_surface_evidence_count=7
+  [ "$unique_surface_evidence_count" -ge "$required_surface_evidence_count" ] || return 1
   local actual_substrate_head actual_substrate_changed empty_digest
   actual_substrate_head=$(git -C "$substrate_root" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1
   [ "$substrate_head_sha" = "$actual_substrate_head" ] || return 1

@@ -63,6 +63,7 @@ The substrate section must contain full lowercase-hex `Substrate base SHA:` and 
 The findings section must contain `Review status: complete`, a non-negative `Finding count:`, and either `Finding summary: none` for zero findings or one `Finding:` record per finding with severity, path, evidence, consequence, and required fix.
 The surface section must contain `Authority:`, `Security:`, `Path:`, `Failure:`, `Tests:`, `Documentation:`, and `Delivery:` fields in the form `reviewed; files=<...>; evidence=<path>:<line> sha256=<line-digest> <signal>; consequence=<...>; fix=<...>`, with each evidence reference naming a listed tracked file from the target diff and the lowercase SHA-256 digest of its referenced line.
 The seven surface file lists must collectively cover every target-project changed path, and each surface must cite changed-file evidence specific to its declared surface.
+When the target diff has at least seven paths, the seven surface evidence references must name seven distinct changed files; smaller diffs require one distinct evidence file per changed path up to the seven surfaces. Deleted files may use the exact referenced line from the merge-base blob.
 The verification section must contain at least one non-empty `Command:` field and one non-empty `Result:` field.
 
 1. `Findings` with severity, `path:line`, evidence, consequence, and required fix for each issue.
