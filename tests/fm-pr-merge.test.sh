@@ -95,7 +95,7 @@ REAL_MV=$(command -v mv) || fail "these tests need mv to simulate a failed poll 
 # Build a fresh sandbox for one test case: a state dir with a task meta and a
 # fakebin with a gh-axi mock that records how it was invoked. Echoes the case dir.
 make_case() {
-  local name=$1 case_dir fakebin target_head target_repository substrate_head empty_digest
+  local name=$1 case_dir fakebin target_head target_repository substrate_head empty_digest base_head merge_base_sha changed_digest surface_digest
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
   mkdir -p "$case_dir/state" "$case_dir/home/data/task-x1" "$case_dir/wt" "$case_dir/substrate" "$fakebin"
@@ -106,6 +106,10 @@ make_case() {
   git -C "$case_dir/wt" add fixture.txt
   git -C "$case_dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
   git -C "$case_dir/wt" branch -M main
+  git -C "$case_dir/wt" checkout -qb fm/task-x1
+  printf 'reviewed surface\n' >> "$case_dir/wt/fixture.txt"
+  git -C "$case_dir/wt" add fixture.txt
+  git -C "$case_dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm change
   git -C "$case_dir/substrate" init -q
   git -C "$case_dir/substrate" config user.name fmtest
   git -C "$case_dir/substrate" config user.email fmtest@example.invalid
@@ -113,6 +117,10 @@ make_case() {
   git -C "$case_dir/substrate" add fixture.txt
   git -C "$case_dir/substrate" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
   target_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  base_head=$(git -C "$case_dir/wt" rev-parse main)
+  merge_base_sha=$(git -C "$case_dir/wt" merge-base "$base_head" "$target_head")
+  changed_digest=$(git -C "$case_dir/wt" diff --name-status "$merge_base_sha" "$target_head" | fm_pr_sha256_stream)
+  surface_digest=$(sed -n '2p' "$case_dir/wt/fixture.txt" | fm_pr_sha256_stream)
   target_repository=$(cd "$case_dir/wt" && pwd -P)
   substrate_head=$(git -C "$case_dir/substrate" rev-parse HEAD)
   empty_digest=$(printf '' | fm_pr_sha256_stream)
@@ -128,10 +136,10 @@ make_case() {
     '# Target-project diff evidence' \
     "Target repository: $target_repository" \
     'Base ref: main' \
-    "Base SHA: $target_head" \
+    "Base SHA: $base_head" \
     "Head SHA: $target_head" \
-    "Merge-base SHA: $target_head" \
-    "Changed files: $empty_digest" \
+    "Merge-base SHA: $merge_base_sha" \
+    "Changed files: $changed_digest" \
     'Tree status: clean' \
     '# Firstmate substrate diff evidence' \
     "Substrate base SHA: $substrate_head" \
@@ -139,13 +147,13 @@ make_case() {
     "Substrate changed files: $empty_digest" \
     'Substrate diff: no substrate diff' \
     '# Surface review' \
-    'Authority: reviewed; files=fixture.txt; evidence=fixture.txt:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing.' \
-    'Security: reviewed; files=fixture.txt; evidence=fixture.txt:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f private report identity is checked; consequence=tampering is refused; fix=preserve single-link mode checks.' \
-    'Path: reviewed; files=fixture.txt; evidence=fixture.txt:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f task paths are validated; consequence=path traversal is rejected; fix=retain canonical task boundaries.' \
-    'Failure: reviewed; files=fixture.txt; evidence=fixture.txt:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f malformed inputs fail closed; consequence=no fallback authority is granted; fix=keep deterministic refusal.' \
-    'Tests: reviewed; files=fixture.txt; evidence=fixture.txt:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f public boundary cases execute; consequence=regressions are visible; fix=retain negative coverage.' \
-    'Documentation: reviewed; files=fixture.txt; evidence=fixture.txt:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f generated contracts name exact evidence; consequence=workers have durable requirements; fix=keep docs aligned.' \
-    'Delivery: reviewed; files=fixture.txt; evidence=fixture.txt:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f readiness paths invoke the shared check; consequence=direct bypasses refuse; fix=preserve no-mistakes authority.' \
+    "Authority: reviewed; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing." \
+    "Security: reviewed; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest private report identity is checked; consequence=tampering is refused; fix=preserve single-link mode checks." \
+    "Path: reviewed; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest task paths are validated; consequence=path traversal is rejected; fix=retain canonical task boundaries." \
+    "Failure: reviewed; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest malformed inputs fail closed; consequence=no fallback authority is granted; fix=keep deterministic refusal." \
+    "Tests: reviewed; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest public boundary cases execute; consequence=regressions are visible; fix=retain negative coverage." \
+    "Documentation: reviewed; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest generated contracts name exact evidence; consequence=workers have durable requirements; fix=keep docs aligned." \
+    "Delivery: reviewed; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest readiness paths invoke the shared check; consequence=direct bypasses refuse; fix=preserve no-mistakes authority." \
     '# Verification' \
     'Command: focused PR-ready boundary test' \
     'Result: passed' \
@@ -157,7 +165,7 @@ make_case() {
     "worktree=$case_dir/wt" \
     "project=$case_dir/project" \
     'review_base_ref=main' \
-    "review_base_sha=$target_head" \
+    "review_base_sha=$base_head" \
     "kind=ship" \
     "mode=no-mistakes"
   printf '%s\n' \

@@ -50,7 +50,7 @@ SH
 }
 
 test_fm_home_parameterization() {
-  local brief home_one home_two out task_wt target_head substrate_root substrate_sha empty_digest
+  local brief home_one home_two out task_wt target_head base_head merge_base_sha changed_digest substrate_root substrate_sha empty_digest surface_digest
   home_one="$TMP_ROOT/home one"
   home_two="$TMP_ROOT/home-two"
   mkdir -p "$home_one/data" "$home_one/state" "$home_two/data" "$home_two/state"
@@ -78,9 +78,17 @@ test_fm_home_parameterization() {
   task_wt="$home_one/task-wt"
   fm_git_init_commit "$task_wt"
   git -C "$task_wt" branch -M main
+  git -C "$task_wt" checkout -qb fm/task-a
+  printf 'reviewed surface\n' >> "$task_wt/README.md"
+  git -C "$task_wt" add README.md
+  git -C "$task_wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm change
   substrate_root="$home_one/substrate"
   fm_git_init_commit "$substrate_root"
   target_head=$(git -C "$task_wt" rev-parse HEAD)
+  base_head=$(git -C "$task_wt" rev-parse main)
+  merge_base_sha=$(git -C "$task_wt" merge-base "$base_head" "$target_head")
+  changed_digest=$(git -C "$task_wt" diff --name-status "$merge_base_sha" "$target_head" | fm_pr_sha256_stream)
+  surface_digest=$(sed -n '2p' "$task_wt/README.md" | fm_pr_sha256_stream)
   substrate_sha=$(git -C "$substrate_root" rev-parse HEAD)
   sed -i.bak "s/^- Firstmate substrate launch SHA: .*/- Firstmate substrate launch SHA: \`$substrate_sha\`/" "$home_one/data/task-a/brief.md"
   rm -f "$home_one/data/task-a/brief.md.bak"
@@ -95,10 +103,10 @@ test_fm_home_parameterization() {
     '# Target-project diff evidence' \
     "Target repository: $(cd "$task_wt" && pwd -P)" \
     'Base ref: main' \
-    "Base SHA: $target_head" \
+    "Base SHA: $base_head" \
     "Head SHA: $target_head" \
-    "Merge-base SHA: $target_head" \
-    "Changed files: $empty_digest" \
+    "Merge-base SHA: $merge_base_sha" \
+    "Changed files: $changed_digest" \
     'Tree status: clean' \
     '# Firstmate substrate diff evidence' \
     "Substrate base SHA: $substrate_sha" \
@@ -106,13 +114,13 @@ test_fm_home_parameterization() {
     "Substrate changed files: $empty_digest" \
     'Substrate diff: no substrate diff' \
     '# Surface review' \
-    'Authority: reviewed; files=README.md; evidence=README.md:1 sha256=e117f7fbd34b82da4d017718ab301a011feaded00b60333eda002cbdf093ae1f no-mistakes owns delivery; consequence=readiness is non-authorizing; fix=retain one delivery owner.' \
-    'Security: reviewed; files=README.md; evidence=README.md:1 sha256=e117f7fbd34b82da4d017718ab301a011feaded00b60333eda002cbdf093ae1f private report is validated; consequence=tampering is refused; fix=retain identity checks.' \
-    'Path: reviewed; files=README.md; evidence=README.md:1 sha256=e117f7fbd34b82da4d017718ab301a011feaded00b60333eda002cbdf093ae1f task path is bound; consequence=wrong worktrees refuse; fix=retain path validation.' \
-    'Failure: reviewed; files=README.md; evidence=README.md:1 sha256=e117f7fbd34b82da4d017718ab301a011feaded00b60333eda002cbdf093ae1f unknown versions refuse; consequence=legacy downgrade is blocked; fix=retain fail-closed parsing.' \
-    'Tests: reviewed; files=README.md; evidence=README.md:1 sha256=e117f7fbd34b82da4d017718ab301a011feaded00b60333eda002cbdf093ae1f public interface executes; consequence=fixture drift is visible; fix=retain focused coverage.' \
-    'Documentation: reviewed; files=README.md; evidence=README.md:1 sha256=e117f7fbd34b82da4d017718ab301a011feaded00b60333eda002cbdf093ae1f brief records launch SHA; consequence=substrate scope is durable; fix=retain generated contract.' \
-    'Delivery: reviewed; files=README.md; evidence=README.md:1 sha256=e117f7fbd34b82da4d017718ab301a011feaded00b60333eda002cbdf093ae1f PR creation checks reports; consequence=direct bypasses refuse; fix=retain shared boundary.' \
+    "Authority: reviewed; files=README.md; evidence=README.md:2 sha256=$surface_digest no-mistakes owns delivery; consequence=readiness is non-authorizing; fix=retain one delivery owner." \
+    "Security: reviewed; files=README.md; evidence=README.md:2 sha256=$surface_digest private report is validated; consequence=tampering is refused; fix=retain identity checks." \
+    "Path: reviewed; files=README.md; evidence=README.md:2 sha256=$surface_digest task path is bound; consequence=wrong worktrees refuse; fix=retain path validation." \
+    "Failure: reviewed; files=README.md; evidence=README.md:2 sha256=$surface_digest unknown versions refuse; consequence=legacy downgrade is blocked; fix=retain fail-closed parsing." \
+    "Tests: reviewed; files=README.md; evidence=README.md:2 sha256=$surface_digest public interface executes; consequence=fixture drift is visible; fix=retain focused coverage." \
+    "Documentation: reviewed; files=README.md; evidence=README.md:2 sha256=$surface_digest brief records launch SHA; consequence=substrate scope is durable; fix=retain generated contract." \
+    "Delivery: reviewed; files=README.md; evidence=README.md:2 sha256=$surface_digest PR creation checks reports; consequence=direct bypasses refuse; fix=retain shared boundary." \
     '# Verification' \
     'Command: fm-pr-check.sh task-a https://github.com/example/repo/pull/1' \
     'Result: passed' \
@@ -121,7 +129,7 @@ test_fm_home_parameterization() {
   chmod 0600 "$home_one/data/task-a/pr-self-review.md"
   fm_write_meta "$home_one/state/task-a.meta" \
     "window=firstmate:fm-task-a" "worktree=$task_wt" "project=x" \
-    'review_base_ref=main' "review_base_sha=$target_head" \
+    'review_base_ref=main' "review_base_sha=$base_head" \
     'kind=ship' 'mode=no-mistakes'
   FM_HOME="$home_one" FM_SUBSTRATE_ROOT_OVERRIDE="$substrate_root" FM_GUARD_GRACE=999999 "$ROOT/bin/fm-pr-check.sh" task-a https://github.com/example/repo/pull/1 >/dev/null 2>/dev/null \
     || fail "fm-pr-check failed under FM_HOME"

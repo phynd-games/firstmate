@@ -90,6 +90,16 @@ make_case() {
   git -C "$dir/wt" add fixture.txt bin tests .agents
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
   git -C "$dir/wt" branch -M main
+  git -C "$dir/wt" checkout -qb fm/task-a
+  for fixture_file in \
+    bin/fm-pr-check.sh bin/fm-pr-lib.sh bin/fm-pr-self-review-check.sh \
+    bin/fm-operational-input.sh bin/fm-pr-create.sh \
+    tests/fm-pr-check-security.test.sh \
+    .agents/skills/firstmate-pr-self-review/SKILL.md; do
+    printf 'reviewed surface\n' >> "$dir/wt/$fixture_file"
+  done
+  git -C "$dir/wt" add bin tests .agents
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm change
   git -C "$dir/substrate" init -q
   git -C "$dir/substrate" config user.name fmtest
   git -C "$dir/substrate" config user.email fmtest@example.invalid
@@ -174,9 +184,10 @@ SH
 }
 
 write_task_meta() {
-  local dir=$1 id=${2:-task-a} substrate_head target_head
+  local dir=$1 id=${2:-task-a} substrate_head target_head base_head
   substrate_head=$(git -C "$dir/substrate" rev-parse HEAD)
   target_head=$(git -C "$dir/wt" rev-parse HEAD)
+  base_head=$(git -C "$dir/wt" rev-parse main)
   mkdir -p "$dir/home/data/$id"
   printf '%s\n' "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$dir/home/data/$id/brief.md"
   fm_write_meta "$dir/home/state/$id.meta" \
@@ -185,18 +196,29 @@ write_task_meta() {
     "worktree=$dir/wt" \
     "project=$dir/project" \
     'review_base_ref=main' \
-    "review_base_sha=$target_head" \
+    "review_base_sha=$base_head" \
     "kind=ship" \
     "mode=no-mistakes"
   write_self_review_report "$dir/home" "$id"
 }
 
 write_self_review_report() {
-  local home=$1 id=$2 report case_dir target_repository target_head substrate_root substrate_head empty_digest
+  local home=$1 id=$2 report case_dir target_repository target_head base_head merge_base_sha substrate_root substrate_head empty_digest changed_digest
+  local authority_digest security_digest path_digest failure_digest tests_digest documentation_digest delivery_digest
   report="$home/data/$id/pr-self-review.md"
   case_dir=$(cd "$home/.." && pwd)
   target_repository=$(cd "$case_dir/wt" && pwd -P)
   target_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  base_head=$(git -C "$case_dir/wt" rev-parse main)
+  merge_base_sha=$(git -C "$case_dir/wt" merge-base "$base_head" "$target_head")
+  changed_digest=$(git -C "$case_dir/wt" diff --name-status "$merge_base_sha" "$target_head" | fm_pr_sha256_stream)
+  authority_digest=$(sed -n '2p' "$case_dir/wt/bin/fm-pr-check.sh" | fm_pr_sha256_stream)
+  security_digest=$(sed -n '2p' "$case_dir/wt/bin/fm-pr-lib.sh" | fm_pr_sha256_stream)
+  path_digest=$(sed -n '2p' "$case_dir/wt/bin/fm-pr-self-review-check.sh" | fm_pr_sha256_stream)
+  failure_digest=$(sed -n '2p' "$case_dir/wt/bin/fm-operational-input.sh" | fm_pr_sha256_stream)
+  tests_digest=$(sed -n '2p' "$case_dir/wt/tests/fm-pr-check-security.test.sh" | fm_pr_sha256_stream)
+  documentation_digest=$(sed -n '2p' "$case_dir/wt/.agents/skills/firstmate-pr-self-review/SKILL.md" | fm_pr_sha256_stream)
+  delivery_digest=$(sed -n '2p' "$case_dir/wt/bin/fm-pr-create.sh" | fm_pr_sha256_stream)
   substrate_root=${FM_TEST_REPORT_SUBSTRATE_ROOT:-$case_dir/substrate}
   substrate_head=$(git -C "$substrate_root" rev-parse HEAD)
   empty_digest=$(printf '' | fm_pr_sha256_stream)
@@ -213,10 +235,10 @@ write_self_review_report() {
     '# Target-project diff evidence' \
     "Target repository: $target_repository" \
     'Base ref: main' \
-    "Base SHA: $target_head" \
+    "Base SHA: $base_head" \
     "Head SHA: $target_head" \
-    "Merge-base SHA: $target_head" \
-    "Changed files: $empty_digest" \
+    "Merge-base SHA: $merge_base_sha" \
+    "Changed files: $changed_digest" \
     'Tree status: clean' \
     '# Firstmate substrate diff evidence' \
     "Substrate base SHA: $substrate_head" \
@@ -224,13 +246,13 @@ write_self_review_report() {
     "Substrate changed files: $empty_digest" \
     'Substrate diff: no substrate diff' \
     '# Surface review' \
-    'Authority: reviewed; files=bin/fm-pr-check.sh,bin/fm-pr-lib.sh; evidence=bin/fm-pr-check.sh:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing.' \
-    'Security: reviewed; files=bin/fm-pr-lib.sh,tests/fm-pr-check-security.test.sh; evidence=bin/fm-pr-lib.sh:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f private report identity is checked; consequence=tampering is refused; fix=preserve single-link mode checks.' \
-    'Path: reviewed; files=bin/fm-pr-check.sh,bin/fm-pr-self-review-check.sh; evidence=bin/fm-pr-check.sh:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f task paths are validated; consequence=path traversal is rejected; fix=retain canonical task boundaries.' \
-    'Failure: reviewed; files=bin/fm-pr-lib.sh,bin/fm-operational-input.sh; evidence=bin/fm-pr-lib.sh:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f malformed inputs fail closed; consequence=no fallback authority is granted; fix=keep deterministic refusal.' \
-    'Tests: reviewed; files=tests/fm-pr-check-security.test.sh,tests/fm-pr-merge.test.sh; evidence=tests/fm-pr-check-security.test.sh:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f public boundary cases execute; consequence=regressions are visible; fix=retain negative coverage.' \
-    'Documentation: reviewed; files=.agents/skills/firstmate-pr-self-review/SKILL.md,bin/fm-brief.sh; evidence=.agents/skills/firstmate-pr-self-review/SKILL.md:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f generated contracts name exact evidence; consequence=workers have durable requirements; fix=keep docs aligned.' \
-    'Delivery: reviewed; files=bin/fm-pr-create.sh,bin/fm-merge-local.sh; evidence=bin/fm-pr-create.sh:1 sha256=e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f readiness paths invoke the shared check; consequence=direct bypasses refuse; fix=preserve no-mistakes authority.' \
+    "Authority: reviewed; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:2 sha256=$authority_digest delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing." \
+    "Security: reviewed; files=bin/fm-pr-lib.sh; evidence=bin/fm-pr-lib.sh:2 sha256=$security_digest private report identity is checked; consequence=tampering is refused; fix=preserve single-link mode checks." \
+    "Path: reviewed; files=bin/fm-pr-self-review-check.sh; evidence=bin/fm-pr-self-review-check.sh:2 sha256=$path_digest task paths are validated; consequence=path traversal is rejected; fix=retain canonical task boundaries." \
+    "Failure: reviewed; files=bin/fm-operational-input.sh; evidence=bin/fm-operational-input.sh:2 sha256=$failure_digest malformed inputs fail closed; consequence=no fallback authority is granted; fix=keep deterministic refusal." \
+    "Tests: reviewed; files=tests/fm-pr-check-security.test.sh; evidence=tests/fm-pr-check-security.test.sh:2 sha256=$tests_digest public boundary cases execute; consequence=regressions are visible; fix=retain negative coverage." \
+    "Documentation: reviewed; files=.agents/skills/firstmate-pr-self-review/SKILL.md; evidence=.agents/skills/firstmate-pr-self-review/SKILL.md:2 sha256=$documentation_digest generated contracts name exact evidence; consequence=workers have durable requirements; fix=keep docs aligned." \
+    "Delivery: reviewed; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:2 sha256=$delivery_digest readiness paths invoke the shared check; consequence=direct bypasses refuse; fix=preserve no-mistakes authority." \
     '# Verification' \
     'Command: focused PR-ready boundary test' \
     'Result: passed' \
@@ -408,7 +430,7 @@ run_merge_entry() {
 }
 
 test_pr_ready_requires_durable_self_review() {
-  local dir report rc
+  local dir report rc fixture_digest
   dir=$(make_case self-review-required)
   write_task_meta "$dir"
   report="$dir/home/data/task-a/pr-self-review.md"
@@ -506,7 +528,8 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
-path.write_text(text.replace("Changed files: " + "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "Changed files: " + "1" * 64), encoding="utf-8")
+import re
+path.write_text(re.sub(r"Changed files: [0-9a-f]{64}", "Changed files: " + "1" * 64, text, count=1), encoding="utf-8")
 PY
   chmod 0600 "$report"
   set +e
@@ -527,6 +550,17 @@ PY
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "arbitrary surface evidence left a runnable poll"
 
   write_self_review_report "$dir/home" task-a
+  fixture_digest=$(printf 'fixture\n' | fm_pr_sha256_stream)
+  sed -i.bak "s#^Authority: .*#Authority: reviewed; files=fixture.txt; evidence=fixture.txt:1 sha256=$fixture_digest delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing.#" "$report"
+  rm -f "$report.bak"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted unchanged-file surface evidence"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "unchanged-file surface evidence left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
   sed -i.bak 's/^Authority: .*/Authority: reviewed; files=bin\/fm-pr-lib.sh; evidence=abcdefghijkl; consequence=abcdefghijkl; fix=abcdefghijkl/' "$report"
   rm -f "$report.bak"
   set +e
@@ -537,7 +571,7 @@ PY
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "filler surface evidence left a runnable poll"
 
   write_self_review_report "$dir/home" task-a
-  sed -i.bak 's/^Authority: .*/Authority: reviewed; files=bin\/fm-pr-lib.sh; evidence=bin\/fm-pr-lib.sh:1 sha256=0000000000000000000000000000000000000000000000000000000000000000 delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing./' "$report"
+  sed -i.bak 's/^Authority: .*/Authority: reviewed; files=bin\/fm-pr-lib.sh; evidence=bin\/fm-pr-lib.sh:2 sha256=0000000000000000000000000000000000000000000000000000000000000000 delivery owner remains no-mistakes; consequence=review cannot authorize delivery; fix=keep this boundary non-authorizing./' "$report"
   rm -f "$report.bak"
   set +e
   run_check_entry "$dir" task-a https://github.com/o/r/pull/109 > "$dir/stdout" 2> "$dir/stderr"
@@ -561,7 +595,7 @@ PY
   fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
     || fail "valid self-review report did not permit a valid PR poll"
 
-  git -C "$dir/wt" branch fm/m1-001-provenance-validator HEAD
+  git -C "$dir/wt" branch fm/m1-001-provenance-validator main
   sed -i.bak 's/Base ref: main/Base ref: fm\/m1-001-provenance-validator/' "$report"
   rm -f "$report.bak"
   sed -i.bak 's/^review_base_ref=main$/review_base_ref=fm\/m1-001-provenance-validator/' "$dir/home/state/task-a.meta"
@@ -589,8 +623,7 @@ test_direct_pr_creation_requires_self_review() {
   dir=$(make_case direct-pr-create)
   fm_write_meta "$dir/home/state/task-a.meta" \
     'window=firstmate:fm-task-a' "worktree=$dir/wt" 'review_base_ref=main' \
-    "review_base_sha=$(git -C "$dir/wt" rev-parse HEAD)" 'kind=ship' 'mode=direct-PR'
-  git -C "$dir/wt" branch fm/task-a
+    "review_base_sha=$(git -C "$dir/wt" rev-parse main)" 'kind=ship' 'mode=direct-PR'
   git -C "$dir/wt" checkout -q fm/task-a
   report="$dir/home/data/task-a/pr-self-review.md"
   rm -f "$report"
@@ -987,7 +1020,7 @@ SH
       "worktree=$dir/wt" \
       "project=$dir/project" \
       'review_base_ref=main' \
-      "review_base_sha=$(git -C "$dir/wt" rev-parse HEAD)" \
+      "review_base_sha=$(git -C "$dir/wt" rev-parse main)" \
       'kind=ship' \
       'mode=local-only'
     write_self_review_report "$dir/home" "$id"
@@ -1831,7 +1864,7 @@ test_ambiguous_failure_accepts_validated_replacement() {
   state="$dir/home/state"
   write_ambiguous_poll "$dir"
   printf '%s\n' "worktree=$dir/wt" 'review_base_ref=main' \
-    "review_base_sha=$(git -C "$dir/wt" rev-parse HEAD)" 'kind=ship' 'mode=no-mistakes' >> "$state/task-a.meta"
+    "review_base_sha=$(git -C "$dir/wt" rev-parse main)" 'kind=ship' 'mode=no-mistakes' >> "$state/task-a.meta"
   write_self_review_report "$dir/home" task-a
   mkdir "$state/task-a.pr-poll"
 

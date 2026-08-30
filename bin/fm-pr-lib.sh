@@ -612,7 +612,7 @@ EOF
   case "$base_ref" in
     ''|[-.]*|*..*|*@\{*|*[!A-Za-z0-9._/-]*) return 1 ;;
   esac
-  local actual_repository actual_head resolved_base actual_merge_base actual_changed_files
+  local actual_repository actual_head resolved_base actual_merge_base actual_changed_files actual_changed_paths
   actual_repository=$(cd "$worktree" && pwd -P) || return 1
   actual_head=$(git -C "$worktree" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1
   [ "$target_repository" = "$actual_repository" ] || return 1
@@ -625,10 +625,13 @@ EOF
   [ "$merge_base_sha" = "$actual_merge_base" ] || return 1
   actual_changed_files=$(git -C "$worktree" diff --name-status "$merge_base_sha" "$head_sha" | fm_pr_sha256_stream) || return 1
   [ "$changed_files" = "$actual_changed_files" ] || return 1
+  actual_changed_paths=$(git -C "$worktree" diff --name-only "$merge_base_sha" "$head_sha") || return 1
+  [ -n "$actual_changed_paths" ] || return 1
   [ -z "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] || return 1
   [ -z "$(git -C "$substrate_root" status --porcelain 2>/dev/null)" ] || return 1
   local line finding_path finding_file finding_line surface_files surface_file review_root
-  local surface_evidence evidence_ref evidence_file evidence_line evidence_hash line_content actual_evidence_hash
+  local surface_evidence evidence_ref evidence_file evidence_line evidence_hash line_content actual_evidence_hash surface_review_files changed_path
+  surface_review_files=
   fm_pr_review_file_valid() {
     local review_file=$1
     for review_root in "$worktree" "$substrate_root"; do
@@ -659,8 +662,27 @@ EOF
         ''|/*|*..*|*[!A-Za-z0-9._/-]*) return 1 ;;
       esac
       fm_pr_review_file_valid "$surface_file" || return 1
+      surface_review_files="$surface_review_files,$surface_file,"
     done < <(printf '%s\n' "$surface_files" | tr ',' '\n')
   done < <(awk '/^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): / { print }' "$report")
+  fm_pr_changed_path_valid() {
+    local candidate=$1
+    while IFS= read -r changed_path || [ -n "$changed_path" ]; do
+      [ "$candidate" = "$changed_path" ] && return 0
+    done <<EOF
+$actual_changed_paths
+EOF
+    return 1
+  }
+  while IFS= read -r changed_path || [ -n "$changed_path" ]; do
+    fm_pr_changed_path_valid "$changed_path" || return 1
+    case ",$surface_review_files," in
+      *,"$changed_path",*) ;;
+      *) return 1 ;;
+    esac
+  done <<EOF
+$actual_changed_paths
+EOF
   while IFS= read -r line || [ -n "$line" ]; do
     actual_evidence_hash=
     surface_files=${line#*files=}
@@ -684,6 +706,7 @@ EOF
       *,"$evidence_file",*) ;;
       *) return 1 ;;
     esac
+    fm_pr_changed_path_valid "$evidence_file" || return 1
     for review_root in "$worktree" "$substrate_root"; do
       if [ -f "$review_root/$evidence_file" ] && [ ! -L "$review_root/$evidence_file" ] \
         && git -C "$review_root" ls-files --error-unmatch -- "$evidence_file" >/dev/null 2>&1; then
