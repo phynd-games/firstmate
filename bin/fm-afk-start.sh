@@ -145,7 +145,22 @@ fm_afk_start_main() {
   fi
 
   if fm_pid_alive "$pid" && [ -n "$pid" ]; then
-    fm_lock_remove_path "$FM_AFK_LOCK" 2>/dev/null || true
+    local owner recorded_identity current_identity
+    owner=$(daemon_lock_owner 2>/dev/null) || {
+      echo "afk: refusing to replace a live away-daemon lock with unknown ownership" >&2
+      return 1
+    }
+    recorded_identity=$(cat "$owner/pid-identity" 2>/dev/null || true)
+    current_identity=$(fm_pid_identity "$pid" 2>/dev/null || true)
+    if [ -z "$recorded_identity" ] || [ -z "$current_identity" ] \
+      || [ "$current_identity" = "$recorded_identity" ]; then
+      echo "afk: refusing to replace a live away daemon without a mismatched process identity" >&2
+      return 1
+    fi
+    if ! fm_lock_try_acquire "$FM_AFK_LOCK"; then
+      echo "afk: could not reclaim the identity-mismatched away-daemon lock safely" >&2
+      return 1
+    fi
   fi
 
   # Fresh start: clear the previous away session's stale delivery artifacts
