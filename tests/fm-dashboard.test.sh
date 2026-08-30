@@ -16,9 +16,20 @@ TMP_ROOT=$(fm_test_tmproot fm-dashboard)
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 
 containment_available() {
-  [ "$(uname -s)" = Linux ] || return 1
-  command -v unshare >/dev/null 2>&1 || return 1
-  unshare --pid --fork --mount-proc --kill-child=9 true >/dev/null 2>&1
+  case "$(uname -s)" in
+    Linux)
+      command -v unshare >/dev/null 2>&1 || return 1
+      unshare --pid --fork --mount-proc --kill-child=9 true >/dev/null 2>&1
+      ;;
+    Darwin)
+      command -v sandbox-exec >/dev/null 2>&1 || return 1
+      sandbox-exec -p '(version 1) (allow default) (deny network-inbound)' \
+        python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0))' \
+        >/dev/null 2>&1
+      [ "$?" -ne 0 ]
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 # A home with one worker, a backlog, a status log and a report. Callers add the

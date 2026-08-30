@@ -1033,6 +1033,34 @@ os.close(control_fd)
 build = subprocess.Popen(sys.argv[1:], close_fds=True)
 raise SystemExit(build.wait())
 '''
+MACOS_SANDBOX_PROFILE = r'''
+(version 1)
+(allow default)
+(deny network-inbound)
+'''
+MACOS_SANDBOX_BUILD = r'''
+import errno
+import os
+import socket
+import subprocess
+import sys
+
+control_fd = int(os.environ["FM_DASHBOARD_NAMESPACE_FD"])
+probe = socket.socket()
+try:
+    probe.bind(("127.0.0.1", 0))
+except OSError as exc:
+    if exc.errno != errno.EPERM:
+        raise SystemExit("sandbox probe failed: %s" % exc)
+else:
+    raise SystemExit("sandbox probe unexpectedly allowed a local bind")
+finally:
+    probe.close()
+build = subprocess.Popen(sys.argv[1:], close_fds=True)
+os.write(control_fd, b"sandbox\n")
+os.close(control_fd)
+raise SystemExit(build.wait())
+'''
 # Only the DIGEST of the owner token reaches this process, and only the digest
 # is ever published. A caller proves it started this exact server for this
 # exact home by hashing the token it holds privately and comparing; the token
@@ -1048,29 +1076,59 @@ HEALTH = json.dumps({
 
 
 def enable_process_containment():
-    if sys.platform != "linux":
-        return None
-    tool = shutil.which("unshare")
-    if tool is None:
-        return None
-    try:
-        result = subprocess.run(
-            [
-                tool,
-                "--pid",
-                "--fork",
-                "--mount-proc",
-                "--kill-child=9",
-                "true",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=CONTAINMENT_HANDSHAKE_TIMEOUT,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return tool if result.returncode == 0 else None
+    if sys.platform == "linux":
+        tool = shutil.which("unshare")
+        if tool is None:
+            return None
+        try:
+            result = subprocess.run(
+                [
+                    tool,
+                    "--pid",
+                    "--fork",
+                    "--mount-proc",
+                    "--kill-child=9",
+                    "true",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=CONTAINMENT_HANDSHAKE_TIMEOUT,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return "linux:" + tool if result.returncode == 0 else None
+    if sys.platform == "darwin":
+        tool = shutil.which("sandbox-exec")
+        if tool is None:
+            return None
+        probe = r'''
+import errno
+import socket
+import sys
+
+s = socket.socket()
+try:
+    s.bind(("127.0.0.1", 0))
+except OSError as exc:
+    raise SystemExit(0 if exc.errno == errno.EPERM else 1)
+else:
+    raise SystemExit(1)
+finally:
+    s.close()
+'''
+        try:
+            result = subprocess.run(
+                [tool, "-p", MACOS_SANDBOX_PROFILE, sys.executable, "-c", probe],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=CONTAINMENT_HANDSHAKE_TIMEOUT,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return "macos:" + tool if result.returncode == 0 else None
+    return None
 
 
 def kill_build_group(build, signum):
@@ -1096,6 +1154,81 @@ def cleanup_contained_build(build):
         return True
     except subprocess.TimeoutExpired:
         return False
+
+
+def macos_process_table():
+    ps = os.environ.get("FM_DASHBOARD_PROCESS_PS", "/bin/ps")
+    result = subprocess.run(
+        [ps, "-axo", "pid=,ppid="],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    parents = {}
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            continue
+        try:
+            parents[int(fields[0])] = int(fields[1])
+        except ValueError:
+            continue
+    return parents
+
+
+def macos_process_tree(root_pid):
+    parents = macos_process_table()
+    if parents is None:
+        return None
+    if root_pid not in parents:
+        return set()
+    tree = {root_pid}
+    changed = True
+    while changed:
+        changed = False
+        for pid, parent in parents.items():
+            if parent in tree and pid not in tree:
+                tree.add(pid)
+                changed = True
+    return tree
+
+
+def macos_cleanup(build, tracked):
+    for pid in tracked:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.monotonic() + BUILD_CLEANUP_GRACE
+    while True:
+        current = macos_process_table()
+        if current is None:
+            return False
+        if not (tracked & set(current)):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.02, remaining))
+    for pid in tracked:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    deadline = time.monotonic() + BUILD_CLEANUP_GRACE
+    while True:
+        current = macos_process_table()
+        if current is None:
+            return False
+        if not (tracked & set(current)):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.02, remaining))
 
 
 def namespace_gone(namespace_inode):
@@ -1162,7 +1295,11 @@ def start_contained_build(containment_command):
         if b"\n" not in ready:
             raise RuntimeError("dashboard build containment handshake failed")
         value = ready.split(b"\n", 1)[0]
-        namespace_inode = int(value)
+        if value == b"sandbox":
+            tracked = macos_process_tree(build.pid)
+            namespace_inode = ("macos", tracked)
+        else:
+            namespace_inode = int(value)
     except (OSError, ValueError, RuntimeError):
         cleanup_contained_build(build)
         raise RuntimeError("dashboard build containment handshake failed")
@@ -1172,27 +1309,40 @@ def start_contained_build(containment_command):
 
 
 def finish_contained_build(build, namespace_inode):
+    if isinstance(namespace_inode, tuple) and namespace_inode[0] == "macos":
+        tracked = set(namespace_inode[1] or ())
+        current = macos_process_tree(build.pid)
+        if current is None:
+            cleanup_contained_build(build)
+            return False
+        tracked.update(current)
+        if build.poll() is None and not cleanup_contained_build(build):
+            return False
+        return macos_cleanup(build, tracked)
     if build.poll() is None and not cleanup_contained_build(build):
         return False
     try:
         build.wait(timeout=BUILD_CLEANUP_GRACE)
     except subprocess.TimeoutExpired:
         return False
-    return wait_for_namespace_gone(namespace_inode)
+    return namespace_inode is None or wait_for_namespace_gone(namespace_inode)
 
 
 def dashboard_build_command(containment_command):
     if not containment_command:
         raise RuntimeError("dashboard build containment is unavailable")
+    mode, tool = containment_command.split(":", 1)
+    inner = PID_NAMESPACE_BUILD if mode == "linux" else MACOS_SANDBOX_BUILD
+    prefix = (
+        [tool, "--pid", "--fork", "--mount-proc", "--kill-child=9"]
+        if mode == "linux" else
+        [tool, "-p", MACOS_SANDBOX_PROFILE]
+    )
     return [
-        containment_command,
-        "--pid",
-        "--fork",
-        "--mount-proc",
-        "--kill-child=9",
+        *prefix,
         sys.executable,
         "-c",
-        PID_NAMESPACE_BUILD,
+        inner,
         SELF,
         "build",
         "--out",

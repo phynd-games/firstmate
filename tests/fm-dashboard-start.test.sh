@@ -21,15 +21,27 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 command -v python3 >/dev/null 2>&1 || { echo "skip: python3 not found"; exit 0; }
 command -v curl >/dev/null 2>&1 || { echo "skip: curl not found"; exit 0; }
 
-if [ "$(uname -s)" != Linux ]; then
-  echo "skip: dashboard lifecycle tests require Linux process containment"
-  exit 0
-fi
-if ! command -v unshare >/dev/null 2>&1 || \
-  ! unshare --pid --fork --mount-proc --kill-child=9 true >/dev/null 2>&1; then
+containment_available() {
+  case "$(uname -s)" in
+    Linux)
+      command -v unshare >/dev/null 2>&1 || return 1
+      unshare --pid --fork --mount-proc --kill-child=9 true >/dev/null 2>&1
+      ;;
+    Darwin)
+      command -v sandbox-exec >/dev/null 2>&1 || return 1
+      sandbox-exec -p '(version 1) (allow default) (deny network-inbound)' \
+        python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0))' \
+        >/dev/null 2>&1
+      [ "$?" -ne 0 ]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+containment_available || {
   echo "skip: dashboard lifecycle tests require available process containment"
   exit 0
-fi
+}
 
 # Every server this suite starts is reclaimed on the way out, however the run
 # ends, so a failed assertion never leaves a listener behind.
@@ -506,8 +518,17 @@ test_an_unprovable_build_cleanup_fails_closed() {
   local home port out child code health
   home=$(make_home unprovable-build-cleanup)
   port=$(free_port)
+  cat > "$home/fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+[ -e "${FM_DASHBOARD_PS_FAILURE_MARKER:?}" ] && exit 1
+exec /bin/ps "$@"
+SH
+  chmod +x "$home/fakebin/ps"
   out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FAKE_HERDR_STATE="$home/herdr" \
     FM_DASHBOARD_BUILD_TIMEOUT=1 FM_DASHBOARD_DESCENDANT_MARKER="$home/descendant.pid" \
+    FM_DASHBOARD_PROCESS_PS="$home/fakebin/ps" \
+    FM_DASHBOARD_PS_FAILURE_MARKER="$home/ps-failure" \
     FM_DASHBOARD_PORT="$port" "$START" ensure 2>&1) \
     || fail "ensure failed: $out"
   cat > "$home/fakebin/jq" <<'SH'
@@ -529,11 +550,7 @@ fi
 sleep 30
 SH
   chmod +x "$home/fakebin/jq"
-  cat > "$home/fakebin/ps" <<'SH'
-#!/usr/bin/env bash
-exit 1
-SH
-  chmod +x "$home/fakebin/ps"
+  : > "$home/ps-failure"
   code=$(curl -sS --max-time 6 -o "$home/timeout-response" \
     -w '%{http_code}' "http://127.0.0.1:$port/" 2>/dev/null || true)
   [ "$code" = "500" ] || fail "an unprovable cleanup returned HTTP $code instead of 500"

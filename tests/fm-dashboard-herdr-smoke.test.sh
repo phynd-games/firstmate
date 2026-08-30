@@ -20,6 +20,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 START="$ROOT/bin/fm-dashboard-start.sh"
+SESSION_START="$ROOT/bin/fm-session-start.sh"
 LAB="$ROOT/bin/fm-herdr-lab.sh"
 TMP_ROOT=$(fm_test_tmproot fm-dashboard-herdr-smoke)
 
@@ -113,4 +114,38 @@ test_a_real_herdr_pane_serves_the_dashboard_and_reports_its_url() {
   pass "a real herdr pane serves the dashboard, adopts on repeat, and is reclaimed by stop"
 }
 
+test_real_herdr_session_start_reports_and_reclaims_the_dashboard() {
+  local home port out url health pane
+  home=$(make_home session-start)
+  port=$(free_port)
+
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_DASHBOARD_PORT="$port" \
+    FM_DASHBOARD_HERDR_CLI="$LAB run $LAB_SESSION" \
+    "$SESSION_START" --source startup 2>&1) \
+    || fail "session start failed against real herdr: $out"
+  url=$(printf '%s' "$out" | sed -n 's/^FIRSTMATE_DASHBOARD_URL=//p')
+  [ "$url" = "http://127.0.0.1:$port/" ] \
+    || fail "session start did not print the proven URL: $out"
+  health=$(curl -fsS --max-time 5 "${url}healthz") \
+    || fail "the session-start URL does not answer"
+  printf '%s' "$health" | jq -e --arg home "$home" '.home == $home and .ready == true' >/dev/null \
+    || fail "session start reported the wrong dashboard: $health"
+  pane=$(sed -n 's/^pane=//p' "$home/state/.dashboard-owner")
+  [ -n "$pane" ] || fail "session start did not record a dashboard pane"
+  "$LAB" run "$LAB_SESSION" pane get "$pane" >/dev/null 2>&1 \
+    || fail "the session-start dashboard pane is not in the lab"
+
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_DASHBOARD_HERDR_CLI="$LAB run $LAB_SESSION" \
+    "$START" stop >/dev/null 2>&1 \
+    || fail "stopping the session-start dashboard failed"
+  sleep 1
+  curl -fsS --max-time 3 "${url}healthz" >/dev/null 2>&1 \
+    && fail "session-start dashboard cleanup left the server running"
+  "$LAB" run "$LAB_SESSION" pane get "$pane" >/dev/null 2>&1 \
+    && fail "session-start dashboard cleanup left the Herdr pane open"
+  pass "real Herdr session start reports a ready URL and fully cleans it up"
+}
+
 test_a_real_herdr_pane_serves_the_dashboard_and_reports_its_url
+test_real_herdr_session_start_reports_and_reclaims_the_dashboard
