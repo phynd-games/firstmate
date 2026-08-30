@@ -162,6 +162,7 @@ All under `state/`, all private to the home.
 - `.herdr-supervisor-alarm` - the latest durable actionable diagnostic; it remains available after later recovery so the last failed attempt is not erased.
 - `.herdr-supervisor-alarm-history` - the append-only per-attempt alarm history.
 - `.herdr-supervisor-emergency` - fallback evidence when alarm or queue persistence fails.
+- `.herdr-supervisor-blocked` - the exact arm pid and identity retained while an unresolved arm child prevents safe replacement.
 - `.watch-arm-blocked` - a durable blocked state used when a native arm cannot persist its normal alarm or queue escalation, so fallback ownership is not suppressed.
 - An arm whose process identity cannot be confirmed remains a tracked blocked child after bounded termination attempts, with durable escalation until that child exits safely.
 - `.herdr-supervisor.log` - a bounded lifecycle ledger.

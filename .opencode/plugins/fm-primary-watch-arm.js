@@ -123,7 +123,25 @@ async function sessionOwnsLock(paths) {
   if (!/^[0-9]+$/.test(lockPid) || lockPid === "1") return false;
   let pid = String(process.pid);
   for (let i = 0; i < 8; i += 1) {
-    if (pid === lockPid) return true;
+    if (pid === lockPid) {
+      let recorded = "";
+      try {
+        recorded = readFileSync(`${paths.state}/.lock-pid-identity`, "utf8").trim();
+      } catch {
+        return false;
+      }
+      if (!recorded) return false;
+      const identity = await runProcess(
+        "bash",
+        ["-c", ". \"$FM_ROOT_OVERRIDE/bin/fm-wake-lib.sh\" && fm_pid_identity \"$1\"", "fm-opencode-lock-identity", lockPid],
+        {
+          cwd: paths.root,
+          encoding: "utf8",
+          env: { ...process.env, FM_HOME: paths.home, FM_ROOT_OVERRIDE: paths.root, FM_STATE_OVERRIDE: paths.state },
+        },
+      );
+      return identity.code === 0 && identity.stdout.trim() === recorded;
+    }
     const result = await runProcess("ps", ["-o", "ppid=", "-p", pid]);
     if (result.code !== 0) return false;
     pid = result.stdout.trim();

@@ -73,12 +73,14 @@ trap 'exit 1' HUP INT TERM
 if [ -f "$LOCK" ] && [ ! -L "$LOCK" ]; then
   old=$(cat "$LOCK" 2>/dev/null || true)
   if [ "$old" = "$me" ]; then
-    publish_lock_identity || {
-      echo "error: cannot verify session-lock process identity; operate read-only until resolved" >&2
-      exit 1
-    }
-    echo "lock acquired: harness pid $me"
-    exit 0
+    recorded=$(cat "$LOCK_IDENTITY" 2>/dev/null || true)
+    current=$(fm_pid_identity "$me" 2>/dev/null || true)
+    if [ -n "$recorded" ] && [ -n "$current" ] && [ "$recorded" = "$current" ]; then
+      echo "lock acquired: harness pid $me"
+      exit 0
+    fi
+    echo "error: session-lock process identity is missing or changed; operate read-only until resolved" >&2
+    exit 1
   fi
   if fm_harness_pid_alive "$old"; then
     echo "error: another live firstmate session holds the lock (pid $old); operate read-only until resolved" >&2
