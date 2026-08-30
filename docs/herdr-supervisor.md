@@ -158,9 +158,11 @@ All under `state/`, all private to the home.
 - `.herdr-supervisor-heartbeat` - the supervisor's liveness beacon, refreshed every pass and while the arm child is waiting.
 - `.herdr-supervisor-pending-cleanup` - an exact session, socket, workspace, tab, and pane receipt retained across uncertain establish or retirement cleanup.
 - `.herdr-supervisor-quarantine.<generation>` - an exact old binding retained when the recorded Herdr server or pane identity can no longer be proven safe to close.
+- `.herdr-supervisor-quarantine.pending.<generation>` - an incomplete create receipt retained when bounded visibility reconciliation cannot prove that Herdr created nothing.
 - `.herdr-supervisor-alarm` - the latest durable actionable diagnostic; it remains available after later recovery so the last failed attempt is not erased.
 - `.herdr-supervisor-alarm-history` - the append-only per-attempt alarm history.
 - `.herdr-supervisor-emergency` - fallback evidence when alarm or queue persistence fails.
+- `.watch-arm-blocked` - a durable blocked state used when a native arm cannot persist its normal alarm or queue escalation, so fallback ownership is not suppressed.
 - `.herdr-supervisor.log` - a bounded lifecycle ledger.
   Diagnostic evidence only, written best-effort, and never read as authority for any decision, so an observability failure cannot stall supervision.
 - `.lock-pid-identity` - the process-instance identity paired with the Pi session lock.

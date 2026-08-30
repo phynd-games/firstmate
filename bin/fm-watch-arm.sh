@@ -651,6 +651,11 @@ hold_child_tracked() {
         || printf 'watcher: emergency diagnostic persistence failed\n' >&2
       blocked=1
     fi
+    if [ "$blocked" -eq 1 ]; then
+      wait "$child" 2>/dev/null || true
+      child=
+      break
+    fi
     child_status
     status=$?
     case "$status" in
