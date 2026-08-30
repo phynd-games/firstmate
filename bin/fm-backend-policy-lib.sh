@@ -93,6 +93,34 @@ fm_backend_policy_legacy_lane() {
   fm_backend_policy_test_process
 }
 
+fm_backend_policy_test_stub() {
+  local name=$1 path stub_dir temp_dir first_line
+  path=$(command -v "$name" 2>/dev/null) || return 1
+  case "$path" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ -f "$path" ] && [ -x "$path" ] || return 1
+  stub_dir=$(cd "$(dirname "$path")" 2>/dev/null && pwd -P) || return 1
+  temp_dir=$(cd "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P) || return 1
+  case "$stub_dir/" in
+    "$temp_dir"/*) ;;
+    *) return 1 ;;
+  esac
+  IFS= read -r first_line < "$path" || return 1
+  case "$first_line" in
+    '#!'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+fm_backend_policy_legacy_adapter_allowed() {
+  local name=${1-}
+  fm_backend_policy_legacy_lane || return 1
+  fm_backend_policy_is_retained "$name" || return 1
+  fm_backend_policy_test_stub "$name"
+}
+
 fm_backend_policy_is_retained() {  # <name>
   case "${1-}" in
     *[[:space:]]*|'') return 1 ;;
@@ -107,7 +135,7 @@ fm_backend_policy_is_retained() {  # <name>
 # process. Herdr always; a retained legacy adapter only inside the test lane.
 fm_backend_policy_permits() {  # <name>
   [ "${1-}" = "$FM_BACKEND_ACTIVE" ] && return 0
-  fm_backend_policy_legacy_lane && fm_backend_policy_is_retained "${1-}" && return 0
+  fm_backend_policy_legacy_adapter_allowed "${1-}" && return 0
   return 1
 }
 

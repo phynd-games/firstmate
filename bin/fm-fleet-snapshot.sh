@@ -433,7 +433,7 @@ task_json_lines() {
   local meta id kind harness mode yolo project worktree home projects spawn_gen backend recorded_backend target status_log report_path
   local remote_host remote_root remote_state remote_rc remote_home_present remote_identity_valid
   local pr pr_source event_json current_json endpoint_exists endpoint_status agent_alive meta_json status_json report_json worktree_json home_json
-  local endpoint_rc
+  local endpoint_rc agent_alive_rc
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
   local open_decisions_tsv open_decisions_json
 
@@ -579,7 +579,21 @@ task_json_lines() {
         fi
       fi
       if [ "$kind" = secondmate ] && [ -n "$target" ]; then
-        agent_alive=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null || printf unknown)
+        if agent_alive=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null); then
+          :
+        else
+          agent_alive_rc=$?
+          if [ "$agent_alive_rc" -eq 2 ]; then
+            agent_alive=capability-failure
+            endpoint_status=capability-failure
+            endpoint_exists=null
+          else
+            agent_alive=unknown
+          fi
+        fi
+        if [ "$endpoint_status" = capability-failure ]; then
+          agent_alive=capability-failure
+        fi
       fi
     fi
 

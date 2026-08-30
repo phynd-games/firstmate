@@ -114,11 +114,14 @@ test_known_sets_are_herdr_only() {
 }
 
 test_legacy_lane_requires_harness_identity() {
-  local config="$TMP_ROOT/untrusted-lane-config"
+  local config="$TMP_ROOT/untrusted-lane-config" forged="$TMP_ROOT/forged-capability"
   mkdir -p "$config"
   printf 'tmux\n' > "$config/backend"
   run_capture untrusted-lane lib_probe "FM_CONFIG_OVERRIDE=$config" FM_BACKEND_LEGACY_TEST_LANE=1 -- 'exec 9>&-; fm_backend_name'
   assert_refusal "an untrusted legacy-lane marker" "$config/backend resolves 'tmux'"
+  printf 'forged\n' > "$forged"
+  run_capture forged-lane lib_probe "FM_CONFIG_OVERRIDE=$config" "FM_FORGED_CAPABILITY=$forged" FM_BACKEND_LEGACY_TEST_LANE=1 -- 'exec 9<"$FM_FORGED_CAPABILITY"; fm_backend_source tmux'
+  assert_refusal "a forged retained-adapter capability" "resolves 'tmux'"
   pass "the retained-adapter lane requires the hermetic test harness identity"
 }
 

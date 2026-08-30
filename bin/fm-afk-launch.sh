@@ -173,7 +173,7 @@ fm_afk_launch_record_write() {  # <backend> <target> <extra>
 }
 
 fm_afk_launch_allow_tmux() {
-  fm_backend_policy_legacy_lane && return 0
+  fm_backend_policy_legacy_adapter_allowed tmux && return 0
   fm_backend_policy_refuse "AFK daemon terminal record" tmux \
     "Retire this pre-invariant AFK terminal record through docs/configuration.md \"Legacy task records\"."
   return 1
@@ -297,6 +297,7 @@ fm_afk_launch_terminal_alive() {  # <backend> <target>
       fm_backend_herdr_cli "$session" pane get "$pane" >/dev/null 2>&1
       ;;
     tmux)
+      fm_afk_launch_allow_tmux || return 1
       tmux has-session -t "$target" 2>/dev/null
       ;;
     *) return 1 ;;

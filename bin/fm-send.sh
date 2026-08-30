@@ -421,10 +421,28 @@ fm_send_resolve_target() {  # <raw-target>
   return 1
 }
 
+fm_send_remote_preflight() {
+  local output rc refusal
+  if output=$("$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh route "$TARGET_REMOTE_ID" < /dev/null 2>&1); then
+    return 0
+  else
+    rc=$?
+  fi
+  refusal=$(printf '%s\n' "$output" | sed -n '/^REFUSED: /{p;q;}')
+  if [ -n "$refusal" ]; then
+    printf '%s\n' "$refusal" >&2
+  elif [ -n "$output" ]; then
+    printf '%s\n' "$output" >&2
+  fi
+  return "$rc"
+}
+
 RAW_TARGET=$1
 fm_send_resolve_target "$RAW_TARGET" || exit 1
 T=$RESOLVED_TARGET
-if [ "$TARGET_BACKEND" != remote ]; then
+if [ "$TARGET_BACKEND" = remote ]; then
+  fm_send_remote_preflight || exit $?
+else
   fm_backend_validate "$TARGET_BACKEND" || exit 1
   if [ "$TARGET_BACKEND" = herdr ]; then
     fm_backend_herdr_capability_preflight "send target $T" || exit 1
@@ -790,19 +808,45 @@ else
       echo "error: steer not sent to remote secondmate $TARGET_REMOTE_ID: its parent task retired or changed route during target resolution" >&2
       exit 1
     fi
+    if fm_send_remote_preflight; then
+      :
+    else
+      remote_preflight_rc=$?
+      fm_lock_release "$REMOTE_META_LOCK"
+      fm_send_known_undelivered_cleanup || true
+      exit "$remote_preflight_rc"
+    fi
     remote_rc=0
     remote_completion_unknown=0
+    remote_output=
+    remote_retry_output=
     REMOTE_SEND_ARGS=("$TARGET_REMOTE_ID" "$MESSAGE")
     [ -z "$FIRE_AND_FORGET_ID" ] || REMOTE_SEND_ARGS+=(fire-and-forget)
-    "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh send \
-      "${REMOTE_SEND_ARGS[@]}" < /dev/null || remote_rc=$?
+    if remote_output=$("$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh send \
+      "${REMOTE_SEND_ARGS[@]}" < /dev/null 2>&1); then
+      remote_rc=0
+    else
+      remote_rc=$?
+    fi
     if [ "$remote_rc" -eq 255 ]; then
       remote_completion_unknown=1
       remote_rc=0
-      "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh send \
-        "${REMOTE_SEND_ARGS[@]}" < /dev/null || remote_rc=$?
+      if remote_retry_output=$("$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh send \
+        "${REMOTE_SEND_ARGS[@]}" < /dev/null 2>&1); then
+        remote_rc=0
+      else
+        remote_rc=$?
+      fi
     fi
     fm_lock_release "$REMOTE_META_LOCK"
+    remote_refusal=$(printf '%s\n%s\n' "$remote_output" "$remote_retry_output" | sed -n '/^REFUSED: /{p;q;}')
+    if [ -n "$remote_refusal" ] && [ "$remote_rc" -ne 0 ]; then
+      fm_send_known_undelivered_cleanup || true
+      printf '%s\n' "$remote_refusal" >&2
+      exit "$remote_rc"
+    fi
+    [ -z "$remote_output" ] || printf '%s\n' "$remote_output" >&2
+    [ -z "$remote_retry_output" ] || printf '%s\n' "$remote_retry_output" >&2
     if [ "$remote_rc" -ne 0 ] && [ "$remote_completion_unknown" -eq 1 ]; then
       if [ -n "$FIRE_AND_FORGET_ID" ]; then
         echo "error: fire-and-forget steer to remote secondmate $TARGET_REMOTE_ID is unconfirmed (delivery-id=$FIRE_AND_FORGET_ID); retry only with the same delivery id" >&2
