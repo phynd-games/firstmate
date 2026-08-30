@@ -836,6 +836,49 @@ test_arm_queue_lock_acquisition_is_bounded() {
   pass "watch-arm: wake-queue lock acquisition is bounded before watcher health"
 }
 
+test_wake_queue_operations_are_bounded() {
+  local dir state holder started status elapsed
+  dir=$(make_case bounded-queue-operations)
+  state="$dir/state"
+  (
+    sleep 30
+  ) &
+  holder=$!
+  mkdir -p "$state/.wake-queue.lock"
+  printf '%s\n' "$holder" > "$state/.wake-queue.lock/pid"
+  FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$holder" > "$state/.wake-queue.lock/pid-identity"
+
+  started=$(date +%s)
+  if FM_STATE_OVERRIDE="$state" FM_WAKE_QUEUED_KEYS_LOCK_TRIES=1 bash -c '
+    . "$1"
+    ! fm_wake_queued_keys check >/dev/null
+  ' _ "$ROOT/bin/fm-wake-lib.sh"; then
+    status=0
+  else
+    status=1
+  fi
+  elapsed=$(( $(date +%s) - started ))
+  [ "$status" -eq 0 ] || fail "watch-arm: queued-key lookup did not fail boundedly"
+  [ "$elapsed" -lt 5 ] || fail "watch-arm: queued-key lookup exceeded its bound"
+
+  started=$(date +%s)
+  if FM_STATE_OVERRIDE="$state" FM_WAKE_APPEND_LOCK_TRIES=1 bash -c '
+    . "$1"
+    ! fm_wake_append check bounded "bounded queue append"
+  ' _ "$ROOT/bin/fm-wake-lib.sh"; then
+    status=0
+  else
+    status=1
+  fi
+  elapsed=$(( $(date +%s) - started ))
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  [ "$status" -eq 0 ] || fail "watch-arm: wake append did not fail boundedly"
+  [ "$elapsed" -lt 5 ] || fail "watch-arm: wake append exceeded its bound"
+  pass "watch-arm: queued-key lookup and wake append honor bounded queue locks"
+}
+
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
@@ -851,3 +894,4 @@ test_handling_window_close_keeps_the_acknowledgement_valid
 test_moved_generation_acknowledgement_is_self_healing
 test_downtime_marker_does_not_follow_symlink
 test_arm_queue_lock_acquisition_is_bounded
+test_wake_queue_operations_are_bounded

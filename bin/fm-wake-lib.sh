@@ -1554,9 +1554,25 @@ fm_wake_clean_field() {
   LC_ALL=C tr '\t\r\n' '   '
 }
 
+fm_wake_queue_lock_acquire() {
+  local lock_tries=${1:-${FM_WAKE_QUEUE_LOCK_TRIES:-${FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES:-0}}} lock_attempt=0
+  case "$lock_tries" in
+    ''|*[!0-9]*) lock_tries=0 ;;
+  esac
+  if [ "$lock_tries" -gt 0 ]; then
+    while ! fm_lock_try_acquire "$FM_WAKE_QUEUE_LOCK"; do
+      [ "$lock_attempt" -lt "$lock_tries" ] || return 1
+      sleep 0.02
+      lock_attempt=$((lock_attempt + 1))
+    done
+  else
+    fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  fi
+}
+
 fm_wake_append() {
   local kind=$1 key=$2 payload=$3 clean_key clean_payload epoch seq seq_file status
-  local lock_tries=${FM_WAKE_APPEND_LOCK_TRIES:-0} lock_attempt=0
+  local lock_tries=${FM_WAKE_APPEND_LOCK_TRIES:-${FM_WAKE_QUEUE_LOCK_TRIES:-${FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES:-0}}}
   local recovery_marker
   case "$kind" in
     signal|stale|check|heartbeat) ;;
@@ -1570,18 +1586,7 @@ fm_wake_append() {
   recovery_marker="$STATE/.watcher-down"
   status=0
 
-  case "$lock_tries" in
-    ''|*[!0-9]*) lock_tries=0 ;;
-  esac
-  if [ "$lock_tries" -gt 0 ]; then
-    while ! fm_lock_try_acquire "$FM_WAKE_QUEUE_LOCK"; do
-      [ "$lock_attempt" -lt "$lock_tries" ] || return 1
-      sleep 0.02
-      lock_attempt=$((lock_attempt + 1))
-    done
-  else
-    fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
-  fi
+  fm_wake_queue_lock_acquire "$lock_tries" || return 1
   _fm_recovery_marker_publish "$recovery_marker" downtime || status=$?
   if [ "$status" -eq 0 ]; then
     seq=$(cat "$seq_file" 2>/dev/null || echo 0)
@@ -1605,14 +1610,16 @@ fm_wake_append() {
 # for it is queued and unacknowledged, and disappears only after post-handling
 # acknowledgement consumes it.
 fm_wake_queued_keys() {
-  local kind=$1
+  local kind=$1 lock_tries=${FM_WAKE_QUEUED_KEYS_LOCK_TRIES:-${FM_WAKE_QUEUE_LOCK_TRIES:-${FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES:-0}}} status
   case "$kind" in
     signal|stale|check|heartbeat) ;;
     *) printf 'fm_wake_queued_keys: invalid wake kind: %s\n' "$kind" >&2; return 2 ;;
   esac
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  fm_wake_queue_lock_acquire "$lock_tries" || return 1
   fm_wake_queued_keys_locked "$kind"
+  status=$?
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+  return "$status"
 }
 
 fm_wake_queued_keys_locked() {
