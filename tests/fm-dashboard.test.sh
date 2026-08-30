@@ -654,6 +654,10 @@ test_malformed_zellij_and_cmux_endpoints_are_unknown_not_absent() {
 
 test_initial_serve_build_is_bounded_before_binding() {
   local home port out real_jq
+  [ "$(uname -s)" = Linux ] || {
+    pass "skip: bounded serve builds require Linux process containment"
+    return 0
+  }
   home=$(make_home bounded-initial-build)
   port=$(python3 - <<'PY'
 import socket
@@ -672,6 +676,31 @@ PY
   assert_contains "$out" "initial dashboard build exceeded" \
     "an initial build timeout did not block before binding"
   pass "the initial serve build is bounded before the dashboard binds"
+}
+
+test_serve_refuses_without_process_containment() {
+  local home port out status=0
+  [ "$(uname -s)" = Linux ] && {
+    pass "skip: this host provides Linux process containment"
+    return 0
+  }
+  home=$(make_home unavailable-containment)
+  port=$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+  )
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" \
+    "$DASH" serve --port "$port" --owner-digest 00000000 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "serve succeeded without process containment: $out"
+  assert_contains "$out" "DASHBOARD_BLOCKED" \
+    "serve did not disclose unavailable process containment"
+  assert_not_contains "$out" "serving:" \
+    "serve reported a URL without process containment"
+  pass "serve fails closed when process containment is unavailable"
 }
 
 test_initial_build_contains_daemonizing_descendants() {
@@ -785,5 +814,6 @@ test_a_malformed_herdr_endpoint_is_unknown_not_absent
 test_a_malformed_tmux_endpoint_is_unknown_not_absent
 test_malformed_zellij_and_cmux_endpoints_are_unknown_not_absent
 test_initial_serve_build_is_bounded_before_binding
+test_serve_refuses_without_process_containment
 test_initial_build_contains_daemonizing_descendants
 test_direct_json_build_is_bounded

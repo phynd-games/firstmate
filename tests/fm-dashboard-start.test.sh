@@ -21,6 +21,11 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 command -v python3 >/dev/null 2>&1 || { echo "skip: python3 not found"; exit 0; }
 command -v curl >/dev/null 2>&1 || { echo "skip: curl not found"; exit 0; }
 
+if [ "$(uname -s)" != Linux ]; then
+  echo "skip: dashboard lifecycle tests require Linux process containment"
+  exit 0
+fi
+
 # Every server this suite starts is reclaimed on the way out, however the run
 # ends, so a failed assertion never leaves a listener behind.
 # Walks the fixture root rather than an array: make_home runs inside $( ), whose

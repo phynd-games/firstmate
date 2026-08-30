@@ -1508,7 +1508,7 @@ class BoundedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
     request_queue_size = MAX_CLIENTS + 1
 
-    def __init__(self, server_address, handler_class):
+    def __init__(self, server_address, handler_class, containment_enabled):
         super().__init__(server_address, handler_class)
         self.build_lock = threading.Lock()
         self.client_slots = threading.BoundedSemaphore(MAX_CLIENTS)
@@ -1519,7 +1519,7 @@ class BoundedHTTPServer(ThreadingMixIn, HTTPServer):
         self.pending_request = None
         self.page_slots = threading.BoundedSemaphore(MAX_PAGE_BUILDS)
         self.cleanup_blocked = False
-        self.containment_enabled = enable_process_containment()
+        self.containment_enabled = containment_enabled
 
     def process_request(self, request, client_address):
         try:
@@ -1577,13 +1577,18 @@ class BoundedHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 def dashboard_build_command(containment_enabled):
+    if not containment_enabled:
+        raise RuntimeError("dashboard build containment is unavailable")
     command = [SELF, "build", "--out", "-"]
-    if containment_enabled:
-        return [sys.executable, "-c", CONTAINED_BUILD] + command
-    return command
+    return [sys.executable, "-c", CONTAINED_BUILD] + command
 
 
 def initial_build(containment_enabled):
+    if not containment_enabled:
+        sys.stderr.write(
+            "fm-dashboard: DASHBOARD_BLOCKED: initial build containment could not be established\n"
+        )
+        return False
     baseline_processes = process_snapshot()
     build = subprocess.Popen(
         dashboard_build_command(containment_enabled),
@@ -1622,11 +1627,10 @@ def initial_build(containment_enabled):
     return True
 
 
-# Loopback only. Binding 127.0.0.1 rather than 0.0.0.0 is the whole
-# local-only guarantee, so it is not configurable.
-if not initial_build(enable_process_containment()):
+containment_enabled = enable_process_containment()
+if not initial_build(containment_enabled):
     raise SystemExit(1)
-with BoundedHTTPServer(("127.0.0.1", PORT), Handler) as httpd:
+with BoundedHTTPServer(("127.0.0.1", PORT), Handler, containment_enabled) as httpd:
     sys.stdout.write("serving: http://127.0.0.1:%s/ (local only; Ctrl-C to stop)\n" % PORT)
     sys.stdout.flush()
     try:
