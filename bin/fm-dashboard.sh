@@ -984,6 +984,7 @@ command_serve() {
     python3 - <<'PY'
 import json
 import os
+import select
 import signal
 import socket
 import subprocess
@@ -1002,6 +1003,18 @@ MAX_CLIENTS = 10
 MAX_PAGE_BUILDS = 8
 BUILD_CLEANUP_GRACE = 0.5
 CONTAINMENT_HANDSHAKE_TIMEOUT = 1.0
+PID_NAMESPACE_BUILD = r'''
+import os
+import subprocess
+import sys
+
+control_fd = int(os.environ["FM_DASHBOARD_NAMESPACE_FD"])
+namespace_inode = os.stat("/proc/self/ns/pid").st_ino
+os.write(control_fd, (str(namespace_inode) + "\n").encode())
+os.close(control_fd)
+build = subprocess.Popen(sys.argv[1:], close_fds=True)
+raise SystemExit(build.wait())
+'''
 # Only the DIGEST of the owner token reaches this process, and only the digest
 # is ever published. A caller proves it started this exact server for this
 # exact home by hashing the token it holds privately and comparing; the token
@@ -1067,21 +1080,87 @@ def cleanup_contained_build(build):
         return False
 
 
+def namespace_gone(namespace_inode):
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return False
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            if os.stat(os.path.join("/proc", entry, "ns", "pid")).st_ino == namespace_inode:
+                return False
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return False
+    return True
+
+
+def wait_for_namespace_gone(namespace_inode):
+    deadline = time.monotonic() + BUILD_CLEANUP_GRACE
+    while True:
+        if namespace_gone(namespace_inode):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.02, remaining))
+
+
 def start_contained_build(containment_command):
-    build = subprocess.Popen(
-        dashboard_build_command(containment_command),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-        env=dict(os.environ, FM_DASHBOARD_BUILD_INNER="1"),
+    read_fd, write_fd = os.pipe()
+    os.set_inheritable(write_fd, True)
+    environment = dict(
+        os.environ,
+        FM_DASHBOARD_BUILD_INNER="1",
+        FM_DASHBOARD_NAMESPACE_FD=str(write_fd),
     )
-    return build
+    try:
+        build = subprocess.Popen(
+            dashboard_build_command(containment_command),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            env=environment,
+            pass_fds=(write_fd,),
+        )
+    finally:
+        os.close(write_fd)
+    ready = bytearray()
+    deadline = time.monotonic() + CONTAINMENT_HANDSHAKE_TIMEOUT
+    try:
+        while b"\n" not in ready:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or build.poll() is not None:
+                break
+            readable, _, _ = select.select([read_fd], [], [], remaining)
+            if readable:
+                chunk = os.read(read_fd, 128)
+                if not chunk:
+                    break
+                ready.extend(chunk)
+        if b"\n" not in ready:
+            raise RuntimeError("dashboard build containment handshake failed")
+        value = ready.split(b"\n", 1)[0]
+        namespace_inode = int(value)
+    except (OSError, ValueError, RuntimeError):
+        cleanup_contained_build(build)
+        raise RuntimeError("dashboard build containment handshake failed")
+    finally:
+        os.close(read_fd)
+    return build, namespace_inode
 
 
-def finish_contained_build(build):
-    if build.poll() is not None:
-        return True
-    return cleanup_contained_build(build)
+def finish_contained_build(build, namespace_inode):
+    if build.poll() is None and not cleanup_contained_build(build):
+        return False
+    try:
+        build.wait(timeout=BUILD_CLEANUP_GRACE)
+    except subprocess.TimeoutExpired:
+        return False
+    return wait_for_namespace_gone(namespace_inode)
 
 
 def dashboard_build_command(containment_command):
@@ -1093,6 +1172,9 @@ def dashboard_build_command(containment_command):
         "--fork",
         "--mount-proc",
         "--kill-child=9",
+        sys.executable,
+        "-c",
+        PID_NAMESPACE_BUILD,
         SELF,
         "build",
         "--out",
@@ -1242,7 +1324,7 @@ class Handler(BaseHTTPRequestHandler):
                 if self.request_time_left() <= 0:
                     self._send(503, b"dashboard rebuild deadline exceeded\n", "text/plain; charset=utf-8")
                     return
-                build = start_contained_build(self.server.containment_root)
+                build, namespace_inode = start_contained_build(self.server.containment_root)
                 try:
                     stdout, stderr = build.communicate(
                         timeout=min(
@@ -1253,7 +1335,7 @@ class Handler(BaseHTTPRequestHandler):
                 except subprocess.TimeoutExpired as exc:
                     stdout = exc.output or b""
                     stderr = exc.stderr or b""
-                    if not finish_contained_build(build):
+                    if not finish_contained_build(build, namespace_inode):
                         self.server.cleanup_blocked = True
                         sys.stderr.write(
                             "fm-dashboard: DASHBOARD_BLOCKED: build descendant cleanup could not be proven\n"
@@ -1266,7 +1348,7 @@ class Handler(BaseHTTPRequestHandler):
                         build.args, 124, stdout, stderr
                     )
                 else:
-                    if not finish_contained_build(build):
+                    if not finish_contained_build(build, namespace_inode):
                         self.server.cleanup_blocked = True
                         sys.stderr.write(
                             "fm-dashboard: DASHBOARD_BLOCKED: build descendant cleanup could not be proven\n"
@@ -1383,7 +1465,7 @@ def initial_build(containment_enabled):
         )
         return False
     try:
-        build = start_contained_build(containment_enabled)
+        build, namespace_inode = start_contained_build(containment_enabled)
     except Exception as exc:
         sys.stderr.write(
             "fm-dashboard: DASHBOARD_BLOCKED: initial build containment failed: %s\n" % exc
@@ -1396,7 +1478,7 @@ def initial_build(containment_enabled):
     except subprocess.TimeoutExpired as exc:
         stdout = exc.output or b""
         stderr = exc.stderr or b""
-        proven = finish_contained_build(build)
+        proven = finish_contained_build(build, namespace_inode)
         if not proven:
             stderr += b"\ninitial dashboard build descendant cleanup could not be proven\n"
         for stream in (build.stdout, build.stderr):
@@ -1413,7 +1495,7 @@ def initial_build(containment_enabled):
             if stream is not None:
                 stream.close()
     if build.returncode != 0 or not stdout:
-        if not finish_contained_build(build):
+        if not finish_contained_build(build, namespace_inode):
             sys.stderr.write(
                 "fm-dashboard: DASHBOARD_BLOCKED: initial build descendant cleanup could not be proven\n"
             )
@@ -1424,7 +1506,7 @@ def initial_build(containment_enabled):
         detail = stderr.decode("utf-8", "replace").strip() or "no detail"
         sys.stderr.write("initial dashboard build failed: %s\n" % detail)
         return False
-    if not finish_contained_build(build):
+    if not finish_contained_build(build, namespace_inode):
         sys.stderr.write(
             "fm-dashboard: DASHBOARD_BLOCKED: initial build descendant cleanup could not be proven\n"
         )
