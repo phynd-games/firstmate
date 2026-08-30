@@ -592,8 +592,8 @@ arm_emergency_write() {
   return 0
 }
 arm_publish_failure() {
-  local reason=$1 marker_status=1 queue_status=1 emergency_status=1
-  fm_recovery_transition "$STATE/.watcher-down" publish downtime >/dev/null 2>&1 && marker_status=0
+  local reason=$1 queue_status=1 emergency_status=1
+  fm_recovery_transition "$STATE/.watcher-down" publish downtime >/dev/null 2>&1 || true
   if FM_WAKE_APPEND_LOCK_TRIES=${FM_WAKE_APPEND_LOCK_TRIES:-${FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES:-100}} \
     fm_wake_append check watcher-arm "$reason" >/dev/null 2>&1; then
     queue_status=0
@@ -601,7 +601,7 @@ arm_publish_failure() {
   if [ "$queue_status" -ne 0 ]; then
     arm_emergency_write "$reason" >/dev/null 2>&1 && emergency_status=0
   fi
-  [ "$marker_status" -eq 0 ] || [ "$queue_status" -eq 0 ] || [ "$emergency_status" -eq 0 ]
+  [ "$queue_status" -eq 0 ] || [ "$emergency_status" -eq 0 ]
 }
 cleanup_child() {
   local status attempts=0 max_attempts=${FM_WATCH_ARM_CLEANUP_TRIES:-40}

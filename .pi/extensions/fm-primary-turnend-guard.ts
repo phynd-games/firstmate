@@ -11,6 +11,7 @@ import {
 import { processInstanceIdentity } from "./lib/fm-process-identity.ts";
 
 let guardFollowupActive = false;
+let herdrEnsureInFlight: Promise<void> | undefined;
 
 type LockOwnership = "owned" | "missing" | "other";
 
@@ -229,6 +230,25 @@ function runGuard(): Promise<{ code: number; stderr: string }> {
   });
 }
 
+function ensureHerdrFallback(): Promise<void> {
+  if (herdrEnsureInFlight) return herdrEnsureInFlight;
+  const run = new Promise<void>((resolveEnsure) => {
+    const child = spawn(`${root}/bin/fm-herdr-supervisor.sh`, ["ensure"], {
+      cwd: root,
+      stdio: ["ignore", "ignore", "ignore"],
+      env: { ...process.env, FM_HOME: fmHome, FM_ROOT_OVERRIDE: root, FM_STATE_OVERRIDE: state },
+    });
+    child.on("error", () => resolveEnsure());
+    child.on("close", () => resolveEnsure());
+  });
+  let trackedRun: Promise<void>;
+  trackedRun = run.finally(() => {
+    if (herdrEnsureInFlight === trackedRun) herdrEnsureInFlight = undefined;
+  });
+  herdrEnsureInFlight = trackedRun;
+  return trackedRun;
+}
+
 // PreToolUse seatbelts (bin/fm-arm-pretool-check.sh, docs/arm-pretool-check.md;
 // bin/fm-cd-pretool-check.sh, docs/cd-guard.md). Both piggyback on this same
 // extension file rather than separate ones so no extra Pi -e flag is needed at
@@ -269,6 +289,7 @@ export default function (pi: ExtensionAPI) {
       ? startupRebuildSource(ctx) ?? "startup"
       : { new: "clear", resume: "resume", fork: "fork" }[reason];
     markLoaded();
+    await ensureHerdrFallback();
     if (!source) return;
     await injectSessionstart(pi, source);
   });
@@ -276,6 +297,7 @@ export default function (pi: ExtensionAPI) {
   // Pi's compaction equivalent. The digest is what a compacted session has just
   // lost, so re-emitting it here is the point rather than a side effect.
   pi.on?.("session_compact", async () => {
+    await ensureHerdrFallback();
     await injectSessionstart(pi, "compact");
   });
 
@@ -293,6 +315,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_settled", async () => {
+    await ensureHerdrFallback();
     if (guardFollowupActive) {
       guardFollowupActive = false;
       return;
@@ -316,4 +339,5 @@ export default function (pi: ExtensionAPI) {
   });
 
   markLoaded();
+  void ensureHerdrFallback();
 }
