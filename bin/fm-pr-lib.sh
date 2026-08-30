@@ -419,6 +419,11 @@ fm_pr_review_base_resolve() {
   local worktree=$1 approved_ref=$2 approved_sha=$3 branch remote_ref resolved
   [ -d "$worktree" ] && [ ! -L "$worktree" ] || return 1
   fm_pr_head_valid "$approved_sha" || return 1
+  resolved=$(git -C "$worktree" rev-parse --verify --quiet "$approved_ref^{commit}" 2>/dev/null || true)
+  if [ "$resolved" = "$approved_sha" ]; then
+    printf '%s\n' "$approved_ref"
+    return 0
+  fi
   branch=$(fm_pr_review_base_branch "$approved_ref") || return 1
   remote_ref="refs/remotes/origin/$branch"
   resolved=$(git -C "$worktree" rev-parse --verify --quiet "$remote_ref^{commit}" 2>/dev/null || true)

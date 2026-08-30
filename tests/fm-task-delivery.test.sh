@@ -217,7 +217,7 @@ EOF
 # Promotion is where a scout's ship contract is finally decided, so it requires the
 # same explicit values and writes them into the task's durable record.
 test_promote_requires_and_records_the_delivery_contract() {
-  local home meta out status proj wt base_sha
+  local home meta out status proj wt base_sha local_proj local_wt local_base
   home="$TMP_ROOT/promote/home"
   proj="$TMP_ROOT/promote/proj"
   wt="$TMP_ROOT/promote/wt"
@@ -290,6 +290,22 @@ test_promote_requires_and_records_the_delivery_contract() {
   assert_grep 'kind=ship' "$home/state/promote-fetch.meta" "fetched-base promotion did not complete"
   assert_grep 'review_base_ref=origin/approved-base' "$home/state/promote-fetch.meta" \
     "fetched-base promotion changed the approved ref"
+
+  local_proj="$TMP_ROOT/promote/local-proj"
+  local_wt="$TMP_ROOT/promote/local-wt"
+  fm_git_init_commit "$local_proj"
+  git -C "$local_proj" branch approved-local
+  git -C "$local_proj" worktree add --quiet -b task-promote-local "$local_wt"
+  local_base=$(git -C "$local_wt" rev-parse approved-local)
+  mkdir -p "$home/data/promote-local"
+  printf 'Scout brief for local base.\nTarget-project approved base: ref=approved-local; sha=%s\n' \
+    "$local_base" > "$home/data/promote-local/brief.md"
+  fm_write_meta "$home/state/promote-local.meta" \
+    "window=fm-promote-local" "kind=scout" "worktree=$local_wt"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-local --mode local-only --yolo off 2>&1)
+  status=$?
+  expect_code 0 "$status" "promotion should accept a matching local approved base without origin"
+  assert_grep 'kind=ship' "$home/state/promote-local.meta" "local-base promotion did not complete"
   pass "fm-promote: promotion requires the delivery contract and records it exactly once"
 }
 
