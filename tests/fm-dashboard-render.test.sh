@@ -58,7 +58,7 @@ payload() {
       events: [],
       reports: {records: [], total: 0, shown: 0, truncated: 0},
       usage: {budget: {available: true, reason: null, effective_budget_tokens: 7500,
-                       total_estimated_tokens: 100, status: "within-budget", files: []},
+                       total_estimated_tokens: 0, status: "within-budget", files: []},
               agents: []},
       degraded: []
     } * $overrides' > "$file" || fail "the fixture payload could not be composed"
@@ -438,6 +438,18 @@ test_render_refuses_a_dashboard_document_with_a_null_task() {
   pass "render refuses a dashboard document with a null task"
 }
 
+test_render_refuses_available_usage_without_file_evidence() {
+  local home file out status=0
+  home=$(new_case)
+  file=$(payload "$home" '{"usage":{"budget":{"available":true,"reason":null,
+    "effective_budget_tokens":0,"total_estimated_tokens":999,"status":"over-budget","files":[]}}}')
+  out=$(FM_HOME="$home" "$DASH" render "$file" --out "$home/page.html" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "render accepted usage totals with no file evidence"
+  assert_contains "$out" "complete readable" "the refusal did not identify the inconsistent usage evidence"
+  [ ! -e "$home/page.html" ] || fail "render published a page for inconsistent usage evidence"
+  pass "render refuses available usage totals that lack file evidence"
+}
+
 test_a_healthy_fleet_renders_its_counts_and_sections
 test_reconciled_state_is_labelled_apart_from_event_history
 test_a_worker_whose_event_log_was_refused_says_why
@@ -455,3 +467,4 @@ test_every_source_path_is_listed_for_checking
 test_a_page_whose_data_is_corrupt_fails_closed
 test_render_refuses_a_payload_that_is_not_a_dashboard_document
 test_render_refuses_a_dashboard_document_with_a_null_task
+test_render_refuses_available_usage_without_file_evidence

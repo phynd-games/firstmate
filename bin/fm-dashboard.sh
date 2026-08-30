@@ -182,7 +182,8 @@ payload_is_valid() {  # <payload-file>
         and (.total_estimated_tokens | nonneg_int)
         and (.status == "within-budget" or .status == "over-budget")
         and (([.files[] | .estimated_tokens] | map(select(. != null))) as $est
-          | if (.files | length) == 0 then true
+          | if (.files | length) == 0 then
+              .total_estimated_tokens == 0 and .status == "within-budget"
             else ($est | length) == (.files | length)
               and .total_estimated_tokens == ($est | add)
             end)

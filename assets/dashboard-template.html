@@ -477,8 +477,9 @@ __FM_DASHBOARD_DATA__
           || (v.status !== "within-budget" && v.status !== "over-budget")) return false;
       var estimates = v.files.map(function (x) { return x.estimated_tokens; });
       if (estimates.some(function (x) { return x === null; })) return false;
-      var estimatesConsistent = estimates.length === 0 || v.total_estimated_tokens ===
-        estimates.reduce(function (sum, x) { return sum + x; }, 0);
+      var estimatesConsistent = estimates.length === 0
+        ? v.total_estimated_tokens === 0 && v.status === "within-budget"
+        : v.total_estimated_tokens === estimates.reduce(function (sum, x) { return sum + x; }, 0);
       return estimatesConsistent
         && (v.status === "within-budget"
           ? v.total_estimated_tokens <= v.effective_budget_tokens
