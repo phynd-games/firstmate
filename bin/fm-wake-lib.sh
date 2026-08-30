@@ -980,6 +980,34 @@ fm_lock_release() {
   rmdir "$lockdir" 2>/dev/null || true
 }
 
+fm_supervision_claim_acquire() {
+  local lock=$1 tries=${2:-100} attempt=0
+  case "$tries" in
+    ''|*[!0-9]*|0) tries=100 ;;
+  esac
+  while ! fm_lock_try_acquire "$lock"; do
+    [ "$attempt" -lt "$tries" ] || return 1
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+}
+
+fm_supervision_claim_held_by_other() {
+  local lock=$1 owner pid expected current
+  if [ -L "$lock" ]; then
+    owner=$(fm_lock_link_owner "$lock" 2>/dev/null || true)
+  else
+    owner=$lock
+  fi
+  [ -n "$owner" ] && [ -d "$owner" ] || return 1
+  pid=$(cat "$owner/pid" 2>/dev/null || true)
+  expected=$(cat "$owner/pid-identity" 2>/dev/null || true)
+  current=$(fm_pid_identity "$pid" 2>/dev/null || true)
+  [ -n "$pid" ] && [ "$pid" != "${BASHPID:-$$}" ] \
+    && [ -n "$expected" ] && [ "$current" = "$expected" ] \
+    && fm_pid_alive "$pid"
+}
+
 fm_meta_lock_path() {
   local meta=$1 dir base id
   dir=${meta%/*}

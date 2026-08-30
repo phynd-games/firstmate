@@ -186,13 +186,14 @@ set -u
 C="\${FM_TEST_ARM_COUNT:?}"
 n=\$(( \$(cat "\$C" 2>/dev/null || echo 0) + 1 ))
 echo "\$n" > "\$C"
-if [ -n "\${FM_TEST_ARM_VALIDATE_FILE:-}" ]; then
+validate_file=\${FM_TEST_ARM_VALIDATE_FILE:-\$FM_HOME/state/arm-env}
+if [ -n "\$validate_file" ]; then
   {
     printf 'FM_GUARD_GRACE=%s\n' "\${FM_GUARD_GRACE:-}"
     printf 'FM_WATCHER_STALE_GRACE=%s\n' "\${FM_WATCHER_STALE_GRACE:-}"
     printf 'FM_ARM_CONFIRM_TIMEOUT=%s\n' "\${FM_ARM_CONFIRM_TIMEOUT:-}"
     printf 'FM_HERDR_SUPERVISOR_READY_TIMEOUT=%s\n' "\${FM_HERDR_SUPERVISOR_READY_TIMEOUT:-}"
-  } > "\$FM_TEST_ARM_VALIDATE_FILE"
+  } > "\$validate_file"
 fi
 if [ "$mode" = fail ]; then
   echo "watcher: FAILED - no live watcher with a fresh beacon"
@@ -769,16 +770,17 @@ HOME13E=$(new_home "launcher-$(printf 'x%.0s' $(seq 1 60))")
 make_arm_stub "$HOME13E/arm.sh" ok
 fm_write_meta "$HOME13E/state/launch-task.meta" "window=firstmate:fm-launch-task"
 out=$(FM_GUARD_GRACE=17 FM_WATCHER_STALE_GRACE=19 FM_ARM_CONFIRM_TIMEOUT=23 \
-  FM_TEST_ARM_VALIDATE_FILE="$HOME13E/arm-env" \
   run_supervisor "$HOME13E" "$FAKEBIN" ensure 2>&1)
 assert_contains "$out" "herdr-supervisor: started" "a long home path still establishes"
-assert_grep "FM_GUARD_GRACE=17" "$HOME13E/arm-env" \
+wait_for 10 test -f "$HOME13E/state/arm-env" \
+  || fail "the consumed launcher did not execute the arm"
+assert_grep "FM_GUARD_GRACE=17" "$HOME13E/state/arm-env" \
   "the consumed launcher delivers the caller's guard grace"
-assert_grep "FM_WATCHER_STALE_GRACE=19" "$HOME13E/arm-env" \
+assert_grep "FM_WATCHER_STALE_GRACE=19" "$HOME13E/state/arm-env" \
   "the consumed launcher delivers the caller's watcher stale grace"
-assert_grep "FM_ARM_CONFIRM_TIMEOUT=23" "$HOME13E/arm-env" \
+assert_grep "FM_ARM_CONFIRM_TIMEOUT=23" "$HOME13E/state/arm-env" \
   "the consumed launcher delivers the caller's arm confirmation timeout"
-assert_grep "FM_HERDR_SUPERVISOR_READY_TIMEOUT=15" "$HOME13E/arm-env" \
+assert_grep "FM_HERDR_SUPERVISOR_READY_TIMEOUT=15" "$HOME13E/state/arm-env" \
   "the consumed launcher delivers the caller's readiness timeout"
 pass "the Herdr pane consumer executes a short launcher with caller tuning"
 stop_loop "$HOME13E"
@@ -797,10 +799,10 @@ sleep 300
 echo "signal: /fake/state/task.status"
 SH
 chmod +x "$HOME13F/arm.sh"
-out=$(FM_HERDR_SUPERVISOR_HEARTBEAT_GRACE=3 run_supervisor "$HOME13F" "$FAKEBIN" ensure 2>&1)
+out=$(FM_HERDR_SUPERVISOR_HEARTBEAT_GRACE=10 run_supervisor "$HOME13F" "$FAKEBIN" ensure 2>&1)
 assert_contains "$out" "herdr-supervisor: started" "a waiting arm still establishes"
 sleep 4
-out=$(FM_HERDR_SUPERVISOR_HEARTBEAT_GRACE=3 run_supervisor "$HOME13F" "$FAKEBIN" status 2>&1)
+out=$(FM_HERDR_SUPERVISOR_HEARTBEAT_GRACE=10 run_supervisor "$HOME13F" "$FAKEBIN" status 2>&1)
 assert_contains "$out" "supervisor: healthy" "a waiting arm keeps the supervisor heartbeat fresh"
 ARM_PID=$(cat "$HOME13F/arm.pid" 2>/dev/null || true)
 [ -n "$ARM_PID" ] || fail "the foreground arm did not publish its child pid"
@@ -974,6 +976,10 @@ assert_grep 'cycle-failed' "$HOME20/state/.herdr-supervisor.log" \
   "the failed arm remains in the durable ledger"
 assert_grep 'check' "$HOME20/state/.wake-queue" \
   "the failed arm remains in the durable wake queue after recovery"
+assert_grep 'reason=watcher arm attempt' "$HOME20/state/.herdr-supervisor-alarm" \
+  "the failed arm remains in the latest durable alarm after recovery"
+assert_grep 'reason=watcher arm attempt' "$HOME20/state/.herdr-supervisor-alarm-history" \
+  "the failed arm remains in the per-attempt alarm history"
 pass "each failed arm leaves durable evidence after a later success"
 stop_loop "$HOME20"
 

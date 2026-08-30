@@ -37,6 +37,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$FM_AFK_START_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 FM_AFK_STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 FM_AFK_LOCK="$FM_AFK_STATE/.supervise-daemon.lock"
+FM_SUPERVISION_CLAIM="$FM_AFK_STATE/.supervision-claim.lock"
 FM_AFK_DAEMON="$FM_AFK_START_DIR/fm-supervise-daemon.sh"
 
 # shellcheck source=bin/fm-wake-lib.sh
@@ -124,6 +125,7 @@ fm_afk_flag_write() {  # <state-dir>
 }
 
 fm_afk_start_main() {
+  local claim_acquired=0
   case "${1:-}" in
     '' ) ;;
     -h|--help) fm_afk_start_usage; return 0 ;;
@@ -131,16 +133,33 @@ fm_afk_start_main() {
   esac
 
   mkdir -p "$FM_AFK_STATE"
+  if [ "${FM_SUPERVISION_CLAIM_HELD:-0}" != 1 ]; then
+    if ! fm_supervision_claim_acquire "$FM_SUPERVISION_CLAIM" 100; then
+      echo "afk: could not acquire the continuity ownership claim" >&2
+      return 1
+    fi
+    claim_acquired=1
+    export FM_SUPERVISION_CLAIM_HELD=1
+  fi
   if [ "${FM_AFK_STATE_PREPARED:-0}" = 1 ]; then
-    [ -f "$FM_AFK_STATE/.afk" ] || { echo "afk: launcher-prepared state is missing" >&2; return 1; }
+    if [ ! -f "$FM_AFK_STATE/.afk" ]; then
+      [ "$claim_acquired" -eq 1 ] && fm_lock_release "$FM_SUPERVISION_CLAIM"
+      echo "afk: launcher-prepared state is missing" >&2
+      return 1
+    fi
   else
-    fm_afk_flag_write "$FM_AFK_STATE" || { echo "afk: failed to write away-mode flag" >&2; return 1; }
+    if ! fm_afk_flag_write "$FM_AFK_STATE"; then
+      [ "$claim_acquired" -eq 1 ] && fm_lock_release "$FM_SUPERVISION_CLAIM"
+      echo "afk: failed to write away-mode flag" >&2
+      return 1
+    fi
   fi
 
   local pid
   pid=$(daemon_lock_pid 2>/dev/null || true)
   if daemon_lock_held_by_live_daemon; then
     echo "afk: daemon already running pid=$pid"
+    [ "$claim_acquired" -eq 1 ] && fm_lock_release "$FM_SUPERVISION_CLAIM"
     return 0
   fi
 
@@ -148,6 +167,7 @@ fm_afk_start_main() {
     local owner recorded_identity current_identity
     owner=$(daemon_lock_owner 2>/dev/null) || {
       echo "afk: refusing to replace a live away-daemon lock with unknown ownership" >&2
+      [ "$claim_acquired" -eq 1 ] && fm_lock_release "$FM_SUPERVISION_CLAIM"
       return 1
     }
     recorded_identity=$(cat "$owner/pid-identity" 2>/dev/null || true)
@@ -155,10 +175,7 @@ fm_afk_start_main() {
     if [ -z "$recorded_identity" ] || [ -z "$current_identity" ] \
       || [ "$current_identity" = "$recorded_identity" ]; then
       echo "afk: refusing to replace a live away daemon without a mismatched process identity" >&2
-      return 1
-    fi
-    if ! fm_lock_try_acquire "$FM_AFK_LOCK"; then
-      echo "afk: could not reclaim the identity-mismatched away-daemon lock safely" >&2
+      [ "$claim_acquired" -eq 1 ] && fm_lock_release "$FM_SUPERVISION_CLAIM"
       return 1
     fi
   fi
@@ -166,11 +183,18 @@ fm_afk_start_main() {
   # Fresh start: clear the previous away session's stale delivery artifacts
   # before the new daemon can surface them (fix for the leaked-artifact defect).
   if [ "${FM_AFK_STATE_PREPARED:-0}" != 1 ]; then
-    fm_afk_clear_stale_artifacts "$FM_AFK_STATE"
+    if ! fm_afk_clear_stale_artifacts "$FM_AFK_STATE"; then
+      [ "$claim_acquired" -eq 1 ] && fm_lock_release "$FM_SUPERVISION_CLAIM"
+      echo "afk: failed to clear stale away-mode artifacts" >&2
+      return 1
+    fi
   fi
 
   echo "afk: starting supervise daemon in foreground; keep this command as a tracked background session"
-  exec "$FM_AFK_DAEMON"
+  if ! exec "$FM_AFK_DAEMON"; then
+    [ "$claim_acquired" -eq 1 ] && fm_lock_release "$FM_SUPERVISION_CLAIM"
+    return 1
+  fi
 }
 
 # Run only when executed, not when sourced (tests source fm_afk_clear_stale_artifacts

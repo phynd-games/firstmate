@@ -96,8 +96,10 @@ QUARANTINE_PREFIX="$STATE/.herdr-supervisor-quarantine"
 RECORD_LOCK="$STATE/.herdr-supervisor.lock"
 HEARTBEAT="$STATE/.herdr-supervisor-heartbeat"
 ALARM="$STATE/.herdr-supervisor-alarm"
+ALARM_HISTORY="$STATE/.herdr-supervisor-alarm-history"
 EMERGENCY="$STATE/.herdr-supervisor-emergency"
 LEDGER="$STATE/.herdr-supervisor.log"
+SUPERVISION_CLAIM="$STATE/.supervision-claim.lock"
 # FM_WATCH_ARM_SCRIPT is the same seam the Pi extension already uses to name the
 # arm it launches; honoring it here keeps one spelling for "which arm script"
 # and gives the deterministic tests a real arm to drive without a live watcher.
@@ -437,11 +439,12 @@ alarm_write() {  # <reason>
     rm -f "$tmp" 2>/dev/null || true
     return 1
   }
-  [ -f "$ALARM" ]
+  cat "$ALARM" >> "$ALARM_HISTORY" 2>/dev/null || return 1
+  [ -f "$ALARM" ] && [ -f "$ALARM_HISTORY" ]
 }
 
 alarm_clear() {
-  rm -f "$ALARM" 2>/dev/null || true
+  return 0
 }
 
 # escalate: one durable diagnostic plus one durable wake, using the queue that
@@ -718,6 +721,10 @@ hs_config_preference() {
 # evidence is never read as the presence of an owner.
 harness_owner_provable() {
   HS_DEFER_REASON=
+  if fm_supervision_claim_held_by_other "$SUPERVISION_CLAIM"; then
+    HS_DEFER_REASON="another continuity owner is completing its ownership claim"
+    return 0
+  fi
   if [ -e "$STATE/.afk" ] && (
     . "$SCRIPT_DIR/fm-afk-start.sh" >/dev/null 2>&1
     daemon_lock_held_by_live_daemon
@@ -1329,38 +1336,48 @@ cmd_ensure() {  # <reason>
     echo "herdr-supervisor: not eligible - $HS_INELIGIBLE_REASON"
     return 0
   fi
+  if ! fm_supervision_claim_acquire "$SUPERVISION_CLAIM" "$SUPERVISOR_LOCK_TRIES"; then
+    escalate "the continuity ownership claim could not be acquired within its bounded retry window"
+    return 1
+  fi
   if harness_owner_provable; then
+    fm_lock_release "$SUPERVISION_CLAIM"
     echo "herdr-supervisor: deferred - $HS_DEFER_REASON"
     return 0
   fi
   if ! fm_supervision_needed "$STATE"; then
+    fm_lock_release "$SUPERVISION_CLAIM"
     echo "herdr-supervisor: not needed - this home has no in-flight work, event source, or relay poll"
     return 0
   fi
 
   if ! supervisor_lock_acquire "$RECORD_LOCK"; then
+    fm_lock_release "$SUPERVISION_CLAIM"
     escalate "the supervisor record lock could not be acquired within its bounded retry window"
     return 1
   fi
   if ! reconcile_pending_locked; then
     fm_lock_release "$RECORD_LOCK"
+    fm_lock_release "$SUPERVISION_CLAIM"
     escalate "pending Herdr supervisor cleanup could not be reconciled; replacement is blocked"
     return 1
   fi
   if supervisor_healthy; then
     fm_lock_release "$RECORD_LOCK"
-    alarm_clear
+    fm_lock_release "$SUPERVISION_CLAIM"
     echo "herdr-supervisor: unchanged generation=$(record_get generation) pane=$(record_get pane) pid=$(live_get loop_pid)"
     return 0
   fi
   ledger_append establish-required "${HS_UNHEALTHY_REASON:-unknown}"
   if ! reconcile_previous_locked; then
     fm_lock_release "$RECORD_LOCK"
+    fm_lock_release "$SUPERVISION_CLAIM"
     return 1
   fi
   establish "$reason (${HS_UNHEALTHY_REASON:-no prior record})"
   rc=$?
   fm_lock_release "$RECORD_LOCK"
+  fm_lock_release "$SUPERVISION_CLAIM"
   return "$rc"
 }
 
@@ -1439,6 +1456,7 @@ LOOP_ARM_IDENTITY=
 STALE_WATCHER_PID=
 STALE_WATCHER_IDENTITY=
 LOOP_OWNER_PID=
+LOOP_CLAIM_HELD=0
 loop_owns_generation() {
   [ "$(record_get generation 2>/dev/null || printf '')" = "$LOOP_GENERATION" ]
 }
@@ -1531,7 +1549,7 @@ loop_wait_unknown_arm() {
 }
 
 loop_stop_arm() {
-  local pid=${LOOP_ARM_PID:-} current i=0
+  local pid=${LOOP_ARM_PID:-} current process_state i=0
   [ -n "$pid" ] || return 0
   if loop_arm_matches; then
     kill -TERM "$pid" 2>/dev/null || true
@@ -1546,7 +1564,8 @@ loop_stop_arm() {
       fi
     fi
   fi
-  if ! fm_pid_alive "$pid"; then
+  process_state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  if [ -z "$process_state" ] || [[ "$process_state" == Z* ]] || ! fm_pid_alive "$pid"; then
     wait "$pid" 2>/dev/null || true
   elif [ -n "$LOOP_ARM_IDENTITY" ]; then
     current=$(fm_pid_identity "$pid" 2>/dev/null || printf '')
@@ -1698,7 +1717,7 @@ cmd_run() {
   # A retire, a supersession, or an operator closing the pane must end this
   # cleanly rather than leaving a record claiming a process that is going away.
   LOOP_ARM_OUT=
-  trap 'if loop_stop_arm; then ledger_append loop-signal "terminated"; [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT"; loop_release_live; exit 0; else escalate "the arm child could not be terminated with a verified identity; retaining supervisor ownership"; fi' HUP TERM INT
+  trap 'if loop_stop_arm; then [ "$LOOP_CLAIM_HELD" -eq 1 ] && fm_lock_release "$SUPERVISION_CLAIM"; LOOP_CLAIM_HELD=0; ledger_append loop-signal "terminated"; [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT"; loop_release_live; exit 0; else escalate "the arm child could not be terminated with a verified identity; retaining supervisor ownership"; fi' HUP TERM INT
 
   while :; do
     if ! loop_owns_generation; then
@@ -1766,9 +1785,17 @@ cmd_run() {
       exit 1
     }
     LOOP_ARM_OUT=$out
+    if ! fm_supervision_claim_acquire "$SUPERVISION_CLAIM" "$SUPERVISOR_LOCK_TRIES"; then
+      escalate "the continuity ownership claim could not be acquired before arming"
+      sleep "$IDLE_INTERVAL"
+      continue
+    fi
+    LOOP_CLAIM_HELD=1
     if harness_owner_provable; then
       rm -f "$out" 2>/dev/null || true
       LOOP_ARM_OUT=
+      fm_lock_release "$SUPERVISION_CLAIM"
+      LOOP_CLAIM_HELD=0
       sleep "$IDLE_INTERVAL"
       continue
     fi
@@ -1784,6 +1811,8 @@ cmd_run() {
       "$ARM" >"$out" 2>&1 &
     fi
     LOOP_ARM_PID=$!
+    fm_lock_release "$SUPERVISION_CLAIM"
+    LOOP_CLAIM_HELD=0
     if loop_capture_arm_identity; then
       arm_match=0
       while loop_arm_matches; do
