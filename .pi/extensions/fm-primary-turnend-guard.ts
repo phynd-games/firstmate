@@ -289,7 +289,6 @@ export default function (pi: ExtensionAPI) {
       ? startupRebuildSource(ctx) ?? "startup"
       : { new: "clear", resume: "resume", fork: "fork" }[reason];
     markLoaded();
-    await ensureHerdrFallback();
     if (!source) return;
     await injectSessionstart(pi, source);
   });
@@ -297,7 +296,6 @@ export default function (pi: ExtensionAPI) {
   // Pi's compaction equivalent. The digest is what a compacted session has just
   // lost, so re-emitting it here is the point rather than a side effect.
   pi.on?.("session_compact", async () => {
-    await ensureHerdrFallback();
     await injectSessionstart(pi, "compact");
   });
 
@@ -339,5 +337,4 @@ export default function (pi: ExtensionAPI) {
   });
 
   markLoaded();
-  void ensureHerdrFallback();
 }

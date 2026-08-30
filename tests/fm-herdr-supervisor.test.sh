@@ -765,7 +765,11 @@ pass "an incomplete Herdr response fails loudly and closes nothing it cannot ide
 rm -f "$HOME13/fakestate/create-incomplete"
 out=$(run_supervisor "$HOME13" "$FAKEBIN" ensure 2>&1)
 assert_contains "$out" "herdr-supervisor: started" "a verified absent incomplete create can be retried"
-assert_absent "$HOME13/state/.herdr-supervisor-pending-cleanup" "verified absence clears the incomplete create receipt"
+find "$HOME13/state" -maxdepth 1 -name '.herdr-supervisor-quarantine.pending.*' -print -quit | grep -q . \
+  || fail "invisible incomplete create was not retained as quarantine evidence"
+assert_grep 'invisible after bounded reconciliation' "$HOME13/state/.herdr-supervisor-alarm" \
+  "the quarantined incomplete create leaves an actionable alarm"
+assert_absent "$HOME13/state/.herdr-supervisor-pending-cleanup" "quarantining the incomplete create releases the active pending slot"
 stop_loop "$HOME13"
 pass "verified absence of an incomplete create does not permanently block recovery"
 

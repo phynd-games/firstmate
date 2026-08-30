@@ -390,6 +390,28 @@ pending_clear() {
   [ ! -e "$PENDING" ]
 }
 
+pending_quarantine() {
+  local reason=$1 generation target tmp
+  generation=$(pending_get generation || printf unknown)
+  case "$generation" in
+    ''|*[!A-Za-z0-9._-]*) generation=unknown-${BASHPID:-$$} ;;
+  esac
+  target="$QUARANTINE_PREFIX.pending.$generation"
+  [ ! -e "$target" ] || target="$target.$(date +%s).${BASHPID:-$$}"
+  tmp="$target.tmp.${BASHPID:-$$}"
+  if ! {
+    awk '!/^mode=/' "$PENDING"
+    printf 'mode=quarantine\n'
+    printf 'quarantine_reason=%s\n' "$(ledger_clean_field "$reason")"
+  } > "$tmp" 2>/dev/null || ! chmod 600 "$tmp" 2>/dev/null \
+    || ! mv -f "$tmp" "$target" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  rm -f "$PENDING" 2>/dev/null || return 1
+  [ ! -e "$PENDING" ]
+}
+
 pending_restore_record() {
   local state=${1:-quarantine} generation session socket socket_identity workspace tab pane
   generation=$(pending_get generation || printf unknown)
@@ -418,7 +440,9 @@ pending_restore_record() {
 }
 
 pending_resolve_creation() {
-  local generation session socket socket_identity label list matches workspace count tab pane
+  local generation session socket socket_identity label list matches workspace count tab pane tries=0 max_tries
+  max_tries=${FM_HERDR_PENDING_RECONCILE_TRIES:-3}
+  case "$max_tries" in ''|*[!0-9]*|0) max_tries=3 ;; esac
   generation=$(pending_get generation || printf '')
   session=$(pending_get herdr_session || printf '')
   socket=$(pending_get herdr_socket || printf '')
@@ -429,13 +453,16 @@ pending_resolve_creation() {
   herdr_identity || return 1
   [ "$HS_SESSION" = "$session" ] && [ "$HS_SOCKET" = "$socket" ] \
     && [ "$HS_SOCKET_IDENTITY" = "$socket_identity" ] || return 1
-  list=$(herdr_workspace_control "$socket" "$socket_identity" list 2>/dev/null) || return 1
-  matches=$(printf '%s' "$list" | jq -r --arg label "$label" \
-    'if (.result.workspaces | type) != "array" then error("workspace list is not an array") else .result.workspaces[] | select(.label == $label) | .workspace_id end' 2>/dev/null) || return 1
-  count=$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d '[:space:]')
-  if [ "$count" = 0 ]; then
-    return 2
-  fi
+  while [ "$tries" -lt "$max_tries" ]; do
+    list=$(herdr_workspace_control "$socket" "$socket_identity" list 2>/dev/null) || return 1
+    matches=$(printf '%s' "$list" | jq -r --arg label "$label" \
+      'if (.result.workspaces | type) != "array" then error("workspace list is not an array") else .result.workspaces[] | select(.label == $label) | .workspace_id end' 2>/dev/null) || return 1
+    count=$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d '[:space:]')
+    [ "$count" != 0 ] && break
+    tries=$((tries + 1))
+    [ "$tries" -lt "$max_tries" ] && sleep 0.1
+  done
+  [ "$count" != 0 ] || return 2
   [ "$count" = 1 ] || return 1
   workspace=$(printf '%s\n' "$matches" | sed -n '1p')
   tab=$(pending_get tab || printf unknown)
@@ -1335,7 +1362,11 @@ reconcile_pending_locked() {
     pending_resolve_creation
     case "$?" in
       0) ;;
-      2) pending_clear || return 1; return 0 ;;
+      2)
+        pending_quarantine "incomplete Herdr create remained invisible after bounded reconciliation" || return 1
+        escalate "incomplete Herdr create was quarantined after bounded reconciliation found no visible workspace" || true
+        return 0
+        ;;
       *) pending_restore_record quarantine || true; return 1 ;;
     esac
     workspace=$(pending_get workspace || printf '')

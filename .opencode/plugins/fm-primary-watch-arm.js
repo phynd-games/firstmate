@@ -104,6 +104,7 @@ async function isPrimaryRoot(root, home) {
 
 function shouldArm(paths) {
   if (existsSync(`${paths.state}/.afk`)) return false;
+  if (existsSync(`${paths.state}/.watch-arm-blocked`)) return false;
   if (existsSync(`${paths.config}/x-mode.env`)) return true;
   try {
     return readdirSync(paths.state).some((name) => name.endsWith(".meta"));
@@ -312,8 +313,31 @@ function persistFailure(paths, reason) {
   }
 }
 
+function persistBlocked(paths, reason) {
+  const blocked = `${paths.state}/.watch-arm-blocked`;
+  const temporary = `${blocked}.opencode-${process.pid}-${Date.now()}`;
+  try {
+    if (lstatSync(blocked).isSymbolicLink()) return false;
+  } catch {
+  }
+  try {
+    mkdirSync(paths.state, { recursive: true });
+    writeFileSync(temporary, `at=${Date.now()}\nreason=${reason}\n`);
+    chmodSync(temporary, 0o600);
+    renameSync(temporary, blocked);
+    return true;
+  } catch {
+    try {
+      unlinkSync(temporary);
+    } catch {
+    }
+    return false;
+  }
+}
+
 function surfaceFailure(paths, client, sessionID, reason) {
-  const durable = persistFailure(paths, reason);
+  let durable = persistFailure(paths, reason);
+  if (!durable) durable = persistBlocked(paths, reason);
   const message = durable ? reason : `${reason}\nwatcher: FAILED - OpenCode could not persist the recovery alarm or wake escalation`;
   void sendPrompt(paths, client, sessionID, wakePrompt(message)).catch(() => {
     // OpenCode owns delivery errors; continuity restoration never waits on prompting.

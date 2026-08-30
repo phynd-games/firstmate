@@ -217,6 +217,7 @@ fm_pi_extension_loaded() {
 # recorded in this home's session lock, with that process still alive.
 fm_pi_extension_owns_supervision() {
   local state=$1 root=$2 lock source marker version
+  [ ! -e "$state/.watch-arm-blocked" ] && [ ! -L "$state/.watch-arm-blocked" ] || return 1
   lock="$state/.lock"
   source=fm-primary-pi-watch.ts
   marker=.pi-watch-extension-loaded

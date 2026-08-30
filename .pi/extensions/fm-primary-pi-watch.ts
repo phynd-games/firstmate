@@ -90,6 +90,7 @@ const state = process.env.FM_STATE_OVERRIDE || `${fmHome}/state`;
 const config = process.env.FM_CONFIG_OVERRIDE || `${fmHome}/config`;
 const armScript = `${fmRoot}/bin/fm-watch-arm.sh`;
 const marker = `${state}/.pi-watch-extension-loaded`;
+const blockedMarker = `${state}/.watch-arm-blocked`;
 const extensionVersion = `sha256:${createHash("sha256").update(readFileSync(extensionFile)).digest("hex")}`;
 const retryBaseMs = positiveInteger("FM_WATCH_REARM_RETRY_BASE_MS", 250);
 const retryMaxMs = positiveInteger("FM_WATCH_REARM_RETRY_MAX_MS", 4000);
@@ -185,6 +186,11 @@ function retryMarkLoaded(): void {
 }
 
 function markLoaded(): boolean {
+  try {
+    lstatSync(blockedMarker);
+    return false;
+  } catch {
+  }
   const ownership = lockOwnership();
   if (ownership === "other") {
     clearMarkerRetry();
@@ -217,6 +223,34 @@ function markLoaded(): boolean {
   writeFileSync(marker, `${extensionVersion}\n${process.pid}\n${lockIdentity}\n`);
   clearMarkerRetry();
   return true;
+}
+
+function retainBlockedFailure(message: string): boolean {
+  const temporary = `${blockedMarker}.pi-${process.pid}-${Date.now()}`;
+  try {
+    if (lstatSync(blockedMarker).isSymbolicLink()) return false;
+  } catch {
+  }
+  try {
+    mkdirSync(state, { recursive: true });
+    writeFileSync(temporary, `at=${Date.now()}\nreason=${message}\n`);
+    chmodSync(temporary, 0o600);
+    renameSync(temporary, blockedMarker);
+    return true;
+  } catch {
+    try {
+      unlinkSync(temporary);
+    } catch {
+    }
+    return false;
+  }
+}
+
+function clearBlockedFailure(): void {
+  try {
+    unlinkSync(blockedMarker);
+  } catch {
+  }
 }
 
 function actionableLine(output: string): string {
@@ -456,6 +490,12 @@ export default function (pi: ExtensionAPI) {
         }
       }
     }
+    if (durableStatus !== 0 && !retainBlockedFailure(message)) {
+      try {
+        unlinkSync(marker);
+      } catch {
+      }
+    }
     void sendWake(owner, message).catch(() => {
       // Pi owns delivery errors; continuity restoration never waits on prompting.
     });
@@ -654,6 +694,7 @@ export default function (pi: ExtensionAPI) {
       const recovery = combined.match(/^watcher: started pid=([0-9]+).* recovery-generation=([A-Za-z0-9._-]+)$/m);
       if (recovery) armRecovery.set(armChild, { watcherPid: recovery[1], generation: recovery[2] });
       if (/^watcher: (?:started|attached)\b/m.test(combined)) {
+        clearBlockedFailure();
         settleReadiness(true);
       }
     };
