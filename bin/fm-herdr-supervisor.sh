@@ -849,8 +849,9 @@ herdr_blocked_child_live() {
   local pid identity current
   pid=$(sed -n 's/^pid=//p' "$BLOCKED" 2>/dev/null | head -n 1)
   identity=$(sed -n 's/^pid-identity=//p' "$BLOCKED" 2>/dev/null | head -n 1)
-  [ -n "$pid" ] && [ -n "$identity" ] || return 2
+  [ -n "$pid" ] || return 2
   fm_pid_alive "$pid" || return 1
+  [ -n "$identity" ] || return 2
   current=$(fm_pid_identity "$pid" 2>/dev/null || true)
   [ -n "$current" ] && [ "$current" = "$identity" ] || return 2
 }
@@ -1939,7 +1940,7 @@ cmd_run() {
             ledger_append handoff "another continuity owner became provable while the unresolved arm child remained live; retaining tracked ownership"
             LOOP_ARM_UNRESOLVED_HANDOFF_REPORTED=1
           fi
-          sleep 0.5
+          wait "${LOOP_ARM_PID:-}" 2>/dev/null || true
           continue
         fi
         if [ "$(date +%s)" -ge "$LOOP_ARM_UNRESOLVED_NEXT" ]; then
