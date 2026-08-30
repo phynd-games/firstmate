@@ -134,6 +134,18 @@ test_a_fresh_start_proves_readiness_before_it_prints_a_url() {
   pass "a fresh start proves readiness and identity before printing a URL"
 }
 
+test_start_waits_for_the_created_pane_shell_before_running_dashboard() {
+  local home port out count
+  home=$(make_home shell-ready)
+  port=$(free_port)
+  out=$(FAKE_HERDR_PANE_READY_AFTER=12 FM_DASHBOARD_PANE_READY_DELAY_MS=10 \
+    start "$home" "$port" ensure) || fail "ensure raced the pane shell: $out"
+  [ -n "$(url_in "$out")" ] || fail "the shell-ready start did not report a URL: $out"
+  count=$(cat "$home/herdr/process-info.count")
+  [ "$count" -ge 21 ] || fail "startup ran before ten stable shell-ready samples: $count"
+  pass "startup waits for ten stable shell-owned samples before running the dashboard"
+}
+
 file_mode() {  # <path>
   stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1" 2>/dev/null
 }
@@ -854,6 +866,7 @@ test_stop_closes_the_pane_and_releases_the_port() {
 }
 
 test_a_fresh_start_proves_readiness_before_it_prints_a_url
+test_start_waits_for_the_created_pane_shell_before_running_dashboard
 test_a_repeat_start_adopts_the_running_dashboard
 test_a_nonregular_owner_target_blocks_without_orphaning_the_new_pane
 test_concurrent_starts_converge_on_one_dashboard

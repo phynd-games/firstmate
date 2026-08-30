@@ -40,6 +40,7 @@ lost_response() {  # <subcommand-pair>
 # Drop the flags the caller passes; capture only the values this double needs.
 WORKSPACE=
 LABEL=
+PANE=
 args=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -49,6 +50,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --workspace|--cwd)
       [ "$1" = --workspace ] && WORKSPACE=${2:-}
+      shift 2 || shift
+      ;;
+    --pane)
+      PANE=${2:-}
       shift 2 || shift
       ;;
     --label)
@@ -133,6 +138,24 @@ case "${1:-}:${2:-}" in
     done
     printf ']}}\n'
     ;;
+  pane:process-info)
+    pane=${PANE:-${3:-}}
+    [ "$(cat "$STATE/panes/$pane.state" 2>/dev/null)" = open ] || {
+      echo "fake-herdr: no such pane: $pane" >&2; exit 1; }
+    count=$(cat "$STATE/process-info.count" 2>/dev/null || echo 0)
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$STATE/process-info.count"
+    shell_pid=4242
+    foreground_pid=$((shell_pid + 1))
+    if [ -n "${FAKE_HERDR_PANE_READY_AFTER:-}" ] &&
+      [ "$count" -ge "$FAKE_HERDR_PANE_READY_AFTER" ]; then
+      foreground_pid=$shell_pid
+    elif [ -z "${FAKE_HERDR_PANE_READY_AFTER:-}" ]; then
+      foreground_pid=$shell_pid
+    fi
+    printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":%s,"foreground_processes":[{"pid":%s}]}}}\n' \
+      "$pane" "$shell_pid" "$foreground_pid"
+    ;;
   pane:get)
     pane=${3:-}
     if [ "${FAKE_HERDR_PANE_GONE_SESSION:-}" = "$SESSION" ]; then
@@ -156,6 +179,14 @@ case "${1:-}:${2:-}" in
     [ "$(cat "$STATE/panes/$pane.state" 2>/dev/null)" = open ] || {
       echo "fake-herdr: no such pane: $pane" >&2; exit 1; }
     shift 3
+    count=$(cat "$STATE/process-info.count" 2>/dev/null || echo 0)
+    if [ -n "${FAKE_HERDR_PANE_READY_AFTER:-}" ] &&
+      [ "$count" -lt "$FAKE_HERDR_PANE_READY_AFTER" ]; then
+      # Herdr 0.8.0 can report success while the shell still swallows the
+      # command.  Model that race without starting a process.
+      printf '{"result":{"type":"ok"}}\n'
+      exit 0
+    fi
     # Own a process group so closing the pane reclaims the whole tree, exactly
     # as closing a real pane reclaims everything running in it.
     perl -e 'setpgrp(0,0); exec @ARGV or exit 127' -- "$@" \

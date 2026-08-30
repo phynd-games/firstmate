@@ -60,6 +60,10 @@
 #   FM_DASHBOARD_PORT_TRIES       candidate ports to try (default 10)
 #   FM_DASHBOARD_READY_TRIES      readiness polls before giving up (default 30)
 #   FM_DASHBOARD_READY_DELAY_MS   delay between readiness polls (default 200)
+#   FM_DASHBOARD_PANE_READY_TRIES shell-readiness polls before giving up
+#                                 (default 100)
+#   FM_DASHBOARD_PANE_READY_DELAY_MS delay between shell-readiness polls
+#                                    (default 100)
 #   FM_DASHBOARD_LOCK_WAIT        seconds to wait for the startup lock (default 15)
 #   FM_DASHBOARD_HERDR_TIMEOUT    seconds allowed for each Herdr call (default 2)
 #   FM_DASHBOARD_HERDR_CLI        command prefix replacing the Herdr call (tests
@@ -87,6 +91,8 @@ FM_DASHBOARD_PORT=${FM_DASHBOARD_PORT:-8787}
 FM_DASHBOARD_PORT_TRIES=${FM_DASHBOARD_PORT_TRIES:-10}
 FM_DASHBOARD_READY_TRIES=${FM_DASHBOARD_READY_TRIES:-30}
 FM_DASHBOARD_READY_DELAY_MS=${FM_DASHBOARD_READY_DELAY_MS:-200}
+FM_DASHBOARD_PANE_READY_TRIES=${FM_DASHBOARD_PANE_READY_TRIES:-100}
+FM_DASHBOARD_PANE_READY_DELAY_MS=${FM_DASHBOARD_PANE_READY_DELAY_MS:-100}
 FM_DASHBOARD_LOCK_WAIT=${FM_DASHBOARD_LOCK_WAIT:-15}
 FM_DASHBOARD_HERDR_TIMEOUT=${FM_DASHBOARD_HERDR_TIMEOUT:-2}
 FM_DASHBOARD_HERDR_CLI=${FM_DASHBOARD_HERDR_CLI:-}
@@ -161,6 +167,8 @@ validate_bound FM_DASHBOARD_PORT "$FM_DASHBOARD_PORT"
 validate_bound FM_DASHBOARD_PORT_TRIES "$FM_DASHBOARD_PORT_TRIES"
 validate_bound FM_DASHBOARD_READY_TRIES "$FM_DASHBOARD_READY_TRIES"
 validate_bound FM_DASHBOARD_READY_DELAY_MS "$FM_DASHBOARD_READY_DELAY_MS"
+validate_bound FM_DASHBOARD_PANE_READY_TRIES "$FM_DASHBOARD_PANE_READY_TRIES"
+validate_bound FM_DASHBOARD_PANE_READY_DELAY_MS "$FM_DASHBOARD_PANE_READY_DELAY_MS"
 validate_bound FM_DASHBOARD_LOCK_WAIT "$FM_DASHBOARD_LOCK_WAIT"
 validate_bound FM_DASHBOARD_HERDR_TIMEOUT "$FM_DASHBOARD_HERDR_TIMEOUT"
 
@@ -458,6 +466,34 @@ herdr_pane_in_scope() {  # <session> <workspace-id> <tab-id> <pane-id>
     and .result.pane.workspace_id == $workspace
     and .result.pane.tab_id == $tab
   ' >/dev/null 2>&1
+}
+
+# Herdr can return a newly-created pane before its interactive shell is ready
+# to receive Enter.  A successful pane run in that window can leave the
+# command typed but unsubmitted, so require ten consecutive process-info
+# samples showing that the shell owns the foreground before running the server.
+herdr_pane_shell_ready() {  # <session> <pane-id>
+  local session=$1 pane=$2 tries=$FM_DASHBOARD_PANE_READY_TRIES
+  local stable=0 out
+  while [ "$tries" -gt 0 ]; do
+    out=$(HERDR_SESSION_OVERRIDE="$session" herdr_cli pane process-info \
+      --pane "$pane" 2>/dev/null) || out=
+    if printf '%s' "$out" | jq -e --arg pane "$pane" '
+      .result.process_info as $process
+      | $process.pane_id == $pane
+      and ($process.shell_pid | type == "number" and . > 1)
+      and ($process.foreground_processes | type == "array" and length == 1)
+      and ($process.foreground_processes[0].pid == $process.shell_pid)
+    ' >/dev/null 2>&1; then
+      stable=$((stable + 1))
+      [ "$stable" -ge 10 ] && return 0
+    else
+      stable=0
+    fi
+    sleep_ms "$FM_DASHBOARD_PANE_READY_DELAY_MS"
+    tries=$((tries - 1))
+  done
+  return 1
 }
 
 # open | gone | unknown. The distinction matters: a failing pane read is
@@ -1042,6 +1078,10 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
   [ -n "$STARTED_PANE" ] && STARTED_PANE_IDENTITY="id:$STARTED_PANE"
   STARTED_STAGE='pane-identity'
   startup_journal_write || return 1
+  [ "$(pane_state "$STARTED_PANE" "$STARTED_SESSION" "$ws" "$STARTED_TAB")" = open ] || return 1
+  STARTED_STAGE='pane-shell-ready'
+  startup_journal_write || return 1
+  herdr_pane_shell_ready "$STARTED_SESSION" "$STARTED_PANE" || return 1
   [ "$(pane_state "$STARTED_PANE" "$STARTED_SESSION" "$ws" "$STARTED_TAB")" = open ] || return 1
   STARTED_STAGE='pane-run'
   startup_journal_write || return 1
