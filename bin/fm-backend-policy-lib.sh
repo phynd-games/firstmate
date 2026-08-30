@@ -19,17 +19,12 @@
 #                                   stay on disk but are unreachable for the
 #                                   active runtime (removal plan:
 #                                   docs/architecture.md "Runtime session backends")
-#   fm_backend_policy_legacy_lane   whether this process is the repository's own
-#                                   retained-adapter regression lane
+#   fm_backend_policy_legacy_lane   the retired retained-adapter lane predicate
 #   fm_backend_policy_permits       whether <name> may be dispatched here
 #   fm_backend_policy_is_retained   whether <name> is a retained legacy adapter
 #   fm_backend_policy_refuse        the one refusal diagnostic
 #   fm_backend_policy_config_remediation, fm_backend_policy_legacy_record_remediation,
 #   fm_backend_policy_marker_note   remediation and marker text used by every boundary
-#
-# Legacy test lane. The explicit lane marker is admitted only when descriptor 9
-# is inherited from a repository test process in the same checkout.
-# Ordinary Firstmate processes cannot enable this lane without that provenance.
 #
 # Sourced by bin/fm-backend.sh and bin/fm-supervisor-target-lib.sh. It sets no
 # FM_ROOT/FM_HOME globals and runs no commands at source time.
@@ -42,83 +37,12 @@ _FM_BACKEND_POLICY_LIB_SOURCED=1
 FM_BACKEND_ACTIVE="herdr"
 FM_BACKEND_RETAINED_LEGACY="tmux zellij orca cmux"
 
-fm_backend_policy_fd_target() {
-  local pid=$1 fd=$2 target
-  case "$pid:$fd" in *[!0-9:]*|*:0) return 1 ;; esac
-  if [ -r "/proc/$pid/fd/$fd" ]; then
-    target=$(readlink "/proc/$pid/fd/$fd" 2>/dev/null) || return 1
-  else
-    target=$(lsof -Fn -a -p "$pid" -d "$fd" 2>/dev/null | sed -n 's/^n//p' | tail -1) || return 1
-  fi
-  [ -n "$target" ] || return 1
-  printf '%s\n' "$target"
-}
-
-fm_backend_policy_test_process() {
-  local fd=9 current_pid=${BASHPID:-$$}
-  local current_target command comm cwd target parent hops=0 root
-  case "$fd" in ''|*[!0-9]*) return 1 ;; esac
-  current_target=$(fm_backend_policy_fd_target "$current_pid" "$fd") || return 1
-  root=$(cd "${BASH_SOURCE[0]%/*}/.." 2>/dev/null && pwd -P) || return 1
-  while [ -n "$current_pid" ] && [ "$current_pid" -gt 1 ] && [ "$hops" -lt 64 ]; do
-    target=$(fm_backend_policy_fd_target "$current_pid" "$fd" 2>/dev/null || true)
-    if [ "$target" = "$current_target" ]; then
-      command=$(ps -p "$current_pid" -o command= 2>/dev/null || true)
-      comm=$(ps -p "$current_pid" -o comm= 2>/dev/null || true)
-      case "$comm" in
-        bash|zsh|sh)
-          case "$command" in *"$root/tests/"*.test.sh*|*"tests/"*.test.sh*) ;; *) command= ;; esac
-          if [ -n "$command" ]; then
-            if [ -r "/proc/$current_pid/cwd" ]; then
-              cwd=$(readlink "/proc/$current_pid/cwd" 2>/dev/null || true)
-            else
-              cwd=$(lsof -Fn -a -p "$current_pid" -d cwd 2>/dev/null | sed -n 's/^n//p' | tail -1 || true)
-            fi
-            case "$cwd" in "$root"|"$root"/*) return 0 ;; esac
-          fi
-          ;;
-      esac
-    fi
-    parent=$(ps -o ppid= -p "$current_pid" 2>/dev/null || true)
-    parent=${parent//[[:space:]]/}
-    [ -n "$parent" ] && [ "$parent" != "$current_pid" ] || break
-    current_pid=$parent
-    hops=$((hops + 1))
-  done
+fm_backend_policy_legacy_lane() {
   return 1
 }
 
-fm_backend_policy_legacy_lane() {
-  [ "${FM_BACKEND_LEGACY_TEST_LANE:-}" = 1 ] || return 1
-  fm_backend_policy_test_process
-}
-
-fm_backend_policy_test_stub() {
-  local name=$1 path stub_dir temp_dir first_line
-  path=$(command -v "$name" 2>/dev/null) || return 1
-  case "$path" in
-    /*) ;;
-    *) return 1 ;;
-  esac
-  [ -f "$path" ] && [ -x "$path" ] || return 1
-  stub_dir=$(cd "$(dirname "$path")" 2>/dev/null && pwd -P) || return 1
-  temp_dir=$(cd "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P) || return 1
-  case "$stub_dir/" in
-    "$temp_dir"/*) ;;
-    *) return 1 ;;
-  esac
-  IFS= read -r first_line < "$path" || return 1
-  case "$first_line" in
-    '#!'*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 fm_backend_policy_legacy_adapter_allowed() {
-  local name=${1-}
-  fm_backend_policy_legacy_lane || return 1
-  fm_backend_policy_is_retained "$name" || return 1
-  fm_backend_policy_test_stub "$name"
+  return 1
 }
 
 fm_backend_policy_is_retained() {  # <name>
@@ -131,11 +55,9 @@ fm_backend_policy_is_retained() {  # <name>
   return 1
 }
 
-# fm_backend_policy_permits: 0 when <name> may be selected or dispatched in this
-# process. Herdr always; a retained legacy adapter only inside the test lane.
+# fm_backend_policy_permits: 0 when Herdr may be selected or dispatched here.
 fm_backend_policy_permits() {  # <name>
   [ "${1-}" = "$FM_BACKEND_ACTIVE" ] && return 0
-  fm_backend_policy_legacy_adapter_allowed "${1-}" && return 0
   return 1
 }
 

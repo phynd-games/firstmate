@@ -9,7 +9,7 @@ Exact task chronology, branch names, temporary homes, local paths, process ids, 
 ## Herdr-only runtime invariant
 
 Herdr is the sole supported runtime backend (`AGENTS.md` hard rule 6; owner `bin/fm-backend-policy-lib.sh`).
-The deterministic guard runs without any real backend binary and outside the regression lane `tests/lib.sh` exports; the real-Herdr guard drives the real spawn and teardown inside a helper-provisioned lab session.
+The deterministic guard runs without any real backend binary; the real-Herdr guard drives the real spawn and teardown inside a helper-provisioned lab session.
 
 ```sh
 bash tests/fm-backend-herdr-only.test.sh
@@ -19,7 +19,7 @@ bash tests/fm-backend-herdr-only-smoke.test.sh
 Verified 2026-08-29 on macOS aarch64 with the installed Herdr 0.8.2 (`herdr status --json` client protocol 20) for the smoke run; the deterministic run used a canned `herdr` stub answering protocol 13 for the floor case and a PATH without `herdr` for the missing-binary case:
 
 ```text
-ok - known and spawn-capable backend sets are exactly herdr outside the regression lane
+ok - known and spawn-capable backend sets are exactly herdr
 ok - fm_backend_name refuses an undeclared home instead of defaulting (no tmux default)
 ok - fm_backend_name refuses every retained, blocked, and unknown config/backend value
 ok - fm_backend_name refuses every non-herdr FM_BACKEND even when config/backend declares herdr (no fall-through)
@@ -61,7 +61,7 @@ not ok - fm_backend_validate tmux: expected a refusal exit, got 0
 not ok - FM_BACKEND=tmux: expected a refusal exit, got 0
 ```
 
-The tmux, Zellij, Orca, and cmux sections below are retained-adapter evidence: they describe adapters that the active runtime refuses by name and that remain exercised only inside the regression lane (`FM_BACKEND_LEGACY_TEST_LANE=1`).
+The tmux, Zellij, Orca, and cmux sections below are historical retained-adapter evidence: they describe adapters that the active runtime refuses by name and that are no longer executable through Firstmate.
 
 ## tmux
 

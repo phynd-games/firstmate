@@ -2,7 +2,7 @@
 
 **Retired from the active runtime.**
 Herdr is Firstmate's sole supported runtime backend (`AGENTS.md` hard rule 6); tmux is never selected, detected, or defaulted to, and `config/backend`, `FM_BACKEND`, or `--backend` naming `tmux` is refused by name with the Herdr remediation.
-The adapter file `bin/backends/tmux.sh` and the tmux primitives in `bin/fm-tmux-lib.sh` stay on disk only for the repository's regression lane; [`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns the current selection contract and the read-only handling of pre-invariant tmux task records, and [`architecture.md`](architecture.md#runtime-session-backends) owns the removal plan.
+The adapter file `bin/backends/tmux.sh` and the tmux primitives in `bin/fm-tmux-lib.sh` stay on disk only as historical, non-operational reference; [`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns the current selection contract and the read-only handling of pre-invariant tmux task records, and [`architecture.md`](architecture.md#runtime-session-backends) owns the removal plan.
 The rest of this page is historical regression-lane material only and is not an instruction for active Firstmate operation.
 
 ## Historical regression-lane material (non-operational)

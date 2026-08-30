@@ -36,9 +36,8 @@
 # config, task metadata, selectors, and supervisor discovery all refuse any
 # other value and any absent identity through fm_backend_policy_refuse, and
 # fm_backend_detect never selects anything. The tmux, zellij, orca, and cmux
-# adapter files stay on disk as retained legacy code reachable only inside the
-# repository's regression lane (FM_BACKEND_LEGACY_TEST_LANE=1), where the
-# pre-invariant contract below still applies.
+# adapter files stay on disk as retained legacy code and are unreachable by
+# every Firstmate runtime path.
 #
 # Pre-invariant compatibility contract (legacy lane only): a task's meta may
 # omit `backend=`; readers treat that as `tmux` (fm_backend_of_meta), and
@@ -64,25 +63,15 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-${FM_ROOT:-$FM_BACKEND_DEFAULT_ROOT}}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 FM_BACKEND_CONFIG_DIR="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
-# The Herdr-only invariant and its retained-adapter regression lane.
+# The Herdr-only invariant and its retained-adapter history.
 # shellcheck source=bin/fm-backend-policy-lib.sh
 . "$FM_BACKEND_LIB_DIR/fm-backend-policy-lib.sh"
 
-# Known and spawn-capable backends. In the active runtime both sets are exactly
-# the one supported backend, herdr (FM_BACKEND_ACTIVE). Inside the regression
-# lane they widen to the retained legacy adapters, each of which still has its
-# own bin/backends/<name>.sh and the empirical record that verified it: herdr
-# (data/fm-backend-design-d7/herdr-verification-p2.md, docs/herdr-backend.md),
-# zellij (docs/zellij-backend.md, real 0.44.0), orca (docs/orca-backend.md,
-# also the worktree provider), and cmux (docs/cmux-backend.md, real 0.64.17).
+# Known and spawn-capable backends are exactly the one supported backend,
+# herdr (FM_BACKEND_ACTIVE). Retained adapters remain historical files and
 # codex-app remains deliberately absent; see docs/codex-app-backend.md.
-if fm_backend_policy_legacy_lane; then
-  FM_BACKEND_KNOWN="tmux herdr zellij orca cmux"
-  FM_BACKEND_SPAWN="tmux herdr zellij orca cmux"
-else
-  FM_BACKEND_KNOWN="$FM_BACKEND_ACTIVE"
-  FM_BACKEND_SPAWN="$FM_BACKEND_ACTIVE"
-fi
+FM_BACKEND_KNOWN="$FM_BACKEND_ACTIVE"
+FM_BACKEND_SPAWN="$FM_BACKEND_ACTIVE"
 
 # fm_backend_list_contains: whitespace-delimited membership without relying on
 # shell word splitting. fm-backend.sh is normally sourced by bash scripts, but
@@ -102,10 +91,8 @@ fm_backend_is_known() {  # <name>
   fm_backend_list_contains "$FM_BACKEND_KNOWN" "$1"
 }
 
-# fm_backend_detect: retain the pre-invariant runtime marker probe only for the
-# repository's regression lane. In the active runtime it is inert and returns
-# 1: markers never select a backend. Inside the regression lane, it prints the
-# detected backend name and returns 0, or returns 1 when nothing is detected.
+# fm_backend_detect: runtime markers never select a backend and this function
+# always returns 1.
 # Nesting resolves INNERMOST-first: tmux sets $TMUX in every process running
 # inside it, even a tmux started inside a herdr pane, so $TMUX is checked first
 # and wins over HERDR_ENV=1 in that nested case. herdr injects HERDR_ENV=1 (plus
@@ -155,10 +142,7 @@ FM_BACKEND_CMUX_BUNDLE_ID="com.cmuxterm.app"
 fm_backend_detect() {
   FM_BACKEND_DETECTED=""
   FM_BACKEND_DETECT_SIGNAL=""
-  # Active runtime: runtime markers are never a selection input (hard rule 6).
-  # HERDR_ENV=1 does not auto-select herdr either; the home declares it. The
-  # innermost-first detection below survives only inside the regression lane.
-  fm_backend_policy_legacy_lane || return 1
+  return 1
   if [ -n "${TMUX:-}" ]; then
     FM_BACKEND_DETECTED=tmux
     FM_BACKEND_DETECT_SIGNAL=TMUX
@@ -259,9 +243,6 @@ fm_backend_detect_cmux_app_is_ancestor() {
 # the remediation, prints NOTHING to stdout, and returns 1, so a caller that
 # captures the name can never receive a usable non-Herdr value.
 #
-# Regression lane only: the pre-invariant contract continues below - runtime
-# auto-detection (fm_backend_detect) after config, then default tmux, with the
-# loud notice for auto-detected herdr or cmux naming the winning signal.
 fm_backend_name() {
   local line v detected marker config_line=""
   if [ -f "$FM_BACKEND_CONFIG_DIR/backend" ]; then
@@ -336,7 +317,7 @@ fm_backend_validate() {  # <name> [origin]
   fi
   if fm_backend_policy_is_retained "$name"; then
     fm_backend_policy_refuse "$origin" "$name" \
-      "Select herdr instead; the $name adapter is retained on disk only for the repository's regression lane and is unreachable for the active runtime."
+      "Select Herdr instead; the $name adapter is retained on disk only as historical code and is unreachable for Firstmate."
     return 1
   fi
   if fm_backend_policy_legacy_lane; then
@@ -412,7 +393,6 @@ fm_meta_get() {  # <meta-file> <key>
 # print an accepted backend to stdout. Callers that render fleet state
 # (fm-session-start.sh, fm-crew-state.sh, fm-fleet-snapshot.sh) check the
 # status and present the record as legacy instead of dispatching on it.
-# Regression lane only: absent means `tmux` (the pre-invariant contract).
 fm_backend_of_meta() {  # <meta-file>
   local v backend_count
   backend_count=$(grep -c '^backend=' "$1" 2>/dev/null || true)
@@ -454,12 +434,12 @@ fm_backend_target_of_meta() {  # <meta-file>
   [ -n "$window" ] && printf '%s' "$window"
 }
 
-fm_backend_meta_recorded_backend() {  # <meta-file>; passive display accessor
-  local meta=$1 count
-  count=$(grep -c '^backend=' "$meta" 2>/dev/null || true)
+fm_backend_meta_recorded_backend() {  # <meta-file> [<key>]; passive display accessor
+  local meta=$1 key=${2:-backend} count
+  count=$(grep -c "^$key=" "$meta" 2>/dev/null || true)
   case "$count" in
     0) printf 'absent' ;;
-    1) fm_meta_get "$meta" backend ;;
+    1) fm_meta_get "$meta" "$key" ;;
     *) printf 'ambiguous' ;;
   esac
 }
@@ -507,7 +487,16 @@ fm_backend_herdr_capability_check() {  # <origin>
 }
 
 fm_backend_herdr_capability_preflight() {  # <origin>
-  fm_backend_source herdr "$1"
+  local origin=$1 session detail
+  fm_backend_source herdr "$origin" || return $?
+  session=$(fm_backend_herdr_session)
+  if detail=$(fm_backend_herdr_session_capability_check "$session" 2>&1); then
+    return 0
+  fi
+  detail=$(printf '%s\n' "$detail" | sed -n '1p')
+  fm_backend_policy_refuse "$origin" herdr \
+    "The native Herdr session capability check failed${detail:+: $detail} Repair Herdr, then verify the named session with 'herdr status --json'."
+  return 2
 }
 
 fm_backend_endpoint_atom_valid() {  # <value>

@@ -697,14 +697,27 @@ secondmate_liveness_one_timed() {  # <meta> <id> <label>
 secondmate_liveness_one() {  # <meta> <id>
   local meta=$1 id=$2
   local window harness backend target agent_state out cause remote_host remote_rc readiness_reason route_out remote_backend
-  window=$(fm_meta_get "$meta" window)
-  [ -n "$window" ] || return 0
   harness=$(fm_meta_get "$meta" harness)
   remote_host=$(fm_meta_get "$meta" remote_host)
   if [ -n "$remote_host" ]; then
+    remote_backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
+    case "$remote_backend" in
+      absent|tmux|zellij|orca|cmux)
+        echo "SECONDMATE_LIVENESS: secondmate $id: skipped: legacy remote backend record (backend=${remote_backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
+        return 0
+        ;;
+      ambiguous|'')
+        echo "SECONDMATE_LIVENESS: secondmate $id: blocked: ambiguous or empty remote backend identity; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\"" >&2
+        return 0
+        ;;
+      herdr) ;;
+      *)
+        echo "SECONDMATE_LIVENESS: secondmate $id: blocked: invalid remote backend identity '${remote_backend}'; declare Herdr and verify with herdr status --json" >&2
+        return 0
+        ;;
+    esac
     if ! fm_backend_validate_remote_meta "$meta" "$id" >/dev/null 2>&1; then
-      remote_backend=$(fm_backend_meta_exact_value "$meta" remote_backend 2>/dev/null || true)
-      echo "SECONDMATE_LIVENESS: secondmate $id: skipped: legacy remote backend record (backend=${remote_backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
+      echo "SECONDMATE_LIVENESS: secondmate $id: blocked: remote Herdr metadata is invalid; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\"" >&2
       return 0
     fi
     remote_rc=0
@@ -969,6 +982,8 @@ x_mode_write_if_changed() {
       return 0
     fi
   fi
+  window=$(fm_meta_get "$meta" window)
+  [ -n "$window" ] || return 0
   tmp=$(umask 077; mktemp "$parent/.fm-x-mode.XXXXXX" 2>/dev/null) || return 1
   if ! printf '%s\n' "$content" > "$tmp" \
     || ! chmod "$mode" "$tmp" \

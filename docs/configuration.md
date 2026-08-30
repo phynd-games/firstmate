@@ -110,7 +110,7 @@ Whichever input is consulted first must be exactly `herdr`; a different value re
 Nothing is auto-detected: `$TMUX`, `TMUX_PANE`, `HERDR_ENV=1`, and cmux runtime markers never select a backend, and when present they are named in the refusal only as ignored evidence.
 Every refusal is one `REFUSED:` line on stderr naming the input judged, Herdr, and the remediation (declare `herdr` in `config/backend` or `FM_BACKEND=herdr`, then prove the runtime with `herdr status --json`), with nothing on stdout, so no caller can receive a usable non-Herdr value; the session-start bootstrap surfaces the same line as `BACKEND_INVALID:` and dispatch stops until it is corrected.
 The declared name is a label; the runtime is proven on use by the Herdr adapter's own native checks - the client protocol floor read from `herdr status --json`, `jq`, the named-session server, launcher pane identity, and every per-operation pane read - and a missing, below-floor, unauthenticated, ambiguous, or unhealthy Herdr is a terminal blocker that firstmate surfaces, never a reason to retry on another backend.
-`tmux`, `zellij`, `orca`, and `cmux` are retained legacy adapters: their files stay under `bin/backends/` for the repository's regression lane only, every dispatcher refuses them by name, and [`architecture.md`](architecture.md#runtime-session-backends) owns their removal plan; `codex-app` remains not accepted ([`docs/codex-app-backend.md`](codex-app-backend.md)).
+`tmux`, `zellij`, `orca`, and `cmux` are retained historical adapters: their files stay under `bin/backends/`, every dispatcher refuses them by name, and [`architecture.md`](architecture.md#runtime-session-backends) owns their removal plan; `codex-app` remains not accepted ([`docs/codex-app-backend.md`](codex-app-backend.md)).
 `config/backend` is inherited into secondmate homes byte-exact under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md) and is judged there by the same rule.
 
 The session-start secondmate liveness sweep uses the recovery-grade `fm_backend_agent_state` classifier.
@@ -139,7 +139,7 @@ The tracked Phynd `config/herdr-presentation-spaces` file opts a home out of, or
 The setting is inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
 For normal herdr operations, `HERDR_SESSION` selects the named session, but destructive test cleanup must not rely on `HERDR_SESSION` alone.
 Use the explicit guarded cleanup path described in [`docs/herdr-backend.md`](herdr-backend.md) instead of `herdr server stop`.
-The retained legacy adapters' own session, label, and test-cleanup semantics stay documented on their pages ([`docs/zellij-backend.md`](zellij-backend.md), [`docs/cmux-backend.md`](cmux-backend.md), [`docs/orca-backend.md`](orca-backend.md)) for the regression lane only.
+The retained adapters' old session, label, and cleanup semantics remain documented on their pages as historical, non-operational reference ([`docs/zellij-backend.md`](zellij-backend.md), [`docs/cmux-backend.md`](cmux-backend.md), [`docs/orca-backend.md`](orca-backend.md)).
 
 ## Away-mode supervisor backend (FM_SUPERVISOR_BACKEND / FM_SUPERVISOR_TARGET)
 
@@ -148,7 +148,7 @@ That pane is a Herdr pane (`AGENTS.md` hard rule 6): `FM_SUPERVISOR_BACKEND`, wh
 Without overrides, both axes are discovered only from Herdr's own injected identity, `HERDR_ENV=1` with `HERDR_PANE_ID`, composing `"${HERDR_SESSION:-default}:${HERDR_PANE_ID}"`; `$TMUX_PANE` never selects, and there is no `firstmate:0` tmux default.
 When neither an override nor a Herdr identity is present, discovery refuses with the same `REFUSED:` line as runtime selection and prints no target, so the daemon stops at startup instead of injecting into a guessed pane; the remediation is to run the primary session inside a Herdr pane or set both overrides.
 Any non-Herdr supervisor backend refuses at daemon startup rather than applying one backend's injection primitives to another backend's pane.
-`bin/fm-supervisor-target-lib.sh` owns the discovery functions; the tmux precedence it also carries is reachable only in the repository's regression lane.
+`bin/fm-supervisor-target-lib.sh` owns the discovery functions; its historical tmux precedence is unreachable in Firstmate.
 
 ## Away-mode wedge alarm channels (config/wedge-alarm)
 
@@ -354,7 +354,7 @@ The universal toolchain is node, git, gh with GitHub auth via `gh auth login`, n
 This section is the single owner of that universal toolchain list; backend guides' prerequisites point here and add only their backend-specific tools.
 In that list, no-mistakes runs the validation pipeline, gh-axi, chrome-devtools-axi, and lavish-axi cover GitHub, browser, and rich-review operations, and tasks-axi plus quota-axi back backlog mutations and quota-aware array dispatch.
 The per-backend delta is required only for the backend resolved from `FM_BACKEND`, then `config/backend` - herdr, the sole supported runtime backend - so a home is never told to install a tool an inactive adapter or feature would need.
-That delta is owned in code by `fm_backend_required_tools` in `bin/fm-backend.sh`: for herdr, the `herdr` CLI, `jq` for the adapter's JSON parsing, and the `treehouse` worktree provider (the table still carries the retained adapters' rows for the regression lane).
+That delta is owned in code by `fm_backend_required_tools` in `bin/fm-backend.sh`: for herdr, the `herdr` CLI, `jq` for the adapter's JSON parsing, and the `treehouse` worktree provider (the table still carries historical rows for retained adapters).
 Backend tool availability uses the adapter's own executable resolver, so bootstrap and spawn agree on supported non-`PATH` locations such as cmux's bundled CLI.
 A refused or unknown backend declaration emits `BACKEND_INVALID` carrying the Herdr remediation and blocks dispatch instead of silently dropping its dependency delta or falling back to another backend.
 A Herdr home is therefore never told `tmux` is missing, and the `treehouse` durable-lease upgrade check runs because Herdr uses treehouse.

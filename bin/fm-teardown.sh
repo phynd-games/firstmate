@@ -2540,11 +2540,14 @@ remove_secondmate_registry_entry() {
 validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
 
 if [ "$KIND" = secondmate ]; then
+  [ -n "$HOME_PATH" ] || HOME_PATH=$WT
+  if [ "$FORCE" = "--force" ]; then
+    preflight_firstmate_home_herdr_children "$HOME_PATH" || exit 1
+  fi
   LOCAL_REGISTRY_LOCK=$(secondmate_registry_lock_path "$STATE")
   fm_lock_acquire_wait "$LOCAL_REGISTRY_LOCK" || exit 1
   LOCAL_HANDOFF_LOCK="$STATE/.backlog-handoff-$ID.lock"
   fm_lock_acquire_wait "$LOCAL_HANDOFF_LOCK" || exit 1
-  [ -n "$HOME_PATH" ] || HOME_PATH=$WT
   handoff_wake_retire_stage_recover "$HOME_PATH" || exit 1
   handoff_wake_retire_validate || exit 1
   validate_firstmate_home_for_removal "$HOME_PATH" "secondmate home" "$ID" >/dev/null || exit 1

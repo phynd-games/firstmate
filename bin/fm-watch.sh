@@ -254,7 +254,9 @@ window_is_busy() {  # <window> <tail40>
   if [ -n "$task" ] && [ -f "$meta" ]; then
     verdict=$(fm_busy_classify_meta "$meta" "$task" "$STATE" "$tail40")
   else
-    verdict=$(fm_busy_classify "$(window_backend "$w")" "$w" "$(window_harness "$w")" \
+    local backend
+    backend=$(window_backend "$w") || return 2
+    verdict=$(fm_busy_classify "$backend" "$w" "$(window_harness "$w")" \
       "${task:-unknown}" "$STATE" "$tail40")
   fi
   [ "${verdict%% *}" = busy ]
@@ -272,19 +274,23 @@ window_kind() {
   echo unknown
 }
 
-# window_backend: the backend recorded in the meta whose window= matches <w>,
-# defaulting to tmux (absent backend= means tmux; the P1 compatibility
-# contract) when no matching meta carries the field, or none matches at all.
+# window_backend: the Herdr backend recorded in the meta whose window= matches
+# <w>. Missing, ambiguous, and retained identities refuse in active runtime.
 window_backend() {
   local w=$1 meta backend
   meta=$(fm_backend_meta_for_window "$w" "$STATE" 2>/dev/null || true)
-  if [ -n "$meta" ]; then
-    backend=$(grep '^backend=' "$meta" | cut -d= -f2- || true)
-    [ -n "$backend" ] || backend=tmux
-    echo "$backend"
-    return 0
+  if [ -z "$meta" ]; then
+    fm_backend_policy_refuse "watch target $w (missing task metadata)" "" \
+      "Repair or explicitly migrate the task record through docs/configuration.md \"Legacy task records\"."
+    return 1
   fi
-  echo tmux
+  backend=$(fm_backend_meta_recorded_backend "$meta" 2>/dev/null || true)
+  [ "$backend" = herdr ] || {
+    fm_backend_policy_refuse "watch target $w (backend=${backend:-missing})" "$backend" \
+      "Declare Herdr in the task record and verify the runtime with 'herdr status --json'."
+    return 1
+  }
+  printf '%s\n' "$backend"
 }
 
 window_harness() {
@@ -986,7 +992,9 @@ event_wait_or_sleep() {
   local w b session first_backend="" first_session="" rec rc
   local windows=()
   while IFS= read -r w; do
-    b=$(window_backend "$w")
+    if ! b=$(window_backend "$w"); then
+      return 2
+    fi
     fm_backend_has_push "$b" || continue
     # Secondmate endpoints are supervised via status writes, not pane/agent
     # state (an idle or blocked secondmate agent pane is healthy by design), so
@@ -1377,6 +1385,9 @@ EOF
   while IFS= read -r w; do
     kind=$(window_kind "$w")
     task=$(window_to_task "$w" "$STATE")
+    if ! window_backend "$w" >/dev/null; then
+      exit 2
+    fi
     # Steering-inbox loss detection runs before the secondmate stale
     # exemption below, because a mate's steers land in an inbox too.
     [ -z "$task" ] || inbox_steer_check "$w" "$task"
@@ -1593,5 +1604,5 @@ EOF
 
   # Terminal wait: a bounded native-event wait for push-capable homes (herdr),
   # else the blind poll sleep. See event_wait_or_sleep.
-  event_wait_or_sleep
+  event_wait_or_sleep || exit 2
 done

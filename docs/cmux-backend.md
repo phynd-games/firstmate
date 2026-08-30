@@ -1,7 +1,7 @@
 # cmux runtime backend (retained legacy adapter)
 
 **Retired from the active runtime.**
-Herdr is Firstmate's sole supported runtime backend (`AGENTS.md` hard rule 6); selecting `cmux` through `config/backend`, `FM_BACKEND`, or `--backend` is refused by name, cmux runtime markers are never used for detection, and `bin/backends/cmux.sh` stays on disk only for the repository's regression lane.
+Herdr is Firstmate's sole supported runtime backend (`AGENTS.md` hard rule 6); selecting `cmux` through `config/backend`, `FM_BACKEND`, or `--backend` is refused by name, cmux runtime markers are never used for detection, and `bin/backends/cmux.sh` stays on disk only as historical, non-operational reference.
 [`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns the current contract and [`architecture.md`](architecture.md#runtime-session-backends) owns the removal plan; the rest of this page describes the retained adapter as it behaved when it was selectable.
 
 The sections below are historical regression-lane documentation and are not active setup, selection, detection, or operation instructions.

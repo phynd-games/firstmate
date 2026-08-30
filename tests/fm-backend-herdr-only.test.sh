@@ -105,12 +105,10 @@ test_known_sets_are_herdr_only() {
   [ "$RC" -eq 0 ] && [ "$OUT" = herdr ] || fail "active public selection must accept declared herdr: rc=$RC out=$OUT err=$ERR"
   run_capture active-tmux lib_probe -- 'fm_backend_validate_spawn tmux'
   assert_refusal "active public spawn validation for tmux" "resolves 'tmux'"
-  out=$(env "${STRIP[@]}" FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_HARNESS=1 \
-    FM_BACKEND_TEST_ROOT="$ROOT" FM_BACKEND_TEST_OWNER_PID="$$" \
-    FM_BACKEND_TEST_OWNER_IDENTITY="$FM_TEST_OWNER_IDENTITY" FM_CONFIG_OVERRIDE="$lane_config" \
-    bash -c '. "$1/bin/fm-backend.sh"; fm_backend_name' _ "$ROOT")
-  [ "$out" = tmux ] || fail "repository test process must retain the legacy public selection behavior, got $out"
-  pass "public backend selection accepts Herdr and refuses retained adapters outside the regression lane"
+  run_capture retired-lane policy_env "FM_CONFIG_OVERRIDE=$lane_config" FM_BACKEND_LEGACY_TEST_LANE=1 -- \
+    bash -c '. "$1/bin/fm-backend.sh"; fm_backend_name' _ "$ROOT"
+  assert_refusal "the retired legacy lane" "declares no backend identity"
+  pass "public backend selection accepts Herdr and refuses retained adapters"
 }
 
 test_legacy_lane_requires_harness_identity() {
@@ -122,7 +120,7 @@ test_legacy_lane_requires_harness_identity() {
   printf 'forged\n' > "$forged"
   run_capture forged-lane lib_probe "FM_CONFIG_OVERRIDE=$config" "FM_FORGED_CAPABILITY=$forged" FM_BACKEND_LEGACY_TEST_LANE=1 -- 'exec 9<"$FM_FORGED_CAPABILITY"; fm_backend_source tmux'
   assert_refusal "a forged retained-adapter capability" "resolves 'tmux'"
-  pass "the retained-adapter lane requires the hermetic test harness identity"
+  pass "retained-adapter activation remains disabled even with forged test markers"
 }
 
 test_name_refuses_absent_or_empty_config() {
@@ -225,7 +223,7 @@ test_dispatchers_refuse_retained_adapters_without_running_them() {
   fb=$(make_recording_fakebin "$TMP_ROOT/dispatch" "$log")
   for v in $LEGACY_NAMES; do
     run_capture "validate-$v" lib_probe -- "fm_backend_validate $v '--backend'"
-    assert_refusal "fm_backend_validate $v" "--backend resolves '$v'" "Select herdr instead" "retained on disk only for the repository's regression lane"
+    assert_refusal "fm_backend_validate $v" "--backend resolves '$v'" "Select Herdr instead" "retained on disk only as historical code"
     run_capture "validate-spawn-$v" lib_probe -- "fm_backend_validate_spawn $v"
     assert_refusal "fm_backend_validate_spawn $v" "resolves '$v'"
     run_capture "source-$v" lib_probe -- "fm_backend_source $v"
@@ -298,13 +296,13 @@ test_spawn_refuses_non_herdr_selection_before_side_effects() {
     if [ "$v" = bogus ]; then
       assert_refusal "--backend bogus" "--backend resolves 'bogus'" "Declare Herdr explicitly"
     else
-      assert_refusal "--backend $v" "--backend resolves '$v'" "Select herdr instead"
+      assert_refusal "--backend $v" "--backend resolves '$v'" "Select Herdr instead"
     fi
     assert_spawn_left_nothing "--backend $v" "$state" "$log"
   done
   : > "$log"
   spawn_case spawn-secondmate-flag-tmux "$config" "$state" "$fb" "$log" -- "$id" --secondmate --backend tmux
-  assert_refusal "remote secondmate --backend=tmux" "--backend resolves 'tmux'" "Select herdr instead"
+  assert_refusal "remote secondmate --backend=tmux" "--backend resolves 'tmux'" "Select Herdr instead"
   assert_spawn_left_nothing "remote secondmate --backend=tmux" "$state" "$log"
   for v in $LEGACY_NAMES; do
     : > "$log"
@@ -586,11 +584,11 @@ test_herdr_record_and_endpoint_pass_every_boundary() {
   [ "$RC" -eq 0 ] && [ "$OUT" = herdr ] && [ -z "$ERR" ] || fail "herdr record must resolve silently: rc=$RC out=$OUT err=$ERR"
   run_capture herdr-endpoint lib_probe -- "fm_backend_validate_task_endpoint '$state/$id.meta' '$id' && printf '%s|%s' \"\$FM_BACKEND_VALIDATED_BACKEND\" \"\$FM_BACKEND_VALIDATED_TARGET\""
   [ "$RC" -eq 0 ] && [ "$OUT" = "herdr|default:w2:p3" ] || fail "herdr endpoint validation failed: rc=$RC out=$OUT err=$ERR"
-  out=$(lib_probe -- "fm_backend_herdr_version_check() { return 0; }; fm_backend_resolve_selector '$id' '$state'")
+  out=$(lib_probe -- "fm_backend_herdr_version_check() { return 0; }; fm_backend_herdr_session_capability_check() { return 0; }; fm_backend_resolve_selector '$id' '$state'")
   [ "$out" = default:w2:p3 ] || fail "task-id selector must resolve the herdr window, got $out"
-  out=$(lib_probe -- "fm_backend_herdr_version_check() { return 0; }; fm_backend_of_selector '$id' 'default:w2:p3' '$state'")
+  out=$(lib_probe -- "fm_backend_herdr_version_check() { return 0; }; fm_backend_herdr_session_capability_check() { return 0; }; fm_backend_of_selector '$id' 'default:w2:p3' '$state'")
   [ "$out" = herdr ] || fail "task-id selector backend must be herdr, got $out"
-  out=$(lib_probe -- 'fm_backend_herdr_version_check() { return 0; }; fm_backend_validate herdr && fm_backend_validate_spawn herdr && fm_backend_source herdr && printf ok')
+  out=$(lib_probe -- 'fm_backend_herdr_version_check() { return 0; }; fm_backend_herdr_session_capability_check() { return 0; }; fm_backend_validate herdr && fm_backend_validate_spawn herdr && fm_backend_source herdr && printf ok')
   [ "$out" = ok ] || fail "herdr must pass validate, validate_spawn, and source: $out"
   out=$(lib_probe -- 'fm_backend_required_tools herdr')
   [ "$out" = "herdr jq treehouse" ] || fail "herdr required tools unchanged, got $out"

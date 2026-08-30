@@ -678,13 +678,32 @@ if [ "${1:-}" = "--key" ]; then
   esac
   key=$2
   semantic_key=$(fm_send_normalize_key "$key")
+  send_key_out= send_key_rc=0
   if [ "$TARGET_BACKEND" = remote ]; then
-    if ! "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh key "$TARGET_REMOTE_ID" "$key" < /dev/null; then
-      echo "error: key '$key' not sent to remote secondmate $TARGET_REMOTE_ID; completion may be unknown" >&2
-      exit 1
+    if send_key_out=$("$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh key "$TARGET_REMOTE_ID" "$key" < /dev/null 2>&1); then
+      send_key_rc=0
+    else
+      send_key_rc=$?
     fi
-  elif ! fm_backend_send_key "$TARGET_BACKEND" "$T" "$key" "$EXPECTED_LABEL"; then
-    echo "error: key '$key' not sent to $T ($TARGET_BACKEND send failed; tried $RESOLUTION_TRIED)" >&2
+  else
+    if send_key_out=$(fm_backend_send_key "$TARGET_BACKEND" "$T" "$key" "$EXPECTED_LABEL" 2>&1); then
+      send_key_rc=0
+    else
+      send_key_rc=$?
+    fi
+  fi
+  if [ "$send_key_rc" -ne 0 ]; then
+    send_key_refusal=$(printf '%s\n' "$send_key_out" | sed -n 's/^\(REFUSED: .*\)$/\1/p' | head -1)
+    if [ -n "$send_key_refusal" ]; then
+      printf '%s\n' "$send_key_refusal" >&2
+    else
+      [ -z "$send_key_out" ] || printf '%s\n' "$send_key_out" >&2
+      if [ "$TARGET_BACKEND" = remote ]; then
+        echo "error: key '$key' not sent to remote secondmate $TARGET_REMOTE_ID; completion may be unknown" >&2
+      else
+        echo "error: key '$key' not sent to $T ($TARGET_BACKEND send failed; tried $RESOLUTION_TRIED)" >&2
+      fi
+    fi
     exit 1
   fi
   fm_send_clear_after_interrupt "$semantic_key" || exit 1

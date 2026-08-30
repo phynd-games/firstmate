@@ -412,6 +412,21 @@ fm_backend_herdr_version_check() {
   return 0
 }
 
+fm_backend_herdr_session_capability_check() {  # <session>
+  local session=$1 status
+  fm_backend_herdr_tool_check || return 1
+  status=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null) || return 1
+  printf '%s' "$status" | jq -e --argjson minimum "$FM_BACKEND_HERDR_MIN_PROTOCOL" '
+    (.client.protocol | type == "number")
+    and (.server.running == true)
+    and (.server.status == "running")
+    and (.server.compatible == true)
+    and (.server.protocol | type == "number")
+    and (.server.protocol >= $minimum)
+  ' >/dev/null 2>&1 || return 1
+  fm_backend_herdr_cli "$session" session list --json >/dev/null 2>&1 || return 1
+}
+
 # fm_backend_herdr_session: resolve which named herdr session this normal
 # spawn/op uses. HERDR_SESSION mirrors tmux's $TMUX ambient-selection for
 # adapter workspace/tab/pane operations: an operator (or firstmate's own

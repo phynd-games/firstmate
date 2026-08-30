@@ -20,9 +20,7 @@
 # with no override the pane is discovered only from Herdr's own injected
 # HERDR_ENV=1 + HERDR_PANE_ID identity. There is no `firstmate:0` tmux default;
 # an undiscoverable pane refuses through fm_backend_policy_refuse and prints
-# nothing, so a caller can never inject into a guessed endpoint. The
-# pre-invariant precedence (override > TMUX_PANE > HERDR_ENV > tmux default)
-# survives only inside the regression lane (FM_BACKEND_LEGACY_TEST_LANE=1).
+# nothing, so a caller can never inject into a guessed endpoint.
 
 _FM_SUPERVISOR_TARGET_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-backend-policy-lib.sh

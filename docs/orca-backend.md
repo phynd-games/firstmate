@@ -1,7 +1,7 @@
 # Orca runtime backend (retained legacy adapter)
 
 **Retired from the active runtime.**
-Herdr is Firstmate's sole supported runtime backend (`AGENTS.md` hard rule 6); selecting `orca` through `config/backend`, `FM_BACKEND`, or `--backend` is refused by name, and `bin/backends/orca.sh` stays on disk only for the repository's regression lane.
+Herdr is Firstmate's sole supported runtime backend (`AGENTS.md` hard rule 6); selecting `orca` through `config/backend`, `FM_BACKEND`, or `--backend` is refused by name, and `bin/backends/orca.sh` stays on disk only as historical, non-operational reference.
 [`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns the current contract, including the read-only handling of pre-invariant Orca task records, and [`architecture.md`](architecture.md#runtime-session-backends) owns the removal plan; the rest of this page is historical regression-lane material only and is not an instruction for active Firstmate operation.
 
 ## Historical regression-lane material (non-operational)
