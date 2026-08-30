@@ -326,6 +326,12 @@ payload_is_valid() {  # <payload-file>
       and all(.main_inventory.orphan_in_flight[]; type == "string")
       and has_type(.; "secondmate_current"; "object")
       and (.secondmate_current | bounded_counts)
+      and has_type(.secondmate_current; "registry"; "object")
+      and has_type(.secondmate_current.registry; "path"; "string")
+      and has_type(.secondmate_current.registry; "present"; "boolean")
+      and has_type(.secondmate_current.registry; "available"; "boolean")
+      and has_type(.secondmate_current.registry; "complete"; "boolean")
+      and has_nullable(.secondmate_current.registry; "reason"; "string")
       and has_type(.secondmate_current; "records"; "array")
       and (.secondmate_current.shown == (.secondmate_current.records | length))
       and all(.secondmate_current.records[]; secondmate)
@@ -1347,6 +1353,23 @@ class Handler(BaseHTTPRequestHandler):
                     done = subprocess.CompletedProcess(
                         build.args, 124, stdout, stderr
                     )
+                except Exception as exc:
+                    stdout = b""
+                    stderr = ("dashboard build communication failed: %s\n" % exc).encode()
+                    try:
+                        cleanup_proven = finish_contained_build(build, namespace_inode)
+                    except Exception as cleanup_exc:
+                        cleanup_proven = False
+                        stderr += ("build cleanup failed: %s\n" % cleanup_exc).encode()
+                    if not cleanup_proven:
+                        self.server.cleanup_blocked = True
+                        sys.stderr.write(
+                            "fm-dashboard: DASHBOARD_BLOCKED: build descendant cleanup could not be proven\n"
+                        )
+                        stderr += b"build descendant cleanup could not be proven\n"
+                    done = subprocess.CompletedProcess(
+                        build.args, 126, stdout, stderr
+                    )
                 else:
                     if not finish_contained_build(build, namespace_inode):
                         self.server.cleanup_blocked = True
@@ -1489,6 +1512,18 @@ def initial_build(containment_enabled):
             "initial dashboard build exceeded its %ss bound\n"
             % os.environ["FM_DASHBOARD_BUILD_TIMEOUT"]
         )
+        return False
+    except Exception as exc:
+        try:
+            cleanup_proven = finish_contained_build(build, namespace_inode)
+        except Exception as cleanup_exc:
+            cleanup_proven = False
+            sys.stderr.write("initial build cleanup failed: %s\n" % cleanup_exc)
+        if not cleanup_proven:
+            sys.stderr.write(
+                "fm-dashboard: DASHBOARD_BLOCKED: initial build descendant cleanup could not be proven\n"
+            )
+        sys.stderr.write("initial dashboard build communication failed: %s\n" % exc)
         return False
     finally:
         for stream in (build.stdout, build.stderr):

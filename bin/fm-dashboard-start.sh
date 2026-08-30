@@ -397,10 +397,67 @@ herdr_ready() {
   return 0
 }
 
-herdr_id_valid() {  # <id>
+herdr_workspace_id_valid() {  # <workspace-id>
   case "$1" in
-    ''|*[!A-Za-z0-9._:@+-]*) return 1 ;;
+    ''|*[!A-Za-z0-9._@+-]*|*:* ) return 1 ;;
   esac
+}
+
+herdr_tab_id_valid() {  # <workspace-id> <tab-id>
+  local workspace=$1 tab=$2
+  herdr_workspace_id_valid "$workspace" || return 1
+  case "$tab" in
+    "$workspace":t[0-9A-Za-z._@+-]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+herdr_pane_id_valid() {  # <workspace-id> <tab-id> <pane-id>
+  local workspace=$1 tab=$2 pane=$3
+  herdr_workspace_id_valid "$workspace" || return 1
+  herdr_tab_id_valid "$workspace" "$tab" || return 1
+  case "$pane" in
+    "$workspace":p[0-9A-Za-z._@+-]*|"$workspace"p[0-9A-Za-z._@+-]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+herdr_workspace_in_scope() {  # <session> <workspace-id> <label>
+  local session=$1 workspace=$2 label=$3 out
+  herdr_workspace_id_valid "$workspace" || return 1
+  out=$(HERDR_SESSION_OVERRIDE="$session" herdr_cli workspace list 2>/dev/null) || return 1
+  printf '%s' "$out" | jq -e --arg workspace "$workspace" --arg label "$label" '
+    (.result.workspaces | type) == "array"
+    and ([.result.workspaces[] | select(.workspace_id == $workspace)] | length) == 1
+    and ([.result.workspaces[] | select(.workspace_id == $workspace)] | .[0]
+      | (.workspace_id | type == "string")
+      and (.workspace_id | test("^[A-Za-z0-9._@+-]+$"))
+      and (if $label == "" then true else .label == $label end))
+  ' >/dev/null 2>&1
+}
+
+herdr_tab_in_scope() {  # <session> <workspace-id> <tab-id> [<label>]
+  local session=$1 workspace=$2 tab=$3 label=${4:-} out
+  herdr_tab_id_valid "$workspace" "$tab" || return 1
+  out=$(HERDR_SESSION_OVERRIDE="$session" herdr_cli tab list --workspace "$workspace" 2>/dev/null) || return 1
+  printf '%s' "$out" | jq -e --arg workspace "$workspace" --arg tab "$tab" --arg label "$label" '
+    (.result.tabs | type) == "array"
+    and ([.result.tabs[] | select(.tab_id == $tab and .workspace_id == $workspace)] | length) == 1
+    and ([.result.tabs[] | select(.tab_id == $tab and .workspace_id == $workspace)] | .[0]
+      | if $label == "" then true else .label == $label end)
+  ' >/dev/null 2>&1
+}
+
+herdr_pane_in_scope() {  # <session> <workspace-id> <tab-id> <pane-id>
+  local session=$1 workspace=$2 tab=$3 pane=$4 out
+  herdr_pane_id_valid "$workspace" "$tab" "$pane" || return 1
+  out=$(HERDR_SESSION_OVERRIDE="$session" herdr_cli pane get "$pane" 2>/dev/null) || return 1
+  printf '%s' "$out" | jq -e --arg workspace "$workspace" --arg tab "$tab" --arg pane "$pane" '
+    (.result.pane | type) == "object"
+    and .pane_id == $pane
+    and .workspace_id == $workspace
+    and .tab_id == $tab
+  ' >/dev/null 2>&1
 }
 
 # open | gone | unknown. The distinction matters: a failing pane read is
@@ -413,6 +470,10 @@ pane_state() {  # <pane-id> <session> <workspace> <tab>
     printf 'unknown'
     return 0
   fi
+  herdr_pane_id_valid "$workspace" "$tab" "$pane" || {
+    printf 'unknown'
+    return 0
+  }
   if [ -z "$FM_DASHBOARD_HERDR_CLI" ]; then
     out=$(fm_run_timed "$FM_DASHBOARD_HERDR_TIMEOUT" env \
       FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="${FM_ROOT_OVERRIDE:-$FM_ROOT}" \
@@ -536,6 +597,11 @@ sleep_ms() {  # <milliseconds>
 record_get() {  # <key>
   [ -f "$RECORD" ] && [ ! -L "$RECORD" ] || return 1
   sed -n "s/^$1=//p" "$RECORD" 2>/dev/null | head -1
+}
+
+record_fingerprint() {
+  [ -f "$RECORD" ] && [ ! -L "$RECORD" ] || return 1
+  digest_of "$(cat "$RECORD")"
 }
 
 record_target_publishable() {
@@ -794,7 +860,7 @@ trap startup_transaction_signal INT TERM
 # Adopt the recorded owner when, and only when, every one of its claims still
 # holds. An unknown identity is retained rather than treated as stale.
 record_is_live() {  # -> 0 and sets ADOPTED_PORT
-  local home session workspace tab port pane digest health
+  local home session workspace tab port pane token digest computed_digest health
   ADOPTED_PORT=
   RECORD_PROBE_STATE=invalid
   [ -f "$RECORD" ] && [ ! -L "$RECORD" ] || return 1
@@ -804,7 +870,10 @@ record_is_live() {  # -> 0 and sets ADOPTED_PORT
   workspace=$(record_get workspace); [ -n "$workspace" ] || return 1
   tab=$(record_get tab); [ -n "$tab" ] || return 1
   port=$(record_get port); case "$port" in ''|*[!0-9]*) return 1 ;; esac
+  token=$(record_get token); [ -n "$token" ] || return 1
   digest=$(record_get digest); [ -n "$digest" ] || return 1
+  computed_digest=$(digest_of "$token") || return 1
+  [ "$computed_digest" = "$digest" ] || return 1
   pane=$(record_get pane); [ -n "$pane" ] || return 1
   RECORD_PROBE_STATE=$(pane_state "$pane" "$session" "$workspace" "$tab")
   case "$RECORD_PROBE_STATE" in
@@ -856,29 +925,32 @@ recover_workspace() {  # <label>
   printf '%s' "$out" | jq -er --arg label "$label" '
     [.result.workspaces[]? | select(.label == $label) | .workspace_id]
     | select(length == 1) | .[0]
-    | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._:@+-]*$"))'
+    | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._@+-]*$"))'
 }
 
 recover_tab() {  # <workspace> <label>
   local workspace=$1 label=$2 out
   out=$(herdr_cli tab list --workspace "$workspace" 2>/dev/null) || return 1
-  printf '%s' "$out" | jq -er --arg label "$label" '
-    [.result.tabs[]? | select(.label == $label) | .tab_id]
+  printf '%s' "$out" | jq -er --arg workspace "$workspace" --arg label "$label" '
+    [.result.tabs[]? | select(.label == $label and .workspace_id == $workspace)
+      | select((.tab_id | type) == "string" and (.tab_id | test("^" + $workspace + ":t[0-9A-Za-z._@+-]+$"))) | .tab_id]
     | select(length == 1) | .[0]
-    | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._:@+-]*$"))'
+    | select(type == "string")'
 }
 
 recover_pane() {  # <workspace> <tab>
   local workspace=$1 tab=$2 out
   out=$(herdr_cli pane list --workspace "$workspace" 2>/dev/null) || return 1
-  printf '%s' "$out" | jq -er --arg tab "$tab" '
-    [.result.panes[]? | select(.tab_id == $tab) | .pane_id]
+  printf '%s' "$out" | jq -er --arg workspace "$workspace" --arg tab "$tab" '
+    [.result.panes[]? | select(.tab_id == $tab and .workspace_id == $workspace)
+      | select((.pane_id | type) == "string" and
+          (.pane_id | test("^(" + $workspace + ":p|" + $workspace + "p)[0-9A-Za-z._@+-]+$"))) | .pane_id]
     | select(length == 1) | .[0]
-    | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._:@+-]*$"))'
+    | select(type == "string")'
 }
 
 start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
-  local port=$1 digest=$2 out ws label
+  local port=$1 digest=$2 out ws label workspace_created=0
   label="firstmate-dashboard-$digest"
   STARTED_SESSION=$(herdr_session)
   STARTED_LABEL=$label
@@ -903,26 +975,32 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
     (.result.workspaces | type) == "array"
     and all(.result.workspaces[]; type == "object"
       and (.workspace_id | type == "string")
-      and (.workspace_id | test("^[A-Za-z0-9][A-Za-z0-9._:@+-]*$")))
+      and (.workspace_id | test("^[A-Za-z0-9][A-Za-z0-9._@+-]*$")))
   ' >/dev/null 2>&1 || return 1
   ws=$(printf '%s' "$out" | jq -r '.result.workspaces[0].workspace_id // empty' 2>/dev/null)
-  [ -z "$ws" ] || herdr_id_valid "$ws" || return 1
+  [ -z "$ws" ] || herdr_workspace_id_valid "$ws" || return 1
   if [ -z "$ws" ]; then
+    workspace_created=1
     STARTED_STAGE=workspace-create
     startup_journal_write || return 1
     out=$(herdr_cli workspace create --cwd "$FM_HOME" --label "$label" --no-focus 2>/dev/null) || :
     ws=$(printf '%s' "$out" | jq -er '
       .result.workspace.workspace_id
-      | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._:@+-]*$"))
+      | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._@+-]*$"))
     ' 2>/dev/null) || ws=
-    if [ -n "$ws" ] && herdr_id_valid "$ws"; then
+    if [ -n "$ws" ] && herdr_workspace_id_valid "$ws"; then
       STARTED_WORKSPACE=$ws
       STARTED_WORKSPACE_IDENTITY="id:$ws"
     fi
     startup_journal_write || return 1
     [ -n "$ws" ] || ws=$(recover_workspace "$label") || return 1
   fi
-  herdr_id_valid "$ws" || return 1
+  herdr_workspace_id_valid "$ws" || return 1
+  if [ "$workspace_created" -eq 1 ]; then
+    herdr_workspace_in_scope "$STARTED_SESSION" "$ws" "$label" || return 1
+  else
+    herdr_workspace_in_scope "$STARTED_SESSION" "$ws" "" || return 1
+  fi
   STARTED_WORKSPACE=$ws
   STARTED_WORKSPACE_IDENTITY="id:$ws"
   STARTED_STAGE=tab-create
@@ -942,14 +1020,16 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
     .result.root_pane.pane_id
     | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._:@+-]*$"))
   ' 2>/dev/null) || STARTED_PANE=
-  [ -z "$STARTED_TAB" ] || herdr_id_valid "$STARTED_TAB" || STARTED_TAB=
-  [ -z "$STARTED_PANE" ] || herdr_id_valid "$STARTED_PANE" || STARTED_PANE=
+  [ -z "$STARTED_TAB" ] || herdr_tab_id_valid "$ws" "$STARTED_TAB" || STARTED_TAB=
+  [ -z "$STARTED_PANE" ] || herdr_pane_id_valid "$ws" "${STARTED_TAB:-$ws:t0}" "$STARTED_PANE" || STARTED_PANE=
   [ -n "$STARTED_TAB" ] && STARTED_TAB_IDENTITY="id:$STARTED_TAB"
   [ -n "$STARTED_PANE" ] && STARTED_PANE_IDENTITY="id:$STARTED_PANE"
   STARTED_PANE_PARENT_TAB=${STARTED_TAB:-}
   STARTED_STAGE=tab-response
   startup_journal_write || return 1
   [ -n "$STARTED_TAB" ] || STARTED_TAB=$(recover_tab "$ws" "$label") || return 1
+  herdr_tab_id_valid "$ws" "$STARTED_TAB" || return 1
+  herdr_tab_in_scope "$STARTED_SESSION" "$ws" "$STARTED_TAB" "$label" || return 1
   [ -n "$STARTED_TAB" ] && STARTED_TAB_IDENTITY="id:$STARTED_TAB"
   STARTED_PANE_PARENT_TAB=$STARTED_TAB
   STARTED_PANE_CREATE_REQUEST="workspace:$ws;tab:$STARTED_TAB;role:root-pane;label:$STARTED_LABEL"
@@ -957,6 +1037,8 @@ start_pane() {  # <port> <digest> -> sets STARTED_WORKSPACE/TAB/PANE
   STARTED_STAGE=pane-response
   startup_journal_write || return 1
   [ -n "$STARTED_PANE" ] || STARTED_PANE=$(recover_pane "$ws" "$STARTED_TAB") || return 1
+  herdr_pane_id_valid "$ws" "$STARTED_TAB" "$STARTED_PANE" || return 1
+  herdr_pane_in_scope "$STARTED_SESSION" "$ws" "$STARTED_TAB" "$STARTED_PANE" || return 1
   [ -n "$STARTED_PANE" ] && STARTED_PANE_IDENTITY="id:$STARTED_PANE"
   STARTED_STAGE=pane-identity
   startup_journal_write || return 1
@@ -1162,6 +1244,7 @@ command_ensure() {
 }
 
 command_status_report() {
+  local before after
   if [ -L "$RECORD" ]; then
     printf 'DASHBOARD_BLOCKED: the dashboard owner record is a symlink and was not read\n'
     return 1
@@ -1172,7 +1255,27 @@ command_status_report() {
   fi
   printf 'dashboard: recorded owner\n'
   sed -nE 's/^(schema|home|session|workspace|tab|pane|port|url|started)=/  \1: /p' "$RECORD"
+  before=$(record_fingerprint) || {
+    printf 'DASHBOARD_BLOCKED: the dashboard owner record could not be fingerprinted\n'
+    return 1
+  }
   if record_is_live; then
+    after=$(record_fingerprint) || {
+      printf 'DASHBOARD_BLOCKED: the dashboard owner record changed during the status probe\n'
+      return 1
+    }
+    if [ "$before" != "$after" ] || ! record_is_live; then
+      printf 'DASHBOARD_BLOCKED: the dashboard owner changed during the status probe\n'
+      return 1
+    fi
+    after=$(record_fingerprint) || {
+      printf 'DASHBOARD_BLOCKED: the dashboard owner record changed during the status probe\n'
+      return 1
+    }
+    if [ "$before" != "$after" ]; then
+      printf 'DASHBOARD_BLOCKED: the dashboard owner changed during the status probe\n'
+      return 1
+    fi
     printf '  live: yes\n'
     printf 'FIRSTMATE_DASHBOARD_URL=http://127.0.0.1:%s/\n' "$ADOPTED_PORT"
   else

@@ -791,6 +791,19 @@ test_status_reports_without_changing_anything() {
   pass "status reports the owner without changing anything or leaking the token"
 }
 
+test_a_tampered_owner_token_is_not_adopted() {
+  local home port out
+  home=$(make_home tampered-owner-token)
+  port=$(free_port)
+  start "$home" "$port" ensure >/dev/null || fail "ensure failed"
+  sed -i '' 's/^token=.*/token=tampered-owner-token/' "$home/state/.dashboard-owner"
+  out=$(start "$home" "$port" status-read-only 2>&1) || true
+  printf '%s' "$out" | grep -q '^FIRSTMATE_DASHBOARD_URL=' \
+    && fail "a tampered owner token produced a URL: $out"
+  assert_contains "$out" "live: no" "a tampered owner token was still accepted"
+  pass "owner adoption recomputes the token digest before reporting a URL"
+}
+
 test_read_only_status_probe_does_not_write_a_lifecycle_lock() {
   local home port out
   home=$(make_home read-only-status-probe)
@@ -855,5 +868,6 @@ test_a_torn_lock_with_a_reused_pid_is_recovered
 test_failed_cleanup_is_quarantined_before_retry
 test_no_free_port_blocks_without_a_url
 test_status_reports_without_changing_anything
+test_a_tampered_owner_token_is_not_adopted
 test_read_only_status_probe_does_not_write_a_lifecycle_lock
 test_stop_closes_the_pane_and_releases_the_port

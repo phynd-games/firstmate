@@ -611,6 +611,12 @@ __FM_DASHBOARD_DATA__
       && nullable(s.main_inventory, "reason", "string") && Array.isArray(s.main_inventory.orphan_in_flight)
       && s.main_inventory.orphan_in_flight.every(function (x) { return typeof x === "string"; })
       && boundedCounts(s.secondmate_current)
+      && obj(s.secondmate_current.registry)
+      && field(s.secondmate_current.registry, "path", "string")
+      && field(s.secondmate_current.registry, "present", "boolean")
+      && field(s.secondmate_current.registry, "available", "boolean")
+      && field(s.secondmate_current.registry, "complete", "boolean")
+      && nullable(s.secondmate_current.registry, "reason", "string")
       && Array.isArray(s.secondmate_current.records)
       && s.secondmate_current.shown === s.secondmate_current.records.length
       && s.secondmate_current.records.every(secondmate)
@@ -652,6 +658,7 @@ __FM_DASHBOARD_DATA__
   var tasks = arr(snapshot.tasks);
   var backlog = arr(snapshot.backlog && snapshot.backlog.records);
   var secondmateCurrent = snapshot.secondmate_current || {};
+  var secondmateRegistry = secondmateCurrent.registry || {};
   var secondmateRecords = arr(secondmateCurrent.records);
   var secondmateLanded = snapshot.secondmate_landed || {};
   var secondmateGuidance = snapshot.secondmate_guidance || {};
@@ -968,6 +975,13 @@ __FM_DASHBOARD_DATA__
   var secSecondmates = section("secondmates", "Secondmate child activity",
     "Current, queued, held, endpoint, and landed evidence from each registered home.");
   var secondmateGrid = add(secSecondmates, el("div", "cp-grid"));
+  if (secondmateRegistry.available === false) {
+    var registryWarning = add(secondmateGrid, el("div", "fm-card"));
+    txt(registryWarning, "div", "fm-sign", "Secondmate registry unavailable");
+    txt(registryWarning, "div", "cp-event__note",
+      dash(secondmateRegistry.reason || "The registered secondmate table could not be read."));
+    txt(registryWarning, "div", "cp-event__note", dash(secondmateRegistry.path));
+  }
   function renderEvidenceList(parent, label, records) {
     var fold = add(parent, el("details", "cp-fold"));
     txt(fold, "summary", "", label + " (" + records.length + ")");
@@ -1389,6 +1403,10 @@ __FM_DASHBOARD_DATA__
     ["backlog", snapshot.backlog && snapshot.backlog.path],
     ["wake queue", (snapshot.roots && snapshot.roots.state) + "/.wake-queue"],
     ["watch lock", (snapshot.roots && snapshot.roots.state) + "/.watch.lock"],
+    ["watch lock pid", (snapshot.roots && snapshot.roots.state) + "/.watch.lock/pid"],
+    ["watch lock home", (snapshot.roots && snapshot.roots.state) + "/.watch.lock/fm-home"],
+    ["watch lock watcher path", (snapshot.roots && snapshot.roots.state) + "/.watch.lock/watcher-path"],
+    ["watch lock pid identity", (snapshot.roots && snapshot.roots.state) + "/.watch.lock/pid-identity"],
     ["watcher heartbeat", (snapshot.roots && snapshot.roots.state) + "/.last-watcher-beat"],
     ["away marker", (snapshot.roots && snapshot.roots.state) + "/.afk"],
     ["recovery marker", (snapshot.roots && snapshot.roots.state) + "/.watcher-down"],
