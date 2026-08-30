@@ -128,6 +128,19 @@ test_a_repeat_start_adopts_the_running_dashboard() {
   pass "a repeat start adopts the running dashboard instead of starting a second"
 }
 
+test_a_nonregular_owner_target_blocks_without_orphaning_the_new_pane() {
+  local home port out open_panes
+  home=$(make_home nonregular-owner)
+  port=$(free_port)
+  mkdir "$home/state/.dashboard-owner"
+  out=$(start "$home" "$port" ensure 2>&1) && fail "a directory owner target was accepted: $out"
+  assert_contains "$out" "DASHBOARD_BLOCKED" "the non-regular owner target did not block startup"
+  [ -d "$home/state/.dashboard-owner" ] || fail "the non-regular owner target was replaced"
+  open_panes=$(grep -l '^open$' "$home/herdr/panes"/*.state 2>/dev/null | wc -l | tr -d ' ')
+  [ "$open_panes" = "0" ] || fail "a rejected owner target orphaned an open pane"
+  pass "a non-regular owner target blocks before publishing or orphaning a pane"
+}
+
 test_concurrent_starts_converge_on_one_dashboard() {
   local home port a b out_a out_b
   home=$(make_home concurrent)
@@ -386,6 +399,57 @@ SH
   pass "a timed-out build kills its complete descendant process group"
 }
 
+test_an_unprovable_build_cleanup_fails_closed() {
+  local home port out child code health
+  home=$(make_home unprovable-build-cleanup)
+  port=$(free_port)
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FAKE_HERDR_STATE="$home/herdr" \
+    FM_DASHBOARD_BUILD_TIMEOUT=1 FM_DASHBOARD_DESCENDANT_MARKER="$home/descendant.pid" \
+    FM_DASHBOARD_PORT="$port" "$START" ensure 2>&1) \
+    || fail "ensure failed: $out"
+  cat > "$home/fakebin/jq" <<'SH'
+#!/usr/bin/env bash
+set -u
+marker="${FM_DASHBOARD_DESCENDANT_MARKER:?}"
+if [ ! -e "$marker" ]; then
+  MARKER="$marker" python3 -c '
+import os
+import subprocess
+import time
+
+child = subprocess.Popen(["sleep", "30"], start_new_session=True)
+with open(os.environ["MARKER"], "w", encoding="utf-8") as marker:
+    marker.write(str(child.pid) + "\n")
+time.sleep(30)
+'
+fi
+sleep 30
+SH
+  chmod +x "$home/fakebin/jq"
+  cat > "$home/fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$home/fakebin/ps"
+  code=$(curl -sS --max-time 6 -o "$home/timeout-response" \
+    -w '%{http_code}' "http://127.0.0.1:$port/" 2>/dev/null || true)
+  [ "$code" = "500" ] || fail "an unprovable cleanup returned HTTP $code instead of 500"
+  child=
+  for _ in $(seq 1 20); do
+    if [ -s "$home/descendant.pid" ]; then
+      child=$(cat "$home/descendant.pid")
+      break
+    fi
+    sleep 0.1
+  done
+  [ -n "$child" ] || fail "the unprovable cleanup fixture did not create its descendant marker"
+  health=$(curl -sS --max-time 3 "http://127.0.0.1:$port/healthz" 2>/dev/null || true)
+  printf '%s' "$health" | jq -e '.ready == false and .reason == "build descendant cleanup could not be proven"' >/dev/null \
+    || fail "the dashboard claimed health after cleanup proof failed: $health"
+  kill -KILL "$child" 2>/dev/null || true
+  pass "an incomplete process snapshot fails dashboard health closed"
+}
+
 test_stop_preserves_an_owner_without_complete_proof() {
   local home port out
   home=$(make_home stop-unproven)
@@ -640,6 +704,7 @@ test_stop_closes_the_pane_and_releases_the_port() {
 
 test_a_fresh_start_proves_readiness_before_it_prints_a_url
 test_a_repeat_start_adopts_the_running_dashboard
+test_a_nonregular_owner_target_blocks_without_orphaning_the_new_pane
 test_concurrent_starts_converge_on_one_dashboard
 test_a_dead_owner_is_replaced_rather_than_reported
 test_an_unprovable_owner_is_never_silently_replaced
@@ -651,6 +716,7 @@ test_health_remains_responsive_while_a_client_stalls
 test_health_remains_admissible_behind_incomplete_clients
 test_a_drip_request_hits_an_absolute_http_deadline
 test_a_timed_out_build_kills_its_descendant_group
+test_an_unprovable_build_cleanup_fails_closed
 test_stop_preserves_an_owner_without_complete_proof
 test_owner_lifecycle_uses_the_recorded_herdr_session
 test_a_mismatched_pane_identity_is_unknown_and_preserved

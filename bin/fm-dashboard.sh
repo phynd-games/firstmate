@@ -991,6 +991,8 @@ HTTP_REQUEST_TIMEOUT = int(os.environ["FM_DASHBOARD_BUILD_TIMEOUT"]) + HTTP_IO_T
 MAX_CLIENTS = 10
 MAX_PAGE_BUILDS = 8
 BUILD_CLEANUP_GRACE = 0.5
+PROCESS_SNAPSHOT_TIMEOUT = 0.1
+PROCESS_CLEANUP_POLL = 0.05
 # Only the DIGEST of the owner token reaches this process, and only the digest
 # is ever published. A caller proves it started this exact server for this
 # exact home by hashing the token it holds privately and comparing; the token
@@ -1012,26 +1014,39 @@ def process_snapshot():
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
-            timeout=0.5,
+            timeout=PROCESS_SNAPSHOT_TIMEOUT,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return {}
+        return None
+    if result.returncode != 0:
+        return None
     processes = {}
     for line in result.stdout.splitlines():
         fields = line.split()
         if len(fields) != 3:
-            continue
+            return None
         try:
             pid, ppid, pgid = (int(field) for field in fields)
         except ValueError:
-            continue
+            return None
         processes[pid] = (ppid, pgid)
     return processes
 
 
-def process_tree_snapshot(root):
-    processes = process_snapshot()
+def process_tree_snapshot(root, processes=None):
+    if processes is None:
+        processes = process_snapshot()
+    if processes is None:
+        return None, None
+    if root not in processes:
+        try:
+            os.kill(root, 0)
+        except ProcessLookupError:
+            return {root}, set()
+        except OSError:
+            return None, None
+        return None, None
     children = {}
     for pid, (ppid, _pgid) in processes.items():
         children.setdefault(ppid, []).append(pid)
@@ -1047,10 +1062,9 @@ def process_tree_snapshot(root):
     return pids, groups
 
 
-def kill_process_tree(root, signum, known_pids=(), known_groups=()):
-    pids, groups = process_tree_snapshot(root)
-    pids.update(known_pids)
-    groups.update(known_groups)
+def signal_process_tree(pids, groups, signum):
+    pids = set(pids)
+    groups = set(groups)
     groups.discard(0)
     groups.discard(os.getpgrp())
     for pgid in sorted(groups):
@@ -1065,6 +1079,50 @@ def kill_process_tree(root, signum, known_pids=(), known_groups=()):
             os.kill(pid, signum)
         except OSError:
             pass
+
+
+def cleanup_process_tree(build):
+    known_pids = {build.pid}
+    known_groups = set()
+    try:
+        known_groups.add(os.getpgid(build.pid))
+    except OSError:
+        pass
+    proven = True
+    for signum in (signal.SIGTERM, signal.SIGKILL):
+        deadline = time.monotonic() + BUILD_CLEANUP_GRACE
+        while time.monotonic() < deadline:
+            pids, groups = process_tree_snapshot(build.pid)
+            if pids is None:
+                proven = False
+            else:
+                known_pids.update(pids)
+                known_groups.update(groups)
+            signal_process_tree(known_pids, known_groups, signum)
+            try:
+                build.wait(timeout=min(PROCESS_CLEANUP_POLL, max(0, deadline - time.monotonic())))
+            except subprocess.TimeoutExpired:
+                pass
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(PROCESS_CLEANUP_POLL, remaining))
+    try:
+        build.wait(timeout=BUILD_CLEANUP_GRACE)
+    except subprocess.TimeoutExpired:
+        proven = False
+    return proven and build.poll() is not None
+
+
+def health_body(server):
+    if getattr(server, "cleanup_blocked", False):
+        return json.dumps({
+            "schema": "fm-dashboard-health.v1",
+            "home": HEALTH_HOME,
+            "owner": OWNER_DIGEST,
+            "ready": False,
+            "reason": "build descendant cleanup could not be proven",
+        }).encode() + b"\n"
+    return HEALTH
 
 
 class DeadlineReader:
@@ -1175,7 +1233,13 @@ class Handler(BaseHTTPRequestHandler):
         # One page and one liveness probe. Every other path is refused: this
         # server never serves a file from disk and has no directory route.
         if self.path == "/healthz":
-            self._send(200, HEALTH, "application/json; charset=utf-8")
+            blocked = getattr(self.server, "cleanup_blocked", False)
+            self._send(503 if blocked else 200, health_body(self.server),
+                       "application/json; charset=utf-8")
+            return
+        if getattr(self.server, "cleanup_blocked", False):
+            self._send(503, b"dashboard cleanup could not be proven\n",
+                       "text/plain; charset=utf-8")
             return
         if self.path not in ("/", "/index.html"):
             self._send(404, b"not found\n", "text/plain; charset=utf-8")
@@ -1209,17 +1273,12 @@ class Handler(BaseHTTPRequestHandler):
                 except subprocess.TimeoutExpired as exc:
                     stdout = exc.output or b""
                     stderr = exc.stderr or b""
-                    build_pids, build_groups = process_tree_snapshot(build.pid)
-                    kill_process_tree(build.pid, signal.SIGTERM, build_pids, build_groups)
-                    try:
-                        build.wait(timeout=BUILD_CLEANUP_GRACE)
-                    except subprocess.TimeoutExpired:
-                        pass
-                    kill_process_tree(build.pid, signal.SIGKILL, build_pids, build_groups)
-                    try:
-                        build.wait(timeout=BUILD_CLEANUP_GRACE)
-                    except subprocess.TimeoutExpired:
-                        pass
+                    if not cleanup_process_tree(build):
+                        self.server.cleanup_blocked = True
+                        sys.stderr.write(
+                            "fm-dashboard: DASHBOARD_BLOCKED: build descendant cleanup could not be proven\n"
+                        )
+                        stderr += b"\nbuild descendant cleanup could not be proven\n"
                     for stream in (build.stdout, build.stderr):
                         if stream is not None:
                             stream.close()
@@ -1263,6 +1322,7 @@ class BoundedHTTPServer(ThreadingMixIn, HTTPServer):
         self.admissions = {}
         self.pending_request = None
         self.page_slots = threading.BoundedSemaphore(MAX_PAGE_BUILDS)
+        self.cleanup_blocked = False
 
     def process_request(self, request, client_address):
         try:

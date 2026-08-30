@@ -538,9 +538,17 @@ record_get() {  # <key>
   sed -n "s/^$1=//p" "$RECORD" 2>/dev/null | head -1
 }
 
+record_target_publishable() {
+  if [ -e "$RECORD" ] || [ -L "$RECORD" ]; then
+    [ -f "$RECORD" ] && [ ! -L "$RECORD" ] || return 1
+  fi
+  return 0
+}
+
 record_write() {  # <session> <workspace> <tab> <pane> <port> <token> <digest>
   local tmp
   startup_state_boundary_safe || return 1
+  record_target_publishable || return 1
   mkdir -p "$STATE" || return 1
   tmp=$(umask 077; mktemp "$STATE/.dashboard-owner.XXXXXX") || return 1
   {
@@ -557,7 +565,9 @@ record_write() {  # <session> <workspace> <tab> <pane> <port> <token> <digest>
     printf 'started=%s\n' "$(now_epoch)"
   } > "$tmp" || { rm -f -- "$tmp"; return 1; }
   chmod 0600 "$tmp" 2>/dev/null || { rm -f -- "$tmp"; return 1; }
+  record_target_publishable || { rm -f -- "$tmp"; return 1; }
   mv -f -- "$tmp" "$RECORD" || { rm -f -- "$tmp"; return 1; }
+  [ -f "$RECORD" ] && [ ! -L "$RECORD" ] || return 1
   return 0
 }
 
