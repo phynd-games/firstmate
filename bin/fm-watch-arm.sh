@@ -504,25 +504,75 @@ fi
 # wake exit propagates out so the harness re-notifies firstmate.
 child=
 child_out=
-cleanup_child() {
-  if [ -n "$child" ] && fm_pid_alive "$child"; then
-    kill -TERM "$child" 2>/dev/null || true
+child_identity=
+child_status() {
+  local process_state
+  fm_pid_alive "$child" || return 0
+  process_state=$(ps -o stat= -p "$child" 2>/dev/null | tr -d '[:space:]')
+  [ -n "$process_state" ] || return 2
+  [[ "$process_state" == Z* ]] && return 0
+  return 1
+}
+stop_child_bounded() {
+  local current i=0 status
+  [ -n "$child" ] || return 0
+  child_status
+  status=$?
+  case "$status" in
+    0) wait "$child" 2>/dev/null || true; return 0 ;;
+    2) return 1 ;;
+  esac
+  current=$(fm_pid_identity "$child" 2>/dev/null || true)
+  [ -n "$child_identity" ] && [ "$current" = "$child_identity" ] || return 1
+  kill -TERM "$child" 2>/dev/null || true
+  while [ "$i" -lt 20 ]; do
+    child_status
+    status=$?
+    [ "$status" -eq 0 ] && break
+    [ "$status" -eq 2 ] && return 1
+    sleep 0.05
+    i=$((i + 1))
+  done
+  child_status
+  status=$?
+  [ "$status" -eq 2 ] && return 1
+  if [ "$status" -eq 1 ]; then
+    current=$(fm_pid_identity "$child" 2>/dev/null || true)
+    [ -n "$current" ] && [ "$current" = "$child_identity" ] || return 1
+    kill -KILL "$child" 2>/dev/null || true
+    i=0
+    while [ "$i" -lt 20 ]; do
+      child_status
+      status=$?
+      [ "$status" -eq 0 ] && break
+      [ "$status" -eq 2 ] && return 1
+      sleep 0.05
+      i=$((i + 1))
+    done
   fi
-  if [ -n "$child_out" ]; then
+  child_status
+  status=$?
+  [ "$status" -eq 0 ] || return 1
+  wait "$child" 2>/dev/null || true
+}
+cleanup_child() {
+  local status=0
+  stop_child_bounded || status=1
+  if [ "$status" -eq 0 ] && [ -n "$child_out" ]; then
     rm -f "$child_out" 2>/dev/null || true
   fi
+  return "$status"
 }
 
 # shellcheck disable=SC2329 # Invoked indirectly by the signal traps below.
 handle_arm_signal() {
   local signal=$1 rc=$2
   trap - HUP TERM INT
-  if [ -n "$child" ] && fm_pid_alive "$child"; then
-    kill -TERM "$child" 2>/dev/null || true
-    wait "$child" 2>/dev/null || true
+  if ! cleanup_child; then
+    cycle_log_append "$rc" "$signal" arm-interrupted-unconfirmed none
+    exit "$rc"
   fi
   cycle_log_append "$rc" "$signal" arm-interrupted none
-  cleanup_child
   exit "$rc"
 }
 
@@ -540,7 +590,8 @@ else
   "$WATCH" >"$child_out" &
 fi
 child=$!
-cycle_begin "$child" started "$(fm_pid_identity "$child" 2>/dev/null || true)"
+child_identity=$(fm_pid_identity "$child" 2>/dev/null || true)
+cycle_begin "$child" started "$child_identity"
 child_done=0
 
 owned_child_finished() {
@@ -607,8 +658,11 @@ while :; do
     if [ "$HEALTHY_PID" = "$child" ]; then
       cycle_refresh_lock_before
       if ! handling_generation=$(handling_successor_generation); then
-        cleanup_child
-        wait "$child" 2>/dev/null || true
+        if ! cleanup_child; then
+          cycle_log_append 1 none handling-handoff-termination-unconfirmed none
+          echo "watcher: FAILED - watcher termination could not be confirmed" >&2
+          exit 1
+        fi
         cycle_log_append 1 none handling-handoff-failed none
         echo "watcher: FAILED - established successor could not inspect handling state"
         exit 1
@@ -643,9 +697,12 @@ done
 
 trap - HUP TERM INT
 print_watch_output "$child_out"
-cleanup_child
-wait "$child" 2>/dev/null
-rc=$?
+if ! cleanup_child; then
+  cycle_log_append 1 none confirmation-timeout-termination-unconfirmed none
+  echo "watcher: FAILED - watcher termination could not be confirmed" >&2
+  exit 1
+fi
+rc=1
 cycle_log_append "$rc" "$(cycle_signal_name "$rc")" confirmation-timeout none
 echo "watcher: FAILED - no live watcher with a fresh beacon"
 exit 1

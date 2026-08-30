@@ -1060,6 +1060,7 @@ establish() {  # <reason>
     [ -z "${FM_GUARD_GRACE:-}" ] || printf 'export FM_GUARD_GRACE=%s\n' "$(shell_quote "$FM_GUARD_GRACE")"
     [ -z "${FM_WATCHER_STALE_GRACE:-}" ] || printf 'export FM_WATCHER_STALE_GRACE=%s\n' "$(shell_quote "$FM_WATCHER_STALE_GRACE")"
     [ -z "${FM_ARM_CONFIRM_TIMEOUT:-}" ] || printf 'export FM_ARM_CONFIRM_TIMEOUT=%s\n' "$(shell_quote "$FM_ARM_CONFIRM_TIMEOUT")"
+    [ -z "${FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES:-}" ] || printf 'export FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES=%s\n' "$(shell_quote "$FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES")"
     printf 'export FM_RECOVERY_MARKER_LOCK_TRIES=100\n'
     [ -z "${FM_SIGNAL_GRACE:-}" ] || printf 'export FM_SIGNAL_GRACE=%s\n' "$(shell_quote "$FM_SIGNAL_GRACE")"
     [ -z "${FM_POLL:-}" ] || printf 'export FM_POLL=%s\n' "$(shell_quote "$FM_POLL")"
@@ -1344,6 +1345,11 @@ cmd_ensure() {  # <reason>
     escalate "the continuity ownership claim could not be acquired within its bounded retry window"
     return 1
   fi
+  if ! fm_supervision_claim_pending_reclaim "$STATE"; then
+    fm_lock_release "$SUPERVISION_CLAIM"
+    escalate "the expired away-mode ownership handoff could not be reconciled"
+    return 1
+  fi
   if harness_owner_provable; then
     fm_lock_release "$SUPERVISION_CLAIM"
     echo "herdr-supervisor: deferred - $HS_DEFER_REASON"
@@ -1461,6 +1467,12 @@ STALE_WATCHER_PID=
 STALE_WATCHER_IDENTITY=
 LOOP_OWNER_PID=
 LOOP_CLAIM_HELD=0
+loop_release_claim() {
+  if [ "$LOOP_CLAIM_HELD" -eq 1 ]; then
+    fm_lock_release "$SUPERVISION_CLAIM" || return 1
+    LOOP_CLAIM_HELD=0
+  fi
+}
 loop_owns_generation() {
   [ "$(record_get generation 2>/dev/null || printf '')" = "$LOOP_GENERATION" ]
 }
@@ -1725,6 +1737,7 @@ cmd_run() {
 
   while :; do
     if ! loop_owns_generation; then
+      loop_release_claim || true
       ledger_append loop-exit "generation superseded or retired"
       loop_release_live
       exit 0
@@ -1739,6 +1752,7 @@ cmd_run() {
         [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT" 2>/dev/null || true
         LOOP_ARM_OUT=
         LOOP_ARM_UNRESOLVED_NEXT=0
+        loop_release_claim || true
       else
         if [ "$(date +%s)" -ge "$LOOP_ARM_UNRESOLVED_NEXT" ]; then
           if [ "$(hs_config_preference)" = off ]; then
@@ -1815,14 +1829,13 @@ cmd_run() {
       "$ARM" >"$out" 2>&1 &
     fi
     LOOP_ARM_PID=$!
-    fm_lock_release "$SUPERVISION_CLAIM"
-    LOOP_CLAIM_HELD=0
     if loop_capture_arm_identity; then
       arm_match=0
       while loop_arm_matches; do
         : > "$HEARTBEAT" 2>/dev/null || true
         if [ "$(hs_config_preference)" = off ]; then
           loop_stop_arm || continue 2
+          loop_release_claim || continue 2
           rm -f "$out" 2>/dev/null || true
           LOOP_ARM_OUT=
           if cmd_retire "config/herdr-supervisor changed to off while arming"; then
@@ -1834,6 +1847,7 @@ cmd_run() {
         fi
         if harness_owner_provable; then
           loop_stop_arm || continue 2
+          loop_release_claim || continue 2
           rm -f "$out" 2>/dev/null || true
           LOOP_ARM_OUT=
           ledger_append handoff "another continuity owner became provable while arming; retaining standby supervisor binding"
@@ -1859,6 +1873,11 @@ cmd_run() {
       wait "$LOOP_ARM_PID" 2>/dev/null
       rc=$?
     fi
+    loop_release_claim || {
+      escalate "the continuity ownership claim could not be released after the arm ended; retaining ownership"
+      sleep "$IDLE_INTERVAL"
+      continue
+    }
     LOOP_ARM_PID=
     LOOP_ARM_IDENTITY=
     : > "$HEARTBEAT" 2>/dev/null || true

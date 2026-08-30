@@ -1402,6 +1402,13 @@ fm_super_main() {
     fi
   }
 
+  if [ "${FM_AFK_HANDOFF:-0}" = 1 ] \
+    && ! fm_supervision_claim_refresh "$STATE"; then
+    echo "error: could not refresh the inherited continuity ownership claim" >&2
+    release_inherited_claim
+    exit 1
+  fi
+
   if [ ! -x "$WATCH" ]; then
     echo "error: watcher not found or not executable: $WATCH" >&2
     release_inherited_claim
@@ -1418,10 +1425,10 @@ fm_super_main() {
     release_inherited_claim
     exit 1
   fi
+  release_inherited_claim
   if [ "${FM_AFK_HANDOFF:-0}" = 1 ]; then
     fm_supervision_claim_pending_clear "$STATE" || true
   fi
-  release_inherited_claim
   echo "$$" > "$PIDFILE"
   fm_pid_identity "${BASHPID:-$$}" > "$LOCK/pid-identity" 2>/dev/null || true
 
