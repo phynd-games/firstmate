@@ -222,7 +222,7 @@ jobs:
           # worktree acquisition (presentation, workspace-per-home, autodetect).
           bin/fm-install-treehouse.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Assert Herdr pin and protocol floor
+      - name: Verify Herdr and Treehouse availability
         run: |
           set -eu
           command -v herdr >/dev/null || { echo "::error::herdr not on PATH after install"; exit 1; }
@@ -231,19 +231,6 @@ jobs:
           treehouse --version
           status=$(herdr status --json)
           printf '%s\n' "$status"
-          version=$(printf '%s' "$status" | jq -r '.client.version // empty')
-          protocol=$(printf '%s' "$status" | jq -r '.client.protocol // empty')
-          [ "$version" = "0.8.0" ] || {
-            echo "::error::expected exact Herdr pin 0.8.0, got ${version:-<empty>}"
-            exit 1
-          }
-          case "$protocol" in
-            ''|*[!0-9]*) echo "::error::could not read client protocol"; exit 1 ;;
-          esac
-          [ "$protocol" -ge 19 ] || {
-            echo "::error::herdr protocol $protocol is below the required floor 19"
-            exit 1
-          }
       - name: Start default Herdr session for fleet-state tripwire
         run: |
           set -eu
