@@ -50,6 +50,8 @@
 #                                               readable run evidence
 #   FM_VLOOP_MAX_CHANGE_COMMITS   default 64    commits accepted in one
 #                                               coherent head transition
+#   FM_VLOOP_MAX_CHANGE_FILES     default 256   existing project files changed
+#                                               in one coherent head transition
 #
 # JOURNAL. state/<id>.validation-loop, key=value lines, rewritten atomically
 # (tmp + mv) by fm_vloop_observe only; removed by teardown with the task's
@@ -79,6 +81,7 @@ FM_VLOOP_MAX_SAME_THEME_DEFAULT=2
 FM_VLOOP_STALL_SECS_DEFAULT=3600
 FM_VLOOP_EVIDENCE_MAX_AGE_SECS_DEFAULT=7200
 FM_VLOOP_MAX_CHANGE_COMMITS_DEFAULT=64
+FM_VLOOP_MAX_CHANGE_FILES_DEFAULT=256
 fm_vloop_journal_path() {  # <state> <id>
   printf '%s/%s.validation-loop' "$1" "$2"
 }
@@ -166,6 +169,16 @@ _fm_vloop_status_valid() {  # <status>
   esac
 }
 
+_fm_vloop_outcome_valid() {  # <status> <outcome>
+  case "$2" in
+    '') return 0 ;;
+    passed|checks-passed) [ "$1" = completed ] && return 0 ;;
+    failed) case "$1" in completed|failed) return 0 ;; esac ;;
+    cancelled) case "$1" in completed|cancelled) return 0 ;; esac ;;
+  esac
+  return 1
+}
+
 _fm_vloop_journal_valid() {  # <journal-content>
   local stored=$1 key value version phase active
   for key in version run head status phase findings_sig progress_sig fix_rounds themes heads last_observed last_progress active stop_reason; do
@@ -233,7 +246,7 @@ _fm_vloop_themes_max() {  # <themes>
 }
 
 fm_vloop_evidence_valid() {  # <content>
-  local content=$1 first key value
+  local content=$1 first key value status outcome
   first=${content%%$'\n'*}
   [ "$first" = run: ] || return 1
   for key in id branch status head; do
@@ -241,7 +254,10 @@ fm_vloop_evidence_valid() {  # <content>
     [ -n "$value" ] || return 1
     case "$value" in *[[:space:]]*) return 1 ;; esac
   done
-  _fm_vloop_status_valid "$(fm_nm_strip_quotes "$(fm_nm_field "$content" status)")" || return 1
+  status=$(fm_nm_strip_quotes "$(fm_nm_field "$content" status)")
+  outcome=$(fm_nm_strip_quotes "$(fm_nm_field "$content" outcome)")
+  _fm_vloop_status_valid "$status" || return 1
+  _fm_vloop_outcome_valid "$status" "$outcome" || return 1
   return 0
 }
 
@@ -255,6 +271,7 @@ _fm_vloop_head_seen() {  # <heads> <head>
 
 _fm_vloop_head_advance_valid() {  # <worktree> <old-head> <new-head>
   local worktree=$1 old_head=$2 new_head=$3 old_full new_full change_commits max_change
+  local change_files change_file change_count max_files
   [ -n "$worktree" ] || return 1
   old_full=$(git -C "$worktree" rev-parse --verify "${old_head}^{commit}" 2>/dev/null) || return 1
   new_full=$(git -C "$worktree" rev-parse --verify "${new_head}^{commit}" 2>/dev/null) || return 1
@@ -264,6 +281,20 @@ _fm_vloop_head_advance_valid() {  # <worktree> <old-head> <new-head>
   change_commits=$(git -C "$worktree" rev-list --count "$old_full..$new_full" 2>/dev/null) || return 1
   max_change=$(_fm_vloop_bound "${FM_VLOOP_MAX_CHANGE_COMMITS:-}" "$FM_VLOOP_MAX_CHANGE_COMMITS_DEFAULT")
   [ "$change_commits" -le "$max_change" ] || return 1
+  change_files=$(git -C "$worktree" diff --name-only --no-renames "$old_full" "$new_full" 2>/dev/null) || return 1
+  [ -n "$change_files" ] || return 1
+  change_count=$(printf '%s\n' "$change_files" | awk 'NF { count += 1 } END { print count + 0 }')
+  max_files=$(_fm_vloop_bound "${FM_VLOOP_MAX_CHANGE_FILES:-}" "$FM_VLOOP_MAX_CHANGE_FILES_DEFAULT")
+  [ "$change_count" -le "$max_files" ] || return 1
+  while IFS= read -r change_file; do
+    [ -n "$change_file" ] || return 1
+    case "$change_file" in
+      /*|../*|*/../*) return 1 ;;
+    esac
+    git -C "$worktree" cat-file -e "$old_full:$change_file" 2>/dev/null || return 1
+  done <<EOF
+$change_files
+EOF
 }
 
 _fm_vloop_record_stop() {  # <state> <id> <reason>

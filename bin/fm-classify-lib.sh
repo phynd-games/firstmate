@@ -1459,7 +1459,8 @@ crew_worktree_written_since() {  # <id> <state> <anchor-file>
 # more current, not less deliverable. Scoped to .status files - a mate's bare
 # turn-ended ping still uses the ordinary provably-working absorb.
 signal_crew_provably_working() {  # <file> ...
-  local f base dir task seen=""
+  local f base dir task seen="" class
+  FM_SIGNAL_LIMIT_REASON=''
   for f in "$@"; do
     base=${f##*/}
     dir=${f%/*}
@@ -1479,7 +1480,12 @@ signal_crew_provably_working() {  # <file> ...
     esac
     case " $seen " in *" $task "*) continue ;; esac
     seen="$seen $task"
-    crew_is_provably_working "$task" || return 1
+    class=$(crew_absorb_class "$task")
+    if [ "$class" = limit ]; then
+      FM_SIGNAL_LIMIT_REASON=$(fm_vloop_reason "${STATE:-${FM_STATE_OVERRIDE:-}}" "$task" 2>/dev/null || true)
+      [ -n "$FM_SIGNAL_LIMIT_REASON" ] || FM_SIGNAL_LIMIT_REASON="automatic continuation limit reached"
+    fi
+    [ "$class" = working ] || return 1
   done
   [ -n "$seen" ] || return 1
   return 0

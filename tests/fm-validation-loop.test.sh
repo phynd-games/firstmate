@@ -237,7 +237,7 @@ test_unknown_state_stop() {
 }
 
 test_malformed_evidence_stop() {
-  local state fakebin dir ev
+  local state fakebin dir ev rc
   dir=$(make_case vloop-malformed-evidence); state="$dir/state"; fakebin="$dir/fakebin"
   ev="$dir/ev"
   printf 'run:\n  id: "01RUN"\n  branch: fm/loop\n' > "$ev"
@@ -248,6 +248,14 @@ test_malformed_evidence_stop() {
     || fail "malformed run evidence was absorbed as working"
   [ ! -e "$state/malformed.validation-loop" ] \
     || fail "malformed evidence created a continuation journal without a valid run"
+  ev_running "$ev" 01RUN running pending
+  fold "$state" malformed-outcome "$ev" 1000
+  printf 'outcome: garbage\n' >> "$ev"
+  if fm_vloop_observe "$state" malformed-outcome "$ev"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 2 ] || fail "an unrecognized run outcome was accepted"
+  [ "$(fm_vloop_reason "$state" malformed-outcome)" = \
+    'validation evidence malformed or incomplete for task malformed-outcome' ] \
+    || fail "an unrecognized run outcome did not stop with its recovery reason"
   unset FM_FAKE_EVIDENCE FM_FAKE_CREW_STATE
   pass "malformed evidence stop: incomplete run evidence fails closed at the absorb boundary"
 }
@@ -438,7 +446,7 @@ test_coarse_evidence_does_not_enforce_stall() {
 }
 
 test_head_change_set_is_bounded() {
-  local state ev dir repo old_head new_head v
+  local state ev dir repo old_head new_head unrelated_head v
   dir=$(make_case vloop-change-set); state="$dir/state"; ev="$dir/ev"; repo="$dir/repo"
   git init -q "$repo"
   git -C "$repo" config user.email test@example.com
@@ -460,6 +468,21 @@ test_head_change_set_is_bounded() {
   case "$v" in
     stop*"incoherent head transition"*) ;;
     *) fail "an overlarge head change set continued: '$v'" ;;
+  esac
+  mkdir -p "$dir/known-state"
+  state="$dir/known-state"
+  ev_running "$ev" 01RUN running pending
+  sed -i.bak "s/abc1234/$old_head/" "$ev" && rm -f "$ev.bak"
+  fold "$state" changes "$ev" 1030 "$repo"
+  printf 'unrelated\n' > "$repo/unrelated.txt"
+  git -C "$repo" add unrelated.txt && git -C "$repo" commit -qm unrelated
+  unrelated_head=$(git -C "$repo" rev-parse HEAD)
+  sed -i.bak "s/$old_head/$unrelated_head/" "$ev" && rm -f "$ev.bak"
+  fold "$state" changes "$ev" 1040 "$repo"
+  v=$(verdict_at "$state" changes 1050)
+  case "$v" in
+    stop*"incoherent head transition"*) ;;
+    *) fail "a new unrelated file entered the automatic head transition: '$v'" ;;
   esac
   pass "head change set: an overlarge transition stops instead of refreshing progress"
 }
@@ -558,6 +581,39 @@ test_watcher_surfaces_validation_loop_limit() {
   pass "watcher: a limit-stopped crew surfaces once with the recorded breach in the durable wake reason"
 }
 
+test_watcher_surfaces_signal_validation_loop_limit() {
+  local dir state fakebin out drain_out capture_file window ev pid
+  dir=$(make_case vloop-signal-limit); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  window="test:fm-signal-limit"
+  printf 'quiet validation pane' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/signaled.meta"
+  printf 'working: validating\n' > "$state/signaled.status"
+  prime_status_seen "$state" "$state/signaled.status"
+  ev="$dir/ev"
+  ev_running "$ev" 01RUN running pending; FM_VLOOP_MAX_FIX_ROUNDS=1 fold "$state" signaled "$ev" 1000
+  ev_fixing  "$ev" 01RUN;                 FM_VLOOP_MAX_FIX_ROUNDS=1 fold "$state" signaled "$ev" 1010
+  ev_running "$ev" 01RUN running rerun;    FM_VLOOP_MAX_FIX_ROUNDS=1 fold "$state" signaled "$ev" 1020
+  ev_fixing  "$ev" 01RUN;                 FM_VLOOP_MAX_FIX_ROUNDS=1 fold "$state" signaled "$ev" 1030
+  printf 'working: validating again\n' > "$state/signaled.status"
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing)'
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not surface a signal limit"
+  grep -F "validation loop limit:" "$out" >/dev/null \
+    || fail "signal limit output did not name the validation loop limit: $(cat "$out")"
+  grep -F "fix rounds 2 exceeded bound 1" "$out" >/dev/null \
+    || fail "signal limit output lost the recorded breach: $(cat "$out")"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after signal limit failed"
+  grep -F "fix rounds 2 exceeded bound 1" "$drain_out" >/dev/null \
+    || fail "signal limit queue record lost the recorded breach"
+  unset FM_FAKE_CREW_STATE
+  pass "watcher: a no-verb signal carries the validation-loop breach reason"
+}
+
 test_near_complete_continuation
 test_repeated_finding_stop
 test_unknown_state_stop
@@ -573,3 +629,4 @@ test_head_change_set_is_bounded
 test_head_transition_is_coherent
 test_threshold_overrides_cannot_disable_bounds
 test_watcher_surfaces_validation_loop_limit
+test_watcher_surfaces_signal_validation_loop_limit

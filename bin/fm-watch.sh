@@ -1366,8 +1366,22 @@ EOF
     # will not re-fire, log, and keep blocking without enqueuing. The provably-working
     # check is the only costly one (it may run a bounded no-mistakes call), so the ||
     # ordering evaluates it ONLY for a non-afk, no-captain-verb signal.
+    signal_actionable=0
+    FM_SIGNAL_LIMIT_REASON=''
     # shellcheck disable=SC2086  # $files is a space-separated status-path list (ids carry no spaces)
-    if afk_present || signal_reason_is_actionable $files || ! signal_crew_provably_working $files; then
+    if afk_present; then
+      signal_actionable=1
+    elif signal_reason_is_actionable $files; then
+      signal_actionable=1
+    elif signal_crew_provably_working $files; then
+      :
+    else
+      signal_actionable=1
+      if [ -n "$FM_SIGNAL_LIMIT_REASON" ]; then
+        reason="$reason (validation loop limit: $FM_SIGNAL_LIMIT_REASON)"
+      fi
+    fi
+    if [ "$signal_actionable" -eq 1 ]; then
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
         fm_wake_append signal "$(basename "$f")" "$reason" || exit 1
