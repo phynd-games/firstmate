@@ -55,6 +55,13 @@
 #                          for human inspection only - never an automatic
 #                          interrupt, signal, or restart of the worker or its
 #                          tool process.
+#   stale: <window> (validation loop limit: ...)
+#                          the deterministic validation-loop bounds
+#                          (bin/fm-validation-loop-lib.sh) stopped absorbing a
+#                          crew that still reads as working: repetitive fix
+#                          rounds or findings, a stalled run, or stale pipeline
+#                          evidence. The worker, branch, and run are untouched;
+#                          recovery is same-copy only via stuck-crewmate-recovery
 #   stale: <window> (unread firstmate instruction: ...)
 #                          the steering-inbox ladder spent its delivery-attempt
 #                          budget on an idle pane without an acknowledgement
@@ -758,10 +765,11 @@ pause_state_class() {  # <window> <task>
   printf '%s' "$class"
 }
 
-surface_nonterminal_stale() {  # <window> <hash>
+surface_nonterminal_stale() {  # <window> <hash> [reason]
   local win=$1 h=$2 key task last
+  local reason=${3:-"stale: $win"}
   key=$(window_key "$win")
-  fm_wake_append stale "$win" "stale: $win" || exit 1
+  fm_wake_append stale "$win" "$reason" || exit 1
   printf '%s' "$h" > "$STATE/.stale-$key"
   rm -f "$STATE/.stale-since-$key"
   clear_write_tracking "$key"
@@ -774,7 +782,7 @@ surface_nonterminal_stale() {  # <window> <hash>
   else
     rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
   fi
-  wake "stale: $win"
+  wake "$reason"
 }
 
 # Check and heartbeat cadence must survive actionable exits and restarts: the
@@ -1488,6 +1496,16 @@ EOF
                 ;;
               paused)
                 handle_paused_stale "$w" "$task" "$h"
+                ;;
+              limit)
+                # The deterministic validation-loop bounds stopped automatic
+                # continuation of a crew that otherwise reads as working
+                # (bin/fm-validation-loop-lib.sh). Surface the recorded reason
+                # itself so the breach is never presented as routine progress;
+                # the run, branch, and worker are untouched, and recovery goes
+                # through the supported same-copy path (stuck-crewmate-recovery).
+                surface_nonterminal_stale "$w" "$h" \
+                  "stale: $w (validation loop limit: $(fm_vloop_reason "$STATE" "$task") - automatic continuation stopped deterministically; branch and run custody preserved; inspect and recover in the same copy via stuck-crewmate-recovery, never a duplicate worker or a skipped check)"
                 ;;
               *)
                 surface_nonterminal_stale "$w" "$h"

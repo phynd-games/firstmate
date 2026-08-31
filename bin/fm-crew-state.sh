@@ -54,8 +54,13 @@
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log.
 #
-# Read-only and side-effect free. Always exits 0 on a successful read regardless
-# of state; exit 2 only on a usage error (no id).
+# Read-only and side-effect free, with one env-gated exception: when
+# FM_CREW_STATE_EVIDENCE_FILE names a path and a run is attributed, the raw run
+# evidence is exported there for the validation-loop journal
+# (bin/fm-validation-loop-lib.sh owns the fold and the continue/stop verdict;
+# this reader also decorates a working detail with any recorded stop so a
+# bounded loop never reads as routine progress). Always exits 0 on a successful
+# read regardless of state; exit 2 only on a usage error (no id).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -73,6 +78,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-validation-loop-lib.sh
+. "$SCRIPT_DIR/fm-validation-loop-lib.sh"
 
 ID=${1:-}
 [ -n "$ID" ] || { echo "usage: fm-crew-state.sh <id>" >&2; exit 2; }
@@ -462,6 +469,22 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
   fi
 fi
 
+# Opt-in raw-evidence export for the validation-loop journal
+# (bin/fm-validation-loop-lib.sh): when FM_CREW_STATE_EVIDENCE_FILE names a
+# path and a run was attributed to this crew, write the raw `axi status` TOON
+# (or one "coarse: <status>" line from the runs-list fallback) there and
+# nothing else. Written ONLY on attribution, so the caller reads an absent
+# file as "no readable run evidence this call". This is the one deliberate,
+# env-gated write in an otherwise side-effect-free reader, the same seam shape
+# as fm-classify-lib.sh's FM_STATUS_CURSOR_SNAPSHOT_FILE.
+if [ -n "${FM_CREW_STATE_EVIDENCE_FILE:-}" ] && [ "$HAVE_RUN" = 1 ]; then
+  if [ "$RUN_SOURCE" = coarse ]; then
+    printf 'coarse: %s\n' "$COARSE_STATUS" > "$FM_CREW_STATE_EVIDENCE_FILE" 2>/dev/null || true
+  else
+    printf '%s\n' "$RUN_OUT" > "$FM_CREW_STATE_EVIDENCE_FILE" 2>/dev/null || true
+  fi
+fi
+
 # --- run-step authoritative path -------------------------------------------
 
 if [ "$HAVE_RUN" = 1 ]; then
@@ -577,6 +600,16 @@ if [ "$HAVE_RUN" = 1 ]; then
       ;;
   esac
 
+  # A recorded validation-loop stop must never read as routine progress: a
+  # working verdict carries the deterministic stop reason so no consumer of
+  # this line can re-absorb the loop as healthy. Read-only (the journal is
+  # folded elsewhere), so a reason computed here reflects the last folded
+  # evidence, refreshed at the next supervised observation.
+  if [ "$RUN_STATE" = working ]; then
+    VLOOP_REASON=$(fm_vloop_reason "$STATE" "$ID" 2>/dev/null) || VLOOP_REASON=''
+    [ -z "$VLOOP_REASON" ] || RUN_DETAIL="$RUN_DETAIL${SEP}validation-loop stopped: $VLOOP_REASON"
+  fi
+
   emit "$RUN_STATE" run-step "$RUN_DETAIL"
 fi
 
@@ -596,7 +629,16 @@ pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACK
 if [ "$KIND" != secondmate ]; then
   BUSY_VERDICT=$(crew_busy_verdict "$BACKEND_TARGET")
   case "${BUSY_VERDICT%% *}" in
-    busy) emit working pane "harness busy (${BUSY_VERDICT#* })" ;;
+    busy)
+      # Same rule as the run-step path: a busy pane over a stopped validation
+      # loop (typically stale pipeline evidence, since no run was readable on
+      # this very call) must carry the stop instead of reading as routine.
+      VLOOP_REASON=$(fm_vloop_reason "$STATE" "$ID" 2>/dev/null) || VLOOP_REASON=''
+      if [ -n "$VLOOP_REASON" ]; then
+        emit working pane "harness busy (${BUSY_VERDICT#* })${SEP}validation-loop stopped: $VLOOP_REASON"
+      fi
+      emit working pane "harness busy (${BUSY_VERDICT#* })"
+      ;;
     idle) ;;
     *) emit unknown pane "harness state unavailable ($BUSY_VERDICT)" ;;
   esac

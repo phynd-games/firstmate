@@ -17,7 +17,11 @@
 # (crew_absorb_class and its working/paused wrappers) is NOT a pure status-file
 # read: it reuses bin/fm-crew-state.sh, which may make a bounded no-mistakes call,
 # to decide whether a crew that just stopped its turn or went stale is working,
-# deliberately paused, or neither. Callers run it ONLY on no-verb signal handling
+# deliberately paused, limit-stopped, or neither - and it folds the run evidence
+# that read exports into the durable validation-loop journal
+# (bin/fm-validation-loop-lib.sh owns that contract), so the deterministic
+# continuation bounds accumulate exactly where the absorb decision is made.
+# Callers run it ONLY on no-verb signal handling
 # and first sighting of a stale hash, never on every wake, so the per-wake triage
 # stays cheap. status_open_decisions_incremental (see "incremental (cursor-backed)
 # open-decisions fold" below) also writes: it persists a per-status-file byte
@@ -49,6 +53,12 @@ case $- in *u*) _fm_classify_nounset=on ;; *) _fm_classify_nounset=off ;; esac
 . "$_FM_CLASSIFY_LIB_DIR/fm-timeout-lib.sh"
 [ "$_fm_classify_nounset" = on ] || set +u
 unset _fm_classify_nounset
+
+# The deterministic validation-loop continuation bounds consumed by
+# crew_absorb_class below (journal fold, continue/stop verdict, thresholds).
+# bin/fm-validation-loop-lib.sh is the one owner of that contract.
+# shellcheck source=bin/fm-validation-loop-lib.sh
+. "$_FM_CLASSIFY_LIB_DIR/fm-validation-loop-lib.sh"
 
 # Captain-relevant status verbs. A status line carrying any of these is work
 # firstmate must see. Lines without these verbs are no-verb signals: the watcher
@@ -1269,24 +1279,57 @@ signal_reason_is_actionable() {  # <file> ...
 #             (e.g. waiting on CI);
 #   paused  - the crew's authoritative current state is a declared external-wait
 #             pause (paused:), which is EXPECTED to idle;
+#   limit   - the crew LOOKS working, but the deterministic validation-loop
+#             bounds (bin/fm-validation-loop-lib.sh) stopped automatic
+#             continuation: the loop is repetitive, no longer advancing, or its
+#             pipeline evidence has gone stale. The wake must surface with the
+#             recorded reason; re-absorbing it as working would hide the
+#             threshold breach as routine progress.
 #   none    - neither, so the wake must surface (a stopped/finished/parked/failed/
 #             torn-down/unknown crew, or an unreadable verdict).
-# One fm-crew-state.sh read serves BOTH absorb reasons at once. Reading the state
+# One fm-crew-state.sh read serves the absorb reasons at once. Reading the state
 # authoritatively (not the status log) is what keeps run-step precedence: a crew
 # that appended paused: but then STARTED a run reports working, never paused.
-# NOT a pure read: fm-crew-state.sh may make a bounded no-mistakes call, so callers
-# run it only on no-verb signal and first-sighting stale paths, never every wake.
-# FM_CREW_STATE_BIN lets tests stub the verdict.
+# NOT a pure read: fm-crew-state.sh may make a bounded no-mistakes call, and this
+# is also where the crew's exported run evidence is folded into the durable
+# validation-loop journal (the library's third documented write exception), so
+# callers run it only on no-verb signal and first-sighting stale paths, never
+# every wake. FM_CREW_STATE_BIN lets tests stub the verdict; the stub receives
+# FM_CREW_STATE_EVIDENCE_FILE exactly like the real reader.
 crew_absorb_class() {  # <id>
-  local id=$1 line state src
+  local id=$1 line state src statedir evfile
   [ -n "$id" ] || { printf 'none'; return; }
-  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  statedir=${STATE:-${FM_STATE_OVERRIDE:-}}
+  evfile=''
+  if [ -n "$statedir" ] && [ -d "$statedir" ]; then
+    evfile="$statedir/.vloop-evidence-$id.$$"
+    rm -f "$evfile" 2>/dev/null || evfile=''
+  fi
+  if [ -n "$evfile" ]; then
+    line=$(FM_CREW_STATE_EVIDENCE_FILE="$evfile" "$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+    # Fold whatever evidence the read exported before judging it: gate and fix
+    # observations count toward the loop bounds regardless of the verdict this
+    # call ends up printing. An absent export folds nothing.
+    fm_vloop_observe "$statedir" "$id" "$evfile" || true
+    rm -f "$evfile" 2>/dev/null || true
+  else
+    line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  fi
   case "$line" in state:*) ;; *) printf 'none'; return ;; esac
   state=${line#state: }; state=${state%% *}
   if [ "$state" = paused ]; then printf 'paused'; return; fi
   if [ "$state" = working ]; then
     src=${line#*source: }; src=${src%% *}
-    case "$src" in run-step|pane) printf 'working'; return ;; esac
+    case "$src" in
+      run-step|pane)
+        if [ -n "$statedir" ]; then
+          case "$(fm_vloop_verdict "$statedir" "$id")" in
+            stop*) printf 'limit'; return ;;
+          esac
+        fi
+        printf 'working'; return
+        ;;
+    esac
   fi
   printf 'none'
 }
