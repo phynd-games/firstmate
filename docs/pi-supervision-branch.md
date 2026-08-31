@@ -56,7 +56,7 @@ The follow-up turn a `captain` verdict opens is itself the captain-visible outco
 Because Pi gives the model only a custom message's `content`, that silent note normally carries both a relay instruction and the `branch-outcome` operational kind owned by `bin/fm-operational-input.sh` inside its own text.
 This self-description lets main distinguish a new supervision outcome from its own earlier captain-facing answer; without it, main can mistake the outcome for that answer and re-emit the stale answer instead of relaying the outcome.
 If envelope encoding fails, the note degrades to the same relay instruction as plain text rather than losing the outcome or opening another turn.
-A no-change heartbeat outcome explicitly reported with `task=fleet` and `silent=true` is also delivered silently with no rendered note, while every other `routine` outcome stays rendered with its sailboat prefix.
+A no-change heartbeat outcome explicitly reported with `task=fleet` and `silent=true` is also delivered silently with no rendered note, while every other `routine` outcome stays rendered with its sailboat prefix unless it deterministically duplicates that task's last rendered note - `bin/fm-branch-outcome.sh`'s `note-render` header owns that per-task novelty gate, and a gate that cannot answer fails toward rendering.
 The verdict criteria in the branch prompt mirror the captain-etiquette escalation list; doubt escalates.
 Main can read the durable outcome store on demand through its `fm_branch_outcomes` tool.
 

@@ -2,7 +2,7 @@
 name: stuck-crewmate-recovery
 description: >-
   Agent-only playbook for stuck or missing ordinary Firstmate direct reports.
-  Use when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
+  Use when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, a failed steer, or a validation-loop limit stop.
   Reconciles recorded work before escalating from targeted inspection through safe relaunch or failure.
 user-invocable: false
 metadata:
@@ -11,7 +11,7 @@ metadata:
 
 # stuck-crewmate-recovery
 
-Use this playbook when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or when a direct report is stale, looping, repeatedly confused, asking a question its brief already answers, unresponsive, or when a steer failed to land.
+Use this playbook when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or when a direct report is stale, looping, repeatedly confused, asking a question its brief already answers, unresponsive, stopped by a validation-loop limit, or when a steer failed to land.
 
 Interrupt, stop, and relaunch a worker through `bin/fm-control.sh <task-id> interrupt|exit|relaunch`, which resolves the recorded runtime itself, verifies each action, and never tears down or discards anything ([`docs/agent-control.md`](../../../docs/agent-control.md)).
 That plane covers workers running in this home; a remotely placed secondmate is refused by name and reconciled through `secondmate-provisioning` instead.
@@ -38,6 +38,17 @@ Before relaunch, prove that no live agent still owns the recorded task and that 
 Preserve its uncommitted changes and commits, keep the same task identity, and resume or relaunch the recorded harness in that existing worktree with the same brief plus a concise progress note.
 Do not use a fresh generic spawn while the recorded worktree is unaccounted for, because allocating another worktree can split one task across two copies.
 If the worktree or ownership cannot be reconciled safely, leave all state intact and report the task failed or blocked with the conflicting evidence.
+
+## Validation-loop limit stop
+
+A wake or crew-state detail naming a validation loop limit means the deterministic bounds in `bin/fm-validation-loop-lib.sh` stopped absorbing a crew that still reads as working: repetitive fix rounds or findings, a stalled active run, or stale pipeline evidence.
+The stop changed nothing but the durable journal (`state/<id>.validation-loop`, whose recorded reason is the finding), so the worker, branch, worktree, and run custody are all exactly where they were.
+Recover in the same copy only:
+
+1. Read `bin/fm-crew-state.sh <id>` and the journal's recorded reason; do not re-absorb the crew as working on the run-step or pane state alone - the breach is the evidence that proof has gone stale.
+2. For a repetitive or stalled run, steer or interrupt the same worker through the ordinary escalation ladder below; if the run itself must end, only the worker uses no-mistakes' own supported abort and custody sequence per `AGENTS.md` section 7, preserving every existing pipeline fix commit.
+3. Never spawn a duplicate worker, never discard changes, and never approve or skip a failing check to clear the stop.
+4. A replacement run on the same branch and copy resets the journal's counters automatically; when the captain explicitly authorizes continuing the stopped loop as-is, remove `state/<id>.validation-loop` to reset the bounds from fresh evidence.
 
 ## Live-endpoint escalation
 

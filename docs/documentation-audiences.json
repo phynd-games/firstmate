@@ -373,6 +373,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/validation-loop-limits.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/verification/dispatch-auth.md",
       "audience": "maintainer-verification"
     },
