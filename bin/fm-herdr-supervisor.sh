@@ -1171,6 +1171,7 @@ establish() {  # <reason>
     printf 'export FM_ROOT_OVERRIDE=%s\n' "$(shell_quote "$FM_ROOT")"
     printf 'export FM_STATE_OVERRIDE=%s\n' "$(shell_quote "$STATE")"
     printf 'export FM_CONFIG_OVERRIDE=%s\n' "$(shell_quote "$CONFIG")"
+    [ -z "${FM_PROC_ROOT_OVERRIDE:-}" ] || printf 'export FM_PROC_ROOT_OVERRIDE=%s\n' "$(shell_quote "$FM_PROC_ROOT_OVERRIDE")"
     [ -z "${FM_GUARD_GRACE:-}" ] || printf 'export FM_GUARD_GRACE=%s\n' "$(shell_quote "$FM_GUARD_GRACE")"
     [ -z "${FM_WATCHER_STALE_GRACE:-}" ] || printf 'export FM_WATCHER_STALE_GRACE=%s\n' "$(shell_quote "$FM_WATCHER_STALE_GRACE")"
     [ -z "${FM_ARM_CONFIRM_TIMEOUT:-}" ] || printf 'export FM_ARM_CONFIRM_TIMEOUT=%s\n' "$(shell_quote "$FM_ARM_CONFIRM_TIMEOUT")"

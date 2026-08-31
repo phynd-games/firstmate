@@ -185,6 +185,10 @@ wait_until 40 cycle_count_at_least 3 \
 pass "one establish keeps re-arming the real watcher inside its Herdr pane"
 
 # --- 4. duplicate arm attaches to the existing real watcher ------------------
+# Keep the task active while checking the singleton.  A completed task makes a
+# real watcher finish its one-shot cycle immediately, so a health check followed
+# by a separate lock read would otherwise have an unavoidable TOCTOU window.
+printf 'working: smoke duplicate-arm\n' > "$HOME_DIR/state/smoke.status"
 wait_until 20 watcher_is_healthy \
   || fail "the duplicate-arm case did not begin with a healthy watcher"
 WATCH_LOCK_PID=$(cat "$HOME_DIR/state/.watch.lock/pid" 2>/dev/null || true)
