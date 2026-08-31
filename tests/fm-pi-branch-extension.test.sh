@@ -480,6 +480,7 @@ const pi = {
     renderers.set(customType, renderer);
   },
   sendMessage(message, options) {
+    if (globalThis.__fmSendMessageError) throw new Error(globalThis.__fmSendMessageError);
     sentToMain.push({ message, options: options ?? {} });
   },
   sendUserMessage(content, options) {
@@ -548,7 +549,7 @@ test_branch_dispatch_two_stage_filter_and_prefix_contract() {
 const prelude = process.env.DRIVER_PRELUDE;
 await eval(`(async () => { ${prelude}; globalThis.__t = { pi, fire, dispatch, settle, outcomeScript, sentToMain, mainUserMessages, mainTools, renderers, home, realRoot }; })()`);
 const { pi, fire, dispatch, settle, outcomeScript, sentToMain, mainUserMessages, mainTools, renderers, home, realRoot } = globalThis.__t;
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 writeFileSync(`${home}/state/.lock`, `${process.ppid}\n`);
 
@@ -733,6 +734,18 @@ writeFileSync(`${home}/state/task-9.status`, "failed: build broke\n");
 await report.execute("call-6", { task: "task-9", verdict: "routine", summary: "worker failed its build" }, undefined, undefined, {});
 if (sentToMain[4].message.display !== true) {
   throw new Error(`a genuinely new outcome must render: display=${sentToMain[4].message.display}`);
+}
+globalThis.__fmSendMessageError = "synthetic send failure";
+const failedDelivery = await report.execute("call-delivery-fail", { task: "task-delivery", verdict: "routine", summary: "delivery should retry" }, undefined, undefined, {});
+if (!failedDelivery.isError) throw new Error("failed routine delivery must be reported as an error");
+if (existsSync(`${home}/state/.branch-note-sig-task-delivery`)) {
+  throw new Error("failed routine delivery must roll back its novelty marker");
+}
+globalThis.__fmSendMessageError = undefined;
+const retriedDelivery = await report.execute("call-delivery-retry", { task: "task-delivery", verdict: "routine", summary: "delivery should retry" }, undefined, undefined, {});
+if (retriedDelivery.isError) throw new Error(`routine delivery retry failed: ${JSON.stringify(retriedDelivery)}`);
+if (sentToMain.length !== 6 || sentToMain[5].message.display !== true) {
+  throw new Error("a routine note must render after delivery retry");
 }
 if (!renderers.has("fm-branch-merge")) throw new Error("merge-note renderer missing");
 const assertRenderedNote = (note, glyph) => {

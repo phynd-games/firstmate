@@ -592,6 +592,7 @@ export default function (pi: ExtensionAPI) {
     silent: boolean,
   ): boolean {
     if (!actingAsOwner(expectedGeneration)) return false;
+    let noteReserved = false;
     if (verdict === "captain") {
       const message = {
         customType: "fm-branch-merge",
@@ -613,12 +614,22 @@ export default function (pi: ExtensionAPI) {
       if (display && task !== "fleet") {
         const gate = runOutcomeScript(["note-render", "--task", task]);
         if (gate.ok && gate.stdout.startsWith("coalesce")) display = false;
+        else if (gate.ok && gate.stdout === "render") noteReserved = true;
+      }
+      if (!actingAsOwner(expectedGeneration)) {
+        if (noteReserved) runOutcomeScript(["note-rollback", "--task", task]);
+        return false;
       }
       const message = { customType: "fm-branch-merge", content: `${MERGE_NOTE_BOAT} ${task}: ${summary}`, display };
-      if (mainStreaming) {
-        pi.sendMessage(message, { deliverAs: "nextTurn" });
-      } else {
-        pi.sendMessage(message, {});
+      try {
+        if (mainStreaming) {
+          pi.sendMessage(message, { deliverAs: "nextTurn" });
+        } else {
+          pi.sendMessage(message, {});
+        }
+      } catch {
+        if (noteReserved) runOutcomeScript(["note-rollback", "--task", task]);
+        return false;
       }
     }
     if (/^[0-9]+$/.test(seq)) {

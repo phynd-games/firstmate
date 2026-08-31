@@ -69,7 +69,7 @@ CURSOR="$STATE/.branch-outcomes-cursor"
 LOCK="$STATE/.branch-outcomes.lock"
 
 usage() {
-  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | list [--recent <n>] | startup-replay | note-render --task <id>" >&2
+  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | list [--recent <n>] | startup-replay | note-render --task <id> | note-rollback --task <id>" >&2
   exit 2
 }
 
@@ -288,6 +288,26 @@ case "$CMD" in
     mv -f -- "$TMP" "$MARKER"
     fm_lock_release "$LOCK"
     printf 'render\n'
+    ;;
+  note-rollback)
+    [ "${1:-}" = --task ] || usage
+    TASK=${2:-}
+    [ "$#" -eq 2 ] || usage
+    [ -n "$TASK" ] || usage
+    case "$TASK" in
+      fleet|*[!A-Za-z0-9._-]*)
+        printf 'rolled-back\n'
+        exit 0
+        ;;
+    esac
+    MARKER="$STATE/.branch-note-sig-$TASK"
+    fm_lock_acquire_wait "$LOCK"
+    if ! rm -f -- "$MARKER"; then
+      fm_lock_release "$LOCK"
+      exit 1
+    fi
+    fm_lock_release "$LOCK"
+    printf 'rolled-back\n'
     ;;
   *) usage ;;
 esac
