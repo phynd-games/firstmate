@@ -992,9 +992,22 @@ if [ "$RELAUNCH" -eq 0 ]; then
   fm_backend_validate_spawn "$BACKEND" || exit 1
     fm_backend_source "$BACKEND" "spawn backend selection" "" spawn || exit 1
 fi
+if [ "$RELAUNCH" -eq 0 ]; then
+  SPAWN_TASK_SET_LOCK=$(fm_task_set_lock_path "$STATE") || {
+    echo "error: could not resolve the task-set lock for $STATE" >&2
+    exit 1
+  }
+fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = secondmate ]; then
-  spawn_remote_secondmate_preflight "$ID"
-  remote_spawn_preflight_rc=$?
+  if [ -e "$SPAWN_TASK_SET_LOCK" ]; then
+    echo "error: this home's task set is locked by another operation (a forced teardown is enumerating or removing its tasks); refusing to create task $ID rather than racing it" >&2
+    exit 1
+  fi
+  if spawn_remote_secondmate_preflight "$ID"; then
+    remote_spawn_preflight_rc=0
+  else
+    remote_spawn_preflight_rc=$?
+  fi
   [ "$remote_spawn_preflight_rc" -eq 3 ] || [ "$remote_spawn_preflight_rc" -eq 0 ] \
     || exit "$remote_spawn_preflight_rc"
 fi
@@ -1021,10 +1034,6 @@ if [ "$RELAUNCH" -eq 0 ]; then
   #
   # Refusing rather than waiting is the fail-closed direction: the home may be
   # moments from removal, so there is nothing worth waiting for.
-  SPAWN_TASK_SET_LOCK=$(fm_task_set_lock_path "$STATE") || {
-    echo "error: could not resolve the task-set lock for $STATE" >&2
-    exit 1
-  }
   if ! fm_lock_try_acquire "$SPAWN_TASK_SET_LOCK"; then
     echo "error: this home's task set is locked by another operation (a forced teardown is enumerating or removing its tasks); refusing to create task $ID rather than racing it" >&2
     exit 1

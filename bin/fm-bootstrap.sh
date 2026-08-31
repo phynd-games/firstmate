@@ -709,26 +709,35 @@ bootstrap_secondmate_runtime_preflight() {
       continue
     fi
     backend=$(fm_backend_meta_recorded_backend "$meta" 2>/dev/null || true)
-    case "$backend" in
-      absent|tmux|zellij|orca|cmux)
-        echo "SECONDMATE_SYNC: secondmate $id: skipped: legacy backend record (backend=${backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
-        continue
-        ;;
-      ambiguous|'')
-        fm_backend_policy_refuse "secondmate $id endpoint record (ambiguous or empty backend identity)" "$backend" \
-          "Repair or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
-        return 1
-        ;;
-      herdr) ;;
-      *)
-        fm_backend_policy_refuse "secondmate $id endpoint record (backend=$backend)" "$backend" \
-          "Declare Herdr or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
-        return 1
-        ;;
-    esac
-    fm_backend_validate_task_endpoint "$meta" "$id" || return 1
-    target=$FM_BACKEND_VALIDATED_TARGET
-    fm_backend_source herdr "bootstrap secondmate $id" "${target%%:*}" || return 1
+    if fm_backend_policy_legacy_lane; then
+      [ "$backend" = absent ] && backend=tmux
+    else
+      case "$backend" in
+        absent|tmux|zellij|orca|cmux)
+          echo "SECONDMATE_SYNC: secondmate $id: skipped: legacy backend record (backend=${backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
+          continue
+          ;;
+        ambiguous|'')
+          fm_backend_policy_refuse "secondmate $id endpoint record (ambiguous or empty backend identity)" "$backend" \
+            "Repair or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+          return 1
+          ;;
+        herdr) ;;
+        *)
+          fm_backend_policy_refuse "secondmate $id endpoint record (backend=$backend)" "$backend" \
+            "Declare Herdr or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+          return 1
+          ;;
+      esac
+    fi
+    if fm_backend_policy_legacy_lane; then
+      target=$(fm_backend_target_of_meta "$meta")
+      [ -n "$target" ] || target=$(fm_meta_get "$meta" window)
+    else
+      fm_backend_validate_task_endpoint "$meta" "$id" || return 1
+      target=$FM_BACKEND_VALIDATED_TARGET
+    fi
+    fm_backend_source "$backend" "bootstrap secondmate $id" "${target%%:*}" || return 1
   done
 }
 
@@ -893,21 +902,25 @@ secondmate_liveness_one() {  # <meta> <id>
     return 0
   fi
   backend=$(fm_backend_meta_recorded_backend "$meta" 2>/dev/null || true)
-  case "$backend" in
-    herdr) ;;
-    absent|tmux|zellij|orca|cmux)
-      echo "SECONDMATE_LIVENESS: secondmate $id: skipped: legacy backend record (backend=${backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
-      return 0
-      ;;
-    ambiguous|'')
-      echo "SECONDMATE_LIVENESS: secondmate $id: blocked: backend identity is ambiguous or missing; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\""
-      return 0
-      ;;
-    *)
-      echo "SECONDMATE_LIVENESS: secondmate $id: blocked: backend=${backend} is not herdr; declare Herdr and verify with herdr status --json"
-      return 0
-      ;;
-  esac
+  if fm_backend_policy_legacy_lane; then
+    [ "$backend" = absent ] && backend=tmux
+  else
+    case "$backend" in
+      herdr) ;;
+      absent|tmux|zellij|orca|cmux)
+        echo "SECONDMATE_LIVENESS: secondmate $id: skipped: legacy backend record (backend=${backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
+        return 0
+        ;;
+      ambiguous|'')
+        echo "SECONDMATE_LIVENESS: secondmate $id: blocked: backend identity is ambiguous or missing; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\""
+        return 0
+        ;;
+      *)
+        echo "SECONDMATE_LIVENESS: secondmate $id: blocked: backend=${backend} is not herdr; declare Herdr and verify with herdr status --json"
+        return 0
+        ;;
+    esac
+  fi
   target=$(fm_backend_target_of_meta "$meta")
   [ -n "$target" ] || target="$window"
   agent_state=$(fm_backend_agent_state "$backend" "$target")

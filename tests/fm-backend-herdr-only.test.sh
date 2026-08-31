@@ -289,6 +289,84 @@ test_workspace_list_failure_refuses_before_creation() {
   pass "failed Herdr workspace listing refuses before workspace creation"
 }
 
+test_kill_refuses_planner_and_focus_failures_before_close() {
+  local planner_marker="$TMP_ROOT/kill-planner-close" focus_marker="$TMP_ROOT/kill-focus-close"
+  rm -f "$planner_marker" "$focus_marker"
+  run_capture kill-planner-failure lib_probe "CLOSE_MARKER=$planner_marker" -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_projection_focus_snapshot() { printf "ws0\tactive-tab"; }
+    fm_backend_herdr_cli() { printf "%s" '\''{"result":{"pane":{"pane_id":"pane1","tab_id":"other-tab","workspace_id":"ws1"}}}'\''; }
+    fm_backend_herdr_emptying_close_plan() { return 2; }
+    fm_backend_herdr_explicit_close_pane_confirmed() { : > "$CLOSE_MARKER"; return 0; }
+    fm_backend_herdr_kill_serialized fmtest pane1
+  '
+  [ "$RC" -eq 2 ] || fail "planner failure must remain typed: rc=$RC out=$OUT err=$ERR"
+  [ ! -e "$planner_marker" ] || fail "planner failure must not close an unverified pane"
+
+  run_capture kill-focus-failure lib_probe "CLOSE_MARKER=$focus_marker" -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_projection_focus_snapshot() { return 2; }
+    fm_backend_herdr_explicit_close_pane_confirmed() { : > "$CLOSE_MARKER"; return 0; }
+    fm_backend_herdr_kill_serialized fmtest pane1
+  '
+  [ "$RC" -eq 2 ] || fail "focus snapshot failure must remain typed: rc=$RC out=$OUT err=$ERR"
+  [ ! -e "$focus_marker" ] || fail "focus snapshot failure must not close an unverified pane"
+  pass "Herdr kill refuses planner and focus failures before any close"
+}
+
+test_endpoint_presence_failure_remains_typed() {
+  run_capture endpoint-presence-failure lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_parse_target() { FM_BACKEND_HERDR_SESSION=fmtest; FM_BACKEND_HERDR_PANE=pane1; }
+    fm_backend_herdr_pane_presence_state() { return 2; }
+    fm_backend_herdr_endpoint_confirmed_gone fmtest:ws1:pane1
+  '
+  [ "$RC" -eq 2 ] || fail "presence read failure must remain typed: rc=$RC out=$OUT err=$ERR"
+  pass "Herdr endpoint confirmation propagates presence-read failures"
+}
+
+test_recovery_agent_failures_refuse_before_replacement() {
+  local replacement_marker="$TMP_ROOT/reclaim-replacement"
+  rm -f "$replacement_marker"
+  run_capture reclaim-agent-failure lib_probe "REPLACEMENT_MARKER=$replacement_marker" -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_projection_journal_snapshot() {
+      FM_BACKEND_HERDR_JOURNAL_VERSION=2
+      FM_BACKEND_HERDR_JOURNAL_HOME=/tmp/reclaim-home
+      FM_BACKEND_HERDR_JOURNAL_SESSION=fmtest
+      FM_BACKEND_HERDR_JOURNAL_WORKSPACE_ID=ws1
+      FM_BACKEND_HERDR_JOURNAL_TAB_ID=tab1
+      FM_BACKEND_HERDR_JOURNAL_PANE_ID=pane1
+      FM_BACKEND_HERDR_JOURNAL_PARENT_LABEL=parent
+      FM_BACKEND_HERDR_JOURNAL_TASK_LABEL=task
+      FM_BACKEND_HERDR_JOURNAL_PROJECTION_ID=projection
+    }
+    fm_backend_herdr_projection_home_identity() { printf /tmp/reclaim-home; }
+    fm_backend_herdr_projection_live_binding_matches() { return 0; }
+    fm_backend_herdr_pane_agent_state() { return 2; }
+    fm_backend_herdr_cli() { : > "$REPLACEMENT_MARKER"; return 0; }
+    fm_backend_herdr_projection_reclaim_task fmtest journal task /tmp/reclaim-home ws1 tab1 pane1 parent task /tmp
+  '
+  [ "$RC" -eq 2 ] || fail "reclaim agent read failure must remain typed: rc=$RC out=$OUT err=$ERR"
+  [ ! -e "$replacement_marker" ] || fail "reclaim agent read failure must not create a replacement"
+
+  run_capture quarantine-agent-failure lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_projection_journal_token() { printf token; }
+    fm_backend_herdr_server_ensure() { return 0; }
+    fm_backend_herdr_cli() {
+      case "$*" in
+        *"workspace list"*) printf "%s" '\''{"result":{"workspaces":[{"workspace_id":"ws1","label":"firstmate/task · p:token"}]}}'\'' ;;
+        *"pane list"*) printf "%s" '\''{"result":{"panes":[{"pane_id":"pane1"}]}}'\'' ;;
+      esac
+    }
+    fm_backend_herdr_pane_agent_state() { return 2; }
+    fm_backend_herdr_projection_recovery_allows_flat fmtest journal task
+  '
+  [ "$RC" -eq 2 ] || fail "quarantine agent read failure must remain typed: rc=$RC out=$OUT err=$ERR"
+  pass "Herdr recovery refuses agent-read failures before replacement or fallback"
+}
+
 # --- fm-spawn ----------------------------------------------------------------
 
 make_project() {  # <dir>
@@ -651,6 +729,9 @@ test_selector_resolution_has_no_tmux_fallback
 test_native_herdr_failures_are_policy_refusals
 test_ambiguous_close_planning_refuses_without_output
 test_workspace_list_failure_refuses_before_creation
+test_kill_refuses_planner_and_focus_failures_before_close
+test_endpoint_presence_failure_remains_typed
+test_recovery_agent_failures_refuse_before_replacement
 test_spawn_refuses_non_herdr_selection_before_side_effects
 test_spawn_refuses_missing_or_incapable_herdr_without_fallback
 test_invalid_backend_state_fails_closed

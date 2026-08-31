@@ -78,16 +78,42 @@ SECONDMATES_MD="$DATA/secondmates.md"
 . "$SCRIPT_DIR/fm-secondmate-nudge-lib.sh"
 
 config_push_validate_primary_backend() {
-  local selected session
+  local selected session line
+  if fm_backend_policy_legacy_lane; then
+    selected=
+    if [ -f "$CONFIG/backend" ]; then
+      while IFS= read -r line; do
+        line=$(printf '%s' "$line" | tr -d '[:space:]')
+        if [ -n "$line" ]; then
+          selected=$line
+          break
+        fi
+      done < "$CONFIG/backend"
+    fi
+    unset FM_CONFIG_INHERIT_BACKEND_OVERRIDE
+    if [ -n "$selected" ]; then
+      fm_backend_policy_legacy_adapter_allowed "$selected" || return 1
+      FM_CONFIG_INHERIT_BACKEND_OVERRIDE=$selected
+      export FM_CONFIG_INHERIT_BACKEND_OVERRIDE
+    fi
+    case " $FM_INHERITABLE_CONFIG " in
+      *" backend ") ;;
+      *) FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG% } backend"; export FM_INHERITABLE_CONFIG ;;
+    esac
+    return 0
+  fi
   selected=$(fm_backend_name) || return 1
-  [ "$selected" = "$FM_BACKEND_ACTIVE" ] || return 1
+  if [ "$selected" != "$FM_BACKEND_ACTIVE" ] \
+    && ! fm_backend_policy_legacy_adapter_allowed "$selected"; then
+    fm_backend_validate "$selected" "config push primary backend" || return 1
+  fi
   session=${HERDR_SESSION:-default}
-  fm_backend_source herdr "config push primary" "$session" || return 1
+  fm_backend_source "$selected" "config push primary" "$session" || return 1
   case " $FM_INHERITABLE_CONFIG " in
     *" backend ") ;;
     *) FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG% } backend"; export FM_INHERITABLE_CONFIG ;;
   esac
-  FM_CONFIG_INHERIT_BACKEND_OVERRIDE=$FM_BACKEND_ACTIVE
+  FM_CONFIG_INHERIT_BACKEND_OVERRIDE=$selected
   export FM_CONFIG_INHERIT_BACKEND_OVERRIDE
 }
 
@@ -137,6 +163,9 @@ config_push_validate_remote_record() { # <task-id> <meta-file>; 10 means legacy 
 
 config_push_validate_local_record() { # <task-id> <meta-file>
   local id=$1 meta=$2 target
+  if fm_backend_policy_legacy_lane; then
+    return 0
+  fi
   fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null || return 1
   target=$FM_BACKEND_VALIDATED_TARGET
   fm_backend_source herdr "config push secondmate $id" "${target%%:*}" || return 1

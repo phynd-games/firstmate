@@ -333,6 +333,7 @@ fm_backend_validate() {  # <name> [origin]
 fm_backend_validate_spawn() {  # <name> [origin]
   local name=$1
   fm_backend_validate "$name" "${2-}" || return 1
+  fm_backend_policy_legacy_adapter_allowed "$name" && return 0
   fm_backend_list_contains "$FM_BACKEND_SPAWN" "$name" && return 0
   echo "error: backend '$name' does not support task spawning yet (spawn-supported: $FM_BACKEND_SPAWN)" >&2
   return 1
@@ -561,12 +562,21 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
       "Retire or explicitly migrate this pre-invariant task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
     return 1
   fi
+  if [ "$backend" = tmux ] && fm_backend_policy_legacy_lane; then
+    window=$(fm_meta_get "$meta" window)
+    [ -n "$window" ] || window=$(fm_meta_get "$meta" terminal)
+    [ -n "$window" ] || return 1
+    FM_BACKEND_VALIDATED_BACKEND=$backend
+    FM_BACKEND_VALIDATED_TARGET=$window
+    return 0
+  fi
   if ! fm_backend_policy_permits "$backend"; then
     fm_backend_policy_refuse "task $id endpoint record $meta (backend=$backend)" "$backend" \
       "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
     return 1
   fi
-  if ! fm_backend_is_known "$backend"; then
+  if ! fm_backend_is_known "$backend" \
+    && ! fm_backend_policy_legacy_adapter_allowed "$backend"; then
     fm_backend_policy_refuse "task $id endpoint record $meta (unknown backend=$backend)" "$backend" \
       "Retire or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
     return 1

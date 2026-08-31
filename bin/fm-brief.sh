@@ -195,6 +195,20 @@ The move IS the acknowledgement: without it firstmate rings again and eventually
 EOF
 INBOX_SECTION=${INBOX_SECTION%$'\n'}
 
+FM_HOME_QUOTED=$(shell_quote "$FM_HOME")
+FM_PEEK_QUOTED=$(shell_quote "$FM_ROOT/bin/fm-peek.sh")
+FM_SEND_QUOTED=$(shell_quote "$FM_ROOT/bin/fm-send.sh")
+FM_CONTROL_QUOTED=$(shell_quote "$FM_ROOT/bin/fm-control.sh")
+IFS= read -r -d '' HERDR_WORKER_SECTION <<EOF || true
+# Herdr worker interaction contract
+Use the exact recorded Herdr target from the task record: backend=herdr with herdr_session, herdr_workspace_id, herdr_tab_id, and herdr_pane_id. Never infer an endpoint from ambient state.
+Observe it with $FM_PEEK_QUOTED <id>.
+Communicate through the durable steering inbox with FM_HOME=$FM_HOME_QUOTED $FM_SEND_QUOTED <id> <message>.
+Drive lifecycle only with $FM_CONTROL_QUOTED <id> interrupt|exit|relaunch.
+Run Herdr lifecycle tests only through a --herdr-lab scaffold and its guarded helper. Never use tmux, treehouse status as endpoint authority, send-keys, ambient targets, detached processes, or fallback backends.
+EOF
+HERDR_WORKER_SECTION=${HERDR_WORKER_SECTION%$'\n'}
+
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
 idx=1
@@ -359,6 +373,8 @@ The report is the only thing that survives, so anything worth keeping must be in
 
 $INBOX_SECTION
 
+$HERDR_WORKER_SECTION
+
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
@@ -477,6 +493,8 @@ $RULE1
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
 $INBOX_SECTION
+
+$HERDR_WORKER_SECTION
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.

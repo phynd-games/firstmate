@@ -813,7 +813,6 @@ all_repo_tests() {
   # shellcheck disable=SC2035
   for f in tests/*.test.sh; do
     [ -f "$f" ] || continue
-    [ "$(basename "$f")" = fm-secondmate-harness.test.sh ] && continue
     printf '%s\n' "$f"
   done | LC_ALL=C sort
 }

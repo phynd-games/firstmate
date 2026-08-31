@@ -611,7 +611,10 @@ set -u
 cmd=\${1:-}; sub=\${2:-}; arg=\${3:-}
 case "\$cmd \$sub" in
   "status --json")
-    printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n'
+    printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true,"status":"running","compatible":true,"protocol":14}}\n'
+    ;;
+  "session list")
+    printf '{"sessions":[{"name":"default","running":true}]}\n'
     ;;
   "pane get")
     if [ "\$arg" = "${stale#*:}" ]; then
@@ -658,6 +661,13 @@ test_nudge_retry_uses_fresh_herdr_endpoint_after_respawn() {
   {
     printf 'window=%s\n' "$stale"
     printf 'backend=herdr\n'
+    printf 'endpoint_task_id=sm-instr\n'
+    printf 'worktree=%s/sm-instr\n' "$w"
+    printf 'project=%s/sm-instr\n' "$w"
+    printf 'herdr_session=default\n'
+    printf 'herdr_workspace_id=w9\n'
+    printf 'herdr_tab_id=t9\n'
+    printf 'herdr_pane_id=w9:pY\n'
     printf 'kind=secondmate\n'
     printf 'harness=claude\n'
     printf 'home=%s/sm-instr\n' "$w"
@@ -672,6 +682,8 @@ meta="\$FM_HOME/state/\$id.meta"
 [ -f "\$meta" ] || exit 1
 sed -i.bak "s/^window=.*/window=$fresh/" "\$meta" 2>/dev/null || \
   sed -i "s/^window=.*/window=$fresh/" "\$meta"
+sed -i.bak "s/^herdr_workspace_id=.*/herdr_workspace_id=wA/; s/^herdr_pane_id=.*/herdr_pane_id=wA:p2/" "\$meta" 2>/dev/null || \
+  sed -i "s/^herdr_workspace_id=.*/herdr_workspace_id=wA/; s/^herdr_pane_id=.*/herdr_pane_id=wA:p2/" "\$meta"
 rm -f "\$meta.bak"
 exit 0
 SH

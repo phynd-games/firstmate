@@ -19,7 +19,7 @@
 #                                   stay on disk but are unreachable for the
 #                                   active runtime (removal plan:
 #                                   docs/architecture.md "Runtime session backends")
-#   fm_backend_policy_legacy_lane   the retired retained-adapter lane predicate
+#   fm_backend_policy_legacy_lane   the test-only retained-adapter lane predicate
 #   fm_backend_policy_permits       whether <name> may be dispatched here
 #   fm_backend_policy_is_retained   whether <name> is a retained legacy adapter
 #   fm_backend_policy_refuse        the one refusal diagnostic
@@ -38,11 +38,19 @@ FM_BACKEND_ACTIVE="herdr"
 FM_BACKEND_RETAINED_LEGACY="tmux zellij orca cmux"
 
 fm_backend_policy_legacy_lane() {
-  return 1
+  local capability_fd=${FM_BACKEND_TEST_CAPABILITY_FD:-}
+  [ "${FM_BACKEND_LEGACY_TEST_LANE:-}" = 1 ] || return 1
+  [ "${FM_BACKEND_TEST_HARNESS:-}" = 1 ] || return 1
+  [ "${FM_GATE_REFUSE_BYPASS:-}" = 1 ] || return 1
+  [ -n "${FM_BACKEND_TEST_ROOT:-}" ] || return 1
+  [ -f "$FM_BACKEND_TEST_ROOT/tests/lib.sh" ] || return 1
+  case "$capability_fd" in ''|*[!0-9]*) return 1 ;; esac
+  [ -r "/dev/fd/$capability_fd" ] || return 1
+  return 0
 }
 
 fm_backend_policy_legacy_adapter_allowed() {
-  return 1
+  fm_backend_policy_legacy_lane && fm_backend_policy_is_retained "${1-}"
 }
 
 fm_backend_policy_is_retained() {  # <name>
@@ -58,6 +66,7 @@ fm_backend_policy_is_retained() {  # <name>
 # fm_backend_policy_permits: 0 when Herdr may be selected or dispatched here.
 fm_backend_policy_permits() {  # <name>
   [ "${1-}" = "$FM_BACKEND_ACTIVE" ] && return 0
+  fm_backend_policy_legacy_adapter_allowed "${1-}" && return 0
   return 1
 }
 

@@ -2454,8 +2454,13 @@ fm_backend_herdr_projection_live_binding_matches() {  # <session> <token> <works
 }
 
 fm_backend_herdr_projection_reclaim_rollback() {  # <session> <new-pane>
-  local session=$1 new_pane=$2 state
-  state=$(fm_backend_herdr_pane_agent_state "$session" "$new_pane")
+  local session=$1 new_pane=$2 state state_rc=0
+  if state=$(fm_backend_herdr_pane_agent_state "$session" "$new_pane"); then
+    :
+  else
+    state_rc=$?
+  fi
+  [ "$state_rc" -eq 0 ] || return "$state_rc"
   case "$state" in
     dead) return 0 ;;
     no-agent) ;;
@@ -2474,7 +2479,7 @@ fm_backend_herdr_projection_reclaim_rollback() {  # <session> <new-pane>
 # post-mutation uncertainty that must refuse the launch.
 fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <home> <meta-workspace> <meta-tab> <meta-pane> <parent-label> <task-label> <cwd>
   local session=$1 journal=$2 id=$3 home=$4 meta_workspace=$5 meta_tab=$6 meta_pane=$7
-  local parent_label=$8 task_label=$9 cwd=${10} canonical_home state focus_before active_tab out new_tab new_pane info close_status
+  local parent_label=$8 task_label=$9 cwd=${10} canonical_home state state_rc=0 focus_before active_tab out new_tab new_pane info close_status
   FM_BACKEND_HERDR_PROJECTION_TAB_ID=""
   FM_BACKEND_HERDR_PROJECTION_PANE_ID=""
   fm_backend_herdr_projection_journal_snapshot "$journal" "$id" || return 1
@@ -2504,7 +2509,12 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
     echo "warning: herdr presentation binding for $id has an ambiguous, renamed, foreign, or non-nested live shape; spawning flat" >&2
     return 2
   fi
-  state=$(fm_backend_herdr_pane_agent_state "$session" "$meta_pane")
+  if state=$(fm_backend_herdr_pane_agent_state "$session" "$meta_pane"); then
+    :
+  else
+    state_rc=$?
+  fi
+  [ "$state_rc" -eq 0 ] || return "$state_rc"
   case "$state" in
     no-agent) ;;
     dead)
@@ -2557,7 +2567,16 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
     echo "warning: herdr presentation reclaim for $id could not verify its replacement pane; spawning flat" >&2
     return 2
   fi
-  state=$(fm_backend_herdr_pane_agent_state "$session" "$meta_pane")
+  state_rc=0
+  if state=$(fm_backend_herdr_pane_agent_state "$session" "$meta_pane"); then
+    :
+  else
+    state_rc=$?
+  fi
+  if [ "$state_rc" -ne 0 ]; then
+    fm_backend_herdr_projection_reclaim_rollback "$session" "$new_pane" || true
+    return "$state_rc"
+  fi
   case "$state" in
     no-agent) ;;
     live|unknown)
@@ -2622,7 +2641,7 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
 # One or more matches allow flat fallback only when every pane is positively
 # dead or agent-free; a live or unknown pane refuses a duplicate launch.
 fm_backend_herdr_projection_recovery_allows_flat() {  # <session> <journal> <task-id>
-  local session=$1 journal=$2 id=$3 token list wsids count wsid panes pane_ids pane state
+  local session=$1 journal=$2 id=$3 token list wsids count wsid panes pane_ids pane state state_rc=0
   token=$(fm_backend_herdr_projection_journal_token "$journal" "$id") || {
     echo "error: malformed herdr presentation journal for $id; refusing duplicate launch" >&2
     return 1
@@ -2662,7 +2681,13 @@ fm_backend_herdr_projection_recovery_allows_flat() {  # <session> <journal> <tas
     pane_ids=$(printf '%s' "$panes" | jq -r '.result.panes[]? | .pane_id' 2>/dev/null)
     while IFS= read -r pane; do
       [ -n "$pane" ] || continue
-      state=$(fm_backend_herdr_pane_agent_state "$session" "$pane")
+      state_rc=0
+      if state=$(fm_backend_herdr_pane_agent_state "$session" "$pane"); then
+        :
+      else
+        state_rc=$?
+      fi
+      [ "$state_rc" -eq 0 ] || return "$state_rc"
       case "$state" in
         dead|no-agent) : ;;
         live|unknown)
@@ -3218,8 +3243,13 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
 # before an unverified close.
 fm_backend_herdr_kill_serialized() {  # <session> <pane>
   local session=$1 pane=$2
-  local before active_tab info info_rc info_code target_pane target_tab target_ws plan shell_pid plan_move_record close_failed close_rc workspace_presence workspace_presence_rc=0
-  before=$(fm_backend_herdr_projection_focus_snapshot "$session") || before=
+  local before active_tab info info_rc info_code target_pane target_tab target_ws plan plan_rc shell_pid plan_move_record close_failed close_rc workspace_presence workspace_presence_rc=0 before_rc=0
+  if before=$(fm_backend_herdr_projection_focus_snapshot "$session"); then
+    :
+  else
+    before_rc=$?
+  fi
+  [ "$before_rc" -eq 0 ] && [ -n "$before" ] || return 2
   if [ -n "$before" ]; then
     active_tab=${before#*$'\t'}
     if info=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>/dev/null); then
@@ -3237,8 +3267,22 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
       return 2
     fi
     if [ "$target_tab" != "$active_tab" ]; then
-      plan=$(fm_backend_herdr_emptying_close_plan "$session" "$pane" "$target_ws" "$target_tab" "${before%%$'\t'*}")
+      plan_rc=0
+      if plan=$(fm_backend_herdr_emptying_close_plan "$session" "$pane" "$target_ws" "$target_tab" "${before%%$'\t'*}"); then
+        :
+      else
+        plan_rc=$?
+      fi
       plan_move_record=
+      if [ "$plan_rc" -ne 0 ]; then
+        case "$plan" in
+          moved$'\t'*)
+            plan_move_record=${plan%%$'\n'*}
+            fm_backend_herdr_emptying_move_rollback "$plan_move_record" || true
+            ;;
+        esac
+        return 2
+      fi
       case "$plan" in
         capability-failure)
           return 2
@@ -3347,9 +3391,14 @@ fm_backend_herdr_kill() {  # <target>
 # unknown presence refuse after every close path, and a missing or malformed
 # target identity is ambiguity that also refuses, never proof of a gone pane.
 fm_backend_herdr_endpoint_confirmed_gone() {  # <target>
-  local presence
+  local presence presence_rc=0
   fm_backend_herdr_parse_target "$1" || return 1
-  presence=$(fm_backend_herdr_pane_presence_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+  if presence=$(fm_backend_herdr_pane_presence_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"); then
+    :
+  else
+    presence_rc=$?
+  fi
+  [ "$presence_rc" -eq 0 ] || return "$presence_rc"
   [ "$presence" = dead ]
 }
 

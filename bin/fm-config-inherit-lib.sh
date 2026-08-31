@@ -53,6 +53,8 @@
 #
 # shellcheck source=bin/fm-startup-memory-budget-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-startup-memory-budget-lib.sh"
+# shellcheck source=bin/fm-backend-policy-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-backend-policy-lib.sh"
 
 # The one shared data file in this inheritance contract. There is deliberately
 # no shared learnings file.
@@ -472,6 +474,16 @@ propagate_inheritable_config() {
   case "${FM_CONFIG_INHERIT_BACKEND_OVERRIDE:-}" in
     '') ;;
     herdr) backend_override=herdr ;;
+    tmux|zellij|orca|cmux)
+      if fm_backend_policy_legacy_adapter_allowed "${FM_CONFIG_INHERIT_BACKEND_OVERRIDE}"; then
+        backend_override=${FM_CONFIG_INHERIT_BACKEND_OVERRIDE}
+      else
+        reason="invalid backend inheritance override"
+        warn_inheritable_config_error backend "$dest_config/backend" "$reason"
+        record_inheritable_config_result backend error "$reason"
+        return 1
+      fi
+      ;;
     *)
       reason="invalid backend inheritance override"
       warn_inheritable_config_error backend "$dest_config/backend" "$reason"
