@@ -154,6 +154,8 @@ seed_commitment() {
 # The pi-rearm shape: a report-ready promised-final bound to a secondmate.
 seed_repro_commitment() {   # <home> <obligation> <request> <work-home> <work-id>
   local home=$1 obligation=$2 request=$3 work_home=$4 work_id=$5
+  # Keep the fixture's 2026-08-28 thread window usable on every test date.
+  export FMX_NOW_OVERRIDE=${FMX_NOW_OVERRIDE:-1787539200}
   jq -n --arg r "$request" \
     '{request_id:$r, platform:"discord",
       context_binding:{version:"ctx1", value:("ctx1_" + $r)},
@@ -1447,7 +1449,7 @@ test_rechain_delivers_second_post_on_same_thread() {
   FAKE_CURL_LOG="$log" run_pf "$parent" deliver public-final-a >/dev/null || fail "deliver failed"
   [ "$(followup_posts "$log")" = 1 ] || fail "expected the investigation post"
 
-  out=$(FAKE_CURL_LOG="$log" run_pf "$parent" rechain public-final-b --from public-final-a \
+  out=$(FMX_NOW_OVERRIDE=1787539200 FAKE_CURL_LOG="$log" run_pf "$parent" rechain public-final-b --from public-final-a \
     --work-home main --work-id ship-b --expected pr-merged) \
     || fail "rechain failed: $out"
   assert_contains "$out" "retired public-final-a reason=handed on to public-final-b" \
@@ -1466,7 +1468,8 @@ SH
   ')
   assert_contains "$command" "--outcome-text" \
     "the exact rechain command must remain continuous through outcome text"
-  command=${command/"$ROOT/bin/fm-public-followup-emit.sh"/"$parent/fakebin/record-emit"}
+  command=$(printf '%s\n' "$command" \
+    | sed "s|$ROOT/bin/fm-public-followup-emit[.]sh|$parent/fakebin/record-emit|")
   command=${command//<value>/https://github.com/example/repo/pull/99}
   RECORD_ARGS="$command_log" bash -c "$command" \
     || fail "the exact rechain command must execute after filling its deliverable value"

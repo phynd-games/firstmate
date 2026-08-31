@@ -26,7 +26,7 @@ TMUX_STATE="$TMP_ROOT/remote-tmux.state"
 CLAIMS="$TMP_ROOT/claims"
 mkdir -p "$PARENT/data" "$PARENT/state" "$PARENT/config" "$PARENT/projects" "$REMOTE_ROOT" "$CLAIMS"
 cleanup() {
-  local worker_pid='' wait_attempt=0
+  local worker_pid='' fixture_watcher_pid wait_attempt=0
   touch "$TMP_ROOT/provision.release" "$TMP_ROOT/seed.release" "$TMP_ROOT/handoff.release" \
     "$TMP_ROOT/inherit.release" "$TMP_ROOT/launch.release" 2>/dev/null || true
   FM_HOME="$PARENT" FM_PROCEVENT_CLAIM_ROOT="$CLAIMS" \
@@ -39,6 +39,8 @@ cleanup() {
       sleep 0.05
     done
   fi
+  fixture_watcher_pid=${FIXTURE_WATCHER_PID:-}
+  [ -z "$fixture_watcher_pid" ] || kill "$fixture_watcher_pid" 2>/dev/null || true
   rm -rf -- "$TMP_ROOT"
 }
 trap cleanup EXIT
@@ -243,12 +245,17 @@ SH
 chmod +x "$FAKEBIN/fake-ssh"
 
 publish_healthy_watcher_identity() { # <state> <home> <watch-script>
-  local state=$1 home=$2 watch=$3 identity
+  local state=$1 home=$2 watch=$3 identity pid
+  [ -z "${FIXTURE_WATCHER_PID:-}" ] || kill "$FIXTURE_WATCHER_PID" 2>/dev/null || true
+  sleep 600 &
+  pid=$!
+  FIXTURE_WATCHER_PID=$pid
+  sleep 0.05
   identity=$(FM_HOME="$PARENT" FM_STATE_OVERRIDE="$PARENT/state" /bin/bash -c \
-    '. "$1"; fm_pid_identity "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$$") \
+    '. "$1"; fm_pid_identity "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$pid") \
     || fail "could not derive fixture watcher identity"
   mkdir -p "$state/.watch.lock"
-  printf '%s\n' "$$" > "$state/.watch.lock/pid"
+  printf '%s\n' "$pid" > "$state/.watch.lock/pid"
   printf '%s\n' "$identity" > "$state/.watch.lock/pid-identity"
   printf '%s\n' "$home" > "$state/.watch.lock/fm-home"
   printf '%s\n' "$watch" > "$state/.watch.lock/watcher-path"
