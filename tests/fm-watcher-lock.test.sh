@@ -1035,8 +1035,8 @@ test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse() {
   state="$dir/state"
   proc_root="$dir/proc"
   pid=4242
-  identity_key=proc-starttime
-  [ "$(uname)" != Linux ] || identity_key=linux-starttime
+  identity_key='proc-starttime'
+  [ "$(uname)" != Linux ] || identity_key='linux-starttime'
   mkdir -p "$proc_root"
   printf 'btime 1784094040\n' > "$proc_root/stat"
   write_fake_proc_identity "$proc_root" "$pid" 987654
@@ -1174,3 +1174,52 @@ test_arm_waits_for_peer_beacon_after_child_stands_down
 test_arm_fails_loud_when_no_fresh_watcher_confirmable
 test_cycle_exit_ledger_links_successor_and_stays_bounded
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified
+
+# A ZOMBIE passes kill -0 but can never act. On Linux its /proc cmdline is EMPTY,
+# so fm_pid_identity returned an ERROR instead of an answer, ownership validation
+# could neither confirm nor deny the owner, the watcher's cleanup could not persist
+# its recovery state, and the acknowledgement handshake that depends on that state
+# failed after it. That surfaced as portable-serial-4 failing only on Linux.
+#
+# Driven through a fake /proc (FM_PROC_ROOT_OVERRIDE) so the case is portable and
+# runs everywhere, not only where a real zombie can be manufactured.
+test_zombie_pid_is_dead_for_liveness_and_ownership() {
+  local dir proc pid rc identity
+  dir=$(make_case zombie-liveness)
+  proc="$dir/proc"
+  pid=$$
+  mkdir -p "$proc/$pid"
+
+  # Running: state S, real cmdline. Liveness must hold and identity must answer.
+  printf '%s (bash) S 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4242 0 0\n' "$pid" > "$proc/$pid/stat"
+  printf 'bash\0-x\0' > "$proc/$pid/cmdline"
+  FM_PROC_ROOT_OVERRIDE="$proc" bash -c '. "$1"; fm_pid_alive "$2"' _ "$LIB" "$pid" \
+    || fail "a running pid was reported dead through the fake /proc"
+  identity=$(FM_PROC_ROOT_OVERRIDE="$proc" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid") \
+    || fail "identity could not be read for a running pid"
+  [ -n "$identity" ] || fail "identity was empty for a running pid"
+
+  # Zombie: state Z with the EMPTY cmdline a real zombie has. kill -0 still
+  # succeeds because the pid is this live shell, which is exactly the trap.
+  printf '%s (bash) Z 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4242 0 0\n' "$pid" > "$proc/$pid/stat"
+  : > "$proc/$pid/cmdline"
+  rc=0
+  FM_PROC_ROOT_OVERRIDE="$proc" bash -c '. "$1"; fm_pid_alive "$2"' _ "$LIB" "$pid" || rc=$?
+  [ "$rc" -ne 0 ] || fail "a zombie pid was reported ALIVE; a reaped watcher can still look like a live lock owner"
+
+  # The empty cmdline is why identity used to error - that is the original cause,
+  # and liveness must now settle the question before identity is ever consulted.
+  rc=0
+  FM_PROC_ROOT_OVERRIDE="$proc" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "identity unexpectedly answered for an empty zombie cmdline"
+
+  # A process name containing ")" must not shift the state field.
+  printf '%s (weird)name) Z 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4242 0 0\n' "$pid" > "$proc/$pid/stat"
+  rc=0
+  FM_PROC_ROOT_OVERRIDE="$proc" bash -c '. "$1"; fm_pid_alive "$2"' _ "$LIB" "$pid" || rc=$?
+  [ "$rc" -ne 0 ] || fail "a zombie whose comm contains ')' was reported alive; the state field shifted"
+
+  pass "a zombie is dead for liveness, so ownership resolves instead of erroring"
+}
+
+test_zombie_pid_is_dead_for_liveness_and_ownership

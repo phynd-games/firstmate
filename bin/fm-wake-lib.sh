@@ -21,12 +21,46 @@ fm_current_pid() {
   printf '%s\n' "${BASHPID:-$$}"
 }
 
+# A ZOMBIE is not alive for any purpose this fleet cares about. It holds no lock,
+# runs no watcher, and can never act again; it exists only until its parent reaps
+# it. kill -0 still succeeds for one, which is what made a reaped-but-unwaited
+# watcher read as a live lock owner on Linux.
+#
+# That mattered concretely: fm_pid_identity's /proc branch requires a non-empty
+# /proc/<pid>/cmdline, and a zombie's cmdline is EMPTY, so identity returned an
+# ERROR rather than an answer. Ownership validation could then neither confirm nor
+# deny the owner, the watcher's cleanup could not persist its recovery state, and
+# the acknowledgement handshake that depends on that state failed after it. Making
+# a zombie definitively dead here turns that error into a clear answer.
+#
+# Detection is /proc-only on purpose: field 3 of /proc/<pid>/stat, read after the
+# final comm delimiter so a process name containing ")" cannot shift it. Hosts
+# without a readable /proc keep the plain kill -0 answer rather than paying a fork
+# per liveness check in the watcher's hot loops, and they do not need it - the
+# ps-based identity fallback still returns text for a defunct process, so it
+# answers instead of erroring there.
+#
+# The recycled-pid guarantee is untouched: identity comparison is unchanged, and a
+# zombie simply fails liveness before identity is ever consulted.
+fm_pid_zombie() {
+  local pid=$1 proc_root stat_line state
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
+  [ -r "$proc_root/$pid/stat" ] || return 1
+  stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
+  read -r state _ <<< "${stat_line##*) }"
+  [ "$state" = Z ]
+}
+
 fm_pid_alive() {
   local pid=$1
   case "$pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
-  kill -0 "$pid" 2>/dev/null
+  kill -0 "$pid" 2>/dev/null || return 1
+  ! fm_pid_zombie "$pid"
 }
 
 fm_pid_identity() {
