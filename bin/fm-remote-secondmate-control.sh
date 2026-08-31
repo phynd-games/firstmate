@@ -151,6 +151,8 @@ state_value() { # <id> [--typed]; prints recovery-grade state
   else
     state_rc=$?
     if [ "$state_rc" -eq 2 ]; then
+      fm_backend_policy_refuse "remote Herdr agent state for $id" herdr \
+        "The native Herdr agent get operation failed after preflight. Repair Herdr, then verify with 'herdr status --json'." || true
       printf 'capability-failure\n'
     else
       printf 'unreadable\n'

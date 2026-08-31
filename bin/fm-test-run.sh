@@ -216,8 +216,11 @@ family_for_basename() {
     fm-backend-zellij-smoke.test.sh)
       printf '%s\n' zellij
       ;;
+    fm-backend-orca.test.sh)
+      printf '%s\n' orca
+      ;;
     fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|fm-tmux-agent-liveness.test.sh|\
-    fm-backend-zellij.test.sh|fm-backend-cmux.test.sh|fm-backend-orca.test.sh|\
+    fm-backend-zellij.test.sh|fm-backend-cmux.test.sh|\
     fm-teardown-endpoint-safety.test.sh)
       printf '%s\n' legacy-adapter
       ;;
@@ -372,7 +375,8 @@ list_portable_serial() {
     [ -n "$s" ] || continue
     base=$(basename "$s")
     fam=$(family_for_basename "$base")
-    if [ "$fam" = "real-herdr-gated" ] || [ "$fam" = "legacy-adapter" ]; then
+    if [ "$fam" = "real-herdr-gated" ] || [ "$fam" = "legacy-adapter" ] \
+      || [ "$fam" = "cmux" ] || [ "$fam" = "zellij" ] || [ "$fam" = "orca" ]; then
       continue
     fi
     if is_proven_isolated_script "$s"; then
@@ -626,6 +630,9 @@ select_lane() {
       ;;
     legacy-adapter)
       select_family legacy-adapter
+      select_family cmux
+      select_family zellij
+      select_family orca
       found=1
       ;;
     *)
@@ -687,7 +694,7 @@ run_coverage_guard() {
   select_family real-herdr-gated
   printf '%s\n' "${SCRIPTS[@]+"${SCRIPTS[@]}"}" | LC_ALL=C sort -u >"$tmp/herdr"
   SCRIPTS=()
-  select_family legacy-adapter
+  select_lane legacy-adapter
   printf '%s\n' "${SCRIPTS[@]+"${SCRIPTS[@]}"}" | LC_ALL=C sort -u >"$tmp/legacy"
   SCRIPTS=("${saved_scripts[@]+"${saved_scripts[@]}"}")
 
@@ -1721,9 +1728,9 @@ else
       export TMP="$work/tmp"
       unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
         FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
-      if [ "$family" = legacy-adapter ]; then
-        export FM_ROOT_OVERRIDE="$ROOT"
-      fi
+      case "$family" in
+        legacy-adapter|cmux|zellij|orca) export FM_ROOT_OVERRIDE="$ROOT" ;;
+      esac
       cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
       bash "$script" >"$work/output" 2>&1

@@ -1609,6 +1609,8 @@ fm_backend_herdr_endpoint_identity() {  # <session> <workspace> <tab> <pane>
     and (.result.pane.pane_id | type) == "string"
     and (.result.pane.workspace_id | type) == "string"
     and (.result.pane.tab_id | type) == "string"
+    and (.result.pane.workspace_id | length) > 0
+    and (.result.pane.tab_id | length) > 0
   ' >/dev/null 2>&1 || return 2
   printf '%s' "$out" | jq -e --arg workspace "$expected_workspace" --arg tab "$expected_tab" --arg pane "$expected_pane" '
     (.result.pane | type) == "object"
@@ -2030,6 +2032,8 @@ fm_backend_herdr_pane_presence_state() {  # <session> <pane_id>
     and (.result.pane.pane_id | type) == "string"
     and (.result.pane.workspace_id | type) == "string"
     and (.result.pane.tab_id | type) == "string"
+    and (.result.pane.workspace_id | length) > 0
+    and (.result.pane.tab_id | length) > 0
     and .result.pane.pane_id == $pane
     and ($workspace == "" or .result.pane.workspace_id == $workspace)
     and ($tab == "" or .result.pane.tab_id == $tab)
@@ -2718,6 +2722,12 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
 # dead or agent-free; a live or unknown pane refuses a duplicate launch.
 fm_backend_herdr_projection_recovery_allows_flat() {  # <session> <journal> <task-id>
   local session=$1 journal=$2 id=$3 token list wsids count wsid panes pane_ids pane state state_rc=0
+  fm_backend_herdr_projection_recovery_refuse() {
+    local detail=$1
+    if declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
+      fm_backend_policy_refuse "quarantined Herdr presentation inspection for $id" herdr "$detail" || true
+    fi
+  }
   token=$(fm_backend_herdr_projection_journal_token "$journal" "$id") || {
     echo "error: malformed herdr presentation journal for $id; refusing duplicate launch" >&2
     return 1
@@ -2727,15 +2737,25 @@ fm_backend_herdr_projection_recovery_allows_flat() {  # <session> <journal> <tas
     return 1
   }
   list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || {
-    echo "error: could not list herdr workspaces while inspecting the quarantined presentation for $id" >&2
+    fm_backend_herdr_projection_recovery_refuse \
+      "The native Herdr workspace list failed while checking the quarantined presentation. Repair Herdr, then verify with 'herdr status --json'."
     return 1
   }
   if ! printf '%s' "$list" | jq -e '(.result.workspaces | type) == "array"' >/dev/null 2>&1; then
-    echo "error: could not parse herdr workspaces while inspecting the quarantined presentation for $id" >&2
+    fm_backend_herdr_projection_recovery_refuse \
+      "The native Herdr workspace list response was malformed while checking the quarantined presentation. Repair Herdr, then verify with 'herdr status --json'."
+    return 1
+  fi
+  if ! printf '%s' "$list" | jq -e --arg suffix " · p:$token" '
+    [.result.workspaces[] | select((.label | type) == "string" and (.label | endswith($suffix)))]
+    | all(.[]; (.workspace_id | type) == "string" and (.workspace_id | length) > 0)
+  ' >/dev/null 2>&1; then
+    fm_backend_herdr_projection_recovery_refuse \
+      "The native Herdr workspace inventory contained a malformed quarantined presentation identity. Repair Herdr, then verify with 'herdr status --json'."
     return 1
   fi
   wsids=$(printf '%s' "$list" | jq -r --arg suffix " · p:$token" \
-    '.result.workspaces[]? | select((.label | type) == "string" and (.label | endswith($suffix))) | .workspace_id' 2>/dev/null)
+    '.result.workspaces[] | select((.label | type) == "string" and (.label | endswith($suffix))) | .workspace_id' 2>/dev/null)
   count=$(printf '%s\n' "$wsids" | awk 'NF { n += 1 } END { print n + 0 }')
   if [ "$count" -eq 0 ]; then
     echo "warning: no exact herdr presentation token match for $id; leaving any stale space untouched and spawning flat" >&2
@@ -2747,16 +2767,22 @@ fm_backend_herdr_projection_recovery_allows_flat() {  # <session> <journal> <tas
   while IFS= read -r wsid; do
     [ -n "$wsid" ] || continue
     panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$wsid" 2>/dev/null) || {
-      echo "error: could not inspect herdr presentation workspace $wsid for $id; refusing duplicate launch" >&2
+      fm_backend_herdr_projection_recovery_refuse \
+        "The native Herdr pane list failed for quarantined presentation workspace $wsid. Repair Herdr, then verify with 'herdr status --json'."
       return 1
     }
-    if ! printf '%s' "$panes" | jq -e '(.result.panes | type) == "array"' >/dev/null 2>&1; then
-      echo "error: could not parse herdr presentation workspace $wsid for $id; refusing duplicate launch" >&2
+    if ! printf '%s' "$panes" | jq -e '
+      (.result.panes | type) == "array"
+      and all(.result.panes[]; (. | type) == "object"
+        and (.pane_id | type) == "string"
+        and (.pane_id | length) > 0)
+    ' >/dev/null 2>&1; then
+      fm_backend_herdr_projection_recovery_refuse \
+        "The native Herdr pane list response was malformed for quarantined presentation workspace $wsid. Repair Herdr, then verify with 'herdr status --json'."
       return 1
     fi
-    pane_ids=$(printf '%s' "$panes" | jq -r '.result.panes[]? | .pane_id' 2>/dev/null)
+    pane_ids=$(printf '%s' "$panes" | jq -r '.result.panes[] | .pane_id' 2>/dev/null)
     while IFS= read -r pane; do
-      [ -n "$pane" ] || continue
       state_rc=0
       if state=$(fm_backend_herdr_pane_agent_state "$session" "$pane"); then
         :

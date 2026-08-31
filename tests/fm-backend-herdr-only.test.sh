@@ -356,6 +356,13 @@ test_pane_presence_requires_complete_identity() {
     fm_backend_herdr_pane_presence_state fmtest pane1 ws1 tab1
   '
   [ "$RC" -eq 2 ] || fail "mis-targeted pane presence must remain typed: rc=$RC out=$OUT"
+
+  run_capture pane-presence-identity-free lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() { printf "%s" '\''{"result":{"pane":{"pane_id":"pane1","workspace_id":"","tab_id":""}}}'\''; }
+    fm_backend_herdr_pane_presence_state fmtest pane1
+  '
+  [ "$RC" -eq 2 ] || fail "identity-free pane presence must remain typed: rc=$RC out=$OUT"
   pass "Herdr pane presence requires a complete matching workspace and tab identity"
 }
 
@@ -441,6 +448,53 @@ test_recovery_agent_failures_refuse_before_replacement() {
   '
   [ "$RC" -eq 2 ] || fail "quarantine agent read failure must remain typed: rc=$RC out=$OUT err=$ERR"
   assert_refusal "quarantine Herdr agent read" "quarantined Herdr presentation agent read"
+
+  run_capture quarantine-workspace-id-failure lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_projection_journal_token() { printf token; }
+    fm_backend_herdr_server_ensure() { return 0; }
+    fm_backend_herdr_cli() {
+      case "$*" in
+        *"workspace list"*) printf "%s" '\''{"result":{"workspaces":[{"label":"firstmate/task · p:token"}]}}'\'' ;;
+      esac
+    }
+    fm_backend_herdr_projection_recovery_allows_flat fmtest journal task
+  '
+  assert_refusal "quarantine workspace identity" "quarantined Herdr presentation inspection" "malformed quarantined presentation identity"
+
+  run_capture quarantine-pane-id-failure lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_projection_journal_token() { printf token; }
+    fm_backend_herdr_server_ensure() { return 0; }
+    fm_backend_herdr_cli() {
+      case "$*" in
+        *"workspace list"*) printf "%s" '\''{"result":{"workspaces":[{"workspace_id":"ws1","label":"firstmate/task · p:token"}]}}'\'' ;;
+        *"pane list"*) printf "%s" '\''{"result":{"panes":[{}]}}'\'' ;;
+      esac
+    }
+    fm_backend_herdr_projection_recovery_allows_flat fmtest journal task
+  '
+  assert_refusal "quarantine pane identity" "quarantined Herdr presentation inspection" "malformed for quarantined presentation workspace ws1"
+
+  run_capture quarantine-workspace-list-failure lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_projection_journal_token() { printf token; }
+    fm_backend_herdr_server_ensure() { return 0; }
+    fm_backend_herdr_cli() { return 1; }
+    fm_backend_herdr_projection_recovery_allows_flat fmtest journal task
+  '
+  assert_refusal "quarantine workspace list failure" "quarantined Herdr presentation inspection" "workspace list failed"
+  [ "$RC" -eq 1 ] || fail "quarantine workspace list failure must retain rc1: rc=$RC"
+
+  run_capture quarantine-workspace-parse-failure lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_projection_journal_token() { printf token; }
+    fm_backend_herdr_server_ensure() { return 0; }
+    fm_backend_herdr_cli() { printf not-json; }
+    fm_backend_herdr_projection_recovery_allows_flat fmtest journal task
+  '
+  assert_refusal "quarantine workspace parse failure" "quarantined Herdr presentation inspection" "workspace list response was malformed"
+  [ "$RC" -eq 1 ] || fail "quarantine workspace parse failure must retain rc1: rc=$RC"
   pass "Herdr recovery refuses agent-read failures before replacement or fallback"
 }
 
@@ -607,6 +661,46 @@ test_remote_identity_preflight_happens_before_remote_operations() {
   [ "$RC" -eq 0 ] || fail "fm-crew-state remote legacy record should remain a read-only view: rc=$RC err=$ERR"
   assert_contains "$OUT" "source: legacy-backend" "fm-crew-state remote legacy record"
   pass "remote task identity is validated before capture, send, or state operations"
+}
+
+test_remote_state_surfaces_native_refusal() {
+  local home="$TMP_ROOT/remote-state-capability" id=remoteagentfailure1 fb
+  mkdir -p "$home/state/parent-route" "$home/data" "$home/config" "$home/bin" "$home/projects"
+  : > "$home/AGENTS.md"
+  printf '%s\n' "$id" > "$home/.fm-secondmate-home"
+  fm_write_meta "$home/state/parent-route/$id.meta" \
+    "backend=herdr" "remote_backend=herdr" "endpoint_task_id=$id" \
+    "remote_herdr_session=fm-remote" "remote_target=fm-remote:w1:p1" \
+    "harness=codex"
+  fb="$home/fakebin"
+  mkdir -p "$fb"
+  cat > "$fb/herdr" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "status --json")
+    printf '%s\n' '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true,"status":"running","compatible":true,"protocol":14}}'
+    ;;
+  "session list")
+    printf '%s\n' '{"sessions":[{"name":"fm-remote","running":true}]}'
+    ;;
+  "pane get")
+    printf '%s\n' '{"error":{"code":"internal_error"}}'
+    ;;
+esac
+SH
+  chmod +x "$fb/herdr"
+  run_capture remote-state-native-failure policy_env \
+    "PATH=$fb:$PATH" "FM_ROOT_OVERRIDE=$ROOT" "FM_HOME=$home" -- \
+    "$ROOT/bin/fm-remote-secondmate-control.sh" state "$id"
+  [ "$RC" -eq 0 ] || fail "remote state should preserve the typed transport result: rc=$RC out=$OUT err=$ERR"
+  [ "$OUT" = capability-failure ] || fail "remote state should emit capability-failure to transport stdout, got: $OUT"
+  [ "$(printf '%s\n' "$ERR" | wc -l | tr -d ' ')" -eq 1 ] \
+    || fail "remote native state failure should emit one diagnostic: $ERR"
+  assert_contains "$ERR" "REFUSED: remote Herdr agent state for $id" \
+    "remote native state failure must surface its policy refusal"
+  assert_contains "$ERR" "herdr status --json" \
+    "remote native state failure must include Herdr remediation"
+  pass "remote state preserves typed transport output and surfaces native Herdr refusal"
 }
 
 # --- secondmate inheritance -------------------------------------------------
@@ -817,6 +911,7 @@ test_spawn_refuses_missing_or_incapable_herdr_without_fallback
 test_invalid_backend_state_fails_closed
 test_refusal_diagnostic_sanitizes_control_characters
 test_remote_identity_preflight_happens_before_remote_operations
+test_remote_state_surfaces_native_refusal
 test_inherited_secondmate_backend_is_judged_by_the_same_rule
 test_supervisor_discovery_has_no_tmux_default
 test_daemon_startup_refuses_non_herdr_supervisor

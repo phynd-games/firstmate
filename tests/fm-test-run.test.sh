@@ -355,16 +355,29 @@ test_exclude_family() {
     "legacy-adapter lane must own orca conformance"
   assert_contains "$legacy" 'tests/fm-teardown-endpoint-safety.test.sh' \
     "legacy-adapter lane must own teardown endpoint conformance"
-  local cmux zellij
+  local cmux zellij orca
   cmux=$("$RUNNER" --list --family cmux)
   assert_contains "$cmux" 'tests/fm-backend-cmux-smoke.test.sh' \
     "cmux family must select its smoke suite"
   zellij=$("$RUNNER" --list --family zellij)
   assert_contains "$zellij" 'tests/fm-backend-zellij-smoke.test.sh' \
     "zellij family must select its smoke suite"
-  if printf '%s\n' $("$RUNNER" --list --lane portable-serial) | grep -Fq 'tests/fm-backend-tmux-smoke.test.sh'; then
-    fail "portable-serial must not schedule legacy-adapter tests"
-  fi
+  orca=$("$RUNNER" --list --family orca)
+  assert_contains "$orca" 'tests/fm-backend-orca.test.sh' \
+    "orca family must select its conformance suite"
+  for lane in portable-parallel-1 portable-parallel-2 portable-serial; do
+    listed=$("$RUNNER" --list --lane "$lane")
+    for forbidden in fm-backend-tmux-smoke.test.sh fm-backend-cmux-smoke.test.sh \
+      fm-backend-zellij-smoke.test.sh fm-backend-orca.test.sh; do
+      if printf '%s\n' "$listed" | grep -Fq "$forbidden"; then
+        fail "$lane must not schedule optional adapter tests: $forbidden"
+      fi
+    done
+  done
+  assert_contains "$legacy" 'tests/fm-backend-cmux-smoke.test.sh' \
+    "legacy-adapter lane must own cmux smoke"
+  assert_contains "$legacy" 'tests/fm-backend-zellij-smoke.test.sh' \
+    "legacy-adapter lane must own zellij smoke"
   pass "exclude-family drops the named primary family after selection"
 }
 

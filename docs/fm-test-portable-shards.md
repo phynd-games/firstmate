@@ -49,7 +49,7 @@ The two parallel lanes use longest-processing-time assignment from those measure
 
 ## Portable serial remainder
 
-`portable-serial` includes every `tests/*.test.sh` that is neither proven-isolated nor `real-herdr-gated` or `legacy-adapter`.
+`portable-serial` includes every `tests/*.test.sh` that is neither proven-isolated nor in the `real-herdr-gated`, `legacy-adapter`, `cmux`, `zellij`, or `orca` families.
 It keeps watcher, lock, AFK, daemon, fake-Herdr secondmate lifecycle, bootstrap, live-harness opt-in, GUI-backend, and other unproven work serial.
 Membership is derived rather than enumerated, so a newly added test lands here by default.
 
@@ -92,7 +92,7 @@ bin/fm-test-run.sh --check-coverage
 ## Coverage guard
 
 `bin/fm-test-run.sh --check-coverage` verifies that both parallel lanes partition the proven-isolated set.
-It also verifies that the parallel lanes, portable serial lane, real-Herdr family, and explicit `legacy-adapter` lane are disjoint and cover every `tests/*.test.sh` script.
+It also verifies that the parallel lanes, portable serial lane, real-Herdr family, and explicit `legacy-adapter` lane (including its cmux, zellij, and orca families) are disjoint and cover every `tests/*.test.sh` script.
 It separately verifies that the portable serial CI shards are non-empty, disjoint, and together equal the portable serial lane.
 
 ## Timing artifacts
