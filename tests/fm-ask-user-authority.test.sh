@@ -37,3 +37,42 @@ test_primary_and_secondmate_instruction_generation() {
 }
 
 test_primary_and_secondmate_instruction_generation
+
+# The supervision branch previously declared EVERY ask-user finding captain-owned,
+# so routine in-scope findings were reflexively escalated instead of decided. These
+# assert the emitted branch prompt - the actual generated interface the branch agent
+# receives - carries the corrected contract.
+test_branch_prompt_finding_authority() {
+  local prompt
+  prompt="$TMP_ROOT/branch-prompt.txt"
+  "$ROOT/bin/fm-branch-prompt.sh" > "$prompt"
+
+  # 1. A routine in-scope finding is decided by firstmate and steered through the
+  #    existing keyed gate, not turned into a captain-facing outcome.
+  assert_grep 'send the worker the exact decision through the existing keyed gate rather than reporting verdict captain' "$prompt" \
+    "emitted branch prompt does not tell the branch to decide a routine finding itself"
+  assert_grep 'load that skill before deciding any finding' "$prompt" \
+    "emitted branch prompt does not require loading the canonical authority skill"
+  assert_no_grep 'including every ask-user finding from a validation gate' "$prompt" \
+    "emitted branch prompt still declares every ask-user finding captain-owned"
+
+  # 2. Round count, risk rating, the reviewer label, implementation conflict, and a
+  #    recurring theme are each explicitly insufficient to escalate on their own.
+  assert_grep 'a rising round count' "$prompt" \
+    "emitted branch prompt does not rule out escalating on round count alone"
+  assert_grep 'recurring theme are none of them reasons to escalate on their own' "$prompt" \
+    "emitted branch prompt does not rule out escalating on a recurring theme alone"
+
+  # 3. The stronger boundaries survive: genuine expansion and security ambiguity,
+  #    merge, and destructive choices still reach the captain.
+  assert_grep 'anything destructive, irreversible, or security-sensitive' "$prompt" \
+    "emitted branch prompt lost the destructive/security captain boundary"
+  assert_grep 'merge a PR, approve a validation step, or exercise any captain authority' "$prompt" \
+    "emitted branch prompt lost the merge and captain-authority prohibition"
+  assert_grep 'You still never answer the gate yourself' "$prompt" \
+    "emitted branch prompt lets the branch answer the validation gate directly"
+
+  pass "the emitted branch prompt decides routine findings and still escalates genuine captain calls"
+}
+
+test_branch_prompt_finding_authority

@@ -28,12 +28,24 @@ It stops at the finding, routes the decision to firstmate, and applies only the 
    The smallest downstream changes needed to keep that behavior correct, add behavioral tests where an executable contract exists, or keep documentation accurate remain within scope even when they touch files not named at intake.
    Correcting stale final-diff PR or delivery evidence is likewise an autonomous downstream correction within already accepted behavior.
 3. Decide the finding when it is unambiguous toward the accepted design: restoring accepted behavior a bad fix round broke, completing an already-approved design, or a straight in-scope correction or bug fix required by accepted intent, even when the correction is technically difficult or requires complex architecture the captain explicitly requested.
-4. Escalate only genuinely ambiguous findings:
+4. Send the exact fix response yourself for every finding that is clear, safe, and in scope.
+   Deciding is the default and the common case; escalation is the exception you must justify.
+5. Never relay a fix-versus-accept choice to the captain merely because:
+   - the reviewer labelled the finding `ask-user`
+   - the reported risk is high
+   - the round count has increased
+   - findings conflict at implementation level
+   - the same causal theme has recurred
+   None of those five facts is evidence about the CONTRACT, and the contract is the only thing that decides ownership.
+   A reviewer's label describes what the reviewer wants a human to look at; it never transfers authority.
+6. Escalate only genuinely ambiguous findings:
    - a Fix that would materially expand the contract by adding a new guarantee, threat model, subsystem, abstraction, compatibility surface, state machine, continuous-monitoring requirement, generalized framework, or broader architecture not required by the accepted intent
    - a product or architecture call not settled by accepted intent
-   - repeated same-theme findings when incremental corrections are preserving a questionable abstraction rather than closing independent defects
+   - repetition that has become evidence, meaning the recurring findings show the accepted product or architecture contract is genuinely ambiguous, or show the abstraction itself needs a new captain-owned contract rather than another correction
    - destructive, irreversible, and genuinely security-sensitive choices, which always escalate under the stronger existing captain boundary
-5. Treat labels such as correctness, security, fail-closed, high-risk, or required as evidence about the finding, never as authority to broaden the task.
+   The third bullet turns on what the repetition PROVES, never on how often it happened.
+   Ten findings that each close an independent in-scope defect are ten decisions for firstmate; two that show the abstraction cannot express the accepted contract are an escalation.
+7. Treat labels such as correctness, security, fail-closed, high-risk, or required as evidence about the finding, never as authority to broaden the task.
 
 ## Captain-facing escalation
 
@@ -51,6 +63,8 @@ Do not relay reviewer labels or gate output as if they settled the decision.
 
 - Fixing a concrete defect that violates an original acceptance criterion is firstmate's to decide, regardless of implementation difficulty.
 - Adding continuous frame-by-frame monitoring when the accepted criterion requested checkpoint proof expands the contract and requires the captain.
-- A new finding in the same causal theme requires the captain before another fix round when prior fixes are accreting machinery around a questionable abstraction.
+- A routine in-scope finding is decided by firstmate and answered with the exact fix response, however the reviewer labelled it and however high it rated the risk.
+- A twenty-fourth fix round is not itself a reason to escalate; if each round is still closing an independent in-scope defect, firstmate keeps deciding.
+- A new finding in the same causal theme requires the captain only once the repetition has become evidence that prior fixes are accreting machinery around an abstraction that cannot express the accepted contract.
 - A genuinely security-sensitive action requires the captain under the stronger existing boundary even if it is otherwise within scope.
 - Complex architecture explicitly requested by the captain stays within scope and does not escalate merely because it is complex.
