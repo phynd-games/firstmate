@@ -202,7 +202,7 @@ HERDR_SESSION="$SESSION" \
   "$ROOT/bin/fm-watch-arm.sh" > "$DUP_OUT" 2>&1 &
 DUP_PID=$!
 wait_until 20 grep -q '^watcher: attached pid=' "$DUP_OUT" \
-  || fail "a duplicate real arm did not attach to the existing watcher"
+  || fail "a duplicate real arm did not attach to the existing watcher: $(cat "$DUP_OUT" 2>/dev/null || true)"
 kill -TERM "$DUP_PID" 2>/dev/null || true
 wait "$DUP_PID" 2>/dev/null || true
 DUP_PID=
