@@ -122,6 +122,10 @@ make_case() {
   merge_base_sha=$(git -C "$case_dir/wt" merge-base "$base_head" "$target_head")
   changed_digest=$(git -C "$case_dir/wt" diff --name-status "$merge_base_sha" "$target_head" | fm_pr_sha256_stream)
   surface_digest=$(sed -n '2p' "$case_dir/wt/fixture.txt" | fm_pr_sha256_stream)
+  surface_binding_digest() {
+    local surface=$1 reference=$2 digest=$3 behavior=$4 action=$5
+    printf '%s\n' "$surface|$reference|$digest|$behavior|$action" | fm_pr_sha256_stream
+  }
   target_repository=$(cd "$case_dir/wt" && pwd -P)
   substrate_head=$(git -C "$case_dir/substrate" rev-parse HEAD)
   empty_digest=$(printf '' | fm_pr_sha256_stream)
@@ -149,13 +153,13 @@ make_case() {
     "Substrate changed files: $empty_digest" \
     'Substrate diff: no substrate diff' \
     '# Surface review' \
-    "Authority: reviewed; surface=authority; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=non-authorizing; fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-owner" \
-    "Security: reviewed; surface=security; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=provenance-bound; fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-boundary" \
-    "Path: reviewed; surface=path; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=path-safe; fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-validation" \
-    "Failure: reviewed; surface=failure; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=fail-closed; fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-refusal" \
-    "Tests: reviewed; surface=tests; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=behavioral; fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-regression" \
-    "Documentation: reviewed; surface=documentation; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=contract-aligned; fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-contract" \
-    "Delivery: reviewed; surface=delivery; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=no-mistakes-owned; fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-no-mistakes" \
+    "Authority: reviewed; surface=authority; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=non-authorizing binding=$(surface_binding_digest authority fixture.txt:2 "$surface_digest" non-authorizing retain-owner); fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-owner binding=$(surface_binding_digest authority fixture.txt:2 "$surface_digest" non-authorizing retain-owner)" \
+    "Security: reviewed; surface=security; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=provenance-bound binding=$(surface_binding_digest security fixture.txt:2 "$surface_digest" provenance-bound retain-boundary); fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-boundary binding=$(surface_binding_digest security fixture.txt:2 "$surface_digest" provenance-bound retain-boundary)" \
+    "Path: reviewed; surface=path; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=path-safe binding=$(surface_binding_digest path fixture.txt:2 "$surface_digest" path-safe retain-validation); fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-validation binding=$(surface_binding_digest path fixture.txt:2 "$surface_digest" path-safe retain-validation)" \
+    "Failure: reviewed; surface=failure; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=fail-closed binding=$(surface_binding_digest failure fixture.txt:2 "$surface_digest" fail-closed retain-refusal); fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-refusal binding=$(surface_binding_digest failure fixture.txt:2 "$surface_digest" fail-closed retain-refusal)" \
+    "Tests: reviewed; surface=tests; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=behavioral binding=$(surface_binding_digest tests fixture.txt:2 "$surface_digest" behavioral retain-regression); fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-regression binding=$(surface_binding_digest tests fixture.txt:2 "$surface_digest" behavioral retain-regression)" \
+    "Documentation: reviewed; surface=documentation; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=contract-aligned binding=$(surface_binding_digest documentation fixture.txt:2 "$surface_digest" contract-aligned retain-contract); fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-contract binding=$(surface_binding_digest documentation fixture.txt:2 "$surface_digest" contract-aligned retain-contract)" \
+    "Delivery: reviewed; surface=delivery; files=fixture.txt; evidence=fixture.txt:2 sha256=$surface_digest hunk=fixture.txt:2; consequence=anchor=fixture.txt:2 sha256=$surface_digest behavior=no-mistakes-owned binding=$(surface_binding_digest delivery fixture.txt:2 "$surface_digest" no-mistakes-owned retain-no-mistakes); fix=anchor=fixture.txt:2 sha256=$surface_digest action=retain-no-mistakes binding=$(surface_binding_digest delivery fixture.txt:2 "$surface_digest" no-mistakes-owned retain-no-mistakes)" \
     '# Verification' \
     'Command: focused PR-ready boundary test' \
     'Result: passed' \

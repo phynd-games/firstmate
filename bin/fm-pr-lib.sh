@@ -655,10 +655,10 @@ fm_pr_self_review_report_valid() {
       else if (surface == "documentation") { behavior = "contract-aligned"; action = "retain-contract" }
       else if (surface == "delivery") { behavior = "no-mistakes-owned"; action = "retain-no-mistakes" }
       else return 0
-      prefix = "consequence=anchor=" file ":" line " sha256=" evidence_hash " behavior=" behavior
-      if (parts[5] != prefix) return 0
-      prefix = "fix=anchor=" file ":" line " sha256=" evidence_hash " action=" action
-      if (parts[6] != prefix) return 0
+      prefix = "consequence=anchor=" file ":" line " sha256=" evidence_hash " behavior=" behavior " binding="
+      if (parts[5] !~ /^consequence=anchor=[^;[:space:]][^;]*:[1-9][0-9]* sha256=[0-9a-f]+ behavior=[a-z-]+ binding=[0-9a-f]+$/ || index(parts[5], prefix) != 1) return 0
+      prefix = "fix=anchor=" file ":" line " sha256=" evidence_hash " action=" action " binding="
+      if (parts[6] !~ /^fix=anchor=[^;[:space:]][^;]*:[1-9][0-9]* sha256=[0-9a-f]+ action=[a-z-]+ binding=[0-9a-f]+$/ || index(parts[6], prefix) != 1) return 0
       return 1
     }
   ' "$report") || return 1
@@ -723,7 +723,7 @@ EOF
     return 0
   }
   local line finding_path finding_file finding_line surface_files surface_file review_root
-  local surface_evidence evidence_ref evidence_rest evidence_file evidence_line evidence_hash line_content actual_evidence_hash surface_review_files surface_evidence_files changed_path surface_name
+  local surface_evidence evidence_ref evidence_rest evidence_file evidence_line evidence_hash line_content actual_evidence_hash surface_review_files surface_evidence_files changed_path surface_name surface_consequence surface_fix surface_behavior surface_action surface_binding
   surface_review_files=
   surface_evidence_files=
   fm_pr_review_file_valid() {
@@ -843,11 +843,27 @@ EOF
     evidence_rest=${surface_evidence#"$evidence_ref" }
     evidence_hash=${evidence_rest#sha256=}
     evidence_hash=${evidence_hash%% *}
+    surface_consequence=${line#*; consequence=}
+    surface_consequence=${surface_consequence%%; fix=*}
+    surface_fix=${line#*; fix=}
     evidence_file=${evidence_ref%:*}
     evidence_line=${evidence_ref##*:}
     fm_pr_review_path_syntax_valid "$evidence_file" || return 1
     evidence_file=$FM_PR_REVIEW_PATH
     surface_name=$(printf '%s' "${line%%:*}" | tr '[:upper:]' '[:lower:]') || return 1
+    case "$surface_name" in
+      authority) surface_behavior=non-authorizing; surface_action=retain-owner ;;
+      security) surface_behavior=provenance-bound; surface_action=retain-boundary ;;
+      path) surface_behavior=path-safe; surface_action=retain-validation ;;
+      failure) surface_behavior=fail-closed; surface_action=retain-refusal ;;
+      tests) surface_behavior=behavioral; surface_action=retain-regression ;;
+      documentation) surface_behavior=contract-aligned; surface_action=retain-contract ;;
+      delivery) surface_behavior=no-mistakes-owned; surface_action=retain-no-mistakes ;;
+      *) return 1 ;;
+    esac
+    surface_binding=$(printf '%s\n' "$surface_name|$evidence_ref|$evidence_hash|$surface_behavior|$surface_action" | fm_pr_sha256_stream) || return 1
+    [ "$surface_consequence" = "anchor=$evidence_ref sha256=$evidence_hash behavior=$surface_behavior binding=$surface_binding" ] || return 1
+    [ "$surface_fix" = "anchor=$evidence_ref sha256=$evidence_hash action=$surface_action binding=$surface_binding" ] || return 1
     fm_pr_review_surface_path_valid "$surface_name" "$evidence_file" || return 1
     [ "$evidence_line" -ge 1 ] 2>/dev/null || return 1
     [ "${#evidence_hash}" -eq 64 ] || return 1
