@@ -68,6 +68,12 @@ claude_lines=$(wc -l < "$claude" | tr -d '[:space:]')
   || fail 'CLAUDE.md must contain only its canonical two-line adapter'
 { IFS= read -r comment && IFS= read -r import && [ -z "${comment#<!-- Points Claude at AGENTS.md via import; edit AGENTS.md, not this file. -->}" ] && [ "$import" = '@AGENTS.md' ]; } < "$claude" \
   || fail 'CLAUDE.md must use Claude Code @AGENTS.md import'
+cmp -s "$claude" <(
+  cat <<'EOF'
+<!-- Points Claude at AGENTS.md via import; edit AGENTS.md, not this file. -->
+@AGENTS.md
+EOF
+) || fail 'CLAUDE.md must contain only its canonical two-line adapter'
 
 grok="$ROOT/GROK_BOT.md"
 [ -f "$grok" ] && [ ! -L "$grok" ] \

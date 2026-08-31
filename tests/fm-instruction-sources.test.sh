@@ -91,8 +91,17 @@ test_dangling_instruction_import_fails() {
   pass 'dangling Claude instruction import is rejected'
 }
 
+test_unterminated_instruction_content_fails() {
+  local repo="$TMP_ROOT/unterminated-instructions"
+  write_fixture "$repo"
+  printf '%s' 'unexpected trailing content' >> "$repo/CLAUDE.md"
+  run_expect_failure 'CLAUDE.md must contain only its canonical two-line adapter' "$repo"
+  pass 'unterminated Claude trailing content is rejected'
+}
+
 test_repository_sources_pass
 test_duplicate_skill_entrypoint_fails
 test_dangling_skill_entrypoint_fails
 test_duplicate_instruction_entrypoint_fails
 test_dangling_instruction_import_fails
+test_unterminated_instruction_content_fails
