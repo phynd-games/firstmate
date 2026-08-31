@@ -519,7 +519,8 @@ test_retained_backends_refuse() {
     printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
     printf '%s\n' "$backend" > "$case_dir/home/config/backend"
     fakebin=$(make_fake_toolchain "$case_dir")
-    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    out=$(PATH="$fakebin:$BASE_PATH" FM_BACKEND_LEGACY_TEST_LANE='' \
+      FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
       FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
     assert_contains "$out" "BACKEND_INVALID: none - REFUSED: " \
       "bootstrap must refuse retained backend=$backend"
@@ -550,7 +551,8 @@ test_unknown_backend_reports_invalid_configuration() {
   printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
   printf '%s\n' bogus > "$case_dir/home/config/backend"
   fakebin=$(make_fake_toolchain "$case_dir")
-  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+  out=$(PATH="$fakebin:$BASE_PATH" FM_BACKEND_LEGACY_TEST_LANE='' \
+    FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
   assert_contains "$out" "BACKEND_INVALID: none - REFUSED: " \
     "bootstrap should report an unknown resolved backend"

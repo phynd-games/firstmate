@@ -530,7 +530,7 @@ fm_backend_endpoint_atom_valid() {  # <value>
 
 fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   local meta=$1 id=$2 backend_count backend window worktree project binding_count binding
-  local session pane recorded_session workspace tab terminal worktree_id surface
+  local session pane recorded_session workspace tab terminal worktree_id surface identity_rc
   FM_BACKEND_VALIDATED_BACKEND=
   FM_BACKEND_VALIDATED_TARGET=
   [ -f "$meta" ] && [ ! -L "$meta" ] || {
@@ -653,6 +653,24 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
         fm_backend_policy_refuse "task $id endpoint record (Herdr endpoint)" "$backend" \
           "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
         return 1
+      fi
+      if ! fm_backend_policy_legacy_lane; then
+        fm_backend_source herdr "task $id endpoint identity" "$recorded_session" || return 2
+        identity_rc=0
+        fm_backend_herdr_endpoint_identity "$recorded_session" "$workspace" "$tab" "$pane" || identity_rc=$?
+        case "$identity_rc" in
+          0) ;;
+          1)
+            fm_backend_policy_refuse "task $id endpoint record (Herdr target identity)" herdr \
+              "The recorded Herdr pane is missing or no longer matches its workspace and tab identity. Repair the endpoint metadata or explicitly migrate the task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+            return 1
+            ;;
+          *)
+            fm_backend_policy_refuse "task $id endpoint record (Herdr target identity)" herdr \
+              "The native Herdr pane identity check failed. Repair Herdr, then verify with 'herdr status --json'. Task state is preserved."
+            return 2
+            ;;
+        esac
       fi
       ;;
     zellij)

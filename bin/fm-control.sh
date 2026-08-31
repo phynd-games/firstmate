@@ -449,9 +449,14 @@ verify_interrupt_running() {
   if fm_control_backend_state_verified "$BACKEND"; then
     # An interrupt cancels a turn; it must never have stopped the agent. This
     # is the postcondition that separates a landed interrupt from an accident.
-    after=$(agent_state)
-    [ "$after" = alive ] \
-      || die "task $ID's agent is '$after' after its interrupt key; an interrupt must leave the agent running"
+    if after=$(agent_state); then
+      [ "$after" = alive ] \
+        || die "task $ID's agent is '$after' after its interrupt key; an interrupt must leave the agent running"
+    else
+      target_rc=$?
+      [ "$target_rc" -eq 2 ] && return 2
+      die "task $ID's agent state could not be verified after its interrupt key"
+    fi
     proof=agent-alive
   fi
   printf '%s' "$proof"

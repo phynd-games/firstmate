@@ -148,7 +148,7 @@ family_for_basename() {
     fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
     fm-tmux-submit-busy.test.sh|fm-trace-context-lib.test.sh|\
     fm-transition-lib.test.sh|\
-    fm-test-run.test.sh|fm-test-isolation-proof.test.sh)
+    fm-test-run.test.sh|fm-test-isolation-proof.test.sh|fm-setup-phynd.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
     fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
@@ -202,14 +202,17 @@ family_for_basename() {
     fm-herdr-submit-confirm-live-e2e.test.sh)
       printf '%s\n' live-harness-optin
       ;;
-    fm-backend-herdr.test.sh|fm-backend-herdr-only.test.sh|fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|\
-    fm-tmux-agent-liveness.test.sh|\
+    fm-backend-herdr.test.sh|fm-backend-herdr-only.test.sh|\
     fm-control.test.sh|fm-control-relaunch.test.sh|\
     fm-herdr-session-cleanup.test.sh|fm-send-resolve-key.test.sh|fm-send-strict.test.sh|\
     fm-send-inbox.test.sh|fm-spawn-batch.test.sh|\
     fm-spawn-dispatch-profile.test.sh|\
     fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh)
       printf '%s\n' backend-dispatch
+      ;;
+    fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|fm-tmux-agent-liveness.test.sh|\
+    fm-backend-zellij-smoke.test.sh|fm-backend-cmux-smoke.test.sh)
+      printf '%s\n' legacy-adapter
       ;;
     fm-pr-check-security.test.sh|fm-pr-merge.test.sh|fm-review-diff.test.sh|\
     fm-teardown.test.sh|fm-x-mode.test.sh)
@@ -238,6 +241,7 @@ expected_gate_skip_for_family() {
   case "$1" in
     real-herdr-gated) printf '%s\n' herdr ;;
     live-harness-optin) printf '%s\n' optin-env ;;
+    legacy-adapter) printf '%s\n' legacy-adapter-optin ;;
     cmux|zellij|orca) printf '%s\n' optional-binary ;;
     snapshot-bearings) printf '%s\n' optional-binary ;;
     *) printf '%s\n' none ;;
@@ -256,6 +260,7 @@ backend-dispatch
 pr-forge
 afk
 snapshot-bearings
+legacy-adapter
 cmux
 zellij
 orca
@@ -274,6 +279,7 @@ list_known_lanes() {
     i=$((i + 1))
   done
   printf '%s\n' real-herdr-gated
+  printf '%s\n' legacy-adapter
 }
 
 # Exact proven-isolated candidate set (same paths as
@@ -365,7 +371,7 @@ list_portable_serial() {
     [ -n "$s" ] || continue
     base=$(basename "$s")
     fam=$(family_for_basename "$base")
-    if [ "$fam" = "real-herdr-gated" ]; then
+    if [ "$fam" = "real-herdr-gated" ] || [ "$fam" = "legacy-adapter" ]; then
       continue
     fi
     if is_proven_isolated_script "$s"; then
@@ -617,6 +623,10 @@ select_lane() {
       select_family real-herdr-gated
       found=1
       ;;
+    legacy-adapter)
+      select_family legacy-adapter
+      found=1
+      ;;
     *)
       die "unknown lane '$want' (see --list-lanes)"
       ;;
@@ -652,7 +662,7 @@ run_coverage_guard() {
     return 1
   fi
 
-  # Serial (whole lane and each CI shard) + Herdr lane listings without
+  # Serial (whole lane and each CI shard) + Herdr and legacy lanes listings without
   # disturbing a caller's selection.
   saved_scripts=("${SCRIPTS[@]+"${SCRIPTS[@]}"}")
   SCRIPTS=()
@@ -675,6 +685,9 @@ run_coverage_guard() {
   SCRIPTS=()
   select_family real-herdr-gated
   printf '%s\n' "${SCRIPTS[@]+"${SCRIPTS[@]}"}" | LC_ALL=C sort -u >"$tmp/herdr"
+  SCRIPTS=()
+  select_family legacy-adapter
+  printf '%s\n' "${SCRIPTS[@]+"${SCRIPTS[@]}"}" | LC_ALL=C sort -u >"$tmp/legacy"
   SCRIPTS=("${saved_scripts[@]+"${saved_scripts[@]}"}")
 
   # Every serial script runs in exactly one CI shard: no duplicate work across
@@ -697,7 +710,8 @@ run_coverage_guard() {
     return 1
   fi
 
-  for pair in "shards_union:serial" "shards_union:herdr" "serial:herdr"; do
+  for pair in "shards_union:serial" "shards_union:herdr" "shards_union:legacy" \
+    "serial:herdr" "serial:legacy" "herdr:legacy"; do
     a=${pair%%:*}
     b=${pair#*:}
     comm -12 "$tmp/$a" "$tmp/$b" >"$tmp/overlap"
@@ -709,7 +723,7 @@ run_coverage_guard() {
     fi
   done
 
-  cat "$tmp/shards_union" "$tmp/serial" "$tmp/herdr" | LC_ALL=C sort >"$tmp/union_raw"
+  cat "$tmp/shards_union" "$tmp/serial" "$tmp/herdr" "$tmp/legacy" | LC_ALL=C sort >"$tmp/union_raw"
   uniq -d "$tmp/union_raw" >"$tmp/union_dups"
   if [ -s "$tmp/union_dups" ]; then
     log "coverage guard: duplicate scripts across lanes:"
@@ -721,7 +735,7 @@ run_coverage_guard() {
   missing=$(comm -23 "$tmp/all" "$tmp/union" || true)
   extra=$(comm -13 "$tmp/all" "$tmp/union" || true)
   if [ -n "$missing" ] || [ -n "$extra" ]; then
-    log "coverage guard: union of portable shards + portable serial + Herdr must equal tests/*.test.sh"
+    log "coverage guard: union of portable shards + portable serial + Herdr + legacy lanes must equal tests/*.test.sh"
     [ -z "$missing" ] || { log "missing from union:"; printf '%s\n' "$missing" >&2; }
     [ -z "$extra" ] || { log "extra beyond inventory:"; printf '%s\n' "$extra" >&2; }
     rm -rf "$tmp"
@@ -894,7 +908,7 @@ families_for_changed_path() {
       ;;
     tests/fm-backend-herdr-eventwait.test.py)
       printf '%s\n' real-herdr-gated
-      printf '%s\n' backend-dispatch
+      printf '%s\n' legacy-adapter
       ;;
     tests/*.test.sh)
       # A single test file change selects only that script via basename family

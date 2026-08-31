@@ -1571,8 +1571,42 @@ fm_backend_herdr_workspace_find_all() {  # <session>
   # compile error that `2>/dev/null` would silently swallow, making this find
   # ALWAYS return empty and every spawn mint a fresh "firstmate" workspace
   # (the workspace leak).
+  printf '%s' "$list" | jq -e '(.result.workspaces | type) == "array"' >/dev/null 2>&1 || return 2
   printf '%s' "$list" | jq -r --arg want "$label" \
-    '.result.workspaces[]? | select(.label == $want) | .workspace_id' 2>/dev/null
+    '.result.workspaces[] | select(.label == $want) | .workspace_id' 2>/dev/null
+}
+
+fm_backend_herdr_endpoint_identity() {  # <session> <workspace> <tab> <pane>
+  local session=$1 expected_workspace=$2 expected_tab=$3 expected_pane=$4 out code native_rc cli_rc=0
+  if out=$(fm_backend_herdr_cli "$session" pane get "$expected_pane" 2>&1); then
+    cli_rc=0
+  else
+    cli_rc=$?
+  fi
+  if [ "$cli_rc" -ne 0 ] && [ -z "$out" ]; then
+    return 2
+  fi
+  code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)
+  if [ -n "$code" ]; then
+    [ "$code" = pane_not_found ] && return 1
+    fm_backend_herdr_native_failure_rc "$out"
+    native_rc=$?
+    [ "$native_rc" -eq 1 ] && return 1
+    return 2
+  fi
+  printf '%s' "$out" | jq -e '
+    (.result.pane | type) == "object"
+    and (.result.pane.pane_id | type) == "string"
+    and (.result.pane.workspace_id | type) == "string"
+    and (.result.pane.tab_id | type) == "string"
+  ' >/dev/null 2>&1 || return 2
+  printf '%s' "$out" | jq -e --arg workspace "$expected_workspace" --arg tab "$expected_tab" --arg pane "$expected_pane" '
+    (.result.pane | type) == "object"
+    and .result.pane.pane_id == $pane
+    and .result.pane.workspace_id == $workspace
+    and .result.pane.tab_id == $tab
+  ' >/dev/null 2>&1 && return 0
+  return 1
 }
 
 # fm_backend_herdr_workspace_find: this HOME's own workspace id inside

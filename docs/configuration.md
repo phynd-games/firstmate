@@ -104,7 +104,7 @@ The runtime session-provider backend controls where task windows/endpoints are c
 Herdr is the sole supported runtime backend (`AGENTS.md` hard rule 6; owner `bin/fm-backend-policy-lib.sh`): every primary session, secondmate, crewmate, scout, task endpoint, supervision surface, send/read/state/control/recovery path, and lab operation runs on Herdr, Treehouse remains the worktree provider, and [`docs/herdr-backend.md`](herdr-backend.md) owns Herdr's setup, behavior, and limits.
 This section takes precedence over any older compatibility prose elsewhere that still describes tmux as a default or a fallback.
 
-A home declares Herdr explicitly and is otherwise refused.
+A home declares Herdr explicitly and is otherwise refused. The locked mutable primary bootstrap path materializes a missing `config/backend` as exactly `herdr` plus one newline, without overwriting an existing file; detect-only and unlocked paths remain read-only.
 New spawns read, in order, an explicit `--backend` flag that current authority for that exact task alone has authorized (a present captain instruction or the task's own accepted brief; never later-task precedent by analogy), then `FM_BACKEND`, then the first non-empty line of tracked `config/backend` (`bin/fm-setup-phynd.sh` writes `herdr`).
 Whichever input is consulted first must be exactly `herdr`; a different value refuses by name without consulting the next input, and a home with none of them declared is refused too.
 Nothing is auto-detected: `$TMUX`, `TMUX_PANE`, `HERDR_ENV=1`, and cmux runtime markers never select a backend, and when present they are named in the refusal only as ignored evidence.

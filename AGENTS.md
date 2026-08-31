@@ -58,6 +58,7 @@ Never add an agent name as a commit co-author.
 
 `docs/configuration.md` is the single owner of the top-level operational-home layout and configuration schemas; each producing script's header and help own exact child fields and mutation mechanics.
 `FM_HOME` selects an instance's private `data/`, `state/`, `config/`, and `projects/`, while scripts continue to come from their tracked code root.
+In the locked mutable primary bootstrap path, a missing `config/backend` is materialized exactly as `herdr\n`; existing files are never overwritten, and detect-only or unlocked paths do not materialize it.
 Each secondmate has a persistent isolated `FM_HOME`, including its own state, backlog, projects, and session lock.
 `bin/fm-send.sh` fails closed unless `FM_HOME` is explicit, so a steer cannot silently resolve against another home.
 

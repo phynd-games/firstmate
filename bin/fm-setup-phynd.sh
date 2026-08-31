@@ -139,6 +139,20 @@ install_or_update_herdr() {
 
 install_or_update_herdr
 
+herdr_readiness_check() {
+  local detail
+  command -v jq >/dev/null 2>&1 || fail 'Herdr setup requires jq to validate herdr status --json.'
+  # shellcheck source=bin/backends/herdr.sh disable=SC1091
+  . "$ROOT/bin/backends/herdr.sh"
+  if detail=$(fm_backend_herdr_tool_check 2>&1) && detail=$(fm_backend_herdr_version_check 2>&1); then
+    return 0
+  fi
+  detail=$(printf '%s\n' "$detail" | sed -n '1p')
+  fail "Herdr readiness verification failed${detail:+: $detail} Repair or update Herdr, then verify with 'herdr status --json'."
+}
+
+herdr_readiness_check
+
 install_or_update_pi() {
   local npm_prefix
   command -v npm >/dev/null 2>&1 || fail 'npm is required to install or update Pi.'
@@ -241,7 +255,7 @@ printf 'Refreshing installed Pi extensions...\n'
 pi update --extensions
 
 printf 'Phynd Pi setup complete.\n'
-printf 'Default model: openai-codex/gpt-5.6-luna with xhigh thinking.\n'
+printf 'Captain default: openai-codex/gpt-5.6-sol with medium thinking.\n'
 printf 'Default Firstmate backend: herdr.\n'
 printf 'Herdr presentation spaces: on (one visible workspace per task).\n'
 printf 'Theme: cosmic-lagoon.\n'

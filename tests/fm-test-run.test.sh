@@ -334,7 +334,7 @@ SH
 }
 
 test_exclude_family() {
-  local listed
+  local listed legacy
   listed=$("$RUNNER" --list --all --exclude-family real-herdr-gated)
   printf '%s\n' "$listed" | grep -Fq 'tests/fm-backend-herdr-smoke.test.sh' \
     && fail "exclude-family real-herdr-gated left a real-herdr script"
@@ -344,16 +344,23 @@ test_exclude_family() {
   listed=$("$RUNNER" --list --family real-herdr-gated)
   printf '%s\n' "$listed" | grep -Fq 'tests/fm-backend-herdr-smoke.test.sh' \
     || fail "family real-herdr-gated must list smoke test"
+  legacy=$("$RUNNER" --list --lane legacy-adapter)
+  assert_contains "$legacy" 'tests/fm-backend-tmux-smoke.test.sh' \
+    "legacy-adapter lane must own tmux conformance"
+  if printf '%s\n' $("$RUNNER" --list --lane portable-serial) | grep -Fq 'tests/fm-backend-tmux-smoke.test.sh'; then
+    fail "portable-serial must not schedule legacy-adapter tests"
+  fi
   pass "exclude-family drops the named primary family after selection"
 }
 
 test_portable_shard_union_and_coverage_guard() {
-  local s1 s2 proven serial herdr all_count union_count overlap out first
+  local s1 s2 proven serial herdr legacy all_count union_count overlap out first
   s1=$("$RUNNER" --list --lane portable-parallel-1)
   s2=$("$RUNNER" --list --lane portable-parallel-2)
   proven=$("$RUNNER" --list --proven-isolated)
   serial=$("$RUNNER" --list --lane portable-serial)
   herdr=$("$RUNNER" --list --family real-herdr-gated)
+  legacy=$("$RUNNER" --list --lane legacy-adapter)
   [ -n "$s1" ] && [ -n "$s2" ] || fail "portable parallel shards must be non-empty"
   # Shards disjoint.
   overlap=$(comm -12 <(printf '%s\n' "$s1" | LC_ALL=C sort) <(printf '%s\n' "$s2" | LC_ALL=C sort) || true)
@@ -370,11 +377,11 @@ test_portable_shard_union_and_coverage_guard() {
   out=$("$RUNNER" --check-coverage)
   assert_contains "$out" "FM_TEST_COVERAGE ok" "coverage guard success marker"
   all_count=$("$RUNNER" --list --all | wc -l | tr -d ' ')
-  union_count=$(printf '%s\n' "$s1" "$s2" "$serial" "$herdr" | LC_ALL=C sort -u | wc -l | tr -d ' ')
+  union_count=$(printf '%s\n' "$s1" "$s2" "$serial" "$herdr" "$legacy" | LC_ALL=C sort -u | wc -l | tr -d ' ')
   [ "$union_count" = "$all_count" ] \
     || fail "union of lanes ($union_count) must equal --all ($all_count)"
   # No duplicates across the four partitions.
-  [ "$(printf '%s\n' "$s1" "$s2" "$serial" "$herdr" | LC_ALL=C sort | uniq -d | wc -l | tr -d ' ')" = "0" ] \
+  [ "$(printf '%s\n' "$s1" "$s2" "$serial" "$herdr" "$legacy" | LC_ALL=C sort | uniq -d | wc -l | tr -d ' ')" = "0" ] \
     || fail "lanes must not duplicate scripts"
   # LPT order: first script of shard 1 is the longest proven script.
   first=$(printf '%s\n' "$s1" | head -n 1)

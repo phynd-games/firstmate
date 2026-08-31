@@ -66,8 +66,8 @@ The checked-in defaults live in `.pi/settings.json`, `defaults/pi-settings.json`
 | Purpose | Default |
 | --- | --- |
 | Captain harness | Pi |
-| Captain model | `openai-codex/gpt-5.6-luna` |
-| Captain thinking | `xhigh` |
+| Captain model | `openai-codex/gpt-5.6-sol` |
+| Captain thinking | `medium` |
 | Runtime backend | Herdr |
 | Herdr visibility | One presentation workspace per task |
 | Pi theme | `cosmic-lagoon` |

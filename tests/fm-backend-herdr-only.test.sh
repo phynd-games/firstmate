@@ -289,6 +289,27 @@ test_workspace_list_failure_refuses_before_creation() {
   pass "failed Herdr workspace listing refuses before workspace creation"
 }
 
+test_workspace_schema_failure_refuses_before_creation() {
+  run_capture workspace-schema-failure lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_workspace_label() { printf firstmate; }
+    fm_backend_herdr_cli() { printf "%s" '''{"result":{"workspaces":{}}}'''; }
+    fm_backend_herdr_workspace_ensure fmtest /tmp other-home
+  '
+  [ "$RC" -eq 2 ] && [ -z "$OUT" ] || fail "invalid Herdr workspace schema must refuse before creation: rc=$RC out=$OUT"
+  pass "schema-invalid Herdr workspace listings refuse before creation"
+}
+
+test_endpoint_identity_mismatch_refuses() {
+  local id=identity-mismatch-z1 state="$TMP_ROOT/identity-state" wt="$TMP_ROOT/identity-wt"
+  mkdir -p "$state" "$wt"
+  fm_write_meta "$state/$id.meta" "window=default:w1:p1" "endpoint_task_id=$id" "worktree=$wt" "project=$wt" \
+    "backend=herdr" "herdr_session=default" "herdr_workspace_id=w1" "herdr_tab_id=w1:t1" "herdr_pane_id=w1:p1"
+  run_capture endpoint-identity-mismatch lib_probe -- "fm_backend_source() { return 0; }; fm_backend_herdr_endpoint_identity() { return 1; }; fm_backend_validate_task_endpoint '$state/$id.meta' '$id'"
+  assert_refusal "mismatched Herdr endpoint identity" "Herdr target identity" "Task state is preserved"
+  pass "mismatched native Herdr workspace or tab identity refuses before operation"
+}
+
 test_kill_refuses_planner_and_focus_failures_before_close() {
   local planner_marker="$TMP_ROOT/kill-planner-close" focus_marker="$TMP_ROOT/kill-focus-close"
   rm -f "$planner_marker" "$focus_marker"
@@ -692,11 +713,11 @@ test_herdr_record_and_endpoint_pass_every_boundary() {
     "herdr_workspace_id=w2" "herdr_tab_id=w2:t1" "herdr_pane_id=w2:p3"
   run_capture herdr-of-meta lib_probe -- "fm_backend_of_meta '$state/$id.meta'"
   [ "$RC" -eq 0 ] && [ "$OUT" = herdr ] && [ -z "$ERR" ] || fail "herdr record must resolve silently: rc=$RC out=$OUT err=$ERR"
-  run_capture herdr-endpoint lib_probe -- "fm_backend_validate_task_endpoint '$state/$id.meta' '$id' && printf '%s|%s' \"\$FM_BACKEND_VALIDATED_BACKEND\" \"\$FM_BACKEND_VALIDATED_TARGET\""
+  run_capture herdr-endpoint lib_probe -- "fm_backend_source() { return 0; }; fm_backend_herdr_endpoint_identity() { return 0; }; fm_backend_validate_task_endpoint '$state/$id.meta' '$id' && printf '%s|%s' \"\$FM_BACKEND_VALIDATED_BACKEND\" \"\$FM_BACKEND_VALIDATED_TARGET\""
   [ "$RC" -eq 0 ] && [ "$OUT" = "herdr|default:w2:p3" ] || fail "herdr endpoint validation failed: rc=$RC out=$OUT err=$ERR"
-  out=$(lib_probe -- "fm_backend_herdr_version_check() { return 0; }; fm_backend_herdr_session_capability_check() { return 0; }; fm_backend_resolve_selector '$id' '$state'")
+  out=$(lib_probe -- "fm_backend_herdr_version_check() { return 0; }; fm_backend_herdr_session_capability_check() { return 0; }; fm_backend_source() { return 0; }; fm_backend_herdr_endpoint_identity() { return 0; }; fm_backend_resolve_selector '$id' '$state'")
   [ "$out" = default:w2:p3 ] || fail "task-id selector must resolve the herdr window, got $out"
-  out=$(lib_probe -- "fm_backend_herdr_version_check() { return 0; }; fm_backend_herdr_session_capability_check() { return 0; }; fm_backend_of_selector '$id' 'default:w2:p3' '$state'")
+  out=$(lib_probe -- "fm_backend_herdr_version_check() { return 0; }; fm_backend_herdr_session_capability_check() { return 0; }; fm_backend_source() { return 0; }; fm_backend_herdr_endpoint_identity() { return 0; }; fm_backend_of_selector '$id' 'default:w2:p3' '$state'")
   [ "$out" = herdr ] || fail "task-id selector backend must be herdr, got $out"
   out=$(lib_probe -- 'fm_backend_herdr_version_check() { return 0; }; fm_backend_herdr_session_capability_check() { return 0; }; fm_backend_validate herdr && fm_backend_validate_spawn herdr && fm_backend_source herdr && printf ok')
   [ "$out" = ok ] || fail "herdr must pass validate, validate_spawn, and source: $out"
@@ -729,6 +750,8 @@ test_selector_resolution_has_no_tmux_fallback
 test_native_herdr_failures_are_policy_refusals
 test_ambiguous_close_planning_refuses_without_output
 test_workspace_list_failure_refuses_before_creation
+test_workspace_schema_failure_refuses_before_creation
+test_endpoint_identity_mismatch_refuses
 test_kill_refuses_planner_and_focus_failures_before_close
 test_endpoint_presence_failure_remains_typed
 test_recovery_agent_failures_refuse_before_replacement

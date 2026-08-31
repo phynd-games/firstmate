@@ -502,7 +502,10 @@ migrate_watcher_pause_markers() {  # <state>
     [ -e "$meta" ] || continue
     backend=$(fm_backend_of_meta "$meta" 2>/dev/null || true)
     [ "$backend" = herdr ] || continue
-    win=$(fm_backend_target_of_meta "$meta")
+    if ! fm_backend_validate_task_endpoint "$meta" "$task"; then
+      continue
+    fi
+    win=$FM_BACKEND_VALIDATED_TARGET
     [ -n "$win" ] || continue
     task=$(basename "$meta"); task=${task%.meta}
     key=$(_stale_key "$task")
