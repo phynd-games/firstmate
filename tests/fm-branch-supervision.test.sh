@@ -156,6 +156,17 @@ test_routine_note_coalescing() {
   [ "$(gate task-c)" = render ] || fail "the first routine note for a task did not render"
   # Duplicate stale/turn-ended/status handling with no state change: coalesced.
   [ "$(gate task-c)" != render ] || fail "an unchanged task rendered a duplicate routine note"
+  printf 'failed: pending delivery\n' > "$home/state/task-pending.status"
+  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending)" = render ] \
+    || fail "a new routine note was not reserved for delivery"
+  grep -q '^pending$' "$home/state/.branch-note-sig-task-pending" \
+    || fail "a routine note reservation was not marked pending"
+  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending)" = render ] \
+    || fail "a pending routine note was coalesced before delivery"
+  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-commit --task task-pending)" = committed ] \
+    || fail "a delivered routine note reservation was not committed"
+  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending)" != render ] \
+    || fail "a committed routine note was not coalesced"
   printf 'working: still implementing\n' >> "$home/state/task-c.status"
   [ "$(gate task-c)" != render ] \
     || fail "a routine working: append (not a failure/decision/terminal change) re-rendered"

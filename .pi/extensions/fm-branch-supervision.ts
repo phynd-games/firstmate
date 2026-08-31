@@ -604,7 +604,7 @@ export default function (pi: ExtensionAPI) {
     } else {
       // Deterministic duplicate coalescing for routine notes: once main owns
       // a task's supervision state, another no-change note about it renders
-      // nothing new, so the note-render gate (fm-branch-outcome.sh, the
+      // nothing new, so the note gate (fm-branch-outcome.sh, the
       // contract owner) suppresses rendering when the task's durable novelty
       // signature - failure/decision/terminal status, PR/CI identity,
       // validation-loop stop - is unchanged since the last rendered note. The
@@ -613,12 +613,12 @@ export default function (pi: ExtensionAPI) {
       // never toward silence.
       let display = !(task === "fleet" && silent);
       if (display && task !== "fleet") {
-        const gate = runOutcomeScript(["note-render", "--task", task]);
+        const gate = runOutcomeScript(["note-reserve", "--task", task]);
         if (gate.ok && gate.stdout.startsWith("coalesce")) display = false;
         else if (gate.ok && gate.stdout === "render") noteReserved = true;
       }
       if (!actingAsOwner(expectedGeneration)) {
-        if (noteReserved) runOutcomeScript(["note-rollback", "--task", task]);
+        if (noteReserved && !runOutcomeScript(["note-rollback", "--task", task]).ok) return false;
         return false;
       }
       const message = { customType: "fm-branch-merge", content: `${MERGE_NOTE_BOAT} ${task}: ${summary}`, display };
@@ -629,9 +629,10 @@ export default function (pi: ExtensionAPI) {
           pi.sendMessage(message, {});
         }
       } catch {
-        if (noteReserved) runOutcomeScript(["note-rollback", "--task", task]);
+        if (noteReserved && !runOutcomeScript(["note-rollback", "--task", task]).ok) return false;
         return false;
       }
+      if (noteReserved) runOutcomeScript(["note-commit", "--task", task]);
     }
     if (/^[0-9]+$/.test(seq)) {
       if (!actingAsOwner(expectedGeneration)) return false;

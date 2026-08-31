@@ -198,6 +198,7 @@ EOF
 
 _fm_vloop_scope_valid() {  # <worktree> <base> <head> <paths>
   local worktree=$1 base=$2 head=$3 paths=$4 base_full head_full path seen='' count=0 max_files
+  local change_files change_file change_count max_change max_commits
   [ -n "$worktree" ] && [ -n "$base" ] && [ -n "$head" ] && [ -n "$paths" ] || return 1
   base_full=$(git -C "$worktree" rev-parse --verify "${base}^{commit}" 2>/dev/null) || return 1
   head_full=$(git -C "$worktree" rev-parse --verify "${head}^{commit}" 2>/dev/null) || return 1
@@ -213,6 +214,21 @@ _fm_vloop_scope_valid() {  # <worktree> <base> <head> <paths>
       /*|../*|*/../*|*[[:space:]]*|*\|*) return 1 ;;
     esac
   done
+  max_commits=$(_fm_vloop_bound "${FM_VLOOP_MAX_CHANGE_COMMITS:-}" "$FM_VLOOP_MAX_CHANGE_COMMITS_DEFAULT")
+  max_change=$(git -C "$worktree" rev-list --count "$base_full..$head_full" 2>/dev/null) || return 1
+  [ "$max_change" -le "$max_commits" ] || return 1
+  change_files=$(git -C "$worktree" diff --name-only --no-renames "$base_full" "$head_full" 2>/dev/null) || return 1
+  change_count=$(printf '%s\n' "$change_files" | awk 'NF { count += 1 } END { print count + 0 }')
+  [ "$change_count" -le "$max_files" ] || return 1
+  while IFS= read -r change_file; do
+    [ -n "$change_file" ] || continue
+    case "$change_file" in
+      /*|../*|*/../*|*[[:space:]]*|*\|*) return 1 ;;
+    esac
+    _fm_vloop_scope_contains "$paths" "$change_file" || return 1
+  done <<EOF
+$change_files
+EOF
 }
 
 _fm_vloop_scope_contains() {  # <paths> <path>
@@ -239,20 +255,35 @@ _fm_vloop_journal_valid() {  # <journal-content>
   esac
   active=$(_fm_vloop_journal_get "$stored" active)
   case "$active" in 0|1) ;; *) return 1 ;; esac
-  case "$phase:$active" in
-    running:1|fixing:1|ci:1|gate:1|terminal:0) ;;
-    coarse:0|coarse:1) ;;
+  case "$phase" in
+    running)
+      [ "$active" = 1 ] || return 1
+      [ "$status" = running ] || return 1
+      ;;
+    fixing)
+      [ "$active" = 1 ] || return 1
+      case "$status" in fixing|running) ;; *) return 1 ;; esac
+      ;;
+    ci)
+      [ "$active" = 1 ] || return 1
+      case "$status" in ci|running) ;; *) return 1 ;; esac
+      ;;
+    gate)
+      [ "$active" = 1 ] || return 1
+      case "$status" in awaiting_approval|fix_review|running) ;; *) return 1 ;; esac
+      ;;
+    terminal)
+      [ "$active" = 0 ] || return 1
+      case "$status" in completed|failed|cancelled) ;; *) return 1 ;; esac
+      ;;
+    coarse)
+      case "$status:$active" in
+        running:1|completed:0|failed:0|cancelled:0) ;;
+        *) return 1 ;;
+      esac
+      ;;
     *) return 1 ;;
   esac
-  if [ "$phase" = terminal ]; then
-    case "$status" in completed|failed|cancelled) ;; *) return 1 ;; esac
-  fi
-  if [ "$phase" = coarse ]; then
-    case "$status:$active" in
-      running:1|completed:0|failed:0|cancelled:0) ;;
-      *) return 1 ;;
-    esac
-  fi
   value=$(_fm_vloop_journal_get "$stored" fix_rounds)
   case "$value" in ''|*[!0-9]*) return 1 ;; esac
   for key in last_observed last_progress; do

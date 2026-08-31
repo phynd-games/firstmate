@@ -316,6 +316,76 @@ EOF
   pass "malformed journal stop: incomplete and unrecognized loop state fails closed"
 }
 
+test_journal_state_matrix() {
+  local state dir variant phase status active verdict n=0
+  dir=$(make_case vloop-journal-matrix); state="$dir/state"
+  for variant in \
+    running,running,1 \
+    fixing,fixing,1 fixing,running,1 \
+    ci,ci,1 ci,running,1 \
+    gate,awaiting_approval,1 gate,fix_review,1 gate,running,1 \
+    terminal,completed,0 terminal,failed,0 terminal,cancelled,0 \
+    coarse,running,1 coarse,completed,0 coarse,failed,0 coarse,cancelled,0; do
+    IFS=, read -r phase status active <<< "$variant"
+    n=$((n + 1))
+    cat > "$state/valid-$n.validation-loop" <<EOF
+version=1
+run=01RUN
+head=abc1234
+status=$status
+phase=$phase
+findings_sig=
+progress_sig=abc
+fix_rounds=0
+themes=
+heads=abc1234
+last_observed=1000
+last_progress=1000
+active=$active
+stop_reason=
+scope_base=
+scope_head=
+scope_paths=
+EOF
+    verdict=$(FM_VLOOP_NOW=1001 fm_vloop_verdict "$state" "valid-$n" 2>/dev/null || true)
+    [ "$verdict" = continue ] || fail "valid journal state $variant was rejected: '$verdict'"
+  done
+  n=0
+  for variant in \
+    running,fixing,1 running,completed,0 \
+    fixing,ci,1 fixing,failed,0 \
+    ci,completed,1 ci,failed,1 \
+    gate,failed,1 gate,completed,0 \
+    terminal,completed,1 terminal,running,0 \
+    coarse,ci,1 coarse,awaiting_approval,1; do
+    IFS=, read -r phase status active <<< "$variant"
+    n=$((n + 1))
+    cat > "$state/invalid-$n.validation-loop" <<EOF
+version=1
+run=01RUN
+head=abc1234
+status=$status
+phase=$phase
+findings_sig=
+progress_sig=abc
+fix_rounds=0
+themes=
+heads=abc1234
+last_observed=1000
+last_progress=1000
+active=$active
+stop_reason=
+scope_base=
+scope_head=
+scope_paths=
+EOF
+    verdict=$(FM_VLOOP_NOW=1001 fm_vloop_verdict "$state" "invalid-$n" 2>/dev/null || true)
+    [ "$verdict" = 'stop validation-loop journal unreadable or incomplete; recover in the same copy' ] \
+      || fail "invalid journal state $variant was accepted: '$verdict'"
+  done
+  pass "journal state matrix: only coherent phase, status, and active combinations continue"
+}
+
 test_journal_write_failure_stops_closed() {
   local state ev dir rc
   dir=$(make_case vloop-write-failure); state="$dir/state"; ev="$dir/ev"
@@ -489,7 +559,7 @@ test_head_change_set_is_bounded() {
   FM_VLOOP_MAX_CHANGE_COMMITS=1 fold "$state" changes "$ev" 1010 "$repo"
   v=$(FM_VLOOP_MAX_CHANGE_COMMITS=1 verdict_at "$state" changes 1020)
   case "$v" in
-    stop*"incoherent head transition"*) ;;
+    stop*"incoherent head transition"*|stop*"validation change-set manifest is invalid or untrusted"*) ;;
     *) fail "an overlarge head change set continued: '$v'" ;;
   esac
   mkdir -p "$dir/known-state"
@@ -505,10 +575,38 @@ test_head_change_set_is_bounded() {
   fold "$state" changes "$ev" 1040 "$repo"
   v=$(verdict_at "$state" changes 1050)
   case "$v" in
-    stop*"incoherent head transition"*) ;;
+    stop*"incoherent head transition"*|stop*"validation change-set manifest is invalid or untrusted"*) ;;
     *) fail "a new unrelated file entered the automatic head transition: '$v'" ;;
   esac
   pass "head change set: an overlarge transition stops instead of refreshing progress"
+}
+
+test_initial_scope_manifest_is_authenticated() {
+  local state ev dir repo base_head final_head v
+  dir=$(make_case vloop-initial-scope); state="$dir/state"; ev="$dir/ev"; repo="$dir/repo"
+  git init -q "$repo"
+  git -C "$repo" config user.email test@example.com
+  git -C "$repo" config user.name test
+  printf 'base\n' > "$repo/file"
+  git -C "$repo" add file && git -C "$repo" commit -qm base
+  base_head=$(git -C "$repo" rev-parse HEAD)
+  printf 'allowed\n' > "$repo/file"
+  git -C "$repo" commit -qam allowed
+  printf 'unrelated\n' > "$repo/unrelated.txt"
+  git -C "$repo" add unrelated.txt && git -C "$repo" commit -qm unrelated
+  final_head=$(git -C "$repo" rev-parse HEAD)
+  ev_running "$ev" 01RUN running pending
+  sed -i.bak "s/^  head: \"abc1234\"/  head: \"$final_head\"/" "$ev" && rm -f "$ev.bak"
+  printf 'base: "%s"\nchanges[1]{path}:\n  file\n' "$base_head" >> "$ev"
+  fold "$state" initial-scope "$ev" 1000 "$repo"
+  v=$(verdict_at "$state" initial-scope 1010)
+  case "$v" in
+    stop*"validation change-set manifest is invalid or untrusted"*) ;;
+    *) fail "an unrelated initial changed path remained continuable: '$v'" ;;
+  esac
+  grep -q '^stop_reason=validation change-set manifest is invalid or untrusted' "$state/initial-scope.validation-loop" \
+    || fail "the initial scope breach was not durable"
+  pass "initial scope: the first base-to-head diff must match the authenticated manifest"
 }
 
 test_head_change_set_allows_authenticated_addition() {
@@ -667,6 +765,7 @@ test_repeated_finding_stop
 test_unknown_state_stop
 test_malformed_evidence_stop
 test_malformed_journal_stop
+test_journal_state_matrix
 test_journal_write_failure_stops_closed
 test_stale_pipeline_evidence
 test_recovery_handoff
@@ -674,6 +773,7 @@ test_fix_round_bound_semantics
 test_stall_stop_and_progress_resume
 test_coarse_evidence_does_not_enforce_stall
 test_head_change_set_is_bounded
+test_initial_scope_manifest_is_authenticated
 test_head_change_set_allows_authenticated_addition
 test_head_transition_is_coherent
 test_threshold_overrides_cannot_disable_bounds
