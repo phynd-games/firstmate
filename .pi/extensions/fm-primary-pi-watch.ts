@@ -513,8 +513,7 @@ export default function (pi: ExtensionAPI) {
 
   function waitForRetry(attempt: number): Promise<void> {
     return new Promise((resolveRetry) => {
-      const timer = setTimeout(resolveRetry, retryDelay(attempt));
-      timer.unref();
+      setTimeout(resolveRetry, retryDelay(attempt));
     });
   }
 
