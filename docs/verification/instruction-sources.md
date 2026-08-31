@@ -44,6 +44,31 @@ Sources: [Grok Build project rules](https://docs.x.ai/build/features/project-rul
 
 No `grok` executable was installed in this validation environment, so Grok Build behavior was not live-probed.
 
+## Guarded runtime evidence
+
+The restart-handoff check ran on 2026-08-31 against Herdr 0.8.2 in an isolated named non-default lab provisioned and torn down through `bin/fm-herdr-lab.sh`.
+
+The guarded lab teardown's before-and-after default-session tripwire was byte-identical, so the default session state was unchanged after teardown.
+
+Four worker endpoints were reachable, but `watcher-self-recovery-herdr` was `pane-not-found`, so the required five-endpoint coverage was not satisfied.
+
+The dashboard root returned HTTP 500 with a rebuild failure, `/api/v1/overview` returned HTTP 404, and only `/healthz` returned HTTP 200, so dashboard and API validation failed.
+
+This record makes no all-clear claim, and PR #2 was not merged.
+
+The owning safe reruns and focused checks are:
+
+```sh
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
+  tests/fm-backend-herdr-respawn-idem-e2e.test.sh
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
+  bin/fm-test-run.sh --lane real-herdr-gated
+tests/fm-dashboard-api.test.sh
+tests/fm-dashboard-start.test.sh
+```
+
+The Herdr lab isolation contract is documented in [`docs/herdr-backend.md`](../herdr-backend.md#destructive-lab-safety), and the restart-husk evidence is maintained in [`docs/verification/runtime-backends.md`](runtime-backends.md#prune-and-respawn).
+
 ## Regression commands
 
 ```sh
