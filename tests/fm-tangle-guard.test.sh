@@ -14,6 +14,8 @@
 # the fm-bootstrap problem line, the brief assertion ordering, and the fm-spawn
 # abort - all hermetic over temp git repos and fakebins.
 set -u
+export FM_APPROVED_BASE_REF=main
+export FM_APPROVED_BASE_SHA=0000000000000000000000000000000000000000
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

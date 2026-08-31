@@ -6,8 +6,8 @@
 # locally instead of via a GitHub PR). It is the one sanctioned exception to hard
 # rule #1 "never run state-changing git in projects/", and it is narrow: it only
 # runs for mode=local-only tasks, only after the captain approves (or yolo=on
-# auto-approves), and only as a clean fast-forward - it refuses a diverged branch
-# and tells you to have the crewmate rebase. See AGENTS.md prime directives,
+# auto-approves), and only as a clean fast-forward - it refuses a stale approved
+# base or diverged branch and requires a new self-review. See AGENTS.md prime directives,
 # project management, and task lifecycle.
 # Usage: fm-merge-local.sh <task-id>
 set -eu
@@ -63,6 +63,11 @@ DELIVERY_LOCK_HELD=1
 PROJ=$(grep '^project=' "$META" | cut -d= -f2-)
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ "$MODE" = local-only ] || { echo "error: task $ID is mode=$MODE, not local-only; merge PR tasks with bin/fm-pr-merge.sh <id> <PR url> after approval" >&2; exit 1; }
+REVIEW_BASE=$(fm_pr_review_base_from_meta "$META" || true)
+[ -n "$REVIEW_BASE" ] || { echo "error: local-only task has no valid approved review base" >&2; exit 1; }
+IFS="$(printf '\t')" read -r REVIEW_BASE_REF REVIEW_BASE_SHA <<EOF
+$REVIEW_BASE
+EOF
 "$FM_ROOT/bin/fm-pr-self-review-check.sh" "$ID" local-only
 
 WT=$(grep '^worktree=' "$META" | cut -d= -f2-)
@@ -104,6 +109,12 @@ git -C "$PROJ" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null || { e
 }
 
 DEFAULT=$(default_branch) || { echo "error: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master" >&2; exit 1; }
+DEFAULT_SHA=$(git -C "$PROJ" rev-parse --verify "refs/heads/$DEFAULT^{commit}" 2>/dev/null || true)
+[ "$DEFAULT_SHA" = "$REVIEW_BASE_SHA" ] || {
+  echo "REFUSED: $DEFAULT has advanced beyond the approved review base $REVIEW_BASE_SHA." >&2
+  echo "Reconcile $BRANCH with the current $DEFAULT, record that exact base, and complete a new self-review before retrying." >&2
+  exit 1
+}
 
 # The project's main checkout must be on its default branch and clean, so the
 # fast-forward lands predictably (firstmate never writes here otherwise).
@@ -120,10 +131,10 @@ fi
   exit 1
 }
 
-# Clean fast-forward only: DEFAULT must be an ancestor of BRANCH.
+# Clean fast-forward only: DEFAULT must be the exact reviewed base and an ancestor of BRANCH.
 if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BRANCH"; then
   echo "REFUSED: $BRANCH is not a fast-forward of $DEFAULT (it has diverged)." >&2
-  echo "Have the crewmate rebase $BRANCH onto $DEFAULT, then retry." >&2
+  echo "Reconcile $BRANCH with the current $DEFAULT, then complete a new self-review before retrying." >&2
   exit 1
 fi
 

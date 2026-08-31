@@ -215,7 +215,8 @@ if [ -e "$PROMOTE_BRIEF" ]; then
 fi
 if ! FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" \
   FM_STATE_OVERRIDE="$STATE" "$FM_ROOT/bin/fm-brief.sh" "$ID" "$PROMOTE_PROJECT" \
-  --mode "$MODE" >/dev/null; then
+  --mode "$MODE" --approved-base-ref "$PROMOTE_BASE_REF" \
+  --approved-base-sha "$PROMOTE_BASE_SHA" >/dev/null; then
   promote_restore_scout_brief || true
   echo "error: could not install the ship brief for promoted scout $ID" >&2
   exit 1
@@ -242,12 +243,12 @@ if [ -n "$PROMOTE_TASK_TMP" ]; then
   rm -f -- "$PROMOTE_TASK_TMP"
   PROMOTE_TASK_TMP=
 fi
-if ! printf 'Target-project approved base: ref=%s; sha=%s\n' \
-  "$PROMOTE_BASE_REF" "$PROMOTE_BASE_SHA" >> "$PROMOTE_BRIEF"; then
+PROMOTE_WRITTEN_BASE=$(fm_pr_review_base_from_brief "$PROMOTE_BRIEF" || true)
+[ "$PROMOTE_WRITTEN_BASE" = "$PROMOTE_BASE_REF	$PROMOTE_BASE_SHA" ] || {
   promote_restore_scout_brief || true
-  echo "error: could not record the approved target base in promoted scout $ID's brief" >&2
+  echo "error: promoted scout $ID's ship brief did not retain the approved target base" >&2
   exit 1
-fi
+}
 TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
 grep -v -e '^kind=' -e '^review_base_ref=' -e '^review_base_sha=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"
 {

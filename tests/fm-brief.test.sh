@@ -21,6 +21,8 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-brief)
 BRIEF_HOME="$TMP_ROOT/home"
 mkdir -p "$BRIEF_HOME/data"
+export FM_APPROVED_BASE_REF=main
+export FM_APPROVED_BASE_SHA=0000000000000000000000000000000000000000
 
 # The script itself must always parse under the ambient bash. That is Bash 5 in
 # CI and locally, where the issue #958/#1069 parser bug does not fire, so this
@@ -195,7 +197,7 @@ EOF
 # one of these DOD blocks, since a broken heredoc corrupts or empties the
 # generated brief content, not just the script's own syntax.
 test_ship_modes_generate_clean_briefs() {
-  local home id mode brief status
+  local home id mode brief status approved_base
   home="$TMP_ROOT/ship-home"
   write_registry "$home"
 
@@ -210,11 +212,37 @@ test_ship_modes_generate_clean_briefs() {
     grep -qx "Delivery contract: mode=$mode" "$brief" \
       || fail "$id: brief did not record its machine-readable delivery contract line"
     assert_grep "{TASK}" "$brief" "$id: brief missing the {TASK} placeholder"
+    approved_base="Target-project approved base: ref=$FM_APPROVED_BASE_REF; sha=$FM_APPROVED_BASE_SHA"
+    assert_grep "$approved_base" "$brief" "$id: brief missing exact approved-base metadata"
     assert_grep "mid-task \`working:\` line (including setup complete) is nonterminal" "$brief" \
       "$id: brief missing nonterminal working:/setup-complete gate protection"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
+}
+
+test_ship_requires_and_persists_approved_base() {
+  local home out status brief sha
+  home="$TMP_ROOT/approved-base-home"
+  mkdir -p "$home/data"
+  out=$(FM_HOME="$home" FM_APPROVED_BASE_REF= FM_APPROVED_BASE_SHA= \
+    "$ROOT/bin/fm-brief.sh" missing-base some-proj --mode local-only 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "ship scaffold accepted missing approved-base evidence"
+  assert_contains "$out" "ship briefs require --approved-base-ref and --approved-base-sha" \
+    "missing approved-base refusal did not explain the contract"
+  assert_absent "$home/data/missing-base/brief.md" \
+    "missing approved-base refusal still wrote a brief"
+
+  sha=0123456789abcdef0123456789abcdef01234567
+  FM_HOME="$home" FM_APPROVED_BASE_REF= FM_APPROVED_BASE_SHA= \
+    "$ROOT/bin/fm-brief.sh" recorded-base some-proj --mode local-only \
+    --approved-base-ref refs/heads/release/m1 --approved-base-sha "$sha" >/dev/null 2>&1 \
+    || fail "ship scaffold rejected a valid explicit approved base"
+  brief="$home/data/recorded-base/brief.md"
+  grep -qx "Target-project approved base: ref=refs/heads/release/m1; sha=$sha" "$brief" \
+    || fail "ship scaffold did not persist the explicit approved-base pair"
+  pass "fm-brief.sh: ship scaffolds require and persist the approved target base"
 }
 
 test_every_ship_mode_requires_findings_first_self_review() {
@@ -791,6 +819,7 @@ test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
+test_ship_requires_and_persists_approved_base
 test_every_ship_mode_requires_findings_first_self_review
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry

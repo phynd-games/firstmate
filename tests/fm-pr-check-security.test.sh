@@ -213,14 +213,41 @@ self_review_line_digest() {
   fi
 }
 
+self_review_line_hex() {
+  local case_dir=$1 file=$2
+  if [ -f "$case_dir/wt/$file" ]; then
+    awk 'NR == 2 { printf "%s", $0 }' "$case_dir/wt/$file" | od -An -tx1 | tr -d ' \n'
+  else
+    git -C "$case_dir/wt" show "main:$file" | awk 'NR == 2 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n'
+  fi
+}
+
 surface_binding_digest() {
-  local surface=$1 reference=$2 digest=$3 behavior=$4 action=$5
-  printf '%s\n' "$surface|$reference|$digest|$behavior|$action" | fm_pr_sha256_stream
+  local surface=$1 reference=$2 digest=$3 change_digest=$4 line_hex=$5 behavior=$6 action=$7
+  printf '%s\n' "$surface|$reference|$digest|$change_digest|$line_hex|$behavior|$action" | fm_pr_sha256_stream
+}
+
+surface_change_digest_for_file() {
+  local case_dir=$1 file=$2 base_head target_head merge_base_sha
+  base_head=$(git -C "$case_dir/wt" rev-parse main)
+  target_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  merge_base_sha=$(git -C "$case_dir/wt" merge-base "$base_head" "$target_head")
+  git -C "$case_dir/wt" diff --no-color --unified=0 "$merge_base_sha" "$target_head" -- "$file" | fm_pr_sha256_stream
+}
+
+surface_change_digest() {
+  local case_dir=$1 file=$2 base_head target_head merge_base_sha
+  base_head=$(git -C "$case_dir/wt" rev-parse main)
+  target_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  merge_base_sha=$(git -C "$case_dir/wt" merge-base "$base_head" "$target_head")
+  git -C "$case_dir/wt" diff --no-color --unified=0 "$merge_base_sha" "$target_head" -- "$file" | fm_pr_sha256_stream
 }
 
 write_self_review_report() {
   local home=$1 id=$2 report case_dir target_repository target_head base_head merge_base_sha substrate_root substrate_head empty_digest changed_digest
   local authority_digest security_digest path_digest failure_digest tests_digest documentation_digest delivery_digest
+  local authority_line_hex security_line_hex path_line_hex failure_line_hex tests_line_hex documentation_line_hex delivery_line_hex
+  local authority_change_digest security_change_digest path_change_digest failure_change_digest tests_change_digest documentation_change_digest delivery_change_digest
   report="$home/data/$id/pr-self-review.md"
   case_dir=$(cd "$home/.." && pwd)
   target_repository=$(cd "$case_dir/wt" && pwd -P)
@@ -235,6 +262,20 @@ write_self_review_report() {
   tests_digest=$(self_review_line_digest "$case_dir" tests/fm-pr-check-security.test.sh)
   documentation_digest=$(self_review_line_digest "$case_dir" .agents/skills/firstmate-pr-self-review/SKILL.md)
   delivery_digest=$(self_review_line_digest "$case_dir" bin/fm-pr-create.sh)
+  authority_line_hex=$(self_review_line_hex "$case_dir" bin/fm-pr-check.sh)
+  security_line_hex=$(self_review_line_hex "$case_dir" bin/fm-pr-lib.sh)
+  path_line_hex=$(self_review_line_hex "$case_dir" bin/fm-pr-self-review-check.sh)
+  failure_line_hex=$(self_review_line_hex "$case_dir" bin/fm-operational-input.sh)
+  tests_line_hex=$(self_review_line_hex "$case_dir" tests/fm-pr-check-security.test.sh)
+  documentation_line_hex=$(self_review_line_hex "$case_dir" .agents/skills/firstmate-pr-self-review/SKILL.md)
+  delivery_line_hex=$(self_review_line_hex "$case_dir" bin/fm-pr-create.sh)
+  authority_change_digest=$(surface_change_digest "$case_dir" bin/fm-pr-check.sh)
+  security_change_digest=$(surface_change_digest "$case_dir" bin/fm-pr-lib.sh)
+  path_change_digest=$(surface_change_digest "$case_dir" bin/fm-pr-self-review-check.sh)
+  failure_change_digest=$(surface_change_digest "$case_dir" bin/fm-operational-input.sh)
+  tests_change_digest=$(surface_change_digest "$case_dir" tests/fm-pr-check-security.test.sh)
+  documentation_change_digest=$(surface_change_digest "$case_dir" .agents/skills/firstmate-pr-self-review/SKILL.md)
+  delivery_change_digest=$(surface_change_digest "$case_dir" bin/fm-pr-create.sh)
   substrate_root=${FM_TEST_REPORT_SUBSTRATE_ROOT:-$case_dir/substrate}
   substrate_head=$(git -C "$substrate_root" rev-parse HEAD)
   empty_digest=$(printf '' | fm_pr_sha256_stream)
@@ -263,13 +304,13 @@ write_self_review_report() {
     "Substrate changed files: $empty_digest" \
     'Substrate diff: no substrate diff' \
     '# Surface review' \
-    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:2 sha256=$authority_digest hunk=bin/fm-pr-check.sh:2; consequence=anchor=bin/fm-pr-check.sh:2 sha256=$authority_digest behavior=non-authorizing binding=$(surface_binding_digest authority bin/fm-pr-check.sh:2 "$authority_digest" non-authorizing retain-owner); fix=anchor=bin/fm-pr-check.sh:2 sha256=$authority_digest action=retain-owner binding=$(surface_binding_digest authority bin/fm-pr-check.sh:2 "$authority_digest" non-authorizing retain-owner)" \
-    "Security: reviewed; surface=security; files=bin/fm-pr-lib.sh; evidence=bin/fm-pr-lib.sh:2 sha256=$security_digest hunk=bin/fm-pr-lib.sh:2; consequence=anchor=bin/fm-pr-lib.sh:2 sha256=$security_digest behavior=provenance-bound binding=$(surface_binding_digest security bin/fm-pr-lib.sh:2 "$security_digest" provenance-bound retain-boundary); fix=anchor=bin/fm-pr-lib.sh:2 sha256=$security_digest action=retain-boundary binding=$(surface_binding_digest security bin/fm-pr-lib.sh:2 "$security_digest" provenance-bound retain-boundary)" \
-    "Path: reviewed; surface=path; files=bin/fm-pr-self-review-check.sh; evidence=bin/fm-pr-self-review-check.sh:2 sha256=$path_digest hunk=bin/fm-pr-self-review-check.sh:2; consequence=anchor=bin/fm-pr-self-review-check.sh:2 sha256=$path_digest behavior=path-safe binding=$(surface_binding_digest path bin/fm-pr-self-review-check.sh:2 "$path_digest" path-safe retain-validation); fix=anchor=bin/fm-pr-self-review-check.sh:2 sha256=$path_digest action=retain-validation binding=$(surface_binding_digest path bin/fm-pr-self-review-check.sh:2 "$path_digest" path-safe retain-validation)" \
-    "Failure: reviewed; surface=failure; files=bin/fm-operational-input.sh; evidence=bin/fm-operational-input.sh:2 sha256=$failure_digest hunk=bin/fm-operational-input.sh:2; consequence=anchor=bin/fm-operational-input.sh:2 sha256=$failure_digest behavior=fail-closed binding=$(surface_binding_digest failure bin/fm-operational-input.sh:2 "$failure_digest" fail-closed retain-refusal); fix=anchor=bin/fm-operational-input.sh:2 sha256=$failure_digest action=retain-refusal binding=$(surface_binding_digest failure bin/fm-operational-input.sh:2 "$failure_digest" fail-closed retain-refusal)" \
-    "Tests: reviewed; surface=tests; files=tests/fm-pr-check-security.test.sh; evidence=tests/fm-pr-check-security.test.sh:2 sha256=$tests_digest hunk=tests/fm-pr-check-security.test.sh:2; consequence=anchor=tests/fm-pr-check-security.test.sh:2 sha256=$tests_digest behavior=behavioral binding=$(surface_binding_digest tests tests/fm-pr-check-security.test.sh:2 "$tests_digest" behavioral retain-regression); fix=anchor=tests/fm-pr-check-security.test.sh:2 sha256=$tests_digest action=retain-regression binding=$(surface_binding_digest tests tests/fm-pr-check-security.test.sh:2 "$tests_digest" behavioral retain-regression)" \
-    "Documentation: reviewed; surface=documentation; files=.agents/skills/firstmate-pr-self-review/SKILL.md; evidence=.agents/skills/firstmate-pr-self-review/SKILL.md:2 sha256=$documentation_digest hunk=.agents/skills/firstmate-pr-self-review/SKILL.md:2; consequence=anchor=.agents/skills/firstmate-pr-self-review/SKILL.md:2 sha256=$documentation_digest behavior=contract-aligned binding=$(surface_binding_digest documentation .agents/skills/firstmate-pr-self-review/SKILL.md:2 "$documentation_digest" contract-aligned retain-contract); fix=anchor=.agents/skills/firstmate-pr-self-review/SKILL.md:2 sha256=$documentation_digest action=retain-contract binding=$(surface_binding_digest documentation .agents/skills/firstmate-pr-self-review/SKILL.md:2 "$documentation_digest" contract-aligned retain-contract)" \
-    "Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:2 sha256=$delivery_digest hunk=bin/fm-pr-create.sh:2; consequence=anchor=bin/fm-pr-create.sh:2 sha256=$delivery_digest behavior=no-mistakes-owned binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:2 "$delivery_digest" no-mistakes-owned retain-no-mistakes); fix=anchor=bin/fm-pr-create.sh:2 sha256=$delivery_digest action=retain-no-mistakes binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:2 "$delivery_digest" no-mistakes-owned retain-no-mistakes)" \
+    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:2 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$authority_line_hex hunk=bin/fm-pr-check.sh:2; consequence=anchor=bin/fm-pr-check.sh:2 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$authority_line_hex behavior=non-authorizing binding=$(surface_binding_digest authority bin/fm-pr-check.sh:2 "$authority_digest" "$authority_change_digest" "$authority_line_hex" non-authorizing retain-owner); fix=anchor=bin/fm-pr-check.sh:2 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$authority_line_hex action=retain-owner binding=$(surface_binding_digest authority bin/fm-pr-check.sh:2 "$authority_digest" "$authority_change_digest" "$authority_line_hex" non-authorizing retain-owner)" \
+    "Security: reviewed; surface=security; files=bin/fm-pr-lib.sh; evidence=bin/fm-pr-lib.sh:2 sha256=$security_digest change-sha256=$security_change_digest line-hex=$security_line_hex hunk=bin/fm-pr-lib.sh:2; consequence=anchor=bin/fm-pr-lib.sh:2 sha256=$security_digest change-sha256=$security_change_digest line-hex=$security_line_hex behavior=provenance-bound binding=$(surface_binding_digest security bin/fm-pr-lib.sh:2 "$security_digest" "$security_change_digest" "$security_line_hex" provenance-bound retain-boundary); fix=anchor=bin/fm-pr-lib.sh:2 sha256=$security_digest change-sha256=$security_change_digest line-hex=$security_line_hex action=retain-boundary binding=$(surface_binding_digest security bin/fm-pr-lib.sh:2 "$security_digest" "$security_change_digest" "$security_line_hex" provenance-bound retain-boundary)" \
+    "Path: reviewed; surface=path; files=bin/fm-pr-self-review-check.sh; evidence=bin/fm-pr-self-review-check.sh:2 sha256=$path_digest change-sha256=$path_change_digest line-hex=$path_line_hex hunk=bin/fm-pr-self-review-check.sh:2; consequence=anchor=bin/fm-pr-self-review-check.sh:2 sha256=$path_digest change-sha256=$path_change_digest line-hex=$path_line_hex behavior=path-safe binding=$(surface_binding_digest path bin/fm-pr-self-review-check.sh:2 "$path_digest" "$path_change_digest" "$path_line_hex" path-safe retain-validation); fix=anchor=bin/fm-pr-self-review-check.sh:2 sha256=$path_digest change-sha256=$path_change_digest line-hex=$path_line_hex action=retain-validation binding=$(surface_binding_digest path bin/fm-pr-self-review-check.sh:2 "$path_digest" "$path_change_digest" "$path_line_hex" path-safe retain-validation)" \
+    "Failure: reviewed; surface=failure; files=bin/fm-operational-input.sh; evidence=bin/fm-operational-input.sh:2 sha256=$failure_digest change-sha256=$failure_change_digest line-hex=$failure_line_hex hunk=bin/fm-operational-input.sh:2; consequence=anchor=bin/fm-operational-input.sh:2 sha256=$failure_digest change-sha256=$failure_change_digest line-hex=$failure_line_hex behavior=fail-closed binding=$(surface_binding_digest failure bin/fm-operational-input.sh:2 "$failure_digest" "$failure_change_digest" "$failure_line_hex" fail-closed retain-refusal); fix=anchor=bin/fm-operational-input.sh:2 sha256=$failure_digest change-sha256=$failure_change_digest line-hex=$failure_line_hex action=retain-refusal binding=$(surface_binding_digest failure bin/fm-operational-input.sh:2 "$failure_digest" "$failure_change_digest" "$failure_line_hex" fail-closed retain-refusal)" \
+    "Tests: reviewed; surface=tests; files=tests/fm-pr-check-security.test.sh; evidence=tests/fm-pr-check-security.test.sh:2 sha256=$tests_digest change-sha256=$tests_change_digest line-hex=$tests_line_hex hunk=tests/fm-pr-check-security.test.sh:2; consequence=anchor=tests/fm-pr-check-security.test.sh:2 sha256=$tests_digest change-sha256=$tests_change_digest line-hex=$tests_line_hex behavior=behavioral binding=$(surface_binding_digest tests tests/fm-pr-check-security.test.sh:2 "$tests_digest" "$tests_change_digest" "$tests_line_hex" behavioral retain-regression); fix=anchor=tests/fm-pr-check-security.test.sh:2 sha256=$tests_digest change-sha256=$tests_change_digest line-hex=$tests_line_hex action=retain-regression binding=$(surface_binding_digest tests tests/fm-pr-check-security.test.sh:2 "$tests_digest" "$tests_change_digest" "$tests_line_hex" behavioral retain-regression)" \
+    "Documentation: reviewed; surface=documentation; files=.agents/skills/firstmate-pr-self-review/SKILL.md; evidence=.agents/skills/firstmate-pr-self-review/SKILL.md:2 sha256=$documentation_digest change-sha256=$documentation_change_digest line-hex=$documentation_line_hex hunk=.agents/skills/firstmate-pr-self-review/SKILL.md:2; consequence=anchor=.agents/skills/firstmate-pr-self-review/SKILL.md:2 sha256=$documentation_digest change-sha256=$documentation_change_digest line-hex=$documentation_line_hex behavior=contract-aligned binding=$(surface_binding_digest documentation .agents/skills/firstmate-pr-self-review/SKILL.md:2 "$documentation_digest" "$documentation_change_digest" "$documentation_line_hex" contract-aligned retain-contract); fix=anchor=.agents/skills/firstmate-pr-self-review/SKILL.md:2 sha256=$documentation_digest change-sha256=$documentation_change_digest line-hex=$documentation_line_hex action=retain-contract binding=$(surface_binding_digest documentation .agents/skills/firstmate-pr-self-review/SKILL.md:2 "$documentation_digest" "$documentation_change_digest" "$documentation_line_hex" contract-aligned retain-contract)" \
+    "Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:2 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex hunk=bin/fm-pr-create.sh:2; consequence=anchor=bin/fm-pr-create.sh:2 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex behavior=no-mistakes-owned binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:2 "$delivery_digest" "$delivery_change_digest" "$delivery_line_hex" no-mistakes-owned retain-no-mistakes); fix=anchor=bin/fm-pr-create.sh:2 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex action=retain-no-mistakes binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:2 "$delivery_digest" "$delivery_change_digest" "$delivery_line_hex" no-mistakes-owned retain-no-mistakes)" \
     '# Verification' \
     'Command: focused PR-ready boundary test' \
     'Result: passed' \
@@ -568,8 +609,9 @@ PY
 
   write_self_review_report "$dir/home" task-a
   fixture_digest=$(printf 'fixture\n' | fm_pr_sha256_stream)
-  fixture_binding=$(surface_binding_digest authority fixture.txt:1 "$fixture_digest" non-authorizing retain-owner)
-  sed -i.bak "s#^Authority: .*#Authority: reviewed; surface=authority; files=fixture.txt; evidence=fixture.txt:1 sha256=$fixture_digest hunk=fixture.txt:1; consequence=anchor=fixture.txt:1 sha256=$fixture_digest behavior=non-authorizing binding=$fixture_binding; fix=anchor=fixture.txt:1 sha256=$fixture_digest action=retain-owner binding=$fixture_binding#" "$report"
+  fixture_line_hex=$(printf 'fixture' | od -An -tx1 | tr -d ' \n')
+  fixture_binding=$(surface_binding_digest authority fixture.txt:1 "$fixture_digest" empty "$fixture_line_hex" non-authorizing retain-owner)
+  sed -i.bak "s#^Authority: .*#Authority: reviewed; surface=authority; files=fixture.txt; evidence=fixture.txt:1 sha256=$fixture_digest change-sha256=$(printf empty | fm_pr_sha256_stream) line-hex=$fixture_line_hex hunk=fixture.txt:1; consequence=anchor=fixture.txt:1 sha256=$fixture_digest change-sha256=$(printf empty | fm_pr_sha256_stream) line-hex=$fixture_line_hex behavior=non-authorizing binding=$fixture_binding; fix=anchor=fixture.txt:1 sha256=$fixture_digest change-sha256=$(printf empty | fm_pr_sha256_stream) line-hex=$fixture_line_hex action=retain-owner binding=$fixture_binding#" "$report"
   rm -f "$report.bak"
   set +e
   run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
@@ -700,6 +742,20 @@ PY
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "filler surface evidence left a runnable poll"
 
   write_self_review_report "$dir/home" task-a
+  authority_digest=$(self_review_line_digest "$dir" bin/fm-pr-check.sh)
+  authority_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-check.sh)
+  bad_line_hex=00
+  bad_binding=$(surface_binding_digest authority bin/fm-pr-check.sh:2 "$authority_digest" "$authority_change_digest" "$bad_line_hex" non-authorizing retain-owner)
+  sed -i.bak "s#^Authority: .*#Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:2 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$bad_line_hex hunk=bin/fm-pr-check.sh:2; consequence=anchor=bin/fm-pr-check.sh:2 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$bad_line_hex behavior=non-authorizing binding=$bad_binding; fix=anchor=bin/fm-pr-check.sh:2 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$bad_line_hex action=retain-owner binding=$bad_binding#" "$report"
+  rm -f "$report.bak"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a surface claim with a false changed-line anchor"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "false changed-line anchor left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
   sed -i.bak 's/^Authority: .*/Authority: reviewed; surface=authority; files=bin\/fm-pr-lib.sh; evidence=bin\/fm-pr-lib.sh:2 sha256=0000000000000000000000000000000000000000000000000000000000000000 hunk=bin\/fm-pr-lib.sh:2; consequence=anchor=bin\/fm-pr-lib.sh:2 sha256=0000000000000000000000000000000000000000000000000000000000000000 behavior=non-authorizing binding=0000000000000000000000000000000000000000000000000000000000000000; fix=anchor=bin\/fm-pr-lib.sh:2 sha256=0000000000000000000000000000000000000000000000000000000000000000 action=retain-owner binding=0000000000000000000000000000000000000000000000000000000000000000/' "$report"
   rm -f "$report.bak"
   set +e
@@ -730,8 +786,10 @@ PY
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm delete-surface
   write_self_review_report "$dir/home" task-a
   delivery_digest=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '1p' | fm_pr_sha256_stream)
-  delivery_binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:1 "$delivery_digest" no-mistakes-owned retain-no-mistakes)
-  sed -i.bak "s#^Delivery: .*#Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest hunk=bin/fm-pr-create.sh:1; consequence=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest behavior=no-mistakes-owned binding=$delivery_binding; fix=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest action=retain-no-mistakes binding=$delivery_binding#" "$report"
+  delivery_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-create.sh)
+  delivery_line_hex=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | awk 'NR == 1 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  delivery_binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:1 "$delivery_digest" "$delivery_change_digest" "$delivery_line_hex" no-mistakes-owned retain-no-mistakes)
+  sed -i.bak "s#^Delivery: .*#Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex hunk=bin/fm-pr-create.sh:1; consequence=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex behavior=no-mistakes-owned binding=$delivery_binding; fix=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex action=retain-no-mistakes binding=$delivery_binding#" "$report"
   rm -f "$report.bak"
   run_check_entry "$dir" task-a https://github.com/o/r/pull/105 >/dev/null \
     || fail "PR-ready path rejected a deleted changed-file evidence reference"
@@ -752,24 +810,28 @@ PY
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm spaced-path
   write_self_review_report "$dir/home" task-a
   delivery_digest=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '1p' | fm_pr_sha256_stream)
-  delivery_binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:1 "$delivery_digest" no-mistakes-owned retain-no-mistakes)
-  sed -i.bak "s#^Delivery: .*#Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest hunk=bin/fm-pr-create.sh:1; consequence=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest behavior=no-mistakes-owned binding=$delivery_binding; fix=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest action=retain-no-mistakes binding=$delivery_binding#" "$report"
+  delivery_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-create.sh)
+  delivery_line_hex=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | awk 'NR == 1 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  delivery_binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:1 "$delivery_digest" "$delivery_change_digest" "$delivery_line_hex" no-mistakes-owned retain-no-mistakes)
+  sed -i.bak "s#^Delivery: .*#Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex hunk=bin/fm-pr-create.sh:1; consequence=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex behavior=no-mistakes-owned binding=$delivery_binding; fix=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex action=retain-no-mistakes binding=$delivery_binding#" "$report"
   rm -f "$report.bak"
   spaced_digest=$(sed -n '2p' "$dir/wt/bin/fm-pr spaced.sh" | fm_pr_sha256_stream)
+  spaced_line_hex=$(awk 'NR == 2 { printf "%s", $0 }' "$dir/wt/bin/fm-pr spaced.sh" | od -An -tx1 | tr -d ' \n')
+  spaced_change_digest=$(surface_change_digest_for_file "$dir" 'bin/fm-pr spaced.sh')
   spaced_path=$(fm_pr_review_path_encode 'bin/fm-pr spaced.sh')
-  python3 - "$report" "$spaced_path" "$spaced_digest" <<'PY'
+  python3 - "$report" "$spaced_path" "$spaced_digest" "$spaced_change_digest" "$spaced_line_hex" <<'PY'
 import pathlib
 import re
 import sys
 
 report = pathlib.Path(sys.argv[1])
-spaced_path, spaced_digest = sys.argv[2:4]
+spaced_path, spaced_digest, spaced_change_digest, spaced_line_hex = sys.argv[2:6]
 import hashlib
-binding = hashlib.sha256(("authority|" + spaced_path + ":2|" + spaced_digest + "|non-authorizing|retain-owner\n").encode()).hexdigest()
+binding = hashlib.sha256(("authority|" + spaced_path + ":2|" + spaced_digest + "|" + spaced_change_digest + "|" + spaced_line_hex + "|non-authorizing|retain-owner\n").encode()).hexdigest()
 text = report.read_text(encoding="utf-8")
 text = re.sub(
     r"(?m)^Authority: .*",
-    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh," + spaced_path + "; evidence=" + spaced_path + ":2 sha256=" + spaced_digest + " hunk=" + spaced_path + ":2; consequence=anchor=" + spaced_path + ":2 sha256=" + spaced_digest + " behavior=non-authorizing binding=" + binding + "; fix=anchor=" + spaced_path + ":2 sha256=" + spaced_digest + " action=retain-owner binding=" + binding,
+    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh," + spaced_path + "; evidence=" + spaced_path + ":2 sha256=" + spaced_digest + " change-sha256=" + spaced_change_digest + " line-hex=" + spaced_line_hex + " hunk=" + spaced_path + ":2; consequence=anchor=" + spaced_path + ":2 sha256=" + spaced_digest + " change-sha256=" + spaced_change_digest + " line-hex=" + spaced_line_hex + " behavior=non-authorizing binding=" + binding + "; fix=anchor=" + spaced_path + ":2 sha256=" + spaced_digest + " change-sha256=" + spaced_change_digest + " line-hex=" + spaced_line_hex + " action=retain-owner binding=" + binding,
     text,
     count=1,
 )
@@ -786,8 +848,10 @@ PY
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm delimiter-paths
   write_self_review_report "$dir/home" task-a
   delivery_digest=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '1p' | fm_pr_sha256_stream)
-  delivery_binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:1 "$delivery_digest" no-mistakes-owned retain-no-mistakes)
-  sed -i.bak "s#^Delivery: .*#Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest hunk=bin/fm-pr-create.sh:1; consequence=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest behavior=no-mistakes-owned binding=$delivery_binding; fix=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest action=retain-no-mistakes binding=$delivery_binding#" "$report"
+  delivery_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-create.sh)
+  delivery_line_hex=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | awk 'NR == 1 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  delivery_binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:1 "$delivery_digest" "$delivery_change_digest" "$delivery_line_hex" no-mistakes-owned retain-no-mistakes)
+  sed -i.bak "s#^Delivery: .*#Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex hunk=bin/fm-pr-create.sh:1; consequence=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex behavior=no-mistakes-owned binding=$delivery_binding; fix=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex action=retain-no-mistakes binding=$delivery_binding#" "$report"
   rm -f "$report.bak"
   spaced_path=$(fm_pr_review_path_encode 'bin/fm-pr spaced.sh')
   comma_path=$(fm_pr_review_path_encode 'bin/fm-pr,comma.sh')
@@ -795,7 +859,13 @@ PY
   spaced_digest=$(sed -n '2p' "$dir/wt/bin/fm-pr spaced.sh" | fm_pr_sha256_stream)
   comma_digest=$(sed -n '2p' "$dir/wt/bin/fm-pr,comma.sh" | fm_pr_sha256_stream)
   semi_digest=$(sed -n '2p' "$dir/wt/bin/fm-pr;semi.sh" | fm_pr_sha256_stream)
-  python3 - "$report" "$spaced_path" "$comma_path" "$semi_path" "$spaced_digest" "$comma_digest" "$semi_digest" <<'PY'
+  spaced_line_hex=$(awk 'NR == 2 { printf "%s", $0 }' "$dir/wt/bin/fm-pr spaced.sh" | od -An -tx1 | tr -d ' \n')
+  comma_line_hex=$(awk 'NR == 2 { printf "%s", $0 }' "$dir/wt/bin/fm-pr,comma.sh" | od -An -tx1 | tr -d ' \n')
+  semi_line_hex=$(awk 'NR == 2 { printf "%s", $0 }' "$dir/wt/bin/fm-pr;semi.sh" | od -An -tx1 | tr -d ' \n')
+  spaced_change_digest=$(surface_change_digest_for_file "$dir" 'bin/fm-pr spaced.sh')
+  comma_change_digest=$(surface_change_digest_for_file "$dir" 'bin/fm-pr,comma.sh')
+  semi_change_digest=$(surface_change_digest_for_file "$dir" 'bin/fm-pr;semi.sh')
+  python3 - "$report" "$spaced_path" "$comma_path" "$semi_path" "$spaced_digest" "$comma_digest" "$semi_digest" "$spaced_change_digest" "$comma_change_digest" "$semi_change_digest" "$spaced_line_hex" "$comma_line_hex" "$semi_line_hex" <<'PY'
 import pathlib
 import re
 import sys
@@ -803,20 +873,23 @@ import sys
 report = pathlib.Path(sys.argv[1])
 spaced, comma, semi = sys.argv[2:5]
 spaced_digest, comma_digest, semi_digest = sys.argv[5:8]
+spaced_change, comma_change, semi_change = sys.argv[8:11]
+spaced_line_hex, comma_line_hex, semi_line_hex = sys.argv[11:14]
 text = report.read_text(encoding="utf-8")
 replacements = {
-    "Authority": ("bin/fm-pr-check.sh," + spaced + "," + comma + "," + semi, spaced, spaced_digest, "delivery owner remains no-mistakes", "review cannot authorize delivery", "keep this boundary non-authorizing"),
-    "Security": ("bin/fm-pr-lib.sh," + comma, comma, comma_digest, "private report identity is checked", "tampering is refused", "preserve single-link mode checks"),
-    "Path": ("bin/fm-pr-self-review-check.sh," + semi, semi, semi_digest, "task paths are validated", "path traversal is rejected", "retain canonical task boundaries"),
+    "Authority": ("bin/fm-pr-check.sh," + spaced + "," + comma + "," + semi, spaced, spaced_digest, spaced_change, "delivery owner remains no-mistakes", "review cannot authorize delivery", "keep this boundary non-authorizing"),
+    "Security": ("bin/fm-pr-lib.sh," + comma, comma, comma_digest, comma_change, "private report identity is checked", "tampering is refused", "preserve single-link mode checks"),
+    "Path": ("bin/fm-pr-self-review-check.sh," + semi, semi, semi_digest, semi_change, "task paths are validated", "path traversal is rejected", "retain canonical task boundaries"),
 }
 behaviors = {"Authority": "non-authorizing", "Security": "provenance-bound", "Path": "path-safe"}
 actions = {"Authority": "retain-owner", "Security": "retain-boundary", "Path": "retain-validation"}
-def binding(surface, evidence, digest):
-    return __import__("hashlib").sha256((surface.lower() + "|" + evidence + ":2|" + digest + "|" + behaviors[surface] + "|" + actions[surface] + "\n").encode()).hexdigest()
-for surface, (files, evidence, digest, signal, consequence, fix) in replacements.items():
+line_hexes = {"Authority": spaced_line_hex, "Security": comma_line_hex, "Path": semi_line_hex}
+def binding(surface, evidence, digest, change):
+    return __import__("hashlib").sha256((surface.lower() + "|" + evidence + ":2|" + digest + "|" + change + "|" + line_hexes[surface] + "|" + behaviors[surface] + "|" + actions[surface] + "\n").encode()).hexdigest()
+for surface, (files, evidence, digest, change, signal, consequence, fix) in replacements.items():
     text = re.sub(
         rf"(?m)^{surface}: .*",
-        f"{surface}: reviewed; surface={surface.lower()}; files={files}; evidence={evidence}:2 sha256={digest} hunk={evidence}:2; consequence=anchor={evidence}:2 sha256={digest} behavior={behaviors[surface]} binding={binding(surface, evidence, digest)}; fix=anchor={evidence}:2 sha256={digest} action={actions[surface]} binding={binding(surface, evidence, digest)}",
+        f"{surface}: reviewed; surface={surface.lower()}; files={files}; evidence={evidence}:2 sha256={digest} change-sha256={change} line-hex={line_hexes[surface]} hunk={evidence}:2; consequence=anchor={evidence}:2 sha256={digest} change-sha256={change} line-hex={line_hexes[surface]} behavior={behaviors[surface]} binding={binding(surface, evidence, digest, change)}; fix=anchor={evidence}:2 sha256={digest} change-sha256={change} line-hex={line_hexes[surface]} action={actions[surface]} binding={binding(surface, evidence, digest, change)}",
         text,
         count=1,
     )
@@ -830,25 +903,29 @@ PY
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm control-path
   write_self_review_report "$dir/home" task-a
   delivery_digest=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '1p' | fm_pr_sha256_stream)
-  delivery_binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:1 "$delivery_digest" no-mistakes-owned retain-no-mistakes)
-  sed -i.bak "s#^Delivery: .*#Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest hunk=bin/fm-pr-create.sh:1; consequence=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest behavior=no-mistakes-owned binding=$delivery_binding; fix=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest action=retain-no-mistakes binding=$delivery_binding#" "$report"
+  delivery_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-create.sh)
+  delivery_line_hex=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | awk 'NR == 1 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  delivery_binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:1 "$delivery_digest" "$delivery_change_digest" "$delivery_line_hex" no-mistakes-owned retain-no-mistakes)
+  sed -i.bak "s#^Delivery: .*#Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex hunk=bin/fm-pr-create.sh:1; consequence=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex behavior=no-mistakes-owned binding=$delivery_binding; fix=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex action=retain-no-mistakes binding=$delivery_binding#" "$report"
   rm -f "$report.bak"
+  control_change_digest=$(surface_change_digest_for_file "$dir" "$control_path")
   control_path=$(fm_pr_review_path_encode "$control_path")
   control_digest=$(printf '%s\n' 'control evidence' | fm_pr_sha256_stream)
+  control_line_hex=$(printf '%s' 'control evidence' | od -An -tx1 | tr -d ' \n')
   control_surface_files="bin/fm-pr-check.sh,$spaced_path,$comma_path,$semi_path,$control_path"
-  python3 - "$report" "$control_surface_files" "$control_path" "$control_digest" <<'PY'
+  python3 - "$report" "$control_surface_files" "$control_path" "$control_digest" "$control_change_digest" "$control_line_hex" <<'PY'
 import pathlib
 import re
 import sys
 
 report = pathlib.Path(sys.argv[1])
-control_surface_files, control_path, control_digest = sys.argv[2:5]
+control_surface_files, control_path, control_digest, control_change_digest, control_line_hex = sys.argv[2:7]
 import hashlib
-binding = hashlib.sha256(("authority|" + control_path + ":1|" + control_digest + "|non-authorizing|retain-owner\n").encode()).hexdigest()
+binding = hashlib.sha256(("authority|" + control_path + ":1|" + control_digest + "|" + control_change_digest + "|" + control_line_hex + "|non-authorizing|retain-owner\n").encode()).hexdigest()
 text = report.read_text(encoding="utf-8")
 text = re.sub(
     r"(?m)^Authority: .*",
-    "Authority: reviewed; surface=authority; files=" + control_surface_files + "; evidence=" + control_path + ":1 sha256=" + control_digest + " hunk=" + control_path + ":1; consequence=anchor=" + control_path + ":1 sha256=" + control_digest + " behavior=non-authorizing binding=" + binding + "; fix=anchor=" + control_path + ":1 sha256=" + control_digest + " action=retain-owner binding=" + binding,
+    "Authority: reviewed; surface=authority; files=" + control_surface_files + "; evidence=" + control_path + ":1 sha256=" + control_digest + " change-sha256=" + control_change_digest + " line-hex=" + control_line_hex + " hunk=" + control_path + ":1; consequence=anchor=" + control_path + ":1 sha256=" + control_digest + " change-sha256=" + control_change_digest + " line-hex=" + control_line_hex + " behavior=non-authorizing binding=" + binding + "; fix=anchor=" + control_path + ":1 sha256=" + control_digest + " change-sha256=" + control_change_digest + " line-hex=" + control_line_hex + " action=retain-owner binding=" + binding,
     text,
     count=1,
 )
@@ -867,6 +944,62 @@ PY
   [ "$rc" -ne 0 ] || fail "PR-ready path accepted dirty substrate evidence"
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "dirty substrate evidence left a runnable poll"
   pass "PR-ready path requires a private durable findings-first self-review"
+}
+
+test_local_landing_refuses_advanced_default_after_review() {
+  local dir fake_root base_head task_head advanced_head rc
+  dir="$TMP_ROOT/local-landing-stale-base"
+  fake_root="$dir/root"
+  mkdir -p "$dir/home/state" "$dir/home/data/local-stale" "$dir/substrate" "$fake_root/bin"
+  git init -q "$dir/project"
+  git -C "$dir/project" config user.name fmtest
+  git -C "$dir/project" config user.email fmtest@example.invalid
+  printf '%s\n' initial > "$dir/project/README.md"
+  git -C "$dir/project" add README.md
+  git -C "$dir/project" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm initial
+  git -C "$dir/project" branch -M main
+  base_head=$(git -C "$dir/project" rev-parse HEAD)
+  git -C "$dir/project" worktree add -q -b fm/local-stale "$dir/wt" main
+  printf '%s\n' task > "$dir/wt/task.txt"
+  git -C "$dir/wt" add task.txt
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm task
+  task_head=$(git -C "$dir/wt" rev-parse HEAD)
+  printf '%s\n' advanced > "$dir/project/advanced.txt"
+  git -C "$dir/project" add advanced.txt
+  git -C "$dir/project" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm advanced
+  advanced_head=$(git -C "$dir/project" rev-parse HEAD)
+  git -C "$dir/substrate" init -q
+  git -C "$dir/substrate" config user.name fmtest
+  git -C "$dir/substrate" config user.email fmtest@example.invalid
+  printf '%s\n' substrate > "$dir/substrate/README.md"
+  git -C "$dir/substrate" add README.md
+  git -C "$dir/substrate" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm substrate
+  printf '%s\n' "- Firstmate substrate root: \`$dir/substrate\`" > "$dir/home/data/local-stale/brief.md"
+  fm_write_meta "$dir/home/state/local-stale.meta" \
+    "window=firstmate:fm-local-stale" "worktree=$dir/wt" "project=$dir/project" \
+    'review_base_ref=main' "review_base_sha=$base_head" 'kind=ship' 'mode=local-only'
+  cat > "$fake_root/bin/fm-guard.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  cat > "$fake_root/bin/fm-pr-self-review-check.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fake_root/bin/fm-guard.sh" "$fake_root/bin/fm-pr-self-review-check.sh"
+  set +e
+  FM_ROOT_OVERRIDE="$fake_root" FM_HOME="$dir/home" "$ROOT/bin/fm-merge-local.sh" local-stale \
+    > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "local landing accepted a default branch advanced after review"
+  grep -q "advanced beyond the approved review base $base_head" "$dir/stderr" \
+    || fail "stale local landing refusal did not name the approved review base"
+  [ "$(git -C "$dir/project" rev-parse refs/heads/main)" = "$advanced_head" ] \
+    || fail "stale local landing changed the advanced default branch"
+  [ "$(git -C "$dir/project" rev-parse refs/heads/fm/local-stale)" = "$task_head" ] \
+    || fail "stale local landing changed the reviewed task branch"
+  pass "local-only landing refuses a moving default after the self-review snapshot"
 }
 
 test_direct_pr_creation_requires_self_review() {
@@ -4318,6 +4451,7 @@ test_gitlab_merged_poll_retires() {
 
 test_parser_matrix
 test_pr_ready_requires_durable_self_review
+test_local_landing_refuses_advanced_default_after_review
 test_direct_pr_creation_requires_self_review
 test_gitlab_merge_watch
 test_merged_poll_retires_once
