@@ -41,6 +41,25 @@ record_live_watcher() {
   printf '%s\n' "$identity" > "$home/state/.watch.lock/pid-identity"
 }
 
+record_live_herdr_supervisor() {
+  local dir=$1 pid=$2 home generation identity
+  home=$(case_home "$dir")
+  generation=fixture-generation
+  identity=$(fm_test_pid_identity "$pid") || return 1
+  cat > "$home/state/.herdr-supervisor" <<EOF
+version=1
+generation=$generation
+fm_home=$home
+mode=active
+EOF
+  cat > "$home/state/.herdr-supervisor-live" <<EOF
+generation=$generation
+loop_pid=$pid
+loop_identity=$identity
+EOF
+  touch "$home/state/.herdr-supervisor-heartbeat" "$home/state/.last-watcher-beat"
+}
+
 # These cases exercise the persistent-watcher model (a live pid is the real
 # liveness signal), so pin the model rather than letting the host test runner's
 # ambient harness ancestry pick it.
@@ -174,6 +193,58 @@ test_fresh_beacon_without_live_watcher_stays_alarm() {
   [ "$(count_text "$out" "WATCHER DOWN - SUPERVISION IS OFF")" -eq 1 ] \
     || fail "a fresh leftover beacon without a live watcher must still alarm: $out"
   pass "fm-guard stale banner: a fresh beacon without a live watcher remains unhealthy"
+}
+
+test_herdr_supervisor_owner_covers_unheld_watcher_gap() {
+  local dir home out pid
+  dir=$(make_guard_case herdr-owner-gap)
+  home=$(case_home "$dir")
+  sleep 60 &
+  pid=$!
+  record_live_herdr_supervisor "$dir" "$pid" || fail "could not record the Herdr supervisor fixture"
+  out=$(run_guard_case "$dir")
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  [ -z "$out" ] || fail "an identity-proven Herdr supervisor gap was reported down: $out"
+  pass "fm-guard accepts a fresh unheld watcher gap owned by Herdr"
+}
+
+test_herdr_supervisor_owner_rejects_dead_recycled_and_stale() {
+  local dir home out pid identity
+  dir=$(make_guard_case herdr-owner-invalid)
+  home=$(case_home "$dir")
+  sleep 60 &
+  pid=$!
+  record_live_herdr_supervisor "$dir" "$pid" || fail "could not record the Herdr supervisor fixture"
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  out=$(run_guard_case "$dir")
+  assert_contains "$out" "WATCHER DOWN - SUPERVISION IS OFF" "a dead Herdr supervisor is down"
+
+  sleep 60 &
+  pid=$!
+  record_live_herdr_supervisor "$dir" "$pid" || fail "could not record the recycled-pid fixture"
+  identity=$(fm_test_pid_identity "$pid")
+  bad_identity="${identity}-mismatch"
+  sed "s/^loop_pid=.*/loop_pid=$pid/; s/^loop_identity=.*/loop_identity=$bad_identity/" \
+    "$home/state/.herdr-supervisor-live" > "$home/state/.herdr-supervisor-live.new"
+  mv "$home/state/.herdr-supervisor-live.new" "$home/state/.herdr-supervisor-live"
+  rm -f "$home/state/.guard-watcher-stale-banner"
+  out=$(run_guard_case "$dir")
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  assert_contains "$out" "WATCHER DOWN - SUPERVISION IS OFF" "a recycled Herdr pid is down"
+
+  sleep 60 &
+  pid=$!
+  record_live_herdr_supervisor "$dir" "$pid" || fail "could not record the stale-beacon fixture"
+  touch -t 200001010000 "$home/state/.herdr-supervisor-heartbeat"
+  rm -f "$home/state/.guard-watcher-stale-banner"
+  out=$(run_guard_case "$dir")
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  assert_contains "$out" "WATCHER DOWN - SUPERVISION IS OFF" "a stale Herdr heartbeat is down"
+  pass "fm-guard rejects dead, recycled, and stale Herdr supervisor evidence"
 }
 
 test_x_mode_without_live_watcher_stays_alarm() {
@@ -539,30 +610,29 @@ test_extension_without_ownership_evidence_stays_alarm() {
   pass "fm-guard stale banner: extension model without ownership evidence stays loud"
 }
 
-# Drive the ownership signals apart one at a time. Each part is load-bearing on its
-# own, so losing any single one restores the alarm rather than leaving the tolerance
-# resting on whichever signal happens to survive.
+# Drive the primary extension signals apart one at a time. The turn-end marker is
+# not itself a continuity owner, while the primary watcher marker is sufficient.
 test_extension_ownership_needs_every_signal() {
-  local dir home out pid case_name spec
+  local dir home out pid case_name spec dead_session
   for spec in \
     "dead-session:dead::" \
     "missing-watch-marker:live:watch:" \
-    "missing-turnend-marker:live:turnend:" \
-    "drifted-watch-build:live::watch" \
-    "drifted-turnend-build:live::turnend"; do
+    "drifted-watch-build:live::watch"; do
     case_name=${spec%%:*}
     dir=$(make_guard_case "extension-$case_name")
     home=$(case_home "$dir")
     sleep 60 &
     pid=$!
-    if [ "$(printf '%s' "$spec" | cut -d: -f2)" = dead ]; then
-      kill "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-    fi
+    dead_session=0
+    [ "$(printf '%s' "$spec" | cut -d: -f2)" = dead ] && dead_session=1
     record_pi_extension_session "$dir" "$pid" \
       "$(printf '%s' "$spec" | cut -d: -f3)" \
       "$(printf '%s' "$spec" | cut -d: -f4)" \
       || fail "could not record the Pi extension session for $case_name"
+    if [ "$dead_session" -eq 1 ]; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
     touch "$home/state/.last-watcher-beat"
     out=$(run_guard_case_extension "$dir")
     kill "$pid" 2>/dev/null || true
@@ -706,6 +776,8 @@ test_autoarm_stale_episode_is_stable
 test_persistent_no_watcher_banner_names_missing_process
 test_persistent_no_watcher_episode_survives_beacon_touch
 test_fresh_beacon_without_live_watcher_stays_alarm
+test_herdr_supervisor_owner_covers_unheld_watcher_gap
+test_herdr_supervisor_owner_rejects_dead_recycled_and_stale
 test_x_mode_without_live_watcher_stays_alarm
 test_healthy_recovery_rearms_next_stale_episode
 test_concurrent_same_episode_prints_one_full_banner

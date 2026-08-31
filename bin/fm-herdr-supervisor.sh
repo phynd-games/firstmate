@@ -33,10 +33,9 @@
 # standby whenever a harness-native or away-mode owner is provable, so only one
 # active owner can arm a watcher.
 #
-# It uses the plain attach-or-start arm for healthy watchers, and uses
-# `--restart` only for an identity-verified stale watcher. A second supervisor
-# that races past the establish lock therefore ATTACHES to a live watcher
-# instead of evicting it, so the one-watcher singleton holds under duplication.
+# It always uses the plain attach-or-start arm. The arm layer owns stale-lock
+# self-eviction and stealing, so a duplicate supervisor cannot evict a live
+# watcher and the one-watcher singleton holds under duplication.
 #
 # HONESTY
 # Health is never inferred from a beacon alone. fm_herdr_supervisor_healthy is
@@ -99,6 +98,7 @@ RECORD_LOCK="$STATE/.herdr-supervisor.lock"
 HEARTBEAT="$STATE/.herdr-supervisor-heartbeat"
 ALARM="$STATE/.herdr-supervisor-alarm"
 ALARM_HISTORY="$STATE/.herdr-supervisor-alarm-history"
+RAPID_EPISODE="$STATE/.herdr-supervisor-rapid-episode"
 EMERGENCY="$STATE/.herdr-supervisor-emergency"
 BLOCKED="$STATE/.herdr-supervisor-blocked"
 LEDGER="$STATE/.herdr-supervisor.log"
@@ -471,6 +471,32 @@ alarm_write() {  # <reason>
 }
 
 alarm_clear() {
+  rm -f "$ALARM" "$RAPID_EPISODE" 2>/dev/null || return 1
+  [ ! -e "$ALARM" ] && [ ! -e "$RAPID_EPISODE" ]
+}
+
+rapid_alarm_write() {  # <reason>
+  local reason=$1 marker_tmp emergency_status=0
+  [ -e "$RAPID_EPISODE" ] || {
+    alarm_write "$reason" || emergency_status=1
+    marker_tmp="$RAPID_EPISODE.tmp.${BASHPID:-$$}"
+    if ! printf '%s\n' "$(ledger_clean_field "$reason")" > "$marker_tmp" 2>/dev/null \
+      || ! mv -f "$marker_tmp" "$RAPID_EPISODE" 2>/dev/null; then
+      rm -f "$marker_tmp" 2>/dev/null || true
+      emergency_status=1
+    fi
+    ledger_append rapid-alarm "$reason"
+  }
+  if [ "$emergency_status" -ne 0 ]; then
+    {
+      printf 'at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      printf 'home=%s\n' "$FM_HOME"
+      printf 'reason=%s\n' "$(ledger_clean_field "$reason")"
+      printf 'rapid_alarm_persistence=failed\n'
+    } >> "$EMERGENCY" 2>/dev/null || true
+    printf 'herdr-supervisor: RAPID ALARM PERSISTENCE FAILED - %s\n' "$reason" >&2
+    return 1
+  fi
   return 0
 }
 
@@ -1180,7 +1206,6 @@ establish() {  # <reason>
   deadline=$(( $(date +%s) + READY_TIMEOUT + 1 ))
   while :; do
     if [ "$(record_get generation || printf '')" = "$generation" ] && supervisor_healthy; then
-      alarm_clear
       ledger_append established "generation=$generation pane=$pane workspace=$workspace"
       pid=$(live_get loop_pid || printf '')
       echo "herdr-supervisor: started generation=$generation pane=$pane pid=$pid"
@@ -1839,6 +1864,7 @@ loop_launch_wait() {  # <pid>
 
 cmd_run() {
   local self out rc reason failures=0 rapid=0 started ended elapsed delay process_state arm_match
+  local previous_reason= stable_cycles=0 floor_delay=0
   local LOOP_ARM_OUT
   local LOOP_ARM_UNRESOLVED=0 LOOP_ARM_UNRESOLVED_NEXT=0 LOOP_ARM_UNRESOLVED_REPORTED=0
   local LOOP_ARM_UNRESOLVED_ATTEMPTS=0
@@ -1977,13 +2003,8 @@ cmd_run() {
     # A healthy watcher is followed; only a verified stale holder is replaced.
     if watcher_stale_lock_verified; then
       ledger_append watcher-restart "replacing identity-verified watcher with stale beacon"
-      FM_WATCH_RESTART_EXPECTED_PID="$STALE_WATCHER_PID" \
-      FM_WATCH_RESTART_EXPECTED_IDENTITY="$STALE_WATCHER_IDENTITY" \
-      FM_WATCH_RESTART_RECLAIM="$STALE_WATCHER_RECLAIM" \
-        "$ARM" --restart >"$out" 2>&1 &
-    else
-      "$ARM" >"$out" 2>&1 &
     fi
+    "$ARM" >"$out" 2>&1 &
     LOOP_ARM_PID=$!
     LOOP_ARM_UNRESOLVED_ATTEMPTS=0
     herdr_blocked_clear || true
@@ -2066,23 +2087,35 @@ cmd_run() {
       # model is the drain's job, not this loop's.
       failures=0
       ledger_append cycle "rc=0 elapsed=${elapsed}s $(ledger_clean_field "$reason")"
-      alarm_clear
       rm -f "$out" 2>/dev/null || true
       LOOP_ARM_OUT=
+      floor_delay=0
       if [ "$elapsed" -le "$RAPID_CYCLE_SECONDS" ]; then
         rapid=$((rapid + 1))
+        stable_cycles=0
+        [ "$previous_reason" = "$reason" ] && floor_delay=1
         if [ "$rapid" -ge "$RAPID_CYCLE_LIMIT" ]; then
-          escalate "watcher cycles have been closing within ${RAPID_CYCLE_SECONDS}s for $rapid consecutive cycles; supervision continues on a ${RAPID_CYCLE_FLOOR}s floor while this is investigated"
-          rapid=0
-          sleep "$RAPID_CYCLE_FLOOR"
+          rapid_alarm_write "watcher cycles have been closing within ${RAPID_CYCLE_SECONDS}s for $rapid consecutive cycles; supervision continues on a ${RAPID_CYCLE_FLOOR}s floor while this is investigated" || true
+          floor_delay=1
         fi
       else
         rapid=0
+        stable_cycles=$((stable_cycles + 1))
+        if [ "$stable_cycles" -ge 3 ]; then
+          alarm_clear || true
+        fi
+      fi
+      previous_reason=$reason
+      if [ "$floor_delay" -eq 1 ]; then
+        sleep "$RAPID_CYCLE_FLOOR"
       fi
       continue
     fi
 
     rapid=0
+    previous_reason=
+    stable_cycles=0
+    floor_delay=0
     failures=$((failures + 1))
     ledger_append cycle-failed "rc=$rc elapsed=${elapsed}s attempt=$failures $(ledger_clean_field "$(head -c 400 "$out" 2>/dev/null | tr '\n' ' ')")"
     escalate "watcher arm attempt $failures failed in Herdr pane $(record_get pane || printf unknown) (rc=$rc elapsed=${elapsed}s ${reason:-no actionable reason}); bounded recovery will continue"

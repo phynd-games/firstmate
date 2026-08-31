@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fm-afk-launch.sh - the single owner of the away-mode daemon TERMINAL lifecycle:
-# launch it in a NON-VISIBLE Herdr-tracked terminal, record its exact id, tear
-# it down by that exact id, and reconcile a leaked one after a crash.
+# launch it in a NON-VISIBLE tracked terminal per backend, record its exact id,
+# tear it down by that exact id, and reconcile a leaked one after a crash.
 #
 # Why this exists (docs/herdr-backend.md "Away-mode daemon terminal launch"):
 # bin/fm-afk-start.sh execs the supervise daemon in the FOREGROUND of whatever
@@ -10,9 +10,8 @@
 # native background mechanism (pi) has to manufacture a terminal, and doing that
 # by SPLITTING the captain's active pane visibly shrinks it - the regression this
 # script fixes. Instead this creates a non-visible tracked terminal (a herdr tab/
-# workspace with --no-focus) that never touches the captain's active tab, and
-# NEVER uses shell `&` (which herdr/codex can reap). Historical tmux records remain
-# readable for exact cleanup, but no tmux terminal is launched.
+# workspace with --no-focus, or a detached tmux session) that never touches the
+# captain's active tab, and NEVER uses shell `&` (which herdr/codex can reap).
 #
 # Correct supervisor targeting: the daemon finds the captain pane to inject into
 # from its OWN inherited env (discover_supervisor_target). Running it in a
@@ -23,13 +22,13 @@
 # Usage:
 #   fm-afk-launch.sh start     Capture the captain pane, then (unless the daemon
 #                              is already running) launch the daemon in a fresh
-#                              non-visible Herdr terminal and
+#                              non-visible terminal for the detected backend and
 #                              record it. Idempotent: an already-running daemon
 #                              just refreshes state/.afk; a recorded-but-dead
 #                              terminal is reconciled (closed by id) first.
 #   fm-afk-launch.sh start-native
-#                              Prepare lifecycle state and exec the daemon in
-#                              the same harness-native tracked background job.
+#                              Prepare lifecycle state for a harness-native
+#                              background job and record that no terminal exists.
 #   fm-afk-launch.sh stop      Correct-ordered exit: SIGTERM the daemon so its
 #                              cleanup flushes WHILE state/.afk is still present,
 #                              wait for it, close the recorded terminal by exact
@@ -37,8 +36,8 @@
 #   fm-afk-launch.sh reconcile Close a recorded-but-dead daemon terminal by exact
 #                              id and drop the record (recovery after a crash).
 #
-# Supported active backend: herdr. Historical tmux records can be reconciled;
-# terminal creation is Herdr-only.
+# Supported backends: herdr, tmux. Others (zellij, orca, cmux) have no verified
+# non-visible-launch primitive here yet and refuse loudly.
 #
 # Test seam: FM_AFK_LAUNCH_ENTRY overrides the command run in the created
 # terminal (default bin/fm-afk-start.sh), so a topology test can run a harmless
@@ -154,13 +153,6 @@ fm_afk_launch_usage() {
 # daemon entry; a test overrides it with a harmless placeholder.
 fm_afk_launch_entry_cmd() {
   printf '%s' "${FM_AFK_LAUNCH_ENTRY:-$FM_ROOT/bin/fm-afk-start.sh}"
-}
-
-fm_afk_launch_release_claim_for_handoff() {
-  if fm_lock_owned_by_current "$FM_AFK_LAUNCH_STATE/.supervision-claim.lock"; then
-    fm_lock_release "$FM_AFK_LAUNCH_STATE/.supervision-claim.lock" || return 1
-    FM_AFK_LAUNCH_CLAIM_RELEASED=1
-  fi
 }
 
 fm_afk_launch_record_write() {  # <backend> <target> <extra>
@@ -286,19 +278,14 @@ fm_afk_launch_terminal_alive() {  # <backend> <target>
 }
 
 fm_afk_launch_wait_ready() {  # <backend> <target>
-  local backend=$1 target=$2 attempt=0 handoff_timeout=${FM_AFK_NATIVE_HANDOFF_TIMEOUT:-30}
+  local backend=$1 target=$2 attempt=0
   if [ -n "${FM_AFK_LAUNCH_ENTRY:-}" ]; then
-    fm_afk_launch_terminal_alive "$backend" "$target" || return 1
-    fm_supervision_claim_pending_clear "$FM_AFK_LAUNCH_STATE"
+    fm_afk_launch_terminal_alive "$backend" "$target"
     return
   fi
   while [ "$attempt" -lt 100 ]; do
     attempt=$((attempt + 1))
-    if daemon_lock_held_by_live_daemon; then
-      fm_supervision_claim_pending_clear "$FM_AFK_LAUNCH_STATE" || return 1
-      return 0
-    fi
-    fm_supervision_claim_pending_write "$FM_AFK_LAUNCH_STATE" "$handoff_timeout" || return 1
+    daemon_lock_held_by_live_daemon && return 0
     fm_afk_launch_terminal_alive "$backend" "$target" || return 1
     sleep 0.05
   done
@@ -371,14 +358,13 @@ fm_afk_launch_reconcile() {
 fm_afk_launch_restore_backup() {  # <backup> <had-afk>
   local backup=$1 had_afk=$2 artifact result=0
   rm -f "$FM_AFK_LAUNCH_STATE/.afk" \
-    "$FM_AFK_LAUNCH_STATE/.supervision-claim.pending" \
     "$FM_AFK_LAUNCH_STATE/.subsuper-escalations" \
     "$FM_AFK_LAUNCH_STATE/.subsuper-escalations.since" \
     "$FM_AFK_LAUNCH_STATE/.subsuper-inject-wedged" || result=1
   if [ "$had_afk" -eq 1 ]; then
     cp "$backup/.afk" "$FM_AFK_LAUNCH_STATE/.afk" || result=1
   fi
-  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged .supervision-claim.pending; do
+  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged; do
     if [ -e "$backup/$artifact" ]; then
       cp -p "$backup/$artifact" "$FM_AFK_LAUNCH_STATE/$artifact" || result=1
     fi
@@ -428,7 +414,7 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
     IFS=$'\t' read -r wsid pane <<< "$recovered"
   fi
   entry=$(fm_afk_launch_entry_cmd)
-  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q FM_AFK_STATE_PREPARED=1 FM_AFK_HANDOFF=1 %q' \
+  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q %q' \
     "$FM_HOME" "$captain_target" "$captain_backend" "$entry")
   if ! fm_afk_launch_record_write herdr "$session:$pane" "$wsid"; then
     fm_afk_launch_log "failed to persist herdr daemon terminal record; closing $session:$pane"
@@ -442,21 +428,34 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
     fm_afk_launch_close_recorded || true
     return 1
   fi
-  if ! fm_supervision_claim_pending_write "$FM_AFK_LAUNCH_STATE" "${FM_AFK_NATIVE_HANDOFF_TIMEOUT:-30}"; then
-    fm_afk_launch_log "failed to refresh the ownership claim reservation for daemon handoff"
-    FM_AFK_REC_BACKEND=herdr
-    FM_AFK_REC_TARGET="$session:$pane"
-    fm_afk_launch_close_recorded || true
-    return 1
-  fi
   fm_afk_launch_commit_terminal herdr "$session:$pane" "$wsid" 1 || return 1
   fm_afk_launch_log "daemon launched in non-visible herdr workspace $wsid (pane $session:$pane), supervising $captain_target"
 }
 
-# Historical cleanup records are still supported, but creation is disabled.
+# Launch the daemon in a detached tmux session (never a split-window in the
+# captain's window). tmux pane ids are server-global, so the daemon reaches the
+# captain pane by its %id from this separate session.
 fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
-  fm_afk_launch_log "historical tmux away-mode launch is disabled; use Herdr"
-  return 1
+  local captain_target=$1 captain_backend=$2 session entry cmd hash nonce
+  hash=$(printf '%s' "$FM_HOME" | cksum | cut -d' ' -f1)
+  nonce="$$-${RANDOM:-0}-$(date '+%s')"
+  session="fm-afk-daemon-$hash-$nonce"
+  entry=$(fm_afk_launch_entry_cmd)
+  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q %q' \
+    "$FM_HOME" "$captain_target" "$captain_backend" "$entry")
+  if ! fm_afk_launch_record_write tmux "$session" ""; then
+    fm_afk_launch_log "failed to persist planned tmux daemon session '$session'"
+    return 1
+  fi
+  if ! tmux new-session -d -s "$session" "$cmd" 2>/dev/null; then
+    fm_afk_launch_log "failed to create detached tmux daemon session '$session'"
+    if ! rm -f "$FM_AFK_LAUNCH_RECORD"; then
+      fm_afk_launch_log "failed to remove planned tmux daemon record after creation failure"
+    fi
+    return 1
+  fi
+  fm_afk_launch_commit_terminal tmux "$session" "" 1 || return 1
+  fm_afk_launch_log "daemon launched in detached tmux session '$session', supervising $captain_target"
 }
 
 fm_afk_launch_start() {
@@ -488,7 +487,7 @@ fm_afk_launch_start() {
     had_afk=1
     cp "$FM_AFK_LAUNCH_STATE/.afk" "$backup/.afk" || { rm -rf "$backup"; return 1; }
   fi
-  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged .supervision-claim.pending; do
+  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged; do
     if [ -e "$FM_AFK_LAUNCH_STATE/$artifact" ]; then
       cp -p "$FM_AFK_LAUNCH_STATE/$artifact" "$backup/$artifact" || { rm -rf "$backup"; return 1; }
     fi
@@ -509,21 +508,13 @@ fm_afk_launch_start() {
       result=1
     fi
   fi
-  if [ "$result" -eq 0 ]; then
-    if ! fm_supervision_claim_pending_write "$FM_AFK_LAUNCH_STATE" "${FM_AFK_NATIVE_HANDOFF_TIMEOUT:-30}"; then
-      fm_afk_launch_log "failed to publish the away-mode ownership handoff reservation"
-      result=1
-    fi
-  fi
+
   if [ "$result" -eq 0 ]; then
     case "$captain_backend" in
       herdr) fm_afk_launch_create_herdr "$captain_target" "$captain_backend"; result=$? ;;
-      tmux)
-        fm_afk_launch_log "tmux away-mode launch is disabled; active continuity requires Herdr"
-        result=1
-        ;;
+      tmux)  fm_afk_launch_create_tmux "$captain_target" "$captain_backend"; result=$? ;;
       *)
-        fm_afk_launch_log "no non-visible Herdr daemon-launch primitive for backend '$captain_backend'"
+        fm_afk_launch_log "no non-visible daemon-launch primitive for backend '$captain_backend' yet (supported: herdr, tmux)"
         result=1
         ;;
     esac
@@ -543,10 +534,6 @@ fm_afk_launch_start_native() {
     fm_afk_launch_log "return catch-up is still pending; run bin/fm-afk-return.sh check before re-entering away mode"
     return 1
   fi
-  if [ "${FM_AFK_NATIVE_TRACKED:-0}" != 1 ]; then
-    fm_afk_launch_log "native away-mode launch must run as one harness-tracked process"
-    return 1
-  fi
   if daemon_lock_held_by_live_daemon; then
     fm_afk_launch_record_validate_if_present || return 1
     fm_afk_launch_flag_write || return 1
@@ -558,7 +545,7 @@ fm_afk_launch_start_native() {
     had_afk=1
     cp "$FM_AFK_LAUNCH_STATE/.afk" "$backup/.afk" || { rm -rf "$backup"; return 1; }
   fi
-  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged .supervision-claim.pending; do
+  for artifact in .subsuper-escalations .subsuper-escalations.since .subsuper-inject-wedged; do
     if [ -e "$FM_AFK_LAUNCH_STATE/$artifact" ]; then
       cp -p "$FM_AFK_LAUNCH_STATE/$artifact" "$backup/$artifact" || { rm -rf "$backup"; return 1; }
     fi
@@ -575,24 +562,10 @@ fm_afk_launch_start_native() {
   if [ "$result" -eq 0 ]; then
     fm_afk_launch_record_write none - native || result=1
   fi
-  if [ "$result" -eq 0 ]; then
-    fm_supervision_claim_pending_write "$FM_AFK_LAUNCH_STATE" "${FM_AFK_NATIVE_HANDOFF_TIMEOUT:-30}" || result=1
-  fi
   if [ "$result" -ne 0 ]; then
     fm_afk_launch_restore_backup "$backup" "$had_afk" || result=1
   else
     rm -rf "$backup" || result=1
-  fi
-  if [ "$result" -eq 0 ]; then
-    if ! fm_afk_launch_lock_release; then
-      fm_afk_launch_log "failed to release the launcher lifecycle lock before daemon exec"
-      result=1
-    else
-      trap - EXIT INT TERM
-      export FM_AFK_STATE_PREPARED=1 FM_AFK_HANDOFF=1 FM_SUPERVISION_CLAIM_HELD=1
-      fm_afk_start_main
-      result=$?
-    fi
   fi
   return "$result"
 }
@@ -643,7 +616,6 @@ fm_afk_launch_stop() {
     fm_afk_launch_log "failed to clear away-mode flag"
     result=1
   fi
-  fm_supervision_claim_pending_clear "$FM_AFK_LAUNCH_STATE" || result=1
   if [ "$result" -eq 0 ]; then
     fm_afk_launch_log "away mode stopped; daemon terminal torn down and .afk cleared"
   else
@@ -653,8 +625,7 @@ fm_afk_launch_stop() {
 }
 
 fm_afk_launch_main() {
-  local result claim_held=0 command=${1:-start}
-  FM_AFK_LAUNCH_CLAIM_RELEASED=0
+  local result
   # Traps first, lock second. Acquiring before the handlers exist leaves a
   # window where a signal terminates this process by default action and leaks
   # the lock directory, which then blocks the next away-mode launch until the
@@ -664,30 +635,15 @@ fm_afk_launch_main() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
   fm_afk_launch_lock_acquire || return 1
-  case "$command" in
-    start|start-native)
-      if fm_supervision_claim_acquire "$FM_AFK_LAUNCH_STATE/.supervision-claim.lock" 100; then
-        claim_held=1
-        if [ "$command" = start ]; then
-          fm_afk_launch_start
-        else
-          fm_afk_launch_start_native
-        fi
-      else
-        fm_afk_launch_log "could not acquire the continuity ownership claim"
-        result=1
-        false
-      fi
-      ;;
+  case "${1:-start}" in
+    start) fm_afk_launch_start ;;
+    start-native) fm_afk_launch_start_native ;;
     stop) fm_afk_launch_stop ;;
     reconcile) fm_afk_launch_reconcile ;;
     -h|--help|help) fm_afk_launch_usage ;;
     *) fm_afk_launch_usage >&2; return 2 ;;
   esac
   result=$?
-  if [ "$claim_held" -eq 1 ] && [ "$FM_AFK_LAUNCH_CLAIM_RELEASED" -ne 1 ]; then
-    fm_lock_release "$FM_AFK_LAUNCH_STATE/.supervision-claim.lock" || result=1
-  fi
   fm_afk_launch_lock_release || result=1
   trap - EXIT INT TERM
   return "$result"
