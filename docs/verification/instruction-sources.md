@@ -98,6 +98,7 @@ ok - duplicate Grok skill directory is rejected
 ok - dangling Claude skill bridge is rejected
 ok - duplicated Grok instruction policy is rejected
 ok - dangling Claude instruction import is rejected
+ok - unterminated Claude trailing content is rejected
 ```
 
 The regression fixture deliberately replaces each bridge with a duplicate or dangling entrypoint and requires the checker to reject it.
