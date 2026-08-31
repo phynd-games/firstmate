@@ -65,7 +65,7 @@
 # this library never fabricates an observation.
 #
 # All functions are safe under `set -u` and never exit the caller; observe
-# returns non-zero only when the journal write itself fails.
+# returns 2 for malformed evidence and 1 when the journal write itself fails.
 
 # Directory of this library, for the sibling TOON field helpers.
 _FM_VLOOP_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || _FM_VLOOP_LIB_DIR="."
@@ -76,10 +76,6 @@ FM_VLOOP_MAX_FIX_ROUNDS_DEFAULT=6
 FM_VLOOP_MAX_SAME_THEME_DEFAULT=2
 FM_VLOOP_STALL_SECS_DEFAULT=3600
 FM_VLOOP_EVIDENCE_MAX_AGE_SECS_DEFAULT=7200
-# Newest-first cap on distinct findings themes the journal tracks; older
-# themes age out, so one long run cannot grow the journal without bound.
-FM_VLOOP_THEME_CAP=8
-
 fm_vloop_journal_path() {  # <state> <id>
   printf '%s/%s.validation-loop' "$1" "$2"
 }
@@ -160,10 +156,9 @@ _fm_vloop_journal_get() {  # <journal-content> <key>
   printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1
 }
 
-# Bump <sig> in a "sig:count sig:count ..." theme list, appending a new sig
-# and dropping the oldest entry past FM_VLOOP_THEME_CAP.
+# Bump <sig> in a "sig:count sig:count ..." theme list, appending a new sig.
 _fm_vloop_themes_bump() {  # <themes> <sig>
-  local themes=$1 sig=$2 out='' entry found=0 count n=0
+  local themes=$1 sig=$2 out='' entry found=0 count
   for entry in $themes; do
     case "$entry" in
       "$sig":*)
@@ -177,12 +172,6 @@ _fm_vloop_themes_bump() {  # <themes> <sig>
   done
   [ "$found" = 1 ] || out="$out$sig:1 "
   out=${out% }
-  # Enforce the cap by dropping from the front (oldest first).
-  n=$(printf '%s\n' "$out" | wc -w | tr -d '[:space:]')
-  while [ "${n:-0}" -gt "$FM_VLOOP_THEME_CAP" ]; do
-    out=${out#* }
-    n=$((n - 1))
-  done
   printf '%s' "$out"
 }
 
@@ -200,19 +189,108 @@ _fm_vloop_themes_max() {  # <themes>
   printf '%s %s' "$max" "$max_sig"
 }
 
+fm_vloop_evidence_valid() {  # <content>
+  local content=$1 first key value
+  first=${content%%$'\n'*}
+  [ "$first" = run: ] || return 1
+  for key in id branch status head; do
+    value=$(fm_nm_strip_quotes "$(fm_nm_field "$content" "$key")")
+    [ -n "$value" ] || return 1
+    case "$value" in *[[:space:]]*) return 1 ;; esac
+  done
+  return 0
+}
+
+_fm_vloop_head_seen() {  # <heads> <head>
+  local entry
+  for entry in ${1:-}; do
+    [ "$entry" = "$2" ] && return 0
+  done
+  return 1
+}
+
+_fm_vloop_head_advance_valid() {  # <worktree> <old-head> <new-head>
+  local worktree=$1 old_head=$2 new_head=$3 old_full new_full
+  [ -n "$worktree" ] || return 0
+  old_full=$(git -C "$worktree" rev-parse --verify "${old_head}^{commit}" 2>/dev/null) || return 1
+  new_full=$(git -C "$worktree" rev-parse --verify "${new_head}^{commit}" 2>/dev/null) || return 1
+  [ "$old_full" = "$new_full" ] && return 1
+  git -C "$worktree" merge-base --is-ancestor "$old_full" "$new_full" 2>/dev/null
+}
+
+_fm_vloop_record_stop() {  # <state> <id> <reason>
+  local state=$1 id=$2 reason=$3 journal tmp
+  journal=$(fm_vloop_journal_path "$state" "$id")
+  [ -f "$journal" ] && [ ! -L "$journal" ] || return 0
+  cat "$journal" >/dev/null 2>&1 || return 1
+  tmp="$journal.tmp.$$"
+  awk -v reason="$reason" '
+    BEGIN { found = 0 }
+    /^stop_reason=/ { print "stop_reason=" reason; found = 1; next }
+    { print }
+    END { if (!found) print "stop_reason=" reason }
+  ' "$journal" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$journal" || { rm -f "$tmp"; return 1; }
+}
+
+_fm_vloop_time_stop_reason() {  # <journal-content> <now>
+  local stored=$1 now=$2 active stop_reason last_observed phase last_progress age max_age stall
+  active=$(_fm_vloop_journal_get "$stored" active)
+  [ "$active" = 1 ] || return 0
+  stop_reason=$(_fm_vloop_journal_get "$stored" stop_reason)
+  if [ -n "$stop_reason" ]; then
+    printf '%s' "$stop_reason"
+    return 0
+  fi
+  last_observed=$(_fm_vloop_journal_get "$stored" last_observed)
+  case "$last_observed" in ''|*[!0-9]*) return 0 ;; esac
+  max_age=$(_fm_vloop_bound "${FM_VLOOP_EVIDENCE_MAX_AGE_SECS:-}" "$FM_VLOOP_EVIDENCE_MAX_AGE_SECS_DEFAULT")
+  age=$((now - last_observed))
+  if [ "$age" -gt "$max_age" ]; then
+    printf 'pipeline evidence stale: an active run was last readable %ss ago (bound %ss); current run state is unknown' "$age" "$max_age"
+    return 0
+  fi
+  phase=$(_fm_vloop_journal_get "$stored" phase)
+  case "$phase" in
+    running|fixing)
+      last_progress=$(_fm_vloop_journal_get "$stored" last_progress)
+      case "$last_progress" in ''|*[!0-9]*) return 0 ;; esac
+      stall=$(_fm_vloop_bound "${FM_VLOOP_STALL_SECS:-}" "$FM_VLOOP_STALL_SECS_DEFAULT")
+      age=$((now - last_progress))
+      if [ "$age" -gt "$stall" ]; then
+        printf 'no evidence advance for %ss while the run claims %s (bound %ss)' "$age" "$phase" "$stall"
+      fi
+      ;;
+  esac
+}
+
+_fm_vloop_record_time_stop() {  # <state> <id> <now>
+  local state=$1 id=$2 now=$3 journal stored reason
+  journal=$(fm_vloop_journal_path "$state" "$id")
+  [ -f "$journal" ] && [ ! -L "$journal" ] || return 0
+  stored=$(cat "$journal" 2>/dev/null) || return 0
+  reason=$(_fm_vloop_time_stop_reason "$stored" "$now")
+  [ -n "$reason" ] || return 0
+  _fm_vloop_record_stop "$state" "$id" "$reason"
+}
+
 # Fold one exported evidence file into the durable journal and recompute the
-# counter-breach verdict. Never touches anything but the journal; a missing,
-# empty, or unparseable evidence file folds nothing. 1 only when the journal
-# write fails.
+# counter-breach verdict. Never touches anything but the journal; a missing or
+# empty evidence file folds only time-based breaches. 2 rejects malformed
+# evidence and 1 reports a journal write failure.
 fm_vloop_observe() {  # <state> <id> <evidence-file>
-  local state=$1 id=$2 ev=$3 journal now content first stored=''
+  local state=$1 id=$2 ev=$3 worktree=${4:-${FM_VLOOP_WORKTREE:-}} journal now content first stored=''
   local run_id status outcome head phase findings_sig steps_sig progress_sig
-  local s_run s_phase s_findings_sig s_progress_sig s_fix_rounds s_themes s_last_progress s_status
-  local fix_rounds themes last_progress active stop_reason='' max_fix max_theme theme_max tmp
+  local s_run s_phase s_findings_sig s_progress_sig s_fix_rounds s_themes s_last_progress s_status s_stop_reason s_head s_heads
+  local fix_rounds themes heads last_progress active stop_reason='' max_fix max_theme theme_max tmp
+  local head_transition=0
   [ -n "$state" ] && [ -d "$state" ] || return 0
-  [ -f "$ev" ] && [ -s "$ev" ] || return 0
   journal=$(fm_vloop_journal_path "$state" "$id")
   now=$(_fm_vloop_now)
+  if [ ! -f "$ev" ] || [ ! -s "$ev" ]; then
+    _fm_vloop_record_time_stop "$state" "$id" "$now"
+    return 0
+  fi
   content=$(cat "$ev" 2>/dev/null) || return 0
   [ -f "$journal" ] && [ ! -L "$journal" ] && stored=$(cat "$journal" 2>/dev/null || true)
   s_run=$(_fm_vloop_journal_get "$stored" run)
@@ -223,6 +301,9 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   s_fix_rounds=$(_fm_vloop_journal_get "$stored" fix_rounds)
   s_themes=$(_fm_vloop_journal_get "$stored" themes)
   s_last_progress=$(_fm_vloop_journal_get "$stored" last_progress)
+  s_stop_reason=$(_fm_vloop_journal_get "$stored" stop_reason)
+  s_head=$(_fm_vloop_journal_get "$stored" head)
+  s_heads=$(_fm_vloop_journal_get "$stored" heads)
   case "$s_fix_rounds" in ''|*[!0-9]*) s_fix_rounds=0 ;; esac
   case "$s_last_progress" in ''|*[!0-9]*) s_last_progress=$now ;; esac
 
@@ -233,6 +314,7 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
       # freshness, and a coarse status change counts as evidence advance, but
       # counters and run identity stay untouched.
       status=$(fm_nm_trim "${first#coarse:}")
+      [ -n "$status" ] || return 2
       last_progress=$s_last_progress
       [ "$status" = "$s_status" ] || last_progress=$now
       case "$status" in
@@ -253,10 +335,17 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
         printf 'last_observed=%s\n' "$now"
         printf 'last_progress=%s\n' "$last_progress"
         printf 'active=%s\n' "$active"
-        printf 'stop_reason=%s\n' "$(_fm_vloop_journal_get "$stored" stop_reason)"
+        printf 'heads=%s\n' "$(_fm_vloop_journal_get "$stored" heads)"
+        printf 'stop_reason=%s\n' "$s_stop_reason"
       } > "$tmp" || { rm -f "$tmp"; return 1; }
       mv -f "$tmp" "$journal" || { rm -f "$tmp"; return 1; }
       return 0
+      ;;
+    *)
+      fm_vloop_evidence_valid "$content" || {
+        _fm_vloop_record_stop "$state" "$id" "validation evidence malformed or incomplete for task $id" || true
+        return 2
+      }
       ;;
   esac
 
@@ -271,6 +360,7 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
 
   fix_rounds=$s_fix_rounds
   themes=$s_themes
+  heads=$s_heads
   last_progress=$s_last_progress
   if [ "$run_id" != "$s_run" ]; then
     # A new run id is the supervised recovery handoff: the loop being bounded
@@ -280,12 +370,28 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
     themes=''
     s_phase=''
     s_findings_sig=''
+    s_stop_reason=''
+    s_head=''
+    heads=$head
     last_progress=$now
+  elif [ -z "$heads" ]; then
+    heads=$head
+  elif [ "$head" != "$s_head" ]; then
+    if _fm_vloop_head_seen "$heads" "$head"; then
+      stop_reason="incoherent head transition from ${s_head:-unknown} to $head for run $run_id"
+    elif _fm_vloop_head_advance_valid "$worktree" "$s_head" "$head"; then
+      head_transition=1
+      heads="$heads $head"
+    else
+      stop_reason="incoherent head transition from ${s_head:-unknown} to $head for run $run_id"
+    fi
   fi
 
   progress_sig=$(printf '%s|%s|%s|%s|%s|%s|%s' \
     "$run_id" "$head" "$status" "$outcome" "$phase" "$findings_sig" "$steps_sig" | _fm_vloop_hash)
-  [ "$progress_sig" = "$s_progress_sig" ] || last_progress=$now
+  if [ "$progress_sig" != "$s_progress_sig" ] && { [ "$head" = "$s_head" ] || [ "$head_transition" = 1 ] || [ "$run_id" != "$s_run" ]; }; then
+    last_progress=$now
+  fi
 
   if [ "$phase" = fixing ] && [ "$s_phase" != fixing ]; then
     fix_rounds=$((fix_rounds + 1))
@@ -295,6 +401,7 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   fi
 
   if [ "$phase" = terminal ]; then active=0; else active=1; fi
+  [ -n "$stop_reason" ] || stop_reason=$s_stop_reason
 
   max_fix=$(_fm_vloop_bound "${FM_VLOOP_MAX_FIX_ROUNDS:-}" "$FM_VLOOP_MAX_FIX_ROUNDS_DEFAULT")
   max_theme=$(_fm_vloop_bound "${FM_VLOOP_MAX_SAME_THEME:-}" "$FM_VLOOP_MAX_SAME_THEME_DEFAULT")
@@ -317,6 +424,7 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
     printf 'progress_sig=%s\n' "$progress_sig"
     printf 'fix_rounds=%s\n' "$fix_rounds"
     printf 'themes=%s\n' "$themes"
+    printf 'heads=%s\n' "$heads"
     printf 'last_observed=%s\n' "$now"
     printf 'last_progress=%s\n' "$last_progress"
     printf 'active=%s\n' "$active"
@@ -326,13 +434,11 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   return 0
 }
 
-# The continue/stop verdict, one line: "continue", or "stop <reason>". A pure
-# read of the journal plus the clock - no evidence call, no write. No journal,
-# or a journal whose last evidence was terminal, is "continue": with no active
-# loop recorded there is nothing to stop.
+# The continue/stop verdict, one line: "continue", or "stop <reason>". A time
+# breach is recorded here at the shared journal boundary before the reason is
+# returned, so a later note-render sees the same durable stop.
 fm_vloop_verdict() {  # <state> <id>
-  local state=$1 id=$2 journal stored now active stop_reason last_observed last_progress phase age
-  local max_age stall
+  local state=$1 id=$2 journal stored now active stop_reason
   journal=$(fm_vloop_journal_path "$state" "$id")
   [ -f "$journal" ] && [ ! -L "$journal" ] || { printf 'continue'; return 0; }
   stored=$(cat "$journal" 2>/dev/null) || { printf 'continue'; return 0; }
@@ -344,35 +450,20 @@ fm_vloop_verdict() {  # <state> <id>
     printf 'stop %s' "$stop_reason"
     return 0
   fi
-  last_observed=$(_fm_vloop_journal_get "$stored" last_observed)
-  case "$last_observed" in ''|*[!0-9]*) last_observed=$now ;; esac
-  max_age=$(_fm_vloop_bound "${FM_VLOOP_EVIDENCE_MAX_AGE_SECS:-}" "$FM_VLOOP_EVIDENCE_MAX_AGE_SECS_DEFAULT")
-  age=$((now - last_observed))
-  if [ "$age" -gt "$max_age" ]; then
-    printf 'stop pipeline evidence stale: an active run was last readable %ss ago (bound %ss); current run state is unknown' "$age" "$max_age"
+  stop_reason=$(_fm_vloop_time_stop_reason "$stored" "$now")
+  if [ -n "$stop_reason" ]; then
+    _fm_vloop_record_stop "$state" "$id" "$stop_reason" || true
+    printf 'stop %s' "$stop_reason"
     return 0
   fi
-  phase=$(_fm_vloop_journal_get "$stored" phase)
-  case "$phase" in
-    running|fixing)
-      last_progress=$(_fm_vloop_journal_get "$stored" last_progress)
-      case "$last_progress" in ''|*[!0-9]*) last_progress=$now ;; esac
-      stall=$(_fm_vloop_bound "${FM_VLOOP_STALL_SECS:-}" "$FM_VLOOP_STALL_SECS_DEFAULT")
-      age=$((now - last_progress))
-      if [ "$age" -gt "$stall" ]; then
-        printf 'stop no evidence advance for %ss while the run claims %s (bound %ss)' "$age" "$phase" "$stall"
-        return 0
-      fi
-      ;;
-  esac
   printf 'continue'
 }
 
 # The current stop reason alone (empty on continue), for wake decoration.
 fm_vloop_reason() {  # <state> <id>
-  local verdict
-  verdict=$(fm_vloop_verdict "$1" "$2")
-  case "$verdict" in
-    stop\ *) printf '%s' "${verdict#stop }" ;;
-  esac
+  local journal stored
+  journal=$(fm_vloop_journal_path "$1" "$2")
+  [ -f "$journal" ] && [ ! -L "$journal" ] || return 0
+  stored=$(cat "$journal" 2>/dev/null) || return 0
+  _fm_vloop_journal_get "$stored" stop_reason
 }

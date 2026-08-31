@@ -449,6 +449,7 @@ COARSE_STATUS=""
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
   RUN_OUT=$(nm_run axi status)
   if [ -n "$RUN_OUT" ]; then
+    fm_vloop_evidence_valid "$RUN_OUT" || emit unknown none "unreadable validation run evidence"
     run_branch=$(strip_quotes "$(nm_field branch)")
     if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] && nm_run_head_matches_worktree; then
       HAVE_RUN=1
@@ -547,8 +548,8 @@ if [ "$HAVE_RUN" = 1 ]; then
         completed)      RUN_STATE="done"; RUN_DETAIL="run completed" ;;
         failed)         RUN_STATE=failed;  RUN_DETAIL="run failed" ;;
         cancelled)      RUN_STATE=failed;  RUN_DETAIL="run cancelled" ;;
-        "")             RUN_STATE=working; RUN_DETAIL="run active" ;;
-        *)              RUN_STATE=working; RUN_DETAIL="run active ($status)" ;;
+        "")             RUN_STATE=unknown; RUN_DETAIL="run status unavailable" ;;
+        *)              RUN_STATE=unknown; RUN_DETAIL="unrecognized run status: $status" ;;
       esac
       if [ "$RUN_STATE" = working ]; then
         CI_STEP_STATUS=$(nm_effective_ci_step_status)

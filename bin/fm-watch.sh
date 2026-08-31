@@ -785,6 +785,21 @@ surface_nonterminal_stale() {  # <window> <hash> [reason]
   wake "$reason"
 }
 
+surface_validation_limit() {  # <window> <hash> <task>
+  local win=$1 h=$2 task=$3 reason
+  reason=$(fm_vloop_reason "$STATE" "$task")
+  [ -n "$reason" ] || reason="automatic continuation limit reached"
+  surface_nonterminal_stale "$win" "$h" \
+    "stale: $win (validation loop limit: $reason - automatic continuation stopped deterministically; branch and run custody preserved; inspect and recover in the same copy via stuck-crewmate-recovery, never a duplicate worker or a skipped check)"
+}
+
+validation_loop_stopped() {
+  case "$(fm_vloop_verdict "$STATE" "$1")" in
+    stop\ *) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Check and heartbeat cadence must survive actionable exits and restarts: the
 # watcher may be relaunched before in-memory counters reach their threshold on a
 # busy fleet. Persist the schedule as file mtimes instead.
@@ -1431,6 +1446,8 @@ EOF
             printf '%s' "$h" > "$sf"
             wake "stale: $w"
           fi
+        elif validation_loop_stopped "$task"; then
+          surface_validation_limit "$w" "$h" "$task"
         elif stale_is_terminal "$w" "$STATE"; then
           # The log's last line is captain-relevant - but that alone is not
           # proof the crew is actually done: a crew's own status log gets no
@@ -1497,16 +1514,7 @@ EOF
               paused)
                 handle_paused_stale "$w" "$task" "$h"
                 ;;
-              limit)
-                # The deterministic validation-loop bounds stopped automatic
-                # continuation of a crew that otherwise reads as working
-                # (bin/fm-validation-loop-lib.sh). Surface the recorded reason
-                # itself so the breach is never presented as routine progress;
-                # the run, branch, and worker are untouched, and recovery goes
-                # through the supported same-copy path (stuck-crewmate-recovery).
-                surface_nonterminal_stale "$w" "$h" \
-                  "stale: $w (validation loop limit: $(fm_vloop_reason "$STATE" "$task") - automatic continuation stopped deterministically; branch and run custody preserved; inspect and recover in the same copy via stuck-crewmate-recovery, never a duplicate worker or a skipped check)"
-                ;;
+              limit) surface_validation_limit "$w" "$h" "$task" ;;
               *)
                 surface_nonterminal_stale "$w" "$h"
                 ;;

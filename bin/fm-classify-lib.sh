@@ -1297,9 +1297,13 @@ signal_reason_is_actionable() {  # <file> ...
 # every wake. FM_CREW_STATE_BIN lets tests stub the verdict; the stub receives
 # FM_CREW_STATE_EVIDENCE_FILE exactly like the real reader.
 crew_absorb_class() {  # <id>
-  local id=$1 line state src statedir evfile
+  local id=$1 line state src statedir evfile worktree observe_rc
   [ -n "$id" ] || { printf 'none'; return; }
   statedir=${STATE:-${FM_STATE_OVERRIDE:-}}
+  worktree=''
+  if [ -n "$statedir" ] && [ -f "$statedir/$id.meta" ]; then
+    worktree=$(grep '^worktree=' "$statedir/$id.meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  fi
   evfile=''
   if [ -n "$statedir" ] && [ -d "$statedir" ]; then
     evfile="$statedir/.vloop-evidence-$id.$$"
@@ -1310,8 +1314,10 @@ crew_absorb_class() {  # <id>
     # Fold whatever evidence the read exported before judging it: gate and fix
     # observations count toward the loop bounds regardless of the verdict this
     # call ends up printing. An absent export folds nothing.
-    fm_vloop_observe "$statedir" "$id" "$evfile" || true
+    fm_vloop_observe "$statedir" "$id" "$evfile" "$worktree"
+    observe_rc=$?
     rm -f "$evfile" 2>/dev/null || true
+    [ "$observe_rc" -eq 0 ] || { printf 'none'; return; }
   else
     line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
   fi

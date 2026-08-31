@@ -194,6 +194,20 @@ test_repeated_finding_stop() {
   ev_fixing "$ev" 02RUN;                        fold "$state" ctl "$ev" 1030
   ev_gate "$ev" 02RUN r5 r6 "shadowed field";  fold "$state" ctl "$ev" 1040
   [ "$(verdict_at "$state" ctl 1050)" = continue ] || fail "distinct findings themes were miscounted as repetition"
+
+  # A cycle longer than the old theme cache must not evict a theme's count.
+  local cycle theme
+  for cycle in 1 2 3; do
+    for theme in 1 2 3 4 5 6 7 8 9; do
+      ev_gate "$ev" 03RUN "c${cycle}a" "c${cycle}b" "cycle-theme-$theme"
+      fold "$state" cyc "$ev" $((1100 + cycle * 100 + theme))
+    done
+  done
+  v=$(verdict_at "$state" cyc 1500)
+  case "$v" in
+    stop*"identical findings theme"*) ;;
+    *) fail "a long repeating theme cycle bypassed the same-theme bound: '$v'" ;;
+  esac
   pass "repeated-finding stop: the identical theme past its bound stops; distinct themes continue"
 }
 
@@ -220,6 +234,22 @@ test_unknown_state_stop() {
     || fail "an unknown state over an active journal was absorbed"
   unset FM_FAKE_CREW_STATE
   pass "unknown-state stop: unknown, unreadable, and dead verdicts are never absorbed"
+}
+
+test_malformed_evidence_stop() {
+  local state fakebin dir ev
+  dir=$(make_case vloop-malformed-evidence); state="$dir/state"; fakebin="$dir/fakebin"
+  ev="$dir/ev"
+  printf 'run:\n  id: "01RUN"\n  branch: fm/loop\n' > "$ev"
+  export FM_CREW_STATE_BIN
+  FM_CREW_STATE_BIN=$(make_exporting_crew_state "$fakebin")
+  export FM_FAKE_EVIDENCE="$ev" FM_FAKE_CREW_STATE='state: working · source: run-step · malformed'
+  [ "$(STATE=$state crew_absorb_class malformed)" = none ] \
+    || fail "malformed run evidence was absorbed as working"
+  [ ! -e "$state/malformed.validation-loop" ] \
+    || fail "malformed evidence created a continuation journal without a valid run"
+  unset FM_FAKE_EVIDENCE FM_FAKE_CREW_STATE
+  pass "malformed evidence stop: incomplete run evidence fails closed at the absorb boundary"
 }
 
 # --- required regression: stale pipeline evidence ------------------------------
@@ -333,13 +363,34 @@ test_stall_stop_and_progress_resume() {
     stop*"no evidence advance"*) ;;
     *) fail "a frozen active run past the stall bound did not stop: '$v'" ;;
   esac
-  # A real step transition is advance and resumes continuation.
-  ev_running "$ev" 01RUN completed running; fold "$state" st "$ev" 4800
-  [ "$(verdict_at "$state" st 4900)" = continue ] || fail "a step transition did not resume continuation"
+  grep -q '^stop_reason=no evidence advance' "$state/st.validation-loop" \
+    || fail "the time-based stall breach was not persisted in the journal"
+  # A replacement run on the same copy is the supported recovery handoff.
+  ev_running "$ev" 02RUN completed running; fold "$state" st "$ev" 4800
+  [ "$(verdict_at "$state" st 4900)" = continue ] || fail "a recovery run did not resume continuation"
   # The ci phase is exempt: no-mistakes' own CI monitor owns that wait.
-  ev_ci "$ev" 01RUN; fold "$state" st "$ev" 5000
+  ev_ci "$ev" 02RUN; fold "$state" st "$ev" 5000
   [ "$(verdict_at "$state" st 9990)" = continue ] || fail "a long ci monitor wait was misread as a stall"
-  pass "stall: frozen active evidence stops past the bound, advance resumes, ci waits are exempt"
+  pass "stall: frozen evidence stops, recovery resumes, ci waits are exempt"
+}
+
+test_head_transition_is_coherent() {
+  local state ev dir v
+  dir=$(make_case vloop-head-transition); state="$dir/state"; ev="$dir/ev"
+  ev_running "$ev" 01RUN running pending; fold "$state" head "$ev" 1000
+  sed -i.bak 's/abc1234/def5678/' "$ev" && rm -f "$ev.bak"
+  fold "$state" head "$ev" 1010
+  [ "$(verdict_at "$state" head 1020)" = continue ] || fail "a first head advance stopped"
+  sed -i.bak 's/def5678/abc1234/' "$ev" && rm -f "$ev.bak"
+  fold "$state" head "$ev" 1030
+  v=$(verdict_at "$state" head 1040)
+  case "$v" in
+    stop*"incoherent head transition"*) ;;
+    *) fail "a regressed head did not stop with an actionable reason: '$v'" ;;
+  esac
+  grep -q '^stop_reason=incoherent head transition' "$state/head.validation-loop" \
+    || fail "the incoherent head stop was not durable"
+  pass "head transition: repeated or regressed run heads stop instead of refreshing progress"
 }
 
 test_threshold_overrides_cannot_disable_bounds() {
@@ -369,7 +420,7 @@ test_watcher_surfaces_validation_loop_limit() {
   window="test:fm-loopy"
   printf 'static validation pane' > "$capture_file"
   printf 'window=%s\nkind=ship\n' "$window" > "$state/loopy.meta"
-  printf 'working: validating\n' > "$state/loopy.status"
+  printf 'done: prior validation result\n' > "$state/loopy.status"
   prime_status_seen "$state" "$state/loopy.status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   pane_hash=$(hash_text 'static validation pane')
@@ -409,9 +460,11 @@ test_watcher_surfaces_validation_loop_limit() {
 test_near_complete_continuation
 test_repeated_finding_stop
 test_unknown_state_stop
+test_malformed_evidence_stop
 test_stale_pipeline_evidence
 test_recovery_handoff
 test_fix_round_bound_semantics
 test_stall_stop_and_progress_resume
+test_head_transition_is_coherent
 test_threshold_overrides_cannot_disable_bounds
 test_watcher_surfaces_validation_loop_limit
