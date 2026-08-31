@@ -795,11 +795,26 @@ EOF
     return 1
   }
   fm_pr_review_surface_path_valid() {
-    local review_surface=$1 review_file=$2
-    [ "$actual_changed_path_count" -lt 7 ] && return 0
+    local review_surface=$1 review_file=$2 changed_path relevant=0
+    while IFS= read -r changed_path || [ -n "$changed_path" ]; do
+      fm_pr_review_path_syntax_valid "$changed_path" || return 1
+      changed_path=$FM_PR_REVIEW_PATH
+      case "$review_surface:$changed_path" in
+        authority:AGENTS.md|authority:.agents/*|authority:bin/fm-brief.sh|authority:bin/fm-check*.sh|authority:bin/fm-merge*.sh|authority:bin/fm-pr*.sh|authority:bin/fm-promote.sh|authority:bin/fm-spawn.sh) relevant=1; break ;;
+        security:.agents/*|security:bin/fm-operational-input.sh|security:bin/fm-pending-reply-lib.sh|security:bin/fm-pr*.sh|security:bin/fm-send.sh|security:bin/fm-spawn.sh|security:bin/firstmate_factory/*|security:schemas/*|security:tests/*security*|security:tests/*trust*) relevant=1; break ;;
+        path:.agents/*|path:bin/fm-pr*.sh|path:bin/fm-remote*.sh|path:bin/fm-send.sh|path:bin/fm-spawn.sh|path:tests/*path*|path:tests/*spawn*|path:tests/*secondmate*) relevant=1; break ;;
+        failure:bin/fm-*.sh|failure:bin/firstmate_factory/*|failure:schemas/*|failure:tests/*) relevant=1; break ;;
+        tests:bin/fm-test*.sh|tests:tests/*) relevant=1; break ;;
+        documentation:AGENTS.md|documentation:.agents/*|documentation:CONTRIBUTING.md|documentation:README*|documentation:docs/*|documentation:bin/fm-brief.sh) relevant=1; break ;;
+        delivery:AGENTS.md|delivery:bin/fm-brief.sh|delivery:bin/fm-merge*.sh|delivery:bin/fm-pr*.sh|delivery:bin/fm-promote.sh|delivery:bin/fm-send.sh|delivery:bin/fm-spawn.sh|delivery:tests/*delivery*|delivery:tests/*pr*) relevant=1; break ;;
+      esac
+    done <<EOF
+$actual_changed_paths
+EOF
+    [ "$relevant" -eq 0 ] && return 0
     case "$review_surface:$review_file" in
       authority:AGENTS.md|authority:.agents/*|authority:bin/fm-brief.sh|authority:bin/fm-check*.sh|authority:bin/fm-merge*.sh|authority:bin/fm-pr*.sh|authority:bin/fm-promote.sh|authority:bin/fm-spawn.sh) return 0 ;;
-      security:.agents/*|security:bin/fm-operational-input.sh|security:bin/fm-pending-reply-lib.sh|security:bin/fm-pr*.sh|security:bin/fm-send.sh|security:bin/firstmate_factory/*|security:schemas/*|security:tests/*security*|security:tests/*trust*) return 0 ;;
+      security:.agents/*|security:bin/fm-operational-input.sh|security:bin/fm-pending-reply-lib.sh|security:bin/fm-pr*.sh|security:bin/fm-send.sh|security:bin/fm-spawn.sh|security:bin/firstmate_factory/*|security:schemas/*|security:tests/*security*|security:tests/*trust*) return 0 ;;
       path:.agents/*|path:bin/fm-pr*.sh|path:bin/fm-remote*.sh|path:bin/fm-send.sh|path:bin/fm-spawn.sh|path:tests/*path*|path:tests/*spawn*|path:tests/*secondmate*) return 0 ;;
       failure:bin/fm-*.sh|failure:bin/firstmate_factory/*|failure:schemas/*|failure:tests/*) return 0 ;;
       tests:bin/fm-test*.sh|tests:tests/*) return 0 ;;

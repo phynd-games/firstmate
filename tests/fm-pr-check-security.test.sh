@@ -946,6 +946,69 @@ PY
   pass "PR-ready path requires a private durable findings-first self-review"
 }
 
+test_pr_ready_rejects_unrelated_small_diff_surface_evidence() {
+  local dir report small_digest small_change_digest small_line_hex fixture_digest fixture_change_digest fixture_line_hex rc
+  dir=$(make_case small-surface-relevance)
+  git -C "$dir/wt" reset --hard -q main
+  printf '%s\n' 'changed authority' >> "$dir/wt/bin/fm-pr-check.sh"
+  printf '%s\n' 'changed fixture' >> "$dir/wt/fixture.txt"
+  git -C "$dir/wt" add -- bin/fm-pr-check.sh fixture.txt
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm small-surface
+  write_self_review_report "$dir/home" task-a
+  report="$dir/home/data/task-a/pr-self-review.md"
+  small_digest=$(self_review_line_digest "$dir" bin/fm-pr-check.sh)
+  small_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-check.sh)
+  small_line_hex=$(self_review_line_hex "$dir" bin/fm-pr-check.sh)
+  fixture_digest=$(self_review_line_digest "$dir" fixture.txt)
+  fixture_change_digest=$(surface_change_digest_for_file "$dir" fixture.txt)
+  fixture_line_hex=$(self_review_line_hex "$dir" fixture.txt)
+  python3 - "$report" "$small_digest" "$small_change_digest" "$small_line_hex" "$fixture_digest" "$fixture_change_digest" "$fixture_line_hex" <<'PY'
+import hashlib
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+small_digest, small_change_digest, small_line_hex = sys.argv[2:5]
+fixture_digest, fixture_change_digest, fixture_line_hex = sys.argv[5:8]
+behaviors = {
+    "Authority": "non-authorizing",
+    "Security": "provenance-bound",
+    "Path": "path-safe",
+    "Failure": "fail-closed",
+    "Tests": "behavioral",
+    "Documentation": "contract-aligned",
+    "Delivery": "no-mistakes-owned",
+}
+actions = {
+    "Authority": "retain-owner",
+    "Security": "retain-boundary",
+    "Path": "retain-validation",
+    "Failure": "retain-refusal",
+    "Tests": "retain-regression",
+    "Documentation": "retain-contract",
+    "Delivery": "retain-no-mistakes",
+}
+def record(surface, path, digest, change_digest, line_hex):
+    reference = path + ":2"
+    binding = hashlib.sha256((surface.lower() + "|" + reference + "|" + digest + "|" + change_digest + "|" + line_hex + "|" + behaviors[surface] + "|" + actions[surface] + "\n").encode()).hexdigest()
+    return f"{surface}: reviewed; surface={surface.lower()}; files={path}; evidence={reference} sha256={digest} change-sha256={change_digest} line-hex={line_hex} hunk={reference}; consequence=anchor={reference} sha256={digest} change-sha256={change_digest} line-hex={line_hex} behavior={behaviors[surface]} binding={binding}; fix=anchor={reference} sha256={digest} change-sha256={change_digest} line-hex={line_hex} action={actions[surface]} binding={binding}"
+text = report.read_text(encoding="utf-8")
+for surface in behaviors:
+    text = re.sub(rf"(?m)^{surface}: .*", record(surface, "bin/fm-pr-check.sh", small_digest, small_change_digest, small_line_hex), text, count=1)
+text = re.sub(r"(?m)^Authority: .*", record("Authority", "fixture.txt", fixture_digest, fixture_change_digest, fixture_line_hex), text, count=1)
+report.write_text(text, encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/113 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted unrelated evidence for a small diff"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "unrelated small-diff evidence left a runnable poll"
+  pass "PR-ready path binds small-diff evidence to applicable surfaces"
+}
+
 test_local_landing_refuses_advanced_default_after_review() {
   local dir fake_root base_head task_head advanced_head rc
   dir="$TMP_ROOT/local-landing-stale-base"
@@ -4451,6 +4514,7 @@ test_gitlab_merged_poll_retires() {
 
 test_parser_matrix
 test_pr_ready_requires_durable_self_review
+test_pr_ready_rejects_unrelated_small_diff_surface_evidence
 test_local_landing_refuses_advanced_default_after_review
 test_direct_pr_creation_requires_self_review
 test_gitlab_merge_watch
