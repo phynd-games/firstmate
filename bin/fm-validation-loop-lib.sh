@@ -219,6 +219,7 @@ _fm_vloop_scope_valid() {  # <worktree> <base> <head> <paths>
   [ "$max_change" -le "$max_commits" ] || return 1
   change_files=$(git -C "$worktree" diff --name-only --no-renames "$base_full" "$head_full" 2>/dev/null) || return 1
   change_count=$(printf '%s\n' "$change_files" | awk 'NF { count += 1 } END { print count + 0 }')
+  [ "$change_count" -eq "$count" ] || return 1
   [ "$change_count" -le "$max_files" ] || return 1
   while IFS= read -r change_file; do
     [ -n "$change_file" ] || continue
@@ -240,7 +241,7 @@ _fm_vloop_scope_contains() {  # <paths> <path>
 }
 
 _fm_vloop_journal_valid() {  # <journal-content>
-  local stored=$1 key value version phase active scope_base scope_head scope_paths scope_count
+  local stored=$1 key value version phase active scope_base scope_head scope_paths scope_count max_files
   for key in version run head status phase findings_sig progress_sig fix_rounds themes heads last_observed last_progress active stop_reason scope_base scope_head scope_paths; do
     printf '%s\n' "$stored" | grep -q "^$key=" || return 1
   done
@@ -305,7 +306,8 @@ _fm_vloop_journal_valid() {  # <journal-content>
     [ -n "$scope_base" ] && [ -n "$scope_head" ] && [ -n "$scope_paths" ] || return 1
     case "$scope_base:$scope_head" in *[[:space:]]*) return 1 ;; esac
     scope_count=$(printf '%s\n' "$scope_paths" | awk 'NF { count += 1 } END { print count + 0 }')
-    [ "$scope_count" -le "$FM_VLOOP_MAX_CHANGE_FILES_DEFAULT" ] || return 1
+    max_files=$(_fm_vloop_bound "${FM_VLOOP_MAX_CHANGE_FILES:-}" "$FM_VLOOP_MAX_CHANGE_FILES_DEFAULT")
+    [ "$scope_count" -le "$max_files" ] || return 1
     for value in $scope_paths; do
       case "$value" in
         ''|*[[:space:]]*|/*|../*|*/../*|*\|*) return 1 ;;

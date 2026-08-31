@@ -632,7 +632,7 @@ export default function (pi: ExtensionAPI) {
         if (noteReserved && !runOutcomeScript(["note-rollback", "--task", task]).ok) return false;
         return false;
       }
-      if (noteReserved) runOutcomeScript(["note-commit", "--task", task]);
+      if (noteReserved && !runOutcomeScript(["note-commit", "--task", task]).ok) return false;
     }
     if (/^[0-9]+$/.test(seq)) {
       if (!actingAsOwner(expectedGeneration)) return false;

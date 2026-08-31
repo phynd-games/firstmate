@@ -317,7 +317,7 @@ EOF
 }
 
 test_journal_state_matrix() {
-  local state dir variant phase status active verdict n=0
+  local state dir variant phase status active verdict n=0 paths i=1
   dir=$(make_case vloop-journal-matrix); state="$dir/state"
   for variant in \
     running,running,1 \
@@ -350,6 +350,32 @@ EOF
     verdict=$(FM_VLOOP_NOW=1001 fm_vloop_verdict "$state" "valid-$n" 2>/dev/null || true)
     [ "$verdict" = continue ] || fail "valid journal state $variant was rejected: '$verdict'"
   done
+  paths=''
+  while [ "$i" -le 257 ]; do
+    paths="$paths p$i"
+    i=$((i + 1))
+  done
+  cat > "$state/valid-large-scope.validation-loop" <<EOF
+version=1
+run=01RUN
+head=abc1234
+status=running
+phase=running
+findings_sig=
+progress_sig=abc
+fix_rounds=0
+themes=
+heads=abc1234
+last_observed=1000
+last_progress=1000
+active=1
+stop_reason=
+scope_base=base
+scope_head=head
+scope_paths=$paths
+EOF
+  verdict=$(FM_VLOOP_MAX_CHANGE_FILES=300 FM_VLOOP_NOW=1001 fm_vloop_verdict "$state" valid-large-scope 2>/dev/null || true)
+  [ "$verdict" = continue ] || fail "a journal within the configured change-file limit was rejected"
   n=0
   for variant in \
     running,fixing,1 running,completed,0 \
@@ -538,7 +564,7 @@ test_coarse_evidence_does_not_enforce_stall() {
 }
 
 test_head_change_set_is_bounded() {
-  local state ev dir repo old_head new_head unrelated_head v
+  local state ev dir repo old_head first_head new_head unrelated_head v
   dir=$(make_case vloop-change-set); state="$dir/state"; ev="$dir/ev"; repo="$dir/repo"
   git init -q "$repo"
   git -C "$repo" config user.email test@example.com
@@ -548,14 +574,15 @@ test_head_change_set_is_bounded() {
   old_head=$(git -C "$repo" rev-parse HEAD)
   printf 'one\n' > "$repo/file"
   git -C "$repo" commit -qam one
+  first_head=$(git -C "$repo" rev-parse HEAD)
   printf 'two\n' > "$repo/file"
   git -C "$repo" commit -qam two
   new_head=$(git -C "$repo" rev-parse HEAD)
   ev_running "$ev" 01RUN running pending
-  sed -i.bak "s/abc1234/$old_head/" "$ev" && rm -f "$ev.bak"
+  sed -i.bak "s/^  head: \"abc1234\"/  head: \"$first_head\"/" "$ev" && rm -f "$ev.bak"
   printf 'base: "%s"\nchanges[1]{path}:\n  file\n' "$old_head" >> "$ev"
   fold "$state" changes "$ev" 1000 "$repo"
-  sed -i.bak "s/^  head: \"$old_head\"/  head: \"$new_head\"/" "$ev" && rm -f "$ev.bak"
+  sed -i.bak "s/^  head: \"$first_head\"/  head: \"$new_head\"/" "$ev" && rm -f "$ev.bak"
   FM_VLOOP_MAX_CHANGE_COMMITS=1 fold "$state" changes "$ev" 1010 "$repo"
   v=$(FM_VLOOP_MAX_CHANGE_COMMITS=1 verdict_at "$state" changes 1020)
   case "$v" in
@@ -565,13 +592,13 @@ test_head_change_set_is_bounded() {
   mkdir -p "$dir/known-state"
   state="$dir/known-state"
   ev_running "$ev" 01RUN running pending
-  sed -i.bak "s/abc1234/$old_head/" "$ev" && rm -f "$ev.bak"
+  sed -i.bak "s/^  head: \"abc1234\"/  head: \"$new_head\"/" "$ev" && rm -f "$ev.bak"
   printf 'base: "%s"\nchanges[1]{path}:\n  file\n' "$old_head" >> "$ev"
   fold "$state" changes "$ev" 1030 "$repo"
   printf 'unrelated\n' > "$repo/unrelated.txt"
   git -C "$repo" add unrelated.txt && git -C "$repo" commit -qm unrelated
   unrelated_head=$(git -C "$repo" rev-parse HEAD)
-  sed -i.bak "s/^  head: \"$old_head\"/  head: \"$unrelated_head\"/" "$ev" && rm -f "$ev.bak"
+  sed -i.bak "s/^  head: \"$new_head\"/  head: \"$unrelated_head\"/" "$ev" && rm -f "$ev.bak"
   fold "$state" changes "$ev" 1040 "$repo"
   v=$(verdict_at "$state" changes 1050)
   case "$v" in
@@ -582,7 +609,7 @@ test_head_change_set_is_bounded() {
 }
 
 test_initial_scope_manifest_is_authenticated() {
-  local state ev dir repo base_head final_head v
+  local state ev state2 ev2 dir repo base_head allowed_head final_head v
   dir=$(make_case vloop-initial-scope); state="$dir/state"; ev="$dir/ev"; repo="$dir/repo"
   git init -q "$repo"
   git -C "$repo" config user.email test@example.com
@@ -592,6 +619,7 @@ test_initial_scope_manifest_is_authenticated() {
   base_head=$(git -C "$repo" rev-parse HEAD)
   printf 'allowed\n' > "$repo/file"
   git -C "$repo" commit -qam allowed
+  allowed_head=$(git -C "$repo" rev-parse HEAD)
   printf 'unrelated\n' > "$repo/unrelated.txt"
   git -C "$repo" add unrelated.txt && git -C "$repo" commit -qm unrelated
   final_head=$(git -C "$repo" rev-parse HEAD)
@@ -606,11 +634,21 @@ test_initial_scope_manifest_is_authenticated() {
   esac
   grep -q '^stop_reason=validation change-set manifest is invalid or untrusted' "$state/initial-scope.validation-loop" \
     || fail "the initial scope breach was not durable"
+  state2="$dir/state-exact"; ev2="$dir/ev-exact"; mkdir -p "$state2"
+  ev_running "$ev2" 02RUN running pending
+  sed -i.bak "s/^  head: \"abc1234\"/  head: \"$allowed_head\"/" "$ev2" && rm -f "$ev2.bak"
+  printf 'base: "%s"\nchanges[2]{path}:\n  file\n  future.txt\n' "$base_head" >> "$ev2"
+  fold "$state2" exact-scope "$ev2" 1100 "$repo"
+  v=$(verdict_at "$state2" exact-scope 1110)
+  case "$v" in
+    stop*"validation change-set manifest is invalid or untrusted"*) ;;
+    *) fail "an initial manifest superset authorized a later path: '$v'" ;;
+  esac
   pass "initial scope: the first base-to-head diff must match the authenticated manifest"
 }
 
 test_head_change_set_allows_authenticated_addition() {
-  local state ev dir repo old_head new_head v
+  local state ev dir repo old_head new_head latest_head v
   dir=$(make_case vloop-change-addition); state="$dir/state"; ev="$dir/ev"; repo="$dir/repo"
   git init -q "$repo"
   git -C "$repo" config user.email test@example.com
@@ -621,11 +659,14 @@ test_head_change_set_allows_authenticated_addition() {
   printf 'added\n' > "$repo/new.txt"
   git -C "$repo" add new.txt && git -C "$repo" commit -qm addition
   new_head=$(git -C "$repo" rev-parse HEAD)
+  printf 'updated\n' > "$repo/new.txt"
+  git -C "$repo" commit -qam update
+  latest_head=$(git -C "$repo" rev-parse HEAD)
   ev_running "$ev" 01RUN running pending
-  sed -i.bak "s/abc1234/$old_head/" "$ev" && rm -f "$ev.bak"
+  sed -i.bak "s/^  head: \"abc1234\"/  head: \"$new_head\"/" "$ev" && rm -f "$ev.bak"
   printf 'base: "%s"\nchanges[1]{path}:\n  new.txt\n' "$old_head" >> "$ev"
   fold "$state" addition "$ev" 1000 "$repo"
-  sed -i.bak "s/^  head: \"$old_head\"/  head: \"$new_head\"/" "$ev" && rm -f "$ev.bak"
+  sed -i.bak "s/^  head: \"$new_head\"/  head: \"$latest_head\"/" "$ev" && rm -f "$ev.bak"
   fold "$state" addition "$ev" 1010 "$repo"
   v=$(verdict_at "$state" addition 1020)
   [ "$v" = continue ] || fail "an authenticated new-file change stopped: '$v'"
@@ -633,7 +674,7 @@ test_head_change_set_allows_authenticated_addition() {
 }
 
 test_head_transition_is_coherent() {
-  local state ev dir v repo old_head new_head
+  local state ev dir v repo old_head new_head latest_head
   dir=$(make_case vloop-head-transition); state="$dir/state"; ev="$dir/ev"; repo="$dir/repo"
   git init -q "$repo"
   git -C "$repo" config user.email test@example.com
@@ -644,14 +685,17 @@ test_head_transition_is_coherent() {
   printf 'two\n' > "$repo/file"
   git -C "$repo" commit -qam two
   new_head=$(git -C "$repo" rev-parse HEAD)
+  printf 'three\n' > "$repo/file"
+  git -C "$repo" commit -qam three
+  latest_head=$(git -C "$repo" rev-parse HEAD)
   ev_running "$ev" 01RUN running pending
-  sed -i.bak "s/abc1234/$old_head/" "$ev" && rm -f "$ev.bak"
+  sed -i.bak "s/^  head: \"abc1234\"/  head: \"$new_head\"/" "$ev" && rm -f "$ev.bak"
   printf 'base: "%s"\nchanges[1]{path}:\n  file\n' "$old_head" >> "$ev"
   fold "$state" head "$ev" 1000 "$repo"
-  sed -i.bak "s/^  head: \"$old_head\"/  head: \"$new_head\"/" "$ev" && rm -f "$ev.bak"
+  sed -i.bak "s/^  head: \"$new_head\"/  head: \"$latest_head\"/" "$ev" && rm -f "$ev.bak"
   fold "$state" head "$ev" 1010 "$repo"
   [ "$(verdict_at "$state" head 1020)" = continue ] || fail "a first head advance stopped"
-  sed -i.bak "s/^  head: \"$new_head\"/  head: \"$old_head\"/" "$ev" && rm -f "$ev.bak"
+  sed -i.bak "s/^  head: \"$latest_head\"/  head: \"$new_head\"/" "$ev" && rm -f "$ev.bak"
   fold "$state" head "$ev" 1030 "$repo"
   v=$(verdict_at "$state" head 1040)
   case "$v" in
