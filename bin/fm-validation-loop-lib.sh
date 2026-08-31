@@ -107,7 +107,7 @@ _fm_vloop_bound() {  # <value> <default>
 _fm_vloop_block_rows() {  # <content> <table-name>
   printf '%s\n' "$1" | awk -v name="$2" '
     found {
-      if ($0 ~ /^[[:space:]]+[^[:space:]].*,/) { print; next }
+      if ($0 ~ /^[[:space:]]+[^[:space:]].*$/) { print; next }
       exit
     }
     $0 ~ ("^[[:space:]]*" name "\\[[0-9]+\\]\\{") { found = 1 }
@@ -179,9 +179,53 @@ _fm_vloop_outcome_valid() {  # <status> <outcome>
   return 1
 }
 
+_fm_vloop_scope_paths() {  # <evidence>
+  local content=$1 table rows row path
+  for table in changes change_set changed_files; do
+    rows=$(_fm_vloop_block_rows "$content" "$table")
+    [ -n "$rows" ] || continue
+    while IFS= read -r row; do
+      path=${row%%,*}
+      path=$(fm_nm_trim "$path")
+      [ -n "$path" ] || return 1
+      printf '%s\n' "$path"
+    done <<EOF
+$rows
+EOF
+    return 0
+  done
+}
+
+_fm_vloop_scope_valid() {  # <worktree> <base> <head> <paths>
+  local worktree=$1 base=$2 head=$3 paths=$4 base_full head_full path seen='' count=0 max_files
+  [ -n "$worktree" ] && [ -n "$base" ] && [ -n "$head" ] && [ -n "$paths" ] || return 1
+  base_full=$(git -C "$worktree" rev-parse --verify "${base}^{commit}" 2>/dev/null) || return 1
+  head_full=$(git -C "$worktree" rev-parse --verify "${head}^{commit}" 2>/dev/null) || return 1
+  git -C "$worktree" merge-base --is-ancestor "$base_full" "$head_full" 2>/dev/null || return 1
+  max_files=$(_fm_vloop_bound "${FM_VLOOP_MAX_CHANGE_FILES:-}" "$FM_VLOOP_MAX_CHANGE_FILES_DEFAULT")
+  for path in $paths; do
+    [ -n "$path" ] || return 1
+    count=$((count + 1))
+    [ "$count" -le "$max_files" ] || return 1
+    case " $seen " in *" $path "*) return 1 ;; esac
+    seen="$seen $path"
+    case "$path" in
+      /*|../*|*/../*|*[[:space:]]*|*\|*) return 1 ;;
+    esac
+  done
+}
+
+_fm_vloop_scope_contains() {  # <paths> <path>
+  local path
+  for path in $1; do
+    [ "$path" = "$2" ] && return 0
+  done
+  return 1
+}
+
 _fm_vloop_journal_valid() {  # <journal-content>
-  local stored=$1 key value version phase active
-  for key in version run head status phase findings_sig progress_sig fix_rounds themes heads last_observed last_progress active stop_reason; do
+  local stored=$1 key value version phase active scope_base scope_head scope_paths scope_count
+  for key in version run head status phase findings_sig progress_sig fix_rounds themes heads last_observed last_progress active stop_reason scope_base scope_head scope_paths; do
     printf '%s\n' "$stored" | grep -q "^$key=" || return 1
   done
   version=$(_fm_vloop_journal_get "$stored" version)
@@ -195,6 +239,20 @@ _fm_vloop_journal_valid() {  # <journal-content>
   esac
   active=$(_fm_vloop_journal_get "$stored" active)
   case "$active" in 0|1) ;; *) return 1 ;; esac
+  case "$phase:$active" in
+    running:1|fixing:1|ci:1|gate:1|terminal:0) ;;
+    coarse:0|coarse:1) ;;
+    *) return 1 ;;
+  esac
+  if [ "$phase" = terminal ]; then
+    case "$status" in completed|failed|cancelled) ;; *) return 1 ;; esac
+  fi
+  if [ "$phase" = coarse ]; then
+    case "$status:$active" in
+      running:1|completed:0|failed:0|cancelled:0) ;;
+      *) return 1 ;;
+    esac
+  fi
   value=$(_fm_vloop_journal_get "$stored" fix_rounds)
   case "$value" in ''|*[!0-9]*) return 1 ;; esac
   for key in last_observed last_progress; do
@@ -208,6 +266,20 @@ _fm_vloop_journal_valid() {  # <journal-content>
     done
   else
     case "$status" in running|completed|failed|cancelled) ;; *) return 1 ;; esac
+  fi
+  scope_base=$(_fm_vloop_journal_get "$stored" scope_base)
+  scope_head=$(_fm_vloop_journal_get "$stored" scope_head)
+  scope_paths=$(_fm_vloop_journal_get "$stored" scope_paths)
+  if [ -n "$scope_base" ] || [ -n "$scope_head" ] || [ -n "$scope_paths" ]; then
+    [ -n "$scope_base" ] && [ -n "$scope_head" ] && [ -n "$scope_paths" ] || return 1
+    case "$scope_base:$scope_head" in *[[:space:]]*) return 1 ;; esac
+    scope_count=$(printf '%s\n' "$scope_paths" | awk 'NF { count += 1 } END { print count + 0 }')
+    [ "$scope_count" -le "$FM_VLOOP_MAX_CHANGE_FILES_DEFAULT" ] || return 1
+    for value in $scope_paths; do
+      case "$value" in
+        ''|*[[:space:]]*|/*|../*|*/../*|*\|*) return 1 ;;
+      esac
+    done
   fi
   return 0
 }
@@ -269,8 +341,8 @@ _fm_vloop_head_seen() {  # <heads> <head>
   return 1
 }
 
-_fm_vloop_head_advance_valid() {  # <worktree> <old-head> <new-head>
-  local worktree=$1 old_head=$2 new_head=$3 old_full new_full change_commits max_change
+_fm_vloop_head_advance_valid() {  # <worktree> <old-head> <new-head> <scope-paths>
+  local worktree=$1 old_head=$2 new_head=$3 scope_paths=${4:-} old_full new_full change_commits max_change
   local change_files change_file change_count max_files
   [ -n "$worktree" ] || return 1
   old_full=$(git -C "$worktree" rev-parse --verify "${old_head}^{commit}" 2>/dev/null) || return 1
@@ -286,12 +358,13 @@ _fm_vloop_head_advance_valid() {  # <worktree> <old-head> <new-head>
   change_count=$(printf '%s\n' "$change_files" | awk 'NF { count += 1 } END { print count + 0 }')
   max_files=$(_fm_vloop_bound "${FM_VLOOP_MAX_CHANGE_FILES:-}" "$FM_VLOOP_MAX_CHANGE_FILES_DEFAULT")
   [ "$change_count" -le "$max_files" ] || return 1
+  [ -n "$scope_paths" ] || return 1
   while IFS= read -r change_file; do
     [ -n "$change_file" ] || return 1
     case "$change_file" in
       /*|../*|*/../*) return 1 ;;
     esac
-    git -C "$worktree" cat-file -e "$old_full:$change_file" 2>/dev/null || return 1
+    _fm_vloop_scope_contains "$scope_paths" "$change_file" || return 1
   done <<EOF
 $change_files
 EOF
@@ -363,6 +436,7 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   local state=$1 id=$2 ev=$3 worktree=${4:-${FM_VLOOP_WORKTREE:-}} journal now content first stored=''
   local run_id status outcome head phase findings_sig steps_sig progress_sig
   local s_run s_phase s_findings_sig s_progress_sig s_fix_rounds s_themes s_last_progress s_status s_stop_reason s_head s_heads
+  local s_scope_base s_scope_head s_scope_paths scope_base scope_head scope_paths evidence_base evidence_paths
   local fix_rounds themes heads last_progress active stop_reason='' max_fix max_theme theme_max tmp
   local head_transition=0
   [ -n "$state" ] && [ -d "$state" ] || return 0
@@ -389,6 +463,9 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   s_stop_reason=$(_fm_vloop_journal_get "$stored" stop_reason)
   s_head=$(_fm_vloop_journal_get "$stored" head)
   s_heads=$(_fm_vloop_journal_get "$stored" heads)
+  s_scope_base=$(_fm_vloop_journal_get "$stored" scope_base)
+  s_scope_head=$(_fm_vloop_journal_get "$stored" scope_head)
+  s_scope_paths=$(_fm_vloop_journal_get "$stored" scope_paths)
   case "$s_fix_rounds" in ''|*[!0-9]*) s_fix_rounds=0 ;; esac
   case "$s_last_progress" in ''|*[!0-9]*) s_last_progress=$now ;; esac
 
@@ -421,6 +498,9 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
         printf 'active=%s\n' "$active"
         printf 'heads=%s\n' "$(_fm_vloop_journal_get "$stored" heads)"
         printf 'stop_reason=%s\n' "$s_stop_reason"
+        printf 'scope_base=%s\n' "$s_scope_base"
+        printf 'scope_head=%s\n' "$s_scope_head"
+        printf 'scope_paths=%s\n' "$s_scope_paths"
       } > "$tmp" || { rm -f "$tmp"; return 1; }
       mv -f "$tmp" "$journal" || { rm -f "$tmp"; return 1; }
       return 0
@@ -441,6 +521,13 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   phase=$(_fm_vloop_phase "$content" "$status" "$outcome")
   findings_sig=$(_fm_vloop_findings_sig "$content")
   steps_sig=$(_fm_vloop_steps_sig "$content")
+  evidence_base=$(fm_nm_strip_quotes "$(fm_nm_field "$content" base)")
+  evidence_paths=$(_fm_vloop_scope_paths "$content" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  if [ -n "$evidence_base" ] || [ -n "$evidence_paths" ]; then
+    _fm_vloop_scope_valid "$worktree" "$evidence_base" "$head" "$evidence_paths" || {
+      stop_reason="validation change-set manifest is invalid or untrusted for run $run_id"
+    }
+  fi
 
   fix_rounds=$s_fix_rounds
   themes=$s_themes
@@ -458,12 +545,30 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
     s_head=''
     heads=$head
     last_progress=$now
+    scope_base=$evidence_base
+    scope_paths=$evidence_paths
+    if [ -n "$scope_base" ] || [ -n "$scope_paths" ]; then scope_head=$head; else scope_head=''; fi
   elif [ -z "$heads" ]; then
     heads=$head
-  elif [ "$head" != "$s_head" ]; then
+    scope_base=$s_scope_base
+    scope_head=$s_scope_head
+    scope_paths=$s_scope_paths
+  elif [ -n "$evidence_base" ] || [ -n "$evidence_paths" ]; then
+    if [ "$evidence_base" != "$s_scope_base" ] || [ "$evidence_paths" != "$s_scope_paths" ]; then
+      stop_reason="validation change-set scope changed without a recovery handoff for run $run_id"
+    fi
+    scope_base=$s_scope_base
+    scope_head=$s_scope_head
+    scope_paths=$s_scope_paths
+  else
+    scope_base=$s_scope_base
+    scope_head=$s_scope_head
+    scope_paths=$s_scope_paths
+  fi
+  if [ -z "$stop_reason" ] && [ "$run_id" = "$s_run" ] && [ -n "$s_head" ] && [ "$head" != "$s_head" ]; then
     if _fm_vloop_head_seen "$heads" "$head"; then
       stop_reason="incoherent head transition from ${s_head:-unknown} to $head for run $run_id"
-    elif _fm_vloop_head_advance_valid "$worktree" "$s_head" "$head"; then
+    elif _fm_vloop_head_advance_valid "$worktree" "$s_head" "$head" "$scope_paths"; then
       head_transition=1
       heads="$heads $head"
     else
@@ -513,6 +618,9 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
     printf 'last_progress=%s\n' "$last_progress"
     printf 'active=%s\n' "$active"
     printf 'stop_reason=%s\n' "$stop_reason"
+    printf 'scope_base=%s\n' "$scope_base"
+    printf 'scope_head=%s\n' "$scope_head"
+    printf 'scope_paths=%s\n' "$scope_paths"
   } > "$tmp" || { rm -f "$tmp"; return 1; }
   mv -f "$tmp" "$journal" || { rm -f "$tmp"; return 1; }
   return 0

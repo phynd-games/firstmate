@@ -76,8 +76,8 @@ usage() {
 # The durable novelty signature note-render compares and records: the task's
 # captain-relevant status lines, its recorded PR identity, and its recorded
 # validation-loop stop. Plain multi-line text, compared verbatim.
-note_novelty_signature() { # <task>
-  local statusf metaf journal line status meta loop_stop
+note_novelty_signature() { # <task> [require-status]
+  local statusf metaf journal line status meta loop_stop require_status=${2:-0}
   statusf="$STATE/$1.status"
   metaf="$STATE/$1.meta"
   journal="$STATE/$1.validation-loop"
@@ -91,6 +91,8 @@ note_novelty_signature() { # <task>
       [ -n "$line" ] || continue
       if status_is_captain_relevant "$line"; then printf '%s\n' "$line"; fi
     done <<< "$status"
+  elif [ "$require_status" = 1 ]; then
+    return 1
   fi
   printf '\n'
   printf 'pr='
@@ -109,6 +111,7 @@ note_novelty_signature() { # <task>
   if [ -e "$journal" ] || [ -L "$journal" ]; then
     [ -f "$journal" ] && [ ! -L "$journal" ] || return 1
     loop_stop=$(cat "$journal") || return 1
+    _fm_vloop_journal_valid "$loop_stop" || return 1
     printf '%s\n' "$loop_stop" | grep '^stop_reason=' | tail -1 | cut -d= -f2- | tr -d '\n' || true
   fi
   printf '\n'
@@ -271,13 +274,28 @@ case "$CMD" in
         ;;
     esac
     MARKER="$STATE/.branch-note-sig-$TASK"
+    marker_present=0
+    if [ -e "$MARKER" ] || [ -L "$MARKER" ]; then marker_present=1; fi
     fm_lock_acquire_wait "$LOCK"
-    if ! SIG=$(note_novelty_signature "$TASK"); then
+    if ! SIG=$(note_novelty_signature "$TASK" "$marker_present"); then
       fm_lock_release "$LOCK"
       printf 'render\n'
       exit 0
     fi
-    LAST=$(cat "$MARKER" 2>/dev/null || true)
+    if [ -e "$MARKER" ] || [ -L "$MARKER" ]; then
+      [ -f "$MARKER" ] && [ ! -L "$MARKER" ] || {
+        fm_lock_release "$LOCK"
+        printf 'render\n'
+        exit 0
+      }
+      LAST=$(cat "$MARKER" 2>/dev/null) || {
+        fm_lock_release "$LOCK"
+        printf 'render\n'
+        exit 0
+      }
+    else
+      LAST=''
+    fi
     if [ -n "$LAST" ] && [ "$SIG" = "$LAST" ]; then
       fm_lock_release "$LOCK"
       printf 'coalesce duplicate routine outcome for %s: no new failure, decision, terminal result, PR/CI change, or validation-loop stop since the last rendered note\n' "$TASK"

@@ -290,6 +290,28 @@ EOF
   [ "$(FM_VLOOP_NOW=2000 fm_vloop_verdict "$state" bogus 2>/dev/null || true)" = \
     'stop validation-loop journal unreadable or incomplete; recover in the same copy' ] \
     || fail "an unrecognized journal status continued"
+  cat > "$state/incoherent.validation-loop" <<'EOF'
+version=1
+run=01RUN
+head=abc1234
+status=completed
+phase=terminal
+findings_sig=
+progress_sig=abc
+fix_rounds=0
+themes=
+heads=abc1234
+last_observed=1000
+last_progress=1000
+active=1
+stop_reason=
+scope_base=
+scope_head=
+scope_paths=
+EOF
+  [ "$(FM_VLOOP_NOW=2000 fm_vloop_verdict "$state" incoherent 2>/dev/null || true)" = \
+    'stop validation-loop journal unreadable or incomplete; recover in the same copy' ] \
+    || fail "an incoherent terminal journal state continued"
   unset FM_FAKE_CREW_STATE
   pass "malformed journal stop: incomplete and unrecognized loop state fails closed"
 }
@@ -461,8 +483,9 @@ test_head_change_set_is_bounded() {
   new_head=$(git -C "$repo" rev-parse HEAD)
   ev_running "$ev" 01RUN running pending
   sed -i.bak "s/abc1234/$old_head/" "$ev" && rm -f "$ev.bak"
+  printf 'base: "%s"\nchanges[1]{path}:\n  file\n' "$old_head" >> "$ev"
   fold "$state" changes "$ev" 1000 "$repo"
-  sed -i.bak "s/$old_head/$new_head/" "$ev" && rm -f "$ev.bak"
+  sed -i.bak "s/^  head: \"$old_head\"/  head: \"$new_head\"/" "$ev" && rm -f "$ev.bak"
   FM_VLOOP_MAX_CHANGE_COMMITS=1 fold "$state" changes "$ev" 1010 "$repo"
   v=$(FM_VLOOP_MAX_CHANGE_COMMITS=1 verdict_at "$state" changes 1020)
   case "$v" in
@@ -473,11 +496,12 @@ test_head_change_set_is_bounded() {
   state="$dir/known-state"
   ev_running "$ev" 01RUN running pending
   sed -i.bak "s/abc1234/$old_head/" "$ev" && rm -f "$ev.bak"
+  printf 'base: "%s"\nchanges[1]{path}:\n  file\n' "$old_head" >> "$ev"
   fold "$state" changes "$ev" 1030 "$repo"
   printf 'unrelated\n' > "$repo/unrelated.txt"
   git -C "$repo" add unrelated.txt && git -C "$repo" commit -qm unrelated
   unrelated_head=$(git -C "$repo" rev-parse HEAD)
-  sed -i.bak "s/$old_head/$unrelated_head/" "$ev" && rm -f "$ev.bak"
+  sed -i.bak "s/^  head: \"$old_head\"/  head: \"$unrelated_head\"/" "$ev" && rm -f "$ev.bak"
   fold "$state" changes "$ev" 1040 "$repo"
   v=$(verdict_at "$state" changes 1050)
   case "$v" in
@@ -485,6 +509,29 @@ test_head_change_set_is_bounded() {
     *) fail "a new unrelated file entered the automatic head transition: '$v'" ;;
   esac
   pass "head change set: an overlarge transition stops instead of refreshing progress"
+}
+
+test_head_change_set_allows_authenticated_addition() {
+  local state ev dir repo old_head new_head v
+  dir=$(make_case vloop-change-addition); state="$dir/state"; ev="$dir/ev"; repo="$dir/repo"
+  git init -q "$repo"
+  git -C "$repo" config user.email test@example.com
+  git -C "$repo" config user.name test
+  printf 'base\n' > "$repo/file"
+  git -C "$repo" add file && git -C "$repo" commit -qm base
+  old_head=$(git -C "$repo" rev-parse HEAD)
+  printf 'added\n' > "$repo/new.txt"
+  git -C "$repo" add new.txt && git -C "$repo" commit -qm addition
+  new_head=$(git -C "$repo" rev-parse HEAD)
+  ev_running "$ev" 01RUN running pending
+  sed -i.bak "s/abc1234/$old_head/" "$ev" && rm -f "$ev.bak"
+  printf 'base: "%s"\nchanges[1]{path}:\n  new.txt\n' "$old_head" >> "$ev"
+  fold "$state" addition "$ev" 1000 "$repo"
+  sed -i.bak "s/^  head: \"$old_head\"/  head: \"$new_head\"/" "$ev" && rm -f "$ev.bak"
+  fold "$state" addition "$ev" 1010 "$repo"
+  v=$(verdict_at "$state" addition 1020)
+  [ "$v" = continue ] || fail "an authenticated new-file change stopped: '$v'"
+  pass "head change set: an authenticated new file remains eligible"
 }
 
 test_head_transition_is_coherent() {
@@ -501,11 +548,12 @@ test_head_transition_is_coherent() {
   new_head=$(git -C "$repo" rev-parse HEAD)
   ev_running "$ev" 01RUN running pending
   sed -i.bak "s/abc1234/$old_head/" "$ev" && rm -f "$ev.bak"
+  printf 'base: "%s"\nchanges[1]{path}:\n  file\n' "$old_head" >> "$ev"
   fold "$state" head "$ev" 1000 "$repo"
-  sed -i.bak "s/$old_head/$new_head/" "$ev" && rm -f "$ev.bak"
+  sed -i.bak "s/^  head: \"$old_head\"/  head: \"$new_head\"/" "$ev" && rm -f "$ev.bak"
   fold "$state" head "$ev" 1010 "$repo"
   [ "$(verdict_at "$state" head 1020)" = continue ] || fail "a first head advance stopped"
-  sed -i.bak "s/$new_head/$old_head/" "$ev" && rm -f "$ev.bak"
+  sed -i.bak "s/^  head: \"$new_head\"/  head: \"$old_head\"/" "$ev" && rm -f "$ev.bak"
   fold "$state" head "$ev" 1030 "$repo"
   v=$(verdict_at "$state" head 1040)
   case "$v" in
@@ -626,6 +674,7 @@ test_fix_round_bound_semantics
 test_stall_stop_and_progress_resume
 test_coarse_evidence_does_not_enforce_stall
 test_head_change_set_is_bounded
+test_head_change_set_allows_authenticated_addition
 test_head_transition_is_coherent
 test_threshold_overrides_cannot_disable_bounds
 test_watcher_surfaces_validation_loop_limit

@@ -1363,23 +1363,28 @@ EOF
     #     such a turn-end is exactly the swallowed-finish this change guards against.
     # Actionable -> enqueue, advance .seen-* markers, exit. Benign (a no-verb wake
     # whose crew IS provably working) in always-on mode -> advance the markers so it
-    # will not re-fire, log, and keep blocking without enqueuing. The provably-working
-    # check is the only costly one (it may run a bounded no-mistakes call), so the ||
-    # ordering evaluates it ONLY for a non-afk, no-captain-verb signal.
+    # will not re-fire, log, and keep blocking without enqueuing. The validation-loop
+    # classification runs before status short-circuiting so a limit reason is retained
+    # when a batch also contains a captain verb.
     signal_actionable=0
     FM_SIGNAL_LIMIT_REASON=''
+    signal_limit_reason=''
     # shellcheck disable=SC2086  # $files is a space-separated status-path list (ids carry no spaces)
     if afk_present; then
       signal_actionable=1
-    elif signal_reason_is_actionable $files; then
-      signal_actionable=1
-    elif signal_crew_provably_working $files; then
-      :
     else
+      signal_collect_limit_reason $files >/dev/null 2>&1 || true
+      signal_limit_reason=$FM_SIGNAL_LIMIT_REASON
+    fi
+    if [ "$signal_actionable" -eq 0 ] && signal_reason_is_actionable $files; then
       signal_actionable=1
-      if [ -n "$FM_SIGNAL_LIMIT_REASON" ]; then
-        reason="$reason (validation loop limit: $FM_SIGNAL_LIMIT_REASON)"
-      fi
+    elif [ "$signal_actionable" -eq 0 ] && signal_crew_provably_working $files; then
+      :
+    elif [ "$signal_actionable" -eq 0 ]; then
+      signal_actionable=1
+    fi
+    if [ -n "$signal_limit_reason" ]; then
+      reason="$reason (validation loop limit: $signal_limit_reason)"
     fi
     if [ "$signal_actionable" -eq 1 ]; then
       while IFS=$(printf '\t') read -r sf sig f; do

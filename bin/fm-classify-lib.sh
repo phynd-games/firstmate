@@ -1491,6 +1491,28 @@ signal_crew_provably_working() {  # <file> ...
   return 0
 }
 
+signal_collect_limit_reason() {  # <file> ...
+  local f base task seen='' class reason
+  FM_SIGNAL_LIMIT_REASON=''
+  for f in "$@"; do
+    base=${f##*/}
+    case "$base" in
+      *.status) task=${base%.status} ;;
+      *.turn-ended) task=${base%.turn-ended} ;;
+      *) continue ;;
+    esac
+    [ -n "$task" ] || continue
+    case " $seen " in *" $task "*) continue ;; esac
+    seen="$seen $task"
+    class=$(crew_absorb_class "$task")
+    if [ "$class" = limit ] && [ -z "$FM_SIGNAL_LIMIT_REASON" ]; then
+      reason=$(fm_vloop_reason "${STATE:-${FM_STATE_OVERRIDE:-}}" "$task" 2>/dev/null || true)
+      FM_SIGNAL_LIMIT_REASON=${reason:-automatic continuation limit reached}
+    fi
+  done
+  [ -n "$FM_SIGNAL_LIMIT_REASON" ]
+}
+
 # 0 (terminal/actionable) if a stale window's last status line is
 # captain-relevant; 1 otherwise, including the no-status case. A 1 only means
 # "non-terminal"; the always-on watcher then applies crew_is_provably_working,

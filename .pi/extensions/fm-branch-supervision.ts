@@ -600,6 +600,7 @@ export default function (pi: ExtensionAPI) {
         display: false,
       };
       pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
+      runOutcomeScript(["note-render", "--task", task]);
     } else {
       // Deterministic duplicate coalescing for routine notes: once main owns
       // a task's supervision state, another no-change note about it renders

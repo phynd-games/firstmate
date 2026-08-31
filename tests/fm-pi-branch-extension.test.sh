@@ -603,6 +603,7 @@ console.log(`CACHE_KEY=${rewriteA.prompt_cache_key}`);
 // turn; routine while main is busy defers to after the captain's next prompt;
 // captain-relevant appends and triggers exactly one turn. Store rows are
 // written BEFORE the merge note and marked read after it.
+writeFileSync(`${home}/state/task-9.status`, "working: validating\n");
 const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
 const r1 = await report.execute("call-1", { task: "task-9", verdict: "routine", summary: "worker healthy, no action needed", wake: "signal: working" }, undefined, undefined, {});
 if (r1.isError) throw new Error(`routine report failed: ${JSON.stringify(r1)}`);

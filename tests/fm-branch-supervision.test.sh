@@ -213,6 +213,10 @@ test_note_signature_read_failures_render_and_line_boundaries() {
   rm -f "$home/state/task-read.status"
   mkdir "$home/state/task-read.status"
   [ "$(gate task-read)" = render ] || fail "an unreadable status source was coalesced"
+  printf 'failed: corrupt journal\n' > "$home/state/task-corrupt.status"
+  [ "$(gate task-corrupt)" = render ] || fail "the initial corrupt-journal state did not render"
+  printf 'version=1\nstop_reason=\n' > "$home/state/task-corrupt.validation-loop"
+  [ "$(gate task-corrupt)" = render ] || fail "a corrupt journal was coalesced"
   pass "note signature: read failures render and status line boundaries remain distinct"
 }
 
