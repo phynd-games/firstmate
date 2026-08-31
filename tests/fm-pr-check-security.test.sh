@@ -86,6 +86,7 @@ make_case() {
     .agents/skills/firstmate-pr-self-review/SKILL.md; do
     printf 'fixture\n' > "$dir/wt/$fixture_file"
   done
+  printf 'fixture\nbase surface\n' > "$dir/wt/bin/fm-pr-check.sh"
   git -C "$dir/wt" remote add origin https://github.com/o/r.git
   git -C "$dir/wt" add fixture.txt bin tests .agents
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
@@ -96,7 +97,7 @@ make_case() {
     bin/fm-operational-input.sh bin/fm-pr-create.sh \
     tests/fm-pr-check-security.test.sh \
     .agents/skills/firstmate-pr-self-review/SKILL.md; do
-    printf 'reviewed surface\n' >> "$dir/wt/$fixture_file"
+    printf 'fixture\nreviewed surface\n' > "$dir/wt/$fixture_file"
   done
   git -C "$dir/wt" add bin tests .agents
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm change
@@ -243,10 +244,45 @@ surface_change_digest() {
   git -C "$case_dir/wt" diff --no-color --unified=0 "$merge_base_sha" "$target_head" -- "$file" | fm_pr_sha256_stream
 }
 
+surface_transition_binding_digest() {
+  local surface=$1 evidence_ref=$2 evidence_digest=$3 change_digest=$4 evidence_hex=$5
+  local consequence_ref=$6 consequence_side=$7 consequence_digest=$8 consequence_hex=$9
+  local fix_ref=${10} fix_side=${11} fix_digest=${12} fix_hex=${13}
+  printf '%s\n' "$surface|$evidence_ref|$evidence_digest|$change_digest|$evidence_hex|$consequence_ref|$consequence_side|$consequence_digest|$consequence_hex|$fix_ref|$fix_side|$fix_digest|$fix_hex" | fm_pr_sha256_stream
+}
+
+surface_review_record() {
+  local label=$1 surface=$2 file=$3 new_digest=$4 new_hex=$5 old_digest=$6 old_hex=$7 change_digest=$8 binding
+  [ -n "$old_hex" ] || {
+    surface_review_single_record "$label" "$surface" "$file" "$new_digest" "$new_hex" "$change_digest"
+    return
+  }
+  binding=$(surface_transition_binding_digest "$surface" "$file:2" "$new_digest" "$change_digest" "$new_hex" "$file:2" old "$old_digest" "$old_hex" "$file:2" new "$new_digest" "$new_hex") || return 1
+  printf '%s: reviewed; surface=%s; files=%s; evidence=%s:2 sha256=%s change-sha256=%s line-hex=%s hunk=%s:2; consequence=anchor=%s:2 side=old sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 binding=%s; fix=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 binding=%s\n' \
+    "$label" "$surface" "$file" "$file" "$new_digest" "$change_digest" "$new_hex" "$file" "$file" "$old_digest" "$change_digest" "$old_hex" "$file" "$binding" "$file" "$new_digest" "$change_digest" "$new_hex" "$file" "$binding"
+}
+
+surface_review_single_record() {
+  local label=$1 surface=$2 file=$3 digest=$4 line_hex=$5 change_digest=$6 binding
+  binding=$(surface_transition_binding_digest "$surface" "$file:2" "$digest" "$change_digest" "$line_hex" "$file:2" new "$digest" "$line_hex" "$file:2" new "$digest" "$line_hex") || return 1
+  printf '%s: reviewed; surface=%s; files=%s; evidence=%s:2 sha256=%s change-sha256=%s line-hex=%s hunk=%s:2; consequence=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 binding=%s; fix=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 binding=%s\n' \
+    "$label" "$surface" "$file" "$file" "$digest" "$change_digest" "$line_hex" "$file" "$file" "$digest" "$change_digest" "$line_hex" "$file" "$binding" "$file" "$digest" "$change_digest" "$line_hex" "$file" "$binding"
+}
+
+surface_review_single_record_at_line() {
+  local label=$1 surface=$2 file=$3 line=$4 digest=$5 line_hex=$6 change_digest=$7 side=${8:-new} binding reference
+  reference="$file:$line"
+  binding=$(surface_transition_binding_digest "$surface" "$reference" "$digest" "$change_digest" "$line_hex" "$reference" "$side" "$digest" "$line_hex" "$reference" "$side" "$digest" "$line_hex") || return 1
+  printf '%s: reviewed; surface=%s; files=%s; evidence=%s sha256=%s change-sha256=%s line-hex=%s hunk=%s; consequence=anchor=%s side=%s sha256=%s change-sha256=%s line-hex=%s hunk=%s binding=%s; fix=anchor=%s side=%s sha256=%s change-sha256=%s line-hex=%s hunk=%s binding=%s\n' \
+    "$label" "$surface" "$file" "$reference" "$digest" "$change_digest" "$line_hex" "$reference" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$reference" "$binding" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$reference" "$binding"
+}
+
 write_self_review_report() {
   local home=$1 id=$2 report case_dir target_repository target_head base_head merge_base_sha substrate_root substrate_head empty_digest changed_digest
   local authority_digest security_digest path_digest failure_digest tests_digest documentation_digest delivery_digest
+  local authority_old_digest security_old_digest path_old_digest failure_old_digest tests_old_digest documentation_old_digest delivery_old_digest
   local authority_line_hex security_line_hex path_line_hex failure_line_hex tests_line_hex documentation_line_hex delivery_line_hex
+  local authority_old_line_hex security_old_line_hex path_old_line_hex failure_old_line_hex tests_old_line_hex documentation_old_line_hex delivery_old_line_hex
   local authority_change_digest security_change_digest path_change_digest failure_change_digest tests_change_digest documentation_change_digest delivery_change_digest
   report="$home/data/$id/pr-self-review.md"
   case_dir=$(cd "$home/.." && pwd)
@@ -269,6 +305,20 @@ write_self_review_report() {
   tests_line_hex=$(self_review_line_hex "$case_dir" tests/fm-pr-check-security.test.sh)
   documentation_line_hex=$(self_review_line_hex "$case_dir" .agents/skills/firstmate-pr-self-review/SKILL.md)
   delivery_line_hex=$(self_review_line_hex "$case_dir" bin/fm-pr-create.sh)
+  authority_old_digest=$(git -C "$case_dir/wt" show "main:bin/fm-pr-check.sh" | sed -n '2p' | fm_pr_sha256_stream)
+  security_old_digest=$(git -C "$case_dir/wt" show "main:bin/fm-pr-lib.sh" | sed -n '2p' | fm_pr_sha256_stream)
+  path_old_digest=$(git -C "$case_dir/wt" show "main:bin/fm-pr-self-review-check.sh" | sed -n '2p' | fm_pr_sha256_stream)
+  failure_old_digest=$(git -C "$case_dir/wt" show "main:bin/fm-operational-input.sh" | sed -n '2p' | fm_pr_sha256_stream)
+  tests_old_digest=$(git -C "$case_dir/wt" show "main:tests/fm-pr-check-security.test.sh" | sed -n '2p' | fm_pr_sha256_stream)
+  documentation_old_digest=$(git -C "$case_dir/wt" show "main:.agents/skills/firstmate-pr-self-review/SKILL.md" | sed -n '2p' | fm_pr_sha256_stream)
+  delivery_old_digest=$(git -C "$case_dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '2p' | fm_pr_sha256_stream)
+  authority_old_line_hex=$(git -C "$case_dir/wt" show "main:bin/fm-pr-check.sh" | awk 'NR == 2 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  security_old_line_hex=$(git -C "$case_dir/wt" show "main:bin/fm-pr-lib.sh" | awk 'NR == 2 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  path_old_line_hex=$(git -C "$case_dir/wt" show "main:bin/fm-pr-self-review-check.sh" | awk 'NR == 2 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  failure_old_line_hex=$(git -C "$case_dir/wt" show "main:bin/fm-operational-input.sh" | awk 'NR == 2 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  tests_old_line_hex=$(git -C "$case_dir/wt" show "main:tests/fm-pr-check-security.test.sh" | awk 'NR == 2 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  documentation_old_line_hex=$(git -C "$case_dir/wt" show "main:.agents/skills/firstmate-pr-self-review/SKILL.md" | awk 'NR == 2 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  delivery_old_line_hex=$(git -C "$case_dir/wt" show "main:bin/fm-pr-create.sh" | awk 'NR == 2 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
   authority_change_digest=$(surface_change_digest "$case_dir" bin/fm-pr-check.sh)
   security_change_digest=$(surface_change_digest "$case_dir" bin/fm-pr-lib.sh)
   path_change_digest=$(surface_change_digest "$case_dir" bin/fm-pr-self-review-check.sh)
@@ -304,13 +354,13 @@ write_self_review_report() {
     "Substrate changed files: $empty_digest" \
     'Substrate diff: no substrate diff' \
     '# Surface review' \
-    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:2 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$authority_line_hex hunk=bin/fm-pr-check.sh:2; consequence=anchor=bin/fm-pr-check.sh:2 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$authority_line_hex behavior=non-authorizing binding=$(surface_binding_digest authority bin/fm-pr-check.sh:2 "$authority_digest" "$authority_change_digest" "$authority_line_hex" non-authorizing retain-owner); fix=anchor=bin/fm-pr-check.sh:2 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$authority_line_hex action=retain-owner binding=$(surface_binding_digest authority bin/fm-pr-check.sh:2 "$authority_digest" "$authority_change_digest" "$authority_line_hex" non-authorizing retain-owner)" \
-    "Security: reviewed; surface=security; files=bin/fm-pr-lib.sh; evidence=bin/fm-pr-lib.sh:2 sha256=$security_digest change-sha256=$security_change_digest line-hex=$security_line_hex hunk=bin/fm-pr-lib.sh:2; consequence=anchor=bin/fm-pr-lib.sh:2 sha256=$security_digest change-sha256=$security_change_digest line-hex=$security_line_hex behavior=provenance-bound binding=$(surface_binding_digest security bin/fm-pr-lib.sh:2 "$security_digest" "$security_change_digest" "$security_line_hex" provenance-bound retain-boundary); fix=anchor=bin/fm-pr-lib.sh:2 sha256=$security_digest change-sha256=$security_change_digest line-hex=$security_line_hex action=retain-boundary binding=$(surface_binding_digest security bin/fm-pr-lib.sh:2 "$security_digest" "$security_change_digest" "$security_line_hex" provenance-bound retain-boundary)" \
-    "Path: reviewed; surface=path; files=bin/fm-pr-self-review-check.sh; evidence=bin/fm-pr-self-review-check.sh:2 sha256=$path_digest change-sha256=$path_change_digest line-hex=$path_line_hex hunk=bin/fm-pr-self-review-check.sh:2; consequence=anchor=bin/fm-pr-self-review-check.sh:2 sha256=$path_digest change-sha256=$path_change_digest line-hex=$path_line_hex behavior=path-safe binding=$(surface_binding_digest path bin/fm-pr-self-review-check.sh:2 "$path_digest" "$path_change_digest" "$path_line_hex" path-safe retain-validation); fix=anchor=bin/fm-pr-self-review-check.sh:2 sha256=$path_digest change-sha256=$path_change_digest line-hex=$path_line_hex action=retain-validation binding=$(surface_binding_digest path bin/fm-pr-self-review-check.sh:2 "$path_digest" "$path_change_digest" "$path_line_hex" path-safe retain-validation)" \
-    "Failure: reviewed; surface=failure; files=bin/fm-operational-input.sh; evidence=bin/fm-operational-input.sh:2 sha256=$failure_digest change-sha256=$failure_change_digest line-hex=$failure_line_hex hunk=bin/fm-operational-input.sh:2; consequence=anchor=bin/fm-operational-input.sh:2 sha256=$failure_digest change-sha256=$failure_change_digest line-hex=$failure_line_hex behavior=fail-closed binding=$(surface_binding_digest failure bin/fm-operational-input.sh:2 "$failure_digest" "$failure_change_digest" "$failure_line_hex" fail-closed retain-refusal); fix=anchor=bin/fm-operational-input.sh:2 sha256=$failure_digest change-sha256=$failure_change_digest line-hex=$failure_line_hex action=retain-refusal binding=$(surface_binding_digest failure bin/fm-operational-input.sh:2 "$failure_digest" "$failure_change_digest" "$failure_line_hex" fail-closed retain-refusal)" \
-    "Tests: reviewed; surface=tests; files=tests/fm-pr-check-security.test.sh; evidence=tests/fm-pr-check-security.test.sh:2 sha256=$tests_digest change-sha256=$tests_change_digest line-hex=$tests_line_hex hunk=tests/fm-pr-check-security.test.sh:2; consequence=anchor=tests/fm-pr-check-security.test.sh:2 sha256=$tests_digest change-sha256=$tests_change_digest line-hex=$tests_line_hex behavior=behavioral binding=$(surface_binding_digest tests tests/fm-pr-check-security.test.sh:2 "$tests_digest" "$tests_change_digest" "$tests_line_hex" behavioral retain-regression); fix=anchor=tests/fm-pr-check-security.test.sh:2 sha256=$tests_digest change-sha256=$tests_change_digest line-hex=$tests_line_hex action=retain-regression binding=$(surface_binding_digest tests tests/fm-pr-check-security.test.sh:2 "$tests_digest" "$tests_change_digest" "$tests_line_hex" behavioral retain-regression)" \
-    "Documentation: reviewed; surface=documentation; files=.agents/skills/firstmate-pr-self-review/SKILL.md; evidence=.agents/skills/firstmate-pr-self-review/SKILL.md:2 sha256=$documentation_digest change-sha256=$documentation_change_digest line-hex=$documentation_line_hex hunk=.agents/skills/firstmate-pr-self-review/SKILL.md:2; consequence=anchor=.agents/skills/firstmate-pr-self-review/SKILL.md:2 sha256=$documentation_digest change-sha256=$documentation_change_digest line-hex=$documentation_line_hex behavior=contract-aligned binding=$(surface_binding_digest documentation .agents/skills/firstmate-pr-self-review/SKILL.md:2 "$documentation_digest" "$documentation_change_digest" "$documentation_line_hex" contract-aligned retain-contract); fix=anchor=.agents/skills/firstmate-pr-self-review/SKILL.md:2 sha256=$documentation_digest change-sha256=$documentation_change_digest line-hex=$documentation_line_hex action=retain-contract binding=$(surface_binding_digest documentation .agents/skills/firstmate-pr-self-review/SKILL.md:2 "$documentation_digest" "$documentation_change_digest" "$documentation_line_hex" contract-aligned retain-contract)" \
-    "Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:2 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex hunk=bin/fm-pr-create.sh:2; consequence=anchor=bin/fm-pr-create.sh:2 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex behavior=no-mistakes-owned binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:2 "$delivery_digest" "$delivery_change_digest" "$delivery_line_hex" no-mistakes-owned retain-no-mistakes); fix=anchor=bin/fm-pr-create.sh:2 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex action=retain-no-mistakes binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:2 "$delivery_digest" "$delivery_change_digest" "$delivery_line_hex" no-mistakes-owned retain-no-mistakes)" \
+    "$(surface_review_record Authority authority bin/fm-pr-check.sh "$authority_digest" "$authority_line_hex" "$authority_old_digest" "$authority_old_line_hex" "$authority_change_digest")" \
+    "$(surface_review_record Security security bin/fm-pr-lib.sh "$security_digest" "$security_line_hex" "$security_old_digest" "$security_old_line_hex" "$security_change_digest")" \
+    "$(surface_review_record Path path bin/fm-pr-self-review-check.sh "$path_digest" "$path_line_hex" "$path_old_digest" "$path_old_line_hex" "$path_change_digest")" \
+    "$(surface_review_record Failure failure bin/fm-operational-input.sh "$failure_digest" "$failure_line_hex" "$failure_old_digest" "$failure_old_line_hex" "$failure_change_digest")" \
+    "$(surface_review_record Tests tests tests/fm-pr-check-security.test.sh "$tests_digest" "$tests_line_hex" "$tests_old_digest" "$tests_old_line_hex" "$tests_change_digest")" \
+    "$(surface_review_record Documentation documentation .agents/skills/firstmate-pr-self-review/SKILL.md "$documentation_digest" "$documentation_line_hex" "$documentation_old_digest" "$documentation_old_line_hex" "$documentation_change_digest")" \
+    "$(surface_review_record Delivery delivery bin/fm-pr-create.sh "$delivery_digest" "$delivery_line_hex" "$delivery_old_digest" "$delivery_old_line_hex" "$delivery_change_digest")" \
     '# Verification' \
     'Command: focused PR-ready boundary test' \
     'Result: passed' \
@@ -755,6 +805,27 @@ PY
 
   write_self_review_report "$dir/home" task-a
   authority_digest=$(self_review_line_digest "$dir" bin/fm-pr-check.sh)
+  authority_line_hex=$(self_review_line_hex "$dir" bin/fm-pr-check.sh)
+  authority_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-check.sh)
+  authority_record=$(surface_review_single_record Authority authority bin/fm-pr-check.sh "$authority_digest" "$authority_line_hex" "$authority_change_digest")
+  python3 - "$report" "$authority_record" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+record = sys.argv[2]
+report.write_text(re.sub(r"(?m)^Authority: .*", record, report.read_text(encoding="utf-8"), count=1), encoding="utf-8")
+PY
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a same-side review of a modified hunk"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "same-side modified-hunk evidence left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  authority_digest=$(self_review_line_digest "$dir" bin/fm-pr-check.sh)
   sed -i.bak "s#^Authority: .*#Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:2 sha256=$authority_digest hunk=bin/fm-pr-check.sh:2; consequence=anchor=bin/fm-pr-check.sh:2 sha256=$authority_digest behavior=non-authorizing binding=0000000000000000000000000000000000000000000000000000000000000000; fix=anchor=bin/fm-pr-check.sh:2 sha256=$authority_digest action=retain-owner binding=0000000000000000000000000000000000000000000000000000000000000000#" "$report"
   rm -f "$report.bak"
   set +e
@@ -811,8 +882,17 @@ PY
   delivery_digest=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '1p' | fm_pr_sha256_stream)
   delivery_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-create.sh)
   delivery_line_hex=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | awk 'NR == 1 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
-  delivery_binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:1 "$delivery_digest" "$delivery_change_digest" "$delivery_line_hex" no-mistakes-owned retain-no-mistakes)
-  sed -i.bak "s#^Delivery: .*#Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex hunk=bin/fm-pr-create.sh:1; consequence=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex behavior=no-mistakes-owned binding=$delivery_binding; fix=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex action=retain-no-mistakes binding=$delivery_binding#" "$report"
+  delivery_record=$(surface_review_single_record_at_line Delivery delivery bin/fm-pr-create.sh 1 "$delivery_digest" "$delivery_line_hex" "$delivery_change_digest" old)
+  python3 - "$report" "$delivery_record" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+record = sys.argv[2]
+text = report.read_text(encoding="utf-8")
+report.write_text(re.sub(r"(?m)^Delivery: .*", record, text, count=1), encoding="utf-8")
+PY
   rm -f "$report.bak"
   run_check_entry "$dir" task-a https://github.com/o/r/pull/105 >/dev/null \
     || fail "PR-ready path rejected a deleted changed-file evidence reference"
@@ -828,36 +908,47 @@ PY
 
   sed -i.bak 's/^review_base_ref=fm\/m1-001-provenance-validator$/review_base_ref=main/' "$dir/home/state/task-a.meta"
   rm -f "$dir/home/state/task-a.meta.bak"
+  printf 'fixture\nrestored delivery surface\n' > "$dir/wt/bin/fm-pr-create.sh"
+  git -C "$dir/wt" add bin/fm-pr-create.sh
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm restore-delivery
   printf '#!/usr/bin/env bash\nspaced evidence\n' > "$dir/wt/bin/fm-pr spaced.sh"
   git -C "$dir/wt" add -- 'bin/fm-pr spaced.sh'
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm spaced-path
   write_self_review_report "$dir/home" task-a
-  delivery_digest=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '1p' | fm_pr_sha256_stream)
+  delivery_digest=$(self_review_line_digest "$dir" bin/fm-pr-create.sh)
   delivery_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-create.sh)
-  delivery_line_hex=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | awk 'NR == 1 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
-  delivery_binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:1 "$delivery_digest" "$delivery_change_digest" "$delivery_line_hex" no-mistakes-owned retain-no-mistakes)
-  sed -i.bak "s#^Delivery: .*#Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex hunk=bin/fm-pr-create.sh:1; consequence=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex behavior=no-mistakes-owned binding=$delivery_binding; fix=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex action=retain-no-mistakes binding=$delivery_binding#" "$report"
-  rm -f "$report.bak"
-  spaced_digest=$(sed -n '2p' "$dir/wt/bin/fm-pr spaced.sh" | fm_pr_sha256_stream)
-  spaced_line_hex=$(awk 'NR == 2 { printf "%s", $0 }' "$dir/wt/bin/fm-pr spaced.sh" | od -An -tx1 | tr -d ' \n')
-  spaced_change_digest=$(surface_change_digest_for_file "$dir" 'bin/fm-pr spaced.sh')
-  spaced_path=$(fm_pr_review_path_encode 'bin/fm-pr spaced.sh')
-  python3 - "$report" "$spaced_path" "$spaced_digest" "$spaced_change_digest" "$spaced_line_hex" <<'PY'
+  delivery_line_hex=$(self_review_line_hex "$dir" bin/fm-pr-create.sh)
+  delivery_record=$(surface_review_single_record Delivery delivery bin/fm-pr-create.sh "$delivery_digest" "$delivery_line_hex" "$delivery_change_digest")
+  python3 - "$report" "$delivery_record" <<'PY'
 import pathlib
 import re
 import sys
 
 report = pathlib.Path(sys.argv[1])
-spaced_path, spaced_digest, spaced_change_digest, spaced_line_hex = sys.argv[2:6]
-import hashlib
-binding = hashlib.sha256(("authority|" + spaced_path + ":2|" + spaced_digest + "|" + spaced_change_digest + "|" + spaced_line_hex + "|non-authorizing|retain-owner\n").encode()).hexdigest()
+record = sys.argv[2]
+report.write_text(re.sub(r"(?m)^Delivery: .*", record, report.read_text(encoding="utf-8"), count=1), encoding="utf-8")
+PY
+  rm -f "$report.bak"
+  spaced_digest=$(sed -n '2p' "$dir/wt/bin/fm-pr spaced.sh" | fm_pr_sha256_stream)
+  spaced_line_hex=$(awk 'NR == 2 { printf "%s", $0 }' "$dir/wt/bin/fm-pr spaced.sh" | od -An -tx1 | tr -d ' \n')
+  spaced_change_digest=$(surface_change_digest_for_file "$dir" 'bin/fm-pr spaced.sh')
+  spaced_path=$(fm_pr_review_path_encode 'bin/fm-pr spaced.sh')
+  authority_record=$(surface_review_single_record Authority authority "$spaced_path" "$spaced_digest" "$spaced_line_hex" "$spaced_change_digest")
+  python3 - "$report" "$authority_record" "$spaced_path" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+authority_record = sys.argv[2]
+spaced_path = sys.argv[3]
 text = report.read_text(encoding="utf-8")
 text = re.sub(
     r"(?m)^Authority: .*",
-    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh," + spaced_path + "; evidence=" + spaced_path + ":2 sha256=" + spaced_digest + " change-sha256=" + spaced_change_digest + " line-hex=" + spaced_line_hex + " hunk=" + spaced_path + ":2; consequence=anchor=" + spaced_path + ":2 sha256=" + spaced_digest + " change-sha256=" + spaced_change_digest + " line-hex=" + spaced_line_hex + " behavior=non-authorizing binding=" + binding + "; fix=anchor=" + spaced_path + ":2 sha256=" + spaced_digest + " change-sha256=" + spaced_change_digest + " line-hex=" + spaced_line_hex + " action=retain-owner binding=" + binding,
+    authority_record.replace("files=" + authority_record.split("files=", 1)[1].split(";", 1)[0], "files=bin/fm-pr-check.sh," + spaced_path),
     text,
     count=1,
-)
+  )
 report.write_text(text, encoding="utf-8")
 PY
   rm -f "$report.bak"
@@ -870,11 +961,19 @@ PY
   git -C "$dir/wt" add -- 'bin/fm-pr,comma.sh' 'bin/fm-pr;semi.sh'
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm delimiter-paths
   write_self_review_report "$dir/home" task-a
-  delivery_digest=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '1p' | fm_pr_sha256_stream)
+  delivery_digest=$(self_review_line_digest "$dir" bin/fm-pr-create.sh)
   delivery_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-create.sh)
-  delivery_line_hex=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | awk 'NR == 1 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
-  delivery_binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:1 "$delivery_digest" "$delivery_change_digest" "$delivery_line_hex" no-mistakes-owned retain-no-mistakes)
-  sed -i.bak "s#^Delivery: .*#Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex hunk=bin/fm-pr-create.sh:1; consequence=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex behavior=no-mistakes-owned binding=$delivery_binding; fix=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex action=retain-no-mistakes binding=$delivery_binding#" "$report"
+  delivery_line_hex=$(self_review_line_hex "$dir" bin/fm-pr-create.sh)
+  delivery_record=$(surface_review_single_record Delivery delivery bin/fm-pr-create.sh "$delivery_digest" "$delivery_line_hex" "$delivery_change_digest")
+  python3 - "$report" "$delivery_record" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+record = sys.argv[2]
+report.write_text(re.sub(r"(?m)^Delivery: .*", record, report.read_text(encoding="utf-8"), count=1), encoding="utf-8")
+PY
   rm -f "$report.bak"
   spaced_path=$(fm_pr_review_path_encode 'bin/fm-pr spaced.sh')
   comma_path=$(fm_pr_review_path_encode 'bin/fm-pr,comma.sh')
@@ -888,34 +987,20 @@ PY
   spaced_change_digest=$(surface_change_digest_for_file "$dir" 'bin/fm-pr spaced.sh')
   comma_change_digest=$(surface_change_digest_for_file "$dir" 'bin/fm-pr,comma.sh')
   semi_change_digest=$(surface_change_digest_for_file "$dir" 'bin/fm-pr;semi.sh')
-  python3 - "$report" "$spaced_path" "$comma_path" "$semi_path" "$spaced_digest" "$comma_digest" "$semi_digest" "$spaced_change_digest" "$comma_change_digest" "$semi_change_digest" "$spaced_line_hex" "$comma_line_hex" "$semi_line_hex" <<'PY'
+  authority_record=$(surface_review_single_record Authority authority "$spaced_path" "$spaced_digest" "$spaced_line_hex" "$spaced_change_digest")
+  security_record=$(surface_review_single_record Security security "$comma_path" "$comma_digest" "$comma_line_hex" "$comma_change_digest")
+  path_record=$(surface_review_single_record Path path "$semi_path" "$semi_digest" "$semi_line_hex" "$semi_change_digest")
+  python3 - "$report" "$authority_record" "$security_record" "$path_record" "bin/fm-pr-check.sh,$spaced_path,$comma_path,$semi_path" "bin/fm-pr-lib.sh,$comma_path" "bin/fm-pr-self-review-check.sh,$semi_path" <<'PY'
 import pathlib
 import re
 import sys
 
 report = pathlib.Path(sys.argv[1])
-spaced, comma, semi = sys.argv[2:5]
-spaced_digest, comma_digest, semi_digest = sys.argv[5:8]
-spaced_change, comma_change, semi_change = sys.argv[8:11]
-spaced_line_hex, comma_line_hex, semi_line_hex = sys.argv[11:14]
+authority_record, security_record, path_record = sys.argv[2:5]
+authority_files, security_files, path_files = sys.argv[5:8]
 text = report.read_text(encoding="utf-8")
-replacements = {
-    "Authority": ("bin/fm-pr-check.sh," + spaced + "," + comma + "," + semi, spaced, spaced_digest, spaced_change, "delivery owner remains no-mistakes", "review cannot authorize delivery", "keep this boundary non-authorizing"),
-    "Security": ("bin/fm-pr-lib.sh," + comma, comma, comma_digest, comma_change, "private report identity is checked", "tampering is refused", "preserve single-link mode checks"),
-    "Path": ("bin/fm-pr-self-review-check.sh," + semi, semi, semi_digest, semi_change, "task paths are validated", "path traversal is rejected", "retain canonical task boundaries"),
-}
-behaviors = {"Authority": "non-authorizing", "Security": "provenance-bound", "Path": "path-safe"}
-actions = {"Authority": "retain-owner", "Security": "retain-boundary", "Path": "retain-validation"}
-line_hexes = {"Authority": spaced_line_hex, "Security": comma_line_hex, "Path": semi_line_hex}
-def binding(surface, evidence, digest, change):
-    return __import__("hashlib").sha256((surface.lower() + "|" + evidence + ":2|" + digest + "|" + change + "|" + line_hexes[surface] + "|" + behaviors[surface] + "|" + actions[surface] + "\n").encode()).hexdigest()
-for surface, (files, evidence, digest, change, signal, consequence, fix) in replacements.items():
-    text = re.sub(
-        rf"(?m)^{surface}: .*",
-        f"{surface}: reviewed; surface={surface.lower()}; files={files}; evidence={evidence}:2 sha256={digest} change-sha256={change} line-hex={line_hexes[surface]} hunk={evidence}:2; consequence=anchor={evidence}:2 sha256={digest} change-sha256={change} line-hex={line_hexes[surface]} behavior={behaviors[surface]} binding={binding(surface, evidence, digest, change)}; fix=anchor={evidence}:2 sha256={digest} change-sha256={change} line-hex={line_hexes[surface]} action={actions[surface]} binding={binding(surface, evidence, digest, change)}",
-        text,
-        count=1,
-    )
+for surface, record, files in (("Authority", authority_record, authority_files), ("Security", security_record, security_files), ("Path", path_record, path_files)):
+    text = re.sub(rf"(?m)^{surface}: .*", record.replace("files=" + record.split("files=", 1)[1].split(";", 1)[0], "files=" + files), text, count=1)
 report.write_text(text, encoding="utf-8")
 PY
   run_check_entry "$dir" task-a https://github.com/o/r/pull/111 >/dev/null \
@@ -925,30 +1010,37 @@ PY
   git -C "$dir/wt" add -- "$control_path"
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm control-path
   write_self_review_report "$dir/home" task-a
-  delivery_digest=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '1p' | fm_pr_sha256_stream)
+  delivery_digest=$(self_review_line_digest "$dir" bin/fm-pr-create.sh)
   delivery_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-create.sh)
-  delivery_line_hex=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | awk 'NR == 1 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
-  delivery_binding=$(surface_binding_digest delivery bin/fm-pr-create.sh:1 "$delivery_digest" "$delivery_change_digest" "$delivery_line_hex" no-mistakes-owned retain-no-mistakes)
-  sed -i.bak "s#^Delivery: .*#Delivery: reviewed; surface=delivery; files=bin/fm-pr-create.sh; evidence=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex hunk=bin/fm-pr-create.sh:1; consequence=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex behavior=no-mistakes-owned binding=$delivery_binding; fix=anchor=bin/fm-pr-create.sh:1 sha256=$delivery_digest change-sha256=$delivery_change_digest line-hex=$delivery_line_hex action=retain-no-mistakes binding=$delivery_binding#" "$report"
+  delivery_line_hex=$(self_review_line_hex "$dir" bin/fm-pr-create.sh)
+  delivery_record=$(surface_review_single_record Delivery delivery bin/fm-pr-create.sh "$delivery_digest" "$delivery_line_hex" "$delivery_change_digest")
+  python3 - "$report" "$delivery_record" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+record = sys.argv[2]
+report.write_text(re.sub(r"(?m)^Delivery: .*", record, report.read_text(encoding="utf-8"), count=1), encoding="utf-8")
+PY
   rm -f "$report.bak"
   control_change_digest=$(surface_change_digest_for_file "$dir" "$control_path")
   control_path=$(fm_pr_review_path_encode "$control_path")
   control_digest=$(printf '%s\n' 'control evidence' | fm_pr_sha256_stream)
   control_line_hex=$(printf '%s' 'control evidence' | od -An -tx1 | tr -d ' \n')
   control_surface_files="bin/fm-pr-check.sh,$spaced_path,$comma_path,$semi_path,$control_path"
-  python3 - "$report" "$control_surface_files" "$control_path" "$control_digest" "$control_change_digest" "$control_line_hex" <<'PY'
+  control_record=$(surface_review_single_record_at_line Authority authority "$control_path" 1 "$control_digest" "$control_line_hex" "$control_change_digest")
+  python3 - "$report" "$control_surface_files" "$control_record" <<'PY'
 import pathlib
 import re
 import sys
 
 report = pathlib.Path(sys.argv[1])
-control_surface_files, control_path, control_digest, control_change_digest, control_line_hex = sys.argv[2:7]
-import hashlib
-binding = hashlib.sha256(("authority|" + control_path + ":1|" + control_digest + "|" + control_change_digest + "|" + control_line_hex + "|non-authorizing|retain-owner\n").encode()).hexdigest()
+control_surface_files, control_record = sys.argv[2:4]
 text = report.read_text(encoding="utf-8")
 text = re.sub(
     r"(?m)^Authority: .*",
-    "Authority: reviewed; surface=authority; files=" + control_surface_files + "; evidence=" + control_path + ":1 sha256=" + control_digest + " change-sha256=" + control_change_digest + " line-hex=" + control_line_hex + " hunk=" + control_path + ":1; consequence=anchor=" + control_path + ":1 sha256=" + control_digest + " change-sha256=" + control_change_digest + " line-hex=" + control_line_hex + " behavior=non-authorizing binding=" + binding + "; fix=anchor=" + control_path + ":1 sha256=" + control_digest + " change-sha256=" + control_change_digest + " line-hex=" + control_line_hex + " action=retain-owner binding=" + binding,
+    control_record.replace("files=" + control_record.split("files=", 1)[1].split(";", 1)[0], "files=" + control_surface_files),
     text,
     count=1,
 )
