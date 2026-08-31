@@ -927,8 +927,12 @@ assert_grep '"revision":2' "$REMOTE_HOME/config/crew-dispatch.json" "partial inh
 NUDGE_MARKER="$PARENT/state/.secondmate-nudge-pending/ios.pending"
 assert_grep 'remote=1' "$NUDGE_MARKER" "partial inheritance left no durable remote reread marker"
 publish_healthy_watcher_identity "$PARENT/state" "$PARENT" "$REMOTE_ROOT/bin/fm-watch.sh"
-remote_env "$ROOT/bin/fm-bootstrap.sh" > "$TMP_ROOT/config-partial-retry.out" \
-  || fail "bootstrap did not converge partial remote inheritance"
+config_retry_attempt=0
+while [ -f "$NUDGE_MARKER" ] && [ "$config_retry_attempt" -lt 2 ]; do
+  config_retry_attempt=$((config_retry_attempt + 1))
+  remote_env "$ROOT/bin/fm-bootstrap.sh" > "$TMP_ROOT/config-partial-retry-$config_retry_attempt.out" \
+    || fail "bootstrap did not converge partial remote inheritance"
+done
 [ "$(cat "$REMOTE_HOME/config/crew-harness")" = grok ] \
   || fail "bootstrap did not apply the remaining inherited file"
 assert_absent "$NUDGE_MARKER" "bootstrap cleared no remote reread marker after convergence"

@@ -48,6 +48,8 @@ REMOTE_HERDR_SESSION=fm-remote
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-task-inbox-lib.sh
 . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
+# shellcheck source=bin/fm-config-inherit-lib.sh
+. "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
@@ -256,18 +258,28 @@ cmd_observe() {
   printf '\n'
 }
 
+remote_sync_status_ignorable() {
+  local path=$1
+  case "$path" in
+    .fm-secondmate-home) return 0 ;;
+    config/*) fm_config_reread_is_allowlisted_item "${path#config/}" && return 0 ;;
+  esac
+  return 1
+}
+
 cmd_sync() {
-  local id=$1 target dirty head current
+  local id=$1 target dirty head current status path
   validate_id "$id"
   validate_home "$id"
   target=$TARGET_HOME
-  # Inherited config is host-local material, so an untracked config directory
-  # must not make an otherwise clean code checkout look dirty. Tracked config
-  # edits and every other untracked path remain a sync refusal.
-  dirty=$(git -C "$target" status --porcelain 2>/dev/null | awk '
-    $1 == "??" && ($2 == "config" || $2 == "config/") { next }
-    $0 != "?? .fm-secondmate-home" { print; exit }
-  ')
+  dirty=$(git -C "$target" status --porcelain --untracked-files=all 2>/dev/null | while IFS= read -r status; do
+    path=${status#?? }
+    if remote_sync_status_ignorable "$path"; then
+      continue
+    fi
+    printf '%s\n' "$status"
+    break
+  done)
   [ -z "$dirty" ] || die "remote secondmate checkout is dirty; sync skipped"
   head=$(git -C "$FM_ROOT" rev-parse HEAD 2>/dev/null) || die "remote code root HEAD is unreadable"
   current=$(git -C "$target" rev-parse HEAD 2>/dev/null) || die "remote home HEAD is unreadable"
