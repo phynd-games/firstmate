@@ -366,6 +366,62 @@ test_pane_presence_requires_complete_identity() {
   pass "Herdr pane presence requires a complete matching workspace and tab identity"
 }
 
+test_shared_pane_identity_boundary_is_typed_and_fail_closed() {
+  local -a cases=(healthy failed-body malformed mismatched gone)
+  local case_name expected_rc expected_output body cli_rc
+  for case_name in "${cases[@]}"; do
+    case "$case_name" in
+      healthy)
+        expected_rc=0
+        expected_output='{"result":{"pane":{"pane_id":"pane1","workspace_id":"ws1","tab_id":"tab1"}}}'
+        body="$expected_output"
+        cli_rc=0
+        ;;
+      failed-body)
+        expected_rc=2
+        expected_output=
+        body='{"result":{"pane":{"pane_id":"pane1","workspace_id":"ws1","tab_id":"tab1"}}}'
+        cli_rc=1
+        ;;
+      malformed)
+        expected_rc=2
+        expected_output=
+        body='not-json'
+        cli_rc=0
+        ;;
+      mismatched)
+        expected_rc=2
+        expected_output=
+        body='{"result":{"pane":{"pane_id":"pane1","workspace_id":"other","tab_id":"tab1"}}}'
+        cli_rc=0
+        ;;
+      gone)
+        expected_rc=1
+        expected_output=
+        body='{"error":{"code":"pane_not_found"}}'
+        cli_rc=0
+        ;;
+    esac
+    run_capture "identity-boundary-$case_name" lib_probe "BOUNDARY_BODY=$body" "BOUNDARY_CLI_RC=$cli_rc" -- '
+      . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+      fm_backend_herdr_cli() {
+        printf "%s" "$BOUNDARY_BODY"
+        return "$BOUNDARY_CLI_RC"
+      }
+      fm_backend_herdr_pane_get_checked fmtest ws1 tab1 pane1 1
+    '
+    [ "$RC" -eq "$expected_rc" ] || fail "shared identity boundary $case_name returned rc=$RC, expected $expected_rc (out=$OUT err=$ERR)"
+    [ "$OUT" = "$expected_output" ] || fail "shared identity boundary $case_name returned unexpected stdout: $OUT"
+  done
+  run_capture identity-boundary-gone-required lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() { printf '''{"error":{"code":"pane_not_found"}}'''; }
+    fm_backend_herdr_pane_get_checked fmtest ws1 tab1 pane1 0
+  '
+  [ "$RC" -eq 2 ] && [ -z "$OUT" ] || fail "pane_not_found without explicit absence permission must refuse: rc=$RC out=$OUT"
+  pass "shared Herdr pane identity boundary preserves typed failures and explicit absence"
+}
+
 test_native_read_failures_do_not_parse_success_bodies() {
   run_capture endpoint-identity-failed-body lib_probe -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
@@ -984,6 +1040,7 @@ test_endpoint_identity_mismatch_refuses
 test_kill_refuses_planner_and_focus_failures_before_close
 test_endpoint_presence_failure_remains_typed
 test_pane_presence_requires_complete_identity
+test_shared_pane_identity_boundary_is_typed_and_fail_closed
 test_native_read_failures_do_not_parse_success_bodies
 test_target_ready_rechecks_recorded_native_identity
 test_quarantine_server_failure_is_a_typed_refusal

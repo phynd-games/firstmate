@@ -869,10 +869,14 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
     return 1
   }
   active_tab=${before#*$'\t'}
-  info=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>/dev/null) || {
+  if info=$(fm_backend_herdr_pane_get_checked "$session" "$expected_workspace" "$expected_tab" "$pane_id" 1); then
+    :
+  else
+    close_status=$?
+    [ "$close_status" -eq 2 ] && return 2
     echo "warning: herdr presentation cleanup could not verify the exact pane; refusing focus-unsafe pane close" >&2
     return 1
-  }
+  fi
   target_pane=$(printf '%s' "$info" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
   target_tab=$(printf '%s' "$info" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
   target_ws=$(printf '%s' "$info" | jq -r '.result.pane.workspace_id // empty' 2>/dev/null)
@@ -1606,37 +1610,51 @@ fm_backend_herdr_workspace_find_all() {  # <session>
     '.result.workspaces[] | select(.label == $want) | .workspace_id' 2>/dev/null
 }
 
-fm_backend_herdr_endpoint_identity() {  # <session> <workspace> <tab> <pane>
-  local session=$1 expected_workspace=$2 expected_tab=$3 expected_pane=$4 out code native_rc cli_rc=0
+fm_backend_herdr_pane_get_checked() {  # <session> <workspace> <tab> <pane> [allow-not-found]
+  local session=$1 expected_workspace=$2 expected_tab=$3 expected_pane=$4 allow_not_found=${5:-0}
+  local out code cli_rc=0
   if out=$(fm_backend_herdr_cli "$session" pane get "$expected_pane" 2>&1); then
     cli_rc=0
   else
     cli_rc=$?
   fi
   [ "$cli_rc" -eq 0 ] || return 2
-  code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)
-  if [ -n "$code" ]; then
-    [ "$code" = pane_not_found ] && return 1
-    fm_backend_herdr_native_failure_rc "$out"
-    native_rc=$?
-    [ "$native_rc" -eq 1 ] && return 1
+  if ! printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1; then
     return 2
   fi
-  printf '%s' "$out" | jq -e '
+  code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null) || return 2
+  if [ -n "$code" ]; then
+    if [ "$code" = pane_not_found ] && [ "$allow_not_found" = 1 ]; then
+      return 1
+    fi
+    return 2
+  fi
+  printf '%s' "$out" | jq -e \
+    --arg workspace "$expected_workspace" --arg tab "$expected_tab" --arg pane "$expected_pane" '
     (.result.pane | type) == "object"
     and (.result.pane.pane_id | type) == "string"
     and (.result.pane.workspace_id | type) == "string"
     and (.result.pane.tab_id | type) == "string"
+    and (.result.pane.pane_id | length) > 0
     and (.result.pane.workspace_id | length) > 0
     and (.result.pane.tab_id | length) > 0
-  ' >/dev/null 2>&1 || return 2
-  printf '%s' "$out" | jq -e --arg workspace "$expected_workspace" --arg tab "$expected_tab" --arg pane "$expected_pane" '
-    (.result.pane | type) == "object"
     and .result.pane.pane_id == $pane
     and ($workspace == "" or .result.pane.workspace_id == $workspace)
     and ($tab == "" or .result.pane.tab_id == $tab)
-  ' >/dev/null 2>&1 && return 0
-  return 1
+  ' >/dev/null 2>&1 || return 2
+  printf '%s' "$out"
+}
+
+fm_backend_herdr_endpoint_identity() {  # <session> <workspace> <tab> <pane>
+  local out identity_rc=0
+  if out=$(fm_backend_herdr_pane_get_checked "$1" "$2" "$3" "$4" 1); then
+    identity_rc=0
+  else
+    identity_rc=$?
+  fi
+  [ "$identity_rc" -eq 0 ] && return 0
+  [ "$identity_rc" -eq 1 ] && return 1
+  return 2
 }
 
 # fm_backend_herdr_workspace_find: this HOME's own workspace id inside
@@ -1728,7 +1746,7 @@ fm_backend_herdr_launcher_identity() {  # <session>
     return 1
   fi
 
-  pane_out=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>/dev/null) || {
+  pane_out=$(fm_backend_herdr_pane_get_checked "$session" "" "" "$pane" 0) || {
     echo "error: herdr launcher pane '$pane' could not be read in session '$session'; refusing to place a worker without its exact parent workspace" >&2
     return 1
   }
@@ -1825,7 +1843,7 @@ fm_backend_herdr_launcher_identity() {  # <session>
 # exists alongside it, never right after workspace creation - and this
 # function independently re-checks the tab count as a second layer.
 fm_backend_herdr_workspace_prune_seeded_default_tab() {  # <session> <workspace_id> <seeded_tab_id> [focus-preserving]
-  local session=$1 wsid=$2 tab_id=$3 close_mode=${4:-direct} tabs tab_count current_label pane_id agent_out agent_status
+  local session=$1 wsid=$2 tab_id=$3 close_mode=${4:-direct} tabs tab_count current_label pane_id agent_out agent_status agent_rc=0
   [ -n "$tab_id" ] || return 0
   tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || return 0
   tab_count=$(printf '%s' "$tabs" | jq -r '.result.tabs? // [] | length' 2>/dev/null)
@@ -1834,13 +1852,40 @@ fm_backend_herdr_workspace_prune_seeded_default_tab() {  # <session> <workspace_
   [ "$current_label" = "1" ] || return 0
   pane_id=$(fm_backend_herdr_pane_for_tab "$session" "$wsid" "$tab_id") || return 0
   [ -n "$pane_id" ] || return 0
-  agent_out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>/dev/null)
-  agent_status=$(printf '%s' "$agent_out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null)
+  if fm_backend_herdr_pane_get_checked "$session" "$wsid" "$tab_id" "$pane_id" 0 >/dev/null; then
+    :
+  else
+    agent_rc=$?
+  fi
+  if [ "$agent_rc" -ne 0 ]; then
+    if declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
+      fm_backend_policy_refuse "Herdr seeded-tab agent read for $tab_id" herdr \
+        "The native Herdr agent read failed before pruning the seeded tab. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+    fi
+    return 2
+  fi
+  if agent_out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>&1); then
+    agent_rc=0
+  else
+    agent_rc=$?
+  fi
+  if [ "$agent_rc" -ne 0 ]; then
+    if declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
+      fm_backend_policy_refuse "Herdr seeded-tab agent read for $tab_id" herdr \
+        "The native Herdr agent read failed before pruning the seeded tab. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+    fi
+    return 2
+  fi
+  if [ "$(printf '%s' "$agent_out" | jq -r '.error.code // empty' 2>/dev/null)" = agent_not_found ]; then
+    agent_status=
+  else
+    agent_status=$(printf '%s' "$agent_out" | jq -er '.result.agent.agent_status | strings | select(length > 0)' 2>/dev/null) || return 2
+  fi
   [ "$agent_status" = working ] && return 0
   if [ "$close_mode" = focus-preserving ]; then
-    fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane_id"
+    fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane_id" '' "$wsid" "$tab_id"
   else
-    fm_backend_herdr_cli "$session" pane close "$pane_id" >/dev/null 2>&1 || true
+    fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id" "$wsid" "$tab_id"
   fi
 }
 
@@ -2022,42 +2067,14 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace> [<launcher-
 # as dead|present|unknown from a successful, identity-checked JSON response.
 fm_backend_herdr_pane_presence_state() {  # <session> <pane_id>
   local session=$1 pane_id=$2 expected_workspace=${3:-} expected_tab=${4:-}
-  local out code native_rc cli_rc=0
-  if out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>&1); then
-    cli_rc=0
-  else
-    cli_rc=$?
-  fi
-  [ "$cli_rc" -eq 0 ] || return 2
-  code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
-  if [ -n "$code" ]; then
-    [ "$code" = "pane_not_found" ] && { printf 'dead'; return 0; }
-    case "$code" in
-      internal_error|temporarily_unavailable|busy)
-        return 2
-        ;;
-    esac
-    fm_backend_herdr_native_failure_rc "$out"
-    native_rc=$?
-    [ "$native_rc" -eq 2 ] && return 2
-    printf 'unknown'
+  if fm_backend_herdr_pane_get_checked "$session" "$expected_workspace" "$expected_tab" "$pane_id" 1 >/dev/null; then
+    printf 'present'
     return 0
   fi
-  if ! printf '%s' "$out" | jq -e --arg pane "$pane_id" --arg workspace "$expected_workspace" --arg tab "$expected_tab" '
-    (.result.pane | type) == "object"
-    and (.result.pane.pane_id | type) == "string"
-    and (.result.pane.workspace_id | type) == "string"
-    and (.result.pane.tab_id | type) == "string"
-    and (.result.pane.workspace_id | length) > 0
-    and (.result.pane.tab_id | length) > 0
-    and .result.pane.pane_id == $pane
-    and ($workspace == "" or .result.pane.workspace_id == $workspace)
-    and ($tab == "" or .result.pane.tab_id == $tab)
-  ' >/dev/null 2>&1; then
-    return 2
-  fi
-  printf 'present'
-  return 0
+  case "$?" in
+    1) printf 'dead'; return 0 ;;
+    *) return 2 ;;
+  esac
 }
 
 fm_backend_herdr_workspace_presence_state() {  # <session> <workspace_id>
@@ -2262,7 +2279,7 @@ fm_backend_herdr_agent_alive() {  # <target>
 # 4th arg, so this function never even queries for a prune candidate in that
 # case. Echoes "<tab_id> <pane_id>" on success.
 fm_backend_herdr_create_task() {  # <container> <label> <cwd> <seeded_default_tab_id>
-  local container=$1 label=$2 cwd=$3 seeded_tab_id=${4:-} session wsid list dup_tabs dup dup_pane dup_tab_ids out tab_id pane_id remaining_dup_tabs
+  local container=$1 label=$2 cwd=$3 seeded_tab_id=${4:-} session wsid list dup_tabs dup dup_pane dup_tab_ids out tab_id pane_id remaining_dup_tabs prune_rc=0
   session=${container%%:*}
   wsid=${container#*:}
   list=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || return 1
@@ -2291,7 +2308,15 @@ EOF
     echo "error: could not parse tab/pane id from herdr tab create output" >&2
     return 1
   fi
-  [ -z "$seeded_tab_id" ] || fm_backend_herdr_workspace_prune_seeded_default_tab "$session" "$wsid" "$seeded_tab_id"
+  if [ -n "$seeded_tab_id" ]; then
+    if fm_backend_herdr_workspace_prune_seeded_default_tab "$session" "$wsid" "$seeded_tab_id"; then
+      :
+    else
+      prune_rc=$?
+      [ "$prune_rc" -eq 2 ] && return 2
+      return 1
+    fi
+  fi
   if [ -n "$dup_tab_ids" ]; then
     while IFS= read -r dup; do
       [ -n "$dup" ] || continue
@@ -2334,7 +2359,7 @@ EOF
 # A missing, failed, or malformed create response stays ambiguous and grants no
 # cleanup authority.
 fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-label>
-  local cwd=$1 workspace_label=$2 task_label=$3 session out tabs panes tab_count pane_count focus_before
+  local cwd=$1 workspace_label=$2 task_label=$3 session out tabs panes tab_count pane_count focus_before prune_rc=0
   FM_BACKEND_HERDR_PROJECTION_SESSION=""
   FM_BACKEND_HERDR_PROJECTION_WORKSPACE_ID=""
   FM_BACKEND_HERDR_PROJECTION_SEEDED_TAB_ID=""
@@ -2407,6 +2432,8 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
     "$FM_BACKEND_HERDR_PROJECTION_WORKSPACE_ID" \
     "$FM_BACKEND_HERDR_PROJECTION_SEEDED_TAB_ID" \
     focus-preserving; then
+    prune_rc=$?
+    [ "$prune_rc" -eq 2 ] && return 2
     echo "error: herdr presentation seeded-tab prune refused a focus-unsafe close; leaving its journal quarantined" >&2
     return 1
   fi
@@ -2446,12 +2473,36 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
 # fm_backend_herdr_projection_cleanup_exact: same-process abort cleanup for a
 # projection whose create calls returned complete exact IDs.
 # It performs no lookup and never calls workspace close.
-fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-pane>
+fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-pane> [expected-workspace] [task-tab] [seeded-tab]
   local session=$1 task_pane=$2 seeded_pane=$3
-  [ -z "$task_pane" ] || fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$task_pane" || true
-  if [ -n "$seeded_pane" ] && [ "$seeded_pane" != "$task_pane" ]; then
-    fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$seeded_pane" || true
+  local expected_workspace=${4:-${FM_BACKEND_HERDR_PROJECTION_WORKSPACE_ID:-}}
+  local task_tab=${5:-${FM_BACKEND_HERDR_PROJECTION_TAB_ID:-}}
+  local seeded_tab=${6:-${FM_BACKEND_HERDR_PROJECTION_SEEDED_TAB_ID:-}} close_rc=0
+  if [ -n "$task_pane" ]; then
+    if fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$task_pane" '' "$expected_workspace" "$task_tab"; then
+      :
+    else
+      close_rc=$?
+      if [ "$close_rc" -eq 2 ] && declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
+        fm_backend_policy_refuse "Herdr projection abort cleanup for $task_pane" herdr \
+          "The native Herdr pane identity read failed before abort cleanup. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+        return 2
+      fi
+    fi
   fi
+  if [ -n "$seeded_pane" ] && [ "$seeded_pane" != "$task_pane" ]; then
+    if fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$seeded_pane" '' "$expected_workspace" "$seeded_tab"; then
+      :
+    else
+      close_rc=$?
+      if [ "$close_rc" -eq 2 ] && declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
+        fm_backend_policy_refuse "Herdr projection abort cleanup for $seeded_pane" herdr \
+          "The native Herdr pane identity read failed before abort cleanup. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+        return 2
+      fi
+    fi
+  fi
+  return 0
 }
 
 # fm_backend_herdr_projection_parent_workspace_exact: resolve one exact parent
@@ -2565,7 +2616,7 @@ fm_backend_herdr_projection_reclaim_rollback() {  # <session> <new-pane> [expect
 # post-mutation uncertainty that must refuse the launch.
 fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <home> <meta-workspace> <meta-tab> <meta-pane> <parent-label> <task-label> <cwd>
   local session=$1 journal=$2 id=$3 home=$4 meta_workspace=$5 meta_tab=$6 meta_pane=$7
-  local parent_label=$8 task_label=$9 cwd=${10} canonical_home state state_rc=0 focus_before active_tab out new_tab new_pane info close_status
+  local parent_label=$8 task_label=$9 cwd=${10} canonical_home state state_rc=0 focus_before active_tab out new_tab new_pane info close_status verify_rc=0
   FM_BACKEND_HERDR_PROJECTION_RECLAIM_NATIVE_FAILURE=0
   FM_BACKEND_HERDR_PROJECTION_TAB_ID=""
   FM_BACKEND_HERDR_PROJECTION_PANE_ID=""
@@ -2636,22 +2687,32 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
     return 2
   fi
   fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "husk replacement create" || return 1
-  info=$(fm_backend_herdr_cli "$session" tab get "$new_tab" 2>/dev/null) || info=
-  if ! printf '%s' "$info" | jq -e --arg tab "$new_tab" --arg workspace "$meta_workspace" '
+  verify_rc=0
+  if info=$(fm_backend_herdr_cli "$session" tab get "$new_tab" 2>&1); then
+    :
+  else
+    verify_rc=$?
+  fi
+  if [ "$verify_rc" -ne 0 ] || ! printf '%s' "$info" | jq -e --arg tab "$new_tab" --arg workspace "$meta_workspace" '
     .result.tab.tab_id == $tab and .result.tab.workspace_id == $workspace
   ' >/dev/null 2>&1; then
     fm_backend_herdr_projection_reclaim_rollback "$session" "$new_pane" "$meta_workspace" "$new_tab" || return 1
-    echo "warning: herdr presentation reclaim for $id could not verify its replacement tab; spawning flat" >&2
+    FM_BACKEND_HERDR_PROJECTION_RECLAIM_NATIVE_FAILURE=1
+    fm_backend_policy_refuse "Herdr presentation reclaim tab read for $id" herdr \
+      "The native Herdr replacement tab read failed before closing the old pane. Repair Herdr, then verify the named session with 'herdr status --json'." || true
     return 2
   fi
-  info=$(fm_backend_herdr_cli "$session" pane get "$new_pane" 2>/dev/null) || info=
-  if ! printf '%s' "$info" | jq -e --arg pane "$new_pane" --arg tab "$new_tab" --arg workspace "$meta_workspace" '
-    .result.pane.pane_id == $pane
-    and .result.pane.tab_id == $tab
-    and .result.pane.workspace_id == $workspace
-  ' >/dev/null 2>&1; then
+  verify_rc=0
+  if fm_backend_herdr_pane_get_checked "$session" "$meta_workspace" "$new_tab" "$new_pane" 0 >/dev/null; then
+    :
+  else
+    verify_rc=$?
+  fi
+  if [ "$verify_rc" -ne 0 ]; then
     fm_backend_herdr_projection_reclaim_rollback "$session" "$new_pane" "$meta_workspace" "$new_tab" || return 1
-    echo "warning: herdr presentation reclaim for $id could not verify its replacement pane; spawning flat" >&2
+    FM_BACKEND_HERDR_PROJECTION_RECLAIM_NATIVE_FAILURE=1
+    fm_backend_policy_refuse "Herdr presentation reclaim pane read for $id" herdr \
+      "The native Herdr replacement pane read failed before closing the old pane. Repair Herdr, then verify the named session with 'herdr status --json'." || true
     return 2
   fi
   state_rc=0
@@ -2903,26 +2964,19 @@ fm_backend_herdr_native_failure_rc() {
 # process's cwd instead, which is what changes when `treehouse get` enters its
 # worktree subshell - confirmed live against a real treehouse acquisition.
 fm_backend_herdr_current_path() {  # <target>
-  local target=$1 ready_rc=0 out code expected_workspace='' expected_tab=''
+  local target=$1 ready_rc=0 out expected_workspace='' expected_tab='' pane_rc=0
   fm_backend_herdr_target_ready "$target" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
   if [ "${FM_BACKEND_HERDR_EXPECTED_TARGET:-}" = "$target" ]; then
     expected_workspace=${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}
     expected_tab=${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}
   fi
-  if out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane get "$FM_BACKEND_HERDR_PANE" 2>&1); then
+  if out=$(fm_backend_herdr_pane_get_checked "$FM_BACKEND_HERDR_SESSION" "$expected_workspace" "$expected_tab" "$FM_BACKEND_HERDR_PANE" 1); then
     :
   else
-    return 2
+    pane_rc=$?
   fi
-  if [ -n "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ]; then
-    fm_backend_herdr_native_failure_rc "$out"
-    native_rc=$?
-    [ "$native_rc" -eq 1 ] && return 1
-    return 2
-  fi
-  code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)
-  [ -z "$code" ] || return 2
+  [ "$pane_rc" -eq 0 ] || return "$pane_rc"
   if ! printf '%s' "$out" | jq -e \
     --arg pane "$FM_BACKEND_HERDR_PANE" \
     --arg workspace "$expected_workspace" \
@@ -3083,11 +3137,22 @@ fm_backend_herdr_capture_ansi() {  # <target> <lines>
 # same commit. The muse `⟩` glyph this adapter's local bare-prompt pattern
 # silently omitted is exactly the drift class that consolidation removes.
 
-fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
-  local out native_rc
-  if ! out=$(fm_backend_herdr_cli "$1" agent get "$2" 2>&1); then
-    return 2
+fm_backend_herdr_agent_identity_raw() {  # <session> <pane> [expected-workspace] [expected-tab] -> <agent>\t<status>
+  local session=$1 pane=$2 expected_workspace=${3:-} expected_tab=${4:-} pane_rc=0 out native_rc cli_rc=0
+  if [ -n "$expected_workspace" ] && [ -n "$expected_tab" ]; then
+    if fm_backend_herdr_pane_get_checked "$session" "$expected_workspace" "$expected_tab" "$pane" 0 >/dev/null; then
+      :
+    else
+      pane_rc=$?
+    fi
+    [ "$pane_rc" -eq 0 ] || return 2
   fi
+  if out=$(fm_backend_herdr_cli "$session" agent get "$pane" 2>&1); then
+    cli_rc=0
+  else
+    cli_rc=$?
+  fi
+  [ "$cli_rc" -eq 0 ] || return 2
   if [ -n "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ]; then
     fm_backend_herdr_native_failure_rc "$out"
     native_rc=$?
@@ -3102,7 +3167,8 @@ fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
 # primitive no other backend has natively.
 fm_backend_herdr_composer_identity() {  # <target> -> "<agent>\t<status>"
   fm_backend_herdr_parse_target "$1" || return 1
-  fm_backend_herdr_agent_identity_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"
+  fm_backend_herdr_agent_identity_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" \
+    "${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}" "${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}"
 }
 
 # fm_backend_herdr_composer_state: thin adapter - capture plus capabilities
@@ -3251,8 +3317,12 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # the pane's rendered busy footer, because live Claude keeps agent_status idle
 # through a whole turn.
 fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered>
-  local target=$1 allow_rendered=${2:-0} raw raw_rc
-  if raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"); then
+  local target=$1 allow_rendered=${2:-0} raw raw_rc expected_workspace='' expected_tab=''
+  if [ "${FM_BACKEND_HERDR_EXPECTED_TARGET:-}" = "$target" ]; then
+    expected_workspace=${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}
+    expected_tab=${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}
+  fi
+  if raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" "$expected_workspace" "$expected_tab"); then
     :
   else
     raw_rc=$?
@@ -3271,13 +3341,17 @@ fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered>
 
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
-  local raw_status raw_status_rc=0 footer_baseline='' allow_rendered=0 enter_sent=0 send_rc=0 key_rc=0
+  local raw_status raw_status_rc=0 footer_baseline='' allow_rendered=0 enter_sent=0 send_rc=0 key_rc=0 expected_workspace='' expected_tab=''
   local footer_rc=0 composer_rc=0 rendered_now='' rendered_rc=0 queued_busy=unknown queued_rc=0
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
+  if [ "${FM_BACKEND_HERDR_EXPECTED_TARGET:-}" = "$target" ]; then
+    expected_workspace=${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}
+    expected_tab=${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}
+  fi
   fm_backend_herdr_send_literal "$target" "$text" || send_rc=$?
   [ "$send_rc" -eq 0 ] || { [ "$send_rc" -eq 2 ] && return 2; printf 'send-failed'; return 0; }
   sleep "$settle"
-  if raw_status=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"); then
+  if raw_status=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" "$expected_workspace" "$expected_tab"); then
     :
   else
     raw_status_rc=$?
@@ -3402,31 +3476,16 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
   [ "$before_rc" -eq 0 ] && [ -n "$before" ] || return 2
   if [ -n "$before" ]; then
     active_tab=${before#*$'\t'}
-    if info=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>/dev/null); then
-      info_rc=0
-    else
-      info_rc=$?
-    fi
-    [ "$info_rc" -eq 0 ] || return 2
     if [ "${FM_BACKEND_HERDR_EXPECTED_TARGET:-}" = "$session:$pane" ]; then
       expected_workspace=${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}
       expected_tab=${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}
     fi
-    if ! printf '%s' "$info" | jq -e \
-      --arg pane "$pane" --arg workspace "$expected_workspace" --arg tab "$expected_tab" '
-      (.result.pane | type) == "object"
-      and (.result.pane.pane_id | type) == "string"
-      and (.result.pane.workspace_id | type) == "string"
-      and (.result.pane.tab_id | type) == "string"
-      and (.result.pane.pane_id | length) > 0
-      and (.result.pane.workspace_id | length) > 0
-      and (.result.pane.tab_id | length) > 0
-      and .result.pane.pane_id == $pane
-      and ($workspace == "" or .result.pane.workspace_id == $workspace)
-      and ($tab == "" or .result.pane.tab_id == $tab)
-    ' >/dev/null 2>&1; then
-      return 2
+    if info=$(fm_backend_herdr_pane_get_checked "$session" "$expected_workspace" "$expected_tab" "$pane" 1); then
+      info_rc=0
+    else
+      info_rc=$?
     fi
+    [ "$info_rc" -eq 0 ] || { [ "$info_rc" -eq 1 ] && return 0; return 2; }
     target_pane=$(printf '%s' "$info" | jq -r '.result.pane.pane_id' 2>/dev/null)
     target_tab=$(printf '%s' "$info" | jq -r '.result.pane.tab_id' 2>/dev/null)
     target_ws=$(printf '%s' "$info" | jq -r '.result.pane.workspace_id' 2>/dev/null)
@@ -3604,11 +3663,26 @@ fm_backend_herdr_classify_submit_agent_status() {  # <raw-agent_status>
 # server is live (e.g. fm_backend_herdr_send_text_submit, immediately after a
 # successful send-text), so re-checking server liveness on every poll would
 # only add latency without adding safety.
-fm_backend_herdr_agent_status_raw() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 out native_rc status
-  if ! out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>&1); then
-    return 2
+fm_backend_herdr_agent_status_raw() {  # <session> <pane_id> [expected-workspace] [expected-tab]
+  local session=$1 pane_id=$2 expected_workspace=${3:-} expected_tab=${4:-} pane_rc=0 out native_rc status cli_rc=0
+  if [ -n "$expected_workspace" ] && [ -n "$expected_tab" ]; then
+    if fm_backend_herdr_pane_get_checked "$session" "$expected_workspace" "$expected_tab" "$pane_id" 1 >/dev/null; then
+      :
+    else
+      pane_rc=$?
+    fi
+    if [ "$pane_rc" -eq 1 ]; then
+      printf ''
+      return 0
+    fi
+    [ "$pane_rc" -eq 0 ] || return 2
   fi
+  if out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>&1); then
+    cli_rc=0
+  else
+    cli_rc=$?
+  fi
+  [ "$cli_rc" -eq 0 ] || return 2
   if [ -n "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ]; then
     fm_backend_herdr_native_failure_rc "$out"
     native_rc=$?
@@ -3625,10 +3699,12 @@ fm_backend_herdr_agent_status_raw() {  # <session> <pane_id>
 # fm_backend_herdr_classify_agent_status for the status->busy/idle/unknown
 # mapping.
 fm_backend_herdr_busy_state() {  # <target>
-  local ready_rc=0 raw raw_rc
+  local ready_rc=0 raw raw_rc expected_workspace='' expected_tab=''
   fm_backend_herdr_target_ready "$1" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
-  if raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"); then
+  expected_workspace=${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}
+  expected_tab=${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}
+  if raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" "$expected_workspace" "$expected_tab"); then
     :
   else
     raw_rc=$?
@@ -3683,7 +3759,11 @@ fm_backend_herdr_submit_confirm_budget() {  # <caller-budget-seconds>
 }
 
 fm_backend_herdr_wait_for_working() {  # <session> <pane_id> <budget-seconds> <polls>
-  local session=$1 pane_id=$2 budget=$3 polls=${4:-1} i interval raw raw_rc bs saw_idle=0
+  local session=$1 pane_id=$2 budget=$3 polls=${4:-1} i interval raw raw_rc bs saw_idle=0 expected_workspace='' expected_tab=''
+  if [ "${FM_BACKEND_HERDR_EXPECTED_TARGET:-}" = "$session:$pane_id" ]; then
+    expected_workspace=${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}
+    expected_tab=${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}
+  fi
   case "$polls" in ''|*[!0-9]*|0) polls=1 ;; esac
   interval=$(awk -v b="$budget" -v p="$polls" 'BEGIN { d = p - 1; if (d < 1) d = 1; v = b / d; if (v < 0) v = 0; printf "%.4f", v }' 2>/dev/null)
   case "$interval" in ''|*[!0-9.]*) interval=0 ;; esac
@@ -3691,7 +3771,7 @@ fm_backend_herdr_wait_for_working() {  # <session> <pane_id> <budget-seconds> <p
     if [ "$polls" -eq 1 ] || [ "$i" -gt 0 ]; then
       sleep "$interval"
     fi
-    if raw=$(fm_backend_herdr_agent_status_raw "$session" "$pane_id"); then
+    if raw=$(fm_backend_herdr_agent_status_raw "$session" "$pane_id" "$expected_workspace" "$expected_tab"); then
       :
     else
       raw_rc=$?

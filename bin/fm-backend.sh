@@ -1239,7 +1239,7 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # primitive so callers that only need a fast alive/dead read (recovery
 # digests, the session-start fleet digest) do not re-derive it inline.
 fm_backend_target_exists() {  # <backend> <target> [expected-label]
-  local backend=$1 target=$2 expected_label=${3:-} session pane pane_out pane_rc
+  local backend=$1 target=$2 expected_label=${3:-} session pane pane_out pane_rc expected_workspace='' expected_tab=''
   # The tmux arm below calls the tmux CLI directly rather than through
   # fm_backend_source, so the invariant is enforced here explicitly: a retained
   # legacy backend is refused before any runtime command runs.
@@ -1253,6 +1253,10 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
       pane=${target#*:}
       [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
       fm_backend_herdr_capability_preflight "target existence check" "$session" || return 2
+      if [ "${FM_BACKEND_HERDR_EXPECTED_TARGET:-}" = "$target" ]; then
+        expected_workspace=${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}
+        expected_tab=${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}
+      fi
       # fm_backend_herdr_cli (not a raw HERDR_SESSION-only call): verified
       # empirically (docs/herdr-backend.md "Session targeting") that the bare
       # env var alone is NOT reliably honored once another herdr server is
@@ -1261,7 +1265,7 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
       # flag on top, so this check is correctly scoped even when the caller's
       # own ambient session (e.g. the primary firstmate's default session) is
       # a DIFFERENT one than the target's.
-      if pane_out=$(fm_backend_herdr_pane_presence_state "$session" "$pane"); then
+      if pane_out=$(fm_backend_herdr_pane_presence_state "$session" "$pane" "$expected_workspace" "$expected_tab"); then
         [ "$pane_out" = present ] && return 0
         [ "$pane_out" = dead ] && return 1
       else
