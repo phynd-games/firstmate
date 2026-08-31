@@ -19,6 +19,16 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 
 export FM_SEND_SETTLE=0 FM_SEND_SLEEP=0 FM_SEND_RETRIES=1
 
+is_live_non_zombie() {  # <pid>
+  local pid=$1 stat
+  kill -0 "$pid" 2>/dev/null || return 1
+  stat=$(ps -p "$pid" -o stat= 2>/dev/null || true)
+  case "$stat" in
+    Z*) return 1 ;;
+  esac
+  return 0
+}
+
 # A main home with one registered, live, local secondmate reachable through the
 # fake tmux backend, so fm-send's real inbox plane is exercised end to end.
 make_main_home() {  # <name> <mate-id>
@@ -407,7 +417,7 @@ test_a_failed_send_is_retried_on_the_next_run() {
 }
 
 test_busy_lifecycle_locks_never_hold_up_the_digest() {
-  local label home mate fakebin snap lock ready release holder notify out
+  local label home mate fakebin snap lock ready release holder notify out elapsed
   for label in reconcile control meta; do
     { read -r home; read -r mate; read -r fakebin; } < <(make_main_home "busy-$label" mate)
     snap="$home/snapshot.json"
@@ -424,8 +434,12 @@ test_busy_lifecycle_locks_never_hold_up_the_digest() {
     while [ ! -f "$ready" ]; do sleep 0.01; done
     run_notify "$home" "$fakebin" "busy-$label" "$snap" > "$home/notify.out" 2>&1 &
     notify=$!
-    sleep 0.2
-    if kill -0 "$notify" 2>/dev/null; then
+    elapsed=0
+    while is_live_non_zombie "$notify" && [ "$elapsed" -lt 5 ]; do
+      sleep 0.1
+      elapsed=$((elapsed + 1))
+    done
+    if is_live_non_zombie "$notify"; then
       : > "$release"
       wait "$notify" 2>/dev/null || true
       wait "$holder" 2>/dev/null || true

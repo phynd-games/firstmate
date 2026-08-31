@@ -214,6 +214,7 @@ test_lock_single_winner_under_concurrency() {
         # Stay alive so the held lock names a live pid for the whole window;
         # otherwise a late contender could legitimately reclaim a dead-pid lock.
         sleep 1
+        :
       fi
     ' _ "$LIB" "$lockdir" "$marker" &
     pids="$pids $!"
@@ -264,6 +265,7 @@ test_lock_stale_steal_single_winner_under_concurrency() {
       if fm_lock_try_acquire "$2"; then
         printf "%s\n" "${BASHPID:-$$}" >> "$3"
         sleep 1
+        :
       fi
     ' _ "$LIB" "$lockdir" "$marker" &
     pids="$pids $!"
