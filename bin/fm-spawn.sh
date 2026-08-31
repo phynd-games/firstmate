@@ -1977,7 +1977,8 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
       echo "error: existing herdr endpoint for $ID could not be inspected; refusing duplicate launch" >&2
       return 1
     }
-    old_state=$(fm_backend_herdr_pane_agent_state "$old_session" "$old_pane")
+    old_state=$(fm_backend_herdr_pane_agent_state "$old_session" "$old_pane" \
+      "$HERDR_RECOVERY_WORKSPACE_ID" "$HERDR_RECOVERY_TAB_ID")
     case "$old_state" in
       dead|no-agent) return 0 ;;
       live|unknown)

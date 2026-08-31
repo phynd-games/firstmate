@@ -422,6 +422,76 @@ test_shared_pane_identity_boundary_is_typed_and_fail_closed() {
   pass "shared Herdr pane identity boundary preserves typed failures and explicit absence"
 }
 
+test_pane_presence_not_found_is_idempotently_dead() {
+  run_capture pane-presence-not-found lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() {
+      printf "%s" '\''{"error":{"code":"pane_not_found"}}'\''
+      return 1
+    }
+    fm_backend_herdr_pane_presence_state fmtest pane1 ws1 tab1
+  '
+  [ "$RC" -eq 0 ] && [ "$OUT" = dead ] || fail "explicit pane_not_found must classify as dead: rc=$RC out=$OUT err=$ERR"
+  pass "explicit Herdr pane absence remains idempotently dead"
+}
+
+test_agent_state_rejects_rebound_identity_and_failed_body() {
+  run_capture agent-rebound lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() {
+      case "$2 $3" in
+        "pane get") printf "%s" '\''{"result":{"pane":{"pane_id":"pane1","workspace_id":"ws1","tab_id":"tab1"}}}'\'' ;;
+        "agent get") printf "%s" '\''{"result":{"agent":{"agent_status":"idle","pane_id":"pane1","workspace_id":"ws2","tab_id":"tab2"}}}'\'' ;;
+      esac
+    }
+    identity=$(fm_backend_herdr_pane_get_checked fmtest ws1 tab1 pane1 0)
+    fm_backend_herdr_agent_status_raw fmtest pane1 ws1 tab1
+  '
+  [ "$RC" -eq 2 ] || fail "agent state must reject a rebound pane identity: rc=$RC out=$OUT"
+
+  run_capture agent-failed-body lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() {
+      printf "%s" '\''{"result":{"agent":{"agent_status":"idle","pane_id":"pane1","workspace_id":"ws1","tab_id":"tab1"}}}'\''
+      return 1
+    }
+    fm_backend_herdr_agent_status_raw fmtest pane1 ws1 tab1
+  '
+  [ "$RC" -eq 2 ] || fail "agent state must reject a failed schema-shaped response: rc=$RC out=$OUT"
+  pass "Herdr agent reads atomically enforce exact identity and native status"
+}
+
+test_seeded_tab_inventory_failure_refuses_before_prune() {
+  local close_marker="$TMP_ROOT/seeded-tab-close"
+  rm -f "$close_marker"
+  run_capture seeded-tab-inventory-failure lib_probe "CLOSE_MARKER=$close_marker" -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() {
+      case "$*" in
+        *"tab list"*) printf "not-json"; return 1 ;;
+        *"tab close"*) : > "$CLOSE_MARKER"; return 0 ;;
+      esac
+    }
+    fm_backend_herdr_workspace_prune_seeded_default_tab fmtest ws1 tab1
+  '
+  [ "$RC" -eq 2 ] || fail "failed seeded-tab inventory must remain typed: rc=$RC out=$OUT err=$ERR"
+  assert_refusal "failed seeded-tab inventory" "tab inventory failed or was malformed"
+  [ ! -e "$close_marker" ] || fail "failed seeded-tab inventory must not close a tab"
+  pass "seeded-tab pruning refuses failed inventory before mutation"
+}
+
+test_workspace_presence_rejects_malformed_inventory() {
+  run_capture malformed-workspace-inventory lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() {
+      printf "%s" '\''{"result":{"workspaces":[{"label":"firstmate"}]}}'\''
+    }
+    fm_backend_herdr_workspace_presence_state fmtest ws1
+  '
+  [ "$RC" -eq 2 ] && [ -z "$OUT" ] || fail "malformed workspace inventory must refuse without a state: rc=$RC out=$OUT"
+  pass "workspace presence refuses malformed Herdr identities"
+}
+
 test_native_read_failures_do_not_parse_success_bodies() {
   run_capture endpoint-identity-failed-body lib_probe -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
@@ -1041,6 +1111,10 @@ test_kill_refuses_planner_and_focus_failures_before_close
 test_endpoint_presence_failure_remains_typed
 test_pane_presence_requires_complete_identity
 test_shared_pane_identity_boundary_is_typed_and_fail_closed
+test_pane_presence_not_found_is_idempotently_dead
+test_agent_state_rejects_rebound_identity_and_failed_body
+test_seeded_tab_inventory_failure_refuses_before_prune
+test_workspace_presence_rejects_malformed_inventory
 test_native_read_failures_do_not_parse_success_bodies
 test_target_ready_rechecks_recorded_native_identity
 test_quarantine_server_failure_is_a_typed_refusal
