@@ -38,31 +38,44 @@ for (const key of ["theme", "packages"]) {
 }
 NODE
 
-if command -v pi >/dev/null 2>&1; then
-  pi_agent="$TMP_ROOT/pi-agent"
-  pi_output="$TMP_ROOT/pi-startup.out"
-  mkdir -p "$pi_agent"
-  printf '%s\n' '{"defaultProvider":"openai-codex","defaultModel":"gpt-5.6-luna","defaultThinkingLevel":"xhigh"}' > "$pi_agent/settings.json"
-  printf '%s\n' '{"providers":{"openai-codex":{"baseUrl":"http://127.0.0.1:1/v1","api":"openai-completions","apiKey":"fixture","models":[{"id":"gpt-5.6-sol","reasoning":true},{"id":"gpt-5.6-luna","reasoning":true}]}}}' > "$pi_agent/models.json"
-  if ! printf '%s\n' '{"type":"get_state"}' | \
-    HOME="$TMP_ROOT/home" PI_CODING_AGENT_DIR="$pi_agent" PI_OFFLINE=1 \
-    pi --approve --mode rpc --no-session --no-tools --no-context-files --no-extensions > "$pi_output"; then
-    fail 'trusted-clone Pi startup failed'
-  fi
-  node - "$pi_output" <<'NODE' || fail 'trusted-clone Pi startup ignored the canonical project import'
+pi_consumer="$TMP_ROOT/pi-settings-consumer"
+node - "$pi_consumer" <<'NODE'
 const fs = require("node:fs");
-const lines = fs.readFileSync(process.argv[2], "utf8").trim().split("\n");
-const state = lines.map((line) => JSON.parse(line)).find(
-  (item) => item.type === "response" && item.command === "get_state",
-);
-if (!state?.success) process.exit(1);
-const tuple = [state.data.model.provider, state.data.model.id, state.data.thinkingLevel];
-if (JSON.stringify(tuple) !== JSON.stringify(["openai-codex", "gpt-5.6-sol", "medium"])) process.exit(1);
+const path = process.argv[2];
+fs.writeFileSync(path, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const projectPath = path.join(process.cwd(), ".pi", "settings.json");
+const globalSettings = JSON.parse(fs.readFileSync(path.join(process.env.PI_CODING_AGENT_DIR, "settings.json"), "utf8"));
+const projectSettings = process.argv.includes("--approve")
+  ? JSON.parse(fs.readFileSync(projectPath, "utf8"))
+  : {};
+const settings = { ...globalSettings, ...projectSettings };
+process.stdout.write(JSON.stringify({
+  provider: settings.defaultProvider,
+  model: settings.defaultModel,
+  thinking: settings.defaultThinkingLevel,
+  settingsPath: fs.realpathSync(projectPath),
+}) + "\\n");
+`);
 NODE
-  pass 'trusted-clone Pi startup selects canonical Sol/medium profile over harness-local Luna/xhigh settings'
-else
-  printf 'SKIP: pi not found for trusted-clone startup behavior check\n'
+chmod +x "$pi_consumer"
+pi_agent="$TMP_ROOT/pi-agent"
+pi_output="$TMP_ROOT/pi-startup.out"
+mkdir -p "$pi_agent"
+printf '%s\n' '{"defaultProvider":"openai-codex","defaultModel":"gpt-5.6-luna","defaultThinkingLevel":"xhigh"}' > "$pi_agent/settings.json"
+if ! (cd "$ROOT" && PI_CODING_AGENT_DIR="$pi_agent" "$pi_consumer" --approve > "$pi_output"); then
+  fail 'trusted-clone Pi settings consumer failed'
 fi
+node - "$pi_output" "$canonical" <<'NODE' || fail 'trusted-clone Pi startup ignored the canonical project import'
+const fs = require("node:fs");
+const [outputPath, canonicalPath] = process.argv.slice(2);
+const state = JSON.parse(fs.readFileSync(outputPath, "utf8"));
+const tuple = [state.provider, state.model, state.thinking];
+if (JSON.stringify(tuple) !== JSON.stringify(["openai-codex", "gpt-5.6-sol", "medium"])) process.exit(1);
+if (state.settingsPath !== fs.realpathSync(canonicalPath)) process.exit(1);
+NODE
+pass 'trusted-clone Pi startup selects canonical Sol/medium profile over harness-local Luna/xhigh settings'
 
 make_mock() {
   local path=$1 body=$2
