@@ -62,6 +62,18 @@ fm_operational_body_byte_count() {  # <body> <result-var>
   printf -v "$result_var" '%s' "$measured"
 }
 
+fm_operational_max_carrier_bytes() {  # <result-var>
+  local result_var=${1-} kind header_bytes max_header_bytes LC_ALL
+  [ -n "$result_var" ] || return 2
+  LC_ALL=C
+  max_header_bytes=${#FM_FROMFIRST_MARK}
+  for kind in $FM_OPERATIONAL_KINDS; do
+    header_bytes=$(( ${#FM_OPERATIONAL_HEADER_PREFIX} + ${#kind} + 2 ))
+    [ "$header_bytes" -le "$max_header_bytes" ] || max_header_bytes=$header_bytes
+  done
+  printf -v "$result_var" '%s' "$((FM_OPERATIONAL_MAX_BODY_BYTES + max_header_bytes))"
+}
+
 fm_operational_body_is_valid() {  # <body>
   local body=${1-} count
   [ -n "$body" ] || return 1
@@ -278,12 +290,12 @@ fm_operational_input_inspect() {  # <current-message> <result-var>
 }
 
 fm_operational_read_stdin() {  # <result-var>
-  local result_var=${1-} value byte_count
+  local result_var=${1-} max_bytes=${2:-$FM_OPERATIONAL_MAX_BODY_BYTES} value byte_count
   [ -n "$result_var" ] || return 2
-  value=$(head -c "$((FM_OPERATIONAL_MAX_BODY_BYTES + 1))" && printf x) || return 2
+  value=$(head -c "$((max_bytes + 1))" && printf x) || return 2
   value=${value%x}
   fm_operational_body_byte_count "$value" byte_count || return 2
-  [ "$byte_count" -le "$FM_OPERATIONAL_MAX_BODY_BYTES" ] || return 2
+  [ "$byte_count" -le "$max_bytes" ] || return 2
   printf -v "$result_var" '%s' "$value"
 }
 
@@ -306,7 +318,8 @@ EOF
 }
 
 fm_operational_main() {
-  local command=${1-} argument=${2-} input output script_dir
+  local command=${1-} argument=${2-} input output script_dir carrier_limit
+  fm_operational_max_carrier_bytes carrier_limit || return 2
   case "$command" in
     -h|--help|help)
       fm_operational_usage
@@ -319,25 +332,25 @@ fm_operational_main() {
       ;;
     kind)
       [ "$#" -eq 1 ] || return 2
-      fm_operational_read_stdin input || return 2
+      fm_operational_read_stdin input "$carrier_limit" || return 2
       fm_operational_input_kind "$input" output || return 1
       printf '%s\n' "$output"
       ;;
     classify)
       [ "$#" -eq 1 ] || return 2
-      fm_operational_read_stdin input || return 2
+      fm_operational_read_stdin input "$carrier_limit" || return 2
       fm_operational_input_classify "$input" output || return 1
       printf '%s\n' "$output"
       ;;
     body)
       [ "$#" -eq 1 ] || return 2
-      fm_operational_read_stdin input || return 2
+      fm_operational_read_stdin input "$carrier_limit" || return 2
       fm_operational_input_body "$input" output || return 1
       printf '%s' "$output"
       ;;
     inspect)
       [ "$#" -eq 1 ] || return 2
-      fm_operational_read_stdin input || return 2
+      fm_operational_read_stdin input "$carrier_limit" || return 2
       if fm_operational_input_inspect "$input" output; then
         printf '%s\n' "$output"
       else

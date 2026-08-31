@@ -171,7 +171,7 @@ test_invalid_current_encodings_are_rejected() {
 }
 
 test_agent_interchange_schema_and_trust_boundaries() {
-  local schema body kind encoded first second limit at_limit oversized parsed schema_kinds runtime_kinds
+  local schema body kind encoded first second limit at_limit oversized parsed schema_kinds runtime_kinds carrier_at_limit
   schema="$TMP_ROOT/agent-interchange-schema.json"
   "$OWNER" schema > "$schema" || fail "agent interchange schema command failed"
   python3 - "$schema" <<'PY' || fail "agent interchange schema trust constraints differ"
@@ -254,6 +254,12 @@ PY
     || fail "oversized launch brief was accepted"
   ! fm_operational_input_construct from-firstmate "$oversized" encoded \
     || fail "oversized secondmate instruction was accepted"
+  fm_operational_input_construct away-supervisor "$at_limit" carrier_at_limit \
+    || fail "maximum-size versioned carrier was rejected before public parsing"
+  [ "$(printf '%s' "$carrier_at_limit" | "$OWNER" kind)" = away-supervisor ] \
+    || fail "public parser rejected a maximum-size versioned carrier"
+  ! printf '%sx' "$carrier_at_limit" | "$OWNER" kind >/dev/null 2>&1 \
+    || fail "public parser accepted a carrier one byte over its bound"
   pass "agent interchange: runtime matches schema and structural evidence grants no trust"
 }
 
