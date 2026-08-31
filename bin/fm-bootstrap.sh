@@ -1102,6 +1102,8 @@ EOF
 # not a diagnostic.
 herdr_supervisor_sweep() {
   local out status lock_pid lock_identity current_identity timeout started elapsed
+  # Runtime source path is selected from the active home at execution time.
+  # shellcheck disable=SC1091
   . "$SCRIPT_DIR/fm-wake-lib.sh"
   lock_pid=$(cat "$STATE/.lock" 2>/dev/null || true)
   lock_identity=$(cat "$STATE/.lock-pid-identity" 2>/dev/null || true)

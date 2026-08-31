@@ -112,6 +112,8 @@ if [ "${FM_WATCH_ARM_CLAIM_REQUIRED:-0}" = 1 ]; then
   ARM_CLAIM_HELD=1
 fi
 
+# shellcheck disable=SC2329
+# Invoked indirectly by the EXIT trap after the arm cycle completes.
 arm_release_claim() {
   if [ "$ARM_CLAIM_HELD" -eq 1 ]; then
     fm_lock_release "$STATE/.supervision-claim.lock" || true
@@ -695,7 +697,7 @@ handle_arm_signal() {
 trap 'handle_arm_signal HUP 129' HUP
 trap 'handle_arm_signal TERM 143' TERM
 trap 'handle_arm_signal INT 130' INT
-trap 'arm_release_claim' EXIT
+trap arm_release_claim EXIT
 
 child_out=$(mktemp "$STATE/.watch-arm-output.XXXXXX") || {
   echo "watcher: FAILED - no live watcher with a fresh beacon"

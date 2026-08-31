@@ -799,6 +799,8 @@ harness_owner_provable() {
   fi
   if [ -e "$STATE/.afk" ]; then
     away_state=$(
+      # Runtime source path is intentionally unavailable to static analysis.
+      # shellcheck disable=SC1091
       . "$SCRIPT_DIR/fm-afk-start.sh" >/dev/null 2>&1
       daemon_lock_state
     )
@@ -810,6 +812,8 @@ harness_owner_provable() {
         ;;
       ambiguous)
         away_owner=$(
+          # Runtime source path is intentionally unavailable to static analysis.
+          # shellcheck disable=SC1091
           . "$SCRIPT_DIR/fm-afk-start.sh" >/dev/null 2>&1
           daemon_lock_owner 2>/dev/null || true
         )
@@ -1626,9 +1630,6 @@ cmd_status() {  # <verbose>
 LOOP_GENERATION=
 LOOP_ARM_PID=
 LOOP_ARM_IDENTITY=
-STALE_WATCHER_PID=
-STALE_WATCHER_IDENTITY=
-LOOP_OWNER_PID=
 LOOP_CLAIM_HELD=0
 loop_release_claim() {
   if [ "$LOOP_CLAIM_HELD" -eq 1 ]; then
@@ -1841,9 +1842,6 @@ arm_output_reason() {  # <file>
 
 watcher_stale_lock_verified() {
   local lockdir pid age beat lock_home lock_path lock_identity current_identity
-  STALE_WATCHER_PID=
-  STALE_WATCHER_IDENTITY=
-  STALE_WATCHER_RECLAIM=0
   lockdir="$STATE/.watch.lock"
   beat="$STATE/.last-watcher-beat"
   [ -e "$lockdir" ] || return 1
@@ -1857,15 +1855,10 @@ watcher_stale_lock_verified() {
   current_identity=$(fm_pid_identity "$pid" 2>/dev/null || printf '')
   if [ "$current_identity" != "$lock_identity" ]; then
     [ -n "$current_identity" ] || return 1
-    STALE_WATCHER_RECLAIM=1
-    STALE_WATCHER_PID=$pid
-    STALE_WATCHER_IDENTITY=$lock_identity
     return 0
   else
     fm_watcher_lock_matches_pid "$STATE" "$FM_ROOT/bin/fm-watch.sh" "$pid" "$FM_HOME" || return 1
   fi
-  STALE_WATCHER_PID=$pid
-  STALE_WATCHER_IDENTITY=$lock_identity
   [ -e "$beat" ] || return 0
   age=$(fm_path_age "$beat")
   case "$age" in
@@ -1874,8 +1867,6 @@ watcher_stale_lock_verified() {
   if [ "$age" -ge "$WATCHER_STALE_GRACE" ]; then
     return 0
   fi
-  STALE_WATCHER_PID=
-  STALE_WATCHER_IDENTITY=
   return 1
 }
 
@@ -1912,13 +1903,12 @@ loop_launch_wait() {  # <pid>
 
 cmd_run() {
   local self out rc reason failures=0 rapid=0 started ended elapsed delay process_state arm_match
-  local previous_reason= stable_cycles=0 floor_delay=0
+  local previous_reason='' stable_cycles=0 floor_delay=0
   local LOOP_ARM_OUT
-  local LOOP_ARM_UNRESOLVED=0 LOOP_ARM_UNRESOLVED_NEXT=0 LOOP_ARM_UNRESOLVED_REPORTED=0
+  local LOOP_ARM_UNRESOLVED=0 LOOP_ARM_UNRESOLVED_NEXT=0
   local LOOP_ARM_UNRESOLVED_ATTEMPTS=0
 
   self=${BASHPID:-$$}
-  LOOP_OWNER_PID=$self
   if ! loop_owns_generation; then
     echo "herdr-supervisor: generation $LOOP_GENERATION is not current; standing down" >&2
     exit 0
@@ -1956,7 +1946,6 @@ cmd_run() {
         LOOP_ARM_IDENTITY=
         LOOP_ARM_UNRESOLVED=0
         LOOP_ARM_UNRESOLVED_ATTEMPTS=0
-        LOOP_ARM_UNRESOLVED_REPORTED=0
         [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT" 2>/dev/null || true
         LOOP_ARM_OUT=
         LOOP_ARM_UNRESOLVED_NEXT=0
@@ -1976,17 +1965,14 @@ cmd_run() {
           else
             escalate "the arm identity remains unknown after its bounded wait; retaining the child until bounded cleanup"
           fi
-          LOOP_ARM_UNRESOLVED_REPORTED=0
           if loop_stop_arm; then
             [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT" 2>/dev/null || true
             LOOP_ARM_OUT=
             LOOP_ARM_UNRESOLVED_ATTEMPTS=0
-            LOOP_ARM_UNRESOLVED_REPORTED=0
             herdr_blocked_clear || true
             loop_release_claim || true
           else
             LOOP_ARM_UNRESOLVED_NEXT=$(( $(date +%s) + UNKNOWN_ARM_TIMEOUT + 1 ))
-            LOOP_ARM_UNRESOLVED_REPORTED=1
           fi
         fi
         : > "$HEARTBEAT" 2>/dev/null || true
@@ -2088,7 +2074,6 @@ cmd_run() {
     else
       arm_match=2
       escalate "the foreground watcher arm process identity became unknown or changed; retaining the child without signaling a recycled pid"
-      LOOP_ARM_UNRESOLVED_REPORTED=0
     fi
     if [ "$arm_match" -eq 2 ]; then
       if ! loop_stop_arm; then
