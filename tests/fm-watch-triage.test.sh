@@ -28,15 +28,28 @@ DRAIN="$ROOT/bin/fm-wake-drain.sh"
 TMP_ROOT=$(fm_test_tmproot fm-watch-triage-tests)
 
 ack_stopped_cycle() {  # <state>
-  local state=$1 err sequence generation
+  local state=$1 err sequence generation attempt=0
   err="$state/.test-cycle-drain.err"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2> "$err" || return 1
-  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
-  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
-  rm -f "$err"
-  [ -n "$sequence" ] && [ -n "$generation" ] || return 1
-  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
-    --recovery-generation "$generation"
+  # The watcher EXIT trap persists the recovery episode before the process is
+  # reaped, but a bounded retry also covers the lock handoff on slow runners.
+  # Keep the assertion on the public drain/ack interface rather than inspecting
+  # implementation details of the marker transition.
+  while [ "$attempt" -lt 50 ]; do
+    : > "$err"
+    if FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2> "$err"; then
+      sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
+      generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
+      if [ -n "$sequence" ] && [ -n "$generation" ] \
+        && FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
+          --recovery-generation "$generation"; then
+        rm -f "$err"
+        return 0
+      fi
+    fi
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  return 1
 }
 
 # Common watcher knobs: tight poll/grace, no check or heartbeat cadence unless a

@@ -2403,12 +2403,17 @@ hold_task_set_lock() {  # <state-dir> -> echoes "<holder-pid> <lock-path>"
   # function's command-substitution pipe; leaving it open would block the caller
   # until the holder exited, by which point the lock would be stale and the
   # contention under test could not happen.
-  (
+  # Use a dedicated bash process so the pid recorded by the lock is exactly
+  # the process kept alive below on both Bash 3.2 and newer Bash releases.
+  # A subshell inside this command substitution can otherwise record the
+  # command-substitution shell's $$ on Bash 3.2, leaving teardown free to
+  # mistake a live publisher lock for a dead owner.
+  bash -c '
     # shellcheck source=/dev/null
-    . "$ROOT/bin/fm-wake-lib.sh"
-    fm_lock_try_acquire "$lock" || exit 1
+    . "$1/bin/fm-wake-lib.sh"
+    fm_lock_try_acquire "$2" || exit 1
     sleep 30
-  ) >/dev/null 2>&1 &
+  ' fm-task-set-lock-holder "$ROOT" "$lock" >/dev/null 2>&1 &
   holder=$!
   while [ ! -e "$lock" ] && [ "$i" -lt 100 ]; do
     sleep 0.1
