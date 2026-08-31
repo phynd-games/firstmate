@@ -60,14 +60,16 @@ The setup never overwrites an existing path that is not a Git checkout.
 
 ## Default configuration
 
-The checked-in defaults live in `.pi/settings.json`, `defaults/pi-settings.json`, `defaults/pi-open-tui.json`, and `defaults/phynd-concise.md`.
-`.pi/settings.json` makes Pi use the Phynd captain defaults immediately in every trusted Firstmate clone, while the setup script applies the same defaults globally without deleting unrelated settings and installs the concise communication prompt for Claude Code.
+[`defaults/pi-settings.json`](defaults/pi-settings.json) is the single canonical Pi captain startup profile.
+Tracked [`.pi/settings.json`](.pi/settings.json) is a relative symlink to that file, so plain Pi startup in a trusted Firstmate clone imports the canonical profile before model selection instead of consulting an independent project-local authority.
+Workstation setup shallow-merges that same canonical file into global Pi settings, preserving unrelated global keys while installing its theme and packages.
+Open TUI defaults and the Claude concise prompt remain separate in `defaults/pi-open-tui.json` and `defaults/phynd-concise.md`.
 
 | Purpose | Default |
 | --- | --- |
 | Captain harness | Pi |
-| Captain model | `openai-codex/gpt-5.6-luna` |
-| Captain thinking | `xhigh` |
+| Captain model | `openai-codex/gpt-5.6-sol` |
+| Captain thinking | `medium` |
 | Runtime backend | Herdr |
 | Herdr visibility | One presentation workspace per task |
 | Pi theme | `cosmic-lagoon` |
