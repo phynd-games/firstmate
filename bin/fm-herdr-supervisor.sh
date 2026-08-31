@@ -478,7 +478,7 @@ alarm_clear() {
 rapid_alarm_write() {  # <reason>
   local reason=$1 marker_tmp emergency_status=0
   [ -e "$RAPID_EPISODE" ] || {
-    alarm_write "$reason" || emergency_status=1
+    [ -e "$ALARM" ] || alarm_write "$reason" || emergency_status=1
     marker_tmp="$RAPID_EPISODE.tmp.${BASHPID:-$$}"
     if ! printf '%s\n' "$(ledger_clean_field "$reason")" > "$marker_tmp" 2>/dev/null \
       || ! mv -f "$marker_tmp" "$RAPID_EPISODE" 2>/dev/null; then
