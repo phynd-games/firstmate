@@ -105,7 +105,7 @@ mkdir -p "$HOME_DIR/state" "$HOME_DIR/config"
 printf 'herdr\n' > "$HOME_DIR/config/backend"
 # One in-flight task so supervision is genuinely needed.
 printf 'window=%s:fm-smoke\n' "$SESSION" > "$HOME_DIR/state/smoke.meta"
-printf 'done: smoke one\n' > "$HOME_DIR/state/smoke.status"
+printf 'working: smoke one\n' > "$HOME_DIR/state/smoke.status"
 
 run_supervisor() {
   FM_HOME="$HOME_DIR" \
@@ -140,6 +140,14 @@ wait_until() {  # <seconds> <cmd...>
   return 1
 }
 
+watcher_is_healthy() {
+  FM_HOME="$HOME_DIR" \
+  FM_ROOT_OVERRIDE="$ROOT" \
+  FM_STATE_OVERRIDE="$HOME_DIR/state" \
+    bash -c '. "$1/bin/fm-wake-lib.sh"; fm_watcher_healthy "$2" "$3" 300 "$4"' \
+      _ "$ROOT" "$HOME_DIR/state" "$ROOT/bin/fm-watch.sh" "$HOME_DIR"
+}
+
 # --- 1. establish inside a real Herdr server ---------------------------------
 out=$(run_supervisor ensure --reason smoke 2>&1) \
   || fail "establish failed against a real Herdr server: $out"
@@ -165,6 +173,7 @@ pass "Herdr's own process tracking names the live supervisor in its pane"
 
 # --- 3. continuity: one establish keeps re-arming -----------------------------
 # The incident's signature was one cycle per hand-start with successor=none.
+printf 'done: smoke one\n' > "$HOME_DIR/state/smoke.status"
 wait_until 40 cycle_count_at_least 1 \
   || fail "the real watcher did not complete its first cycle in a real pane"
 printf 'done: smoke two\n' > "$HOME_DIR/state/smoke.status"
@@ -176,6 +185,10 @@ wait_until 40 cycle_count_at_least 3 \
 pass "one establish keeps re-arming the real watcher inside its Herdr pane"
 
 # --- 4. duplicate arm attaches to the existing real watcher ------------------
+wait_until 20 watcher_is_healthy \
+  || fail "the duplicate-arm case did not begin with a healthy watcher"
+WATCH_LOCK_PID=$(cat "$HOME_DIR/state/.watch.lock/pid" 2>/dev/null || true)
+[ -n "$WATCH_LOCK_PID" ] || fail "the healthy watcher did not publish its lock pid"
 DUP_OUT="$SCRATCH/duplicate-arm.out"
 FM_HOME="$HOME_DIR" \
 FM_ROOT_OVERRIDE="$ROOT" \
@@ -190,8 +203,6 @@ HERDR_SESSION="$SESSION" \
 DUP_PID=$!
 wait_until 20 grep -q '^watcher: attached pid=' "$DUP_OUT" \
   || fail "a duplicate real arm did not attach to the existing watcher"
-WATCH_LOCK_PID=$(cat "$HOME_DIR/state/.watch.lock/pid" 2>/dev/null || true)
-[ -n "$WATCH_LOCK_PID" ] || fail "the real watcher lock did not name a live watcher"
 kill -TERM "$DUP_PID" 2>/dev/null || true
 wait "$DUP_PID" 2>/dev/null || true
 DUP_PID=

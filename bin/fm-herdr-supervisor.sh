@@ -1008,6 +1008,20 @@ recorded_workspace_matches() {
   pane_binding_intact "$session" "$workspace" "$tab" "$pane" || return 1
 }
 
+recorded_workspace_absent() {
+  local session socket socket_identity workspace out
+  session=$(record_get herdr_session || printf '')
+  socket=$(record_get herdr_socket || printf '')
+  socket_identity=$(record_get herdr_socket_identity || printf '')
+  workspace=$(record_get workspace || printf '')
+  [ -n "$session" ] && [ -n "$socket" ] && [ -n "$socket_identity" ] \
+    && [ -n "$workspace" ] || return 1
+  out=$(herdr_workspace_control "$socket" "$socket_identity" list 2>/dev/null) || return 1
+  printf '%s' "$out" | jq -e --arg workspace "$workspace" \
+    '[.result.workspaces[]? | select(.workspace_id == $workspace)] | length == 0' \
+    >/dev/null 2>&1
+}
+
 supervisor_label() {
   printf '%s-supervisor' "$(fm_backend_herdr_workspace_label)"
 }
@@ -1229,7 +1243,7 @@ establish() {  # <reason>
 
 retire_binding_locked() {  # <reason> [signal-owner]
   local reason=$1 signal_owner=${2:-1}
-  local session workspace tab pane loop_pid loop_identity current cleanup_state i=0
+  local session workspace tab pane loop_pid loop_identity current cleanup_state workspace_absent=0 i=0
   session=$(record_get herdr_session || printf '')
   workspace=$(record_get workspace || printf '')
   tab=$(record_get tab || printf '')
@@ -1263,7 +1277,7 @@ retire_binding_locked() {  # <reason> [signal-owner]
         ledger_append quarantine "could not signal the old supervisor for $reason"
         return 1
       }
-      while [ "$i" -lt 20 ] && fm_pid_alive "$loop_pid"; do
+      while [ "$i" -lt 100 ] && fm_pid_alive "$loop_pid"; do
         current=$(fm_pid_identity "$loop_pid" 2>/dev/null || printf '')
         [ "$current" = "$loop_identity" ] || {
           record_set_mode quarantine || true
@@ -1274,9 +1288,23 @@ retire_binding_locked() {  # <reason> [signal-owner]
         i=$((i + 1))
       done
       if fm_pid_alive "$loop_pid"; then
-        record_set_mode quarantine || true
-        ledger_append quarantine "old supervisor did not terminate during $reason"
-        return 1
+        current=$(fm_pid_identity "$loop_pid" 2>/dev/null || printf '')
+        [ "$current" = "$loop_identity" ] || {
+          record_set_mode quarantine || true
+          ledger_append quarantine "old supervisor identity changed before forced termination for $reason"
+          return 1
+        }
+        kill -KILL "$loop_pid" 2>/dev/null || true
+        i=0
+        while [ "$i" -lt 20 ] && fm_pid_alive "$loop_pid"; do
+          sleep 0.05
+          i=$((i + 1))
+        done
+        if fm_pid_alive "$loop_pid"; then
+          record_set_mode quarantine || true
+          ledger_append quarantine "old supervisor did not terminate after bounded forced termination for $reason"
+          return 1
+        fi
       fi
     else
       record_set_mode quarantine || true
@@ -1296,14 +1324,22 @@ retire_binding_locked() {  # <reason> [signal-owner]
   fi
   if [ -n "$workspace" ] && [ "$cleanup_state" != closed ] \
     && { ! recorded_herdr_identity_matches || ! recorded_workspace_matches; }; then
-    record_set_mode quarantine || true
-    ledger_append quarantine "could not prove the recorded Herdr binding immediately before closing $workspace for $reason"
-    return 1
+    if recorded_herdr_identity_matches && recorded_workspace_absent; then
+      workspace_absent=1
+    else
+      record_set_mode quarantine || true
+      ledger_append quarantine "could not prove the recorded Herdr binding immediately before closing $workspace for $reason"
+      return 1
+    fi
   fi
   if [ -n "$workspace" ] && [ "$cleanup_state" != closed ] && [ -n "$session" ] \
+    && [ "$workspace_absent" -eq 0 ] \
     && herdr_workspace_control "$(record_get herdr_socket || printf '')" \
       "$(record_get herdr_socket_identity || printf '')" close "$workspace" >/dev/null 2>&1; then
     :
+  elif [ -n "$workspace" ] && [ "$cleanup_state" != closed ] \
+    && recorded_herdr_identity_matches && recorded_workspace_absent; then
+    workspace_absent=1
   elif [ -n "$workspace" ]; then
     record_set_mode quarantine || true
     ledger_append quarantine "could not close exact workspace $workspace for $reason"
@@ -1685,6 +1721,18 @@ loop_capture_arm_identity() {
   LOOP_ARM_IDENTITY=
   while [ "$i" -lt 20 ] && fm_pid_alive "$pid"; do
     candidate=$(fm_pid_identity "$pid" 2>/dev/null || printf '')
+    # On macOS, a script launched through an /usr/bin/env shebang briefly
+    # reports the env trampoline as its command before execing bash. Do not
+    # publish that transient identity: it would make the real arm look
+    # recycled as soon as the trampoline completes.
+    case "$candidate" in
+      *'     /usr/bin/env bash '*)
+        previous=
+        sleep 0.05
+        i=$((i + 1))
+        continue
+        ;;
+    esac
     if [ -n "$candidate" ] && [ "$candidate" = "$previous" ]; then
       LOOP_ARM_IDENTITY=$candidate
       return 0
