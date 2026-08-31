@@ -233,6 +233,9 @@ run_supervisor() {  # <home> <fakebin> <args...>
   FM_TEST_ARM_COUNT="$home/arm.count" \
   FM_HERDR_WORKSPACE_CONTROL_HELPER="$fakebin/herdr-workspace-control" \
   FM_SUPERVISION_MODEL="${FM_TEST_SUPERVISION_MODEL:-extension}" \
+  FM_TEST_UNKNOWN_ARM="${FM_TEST_UNKNOWN_ARM:-0}" \
+  FM_HERDR_SUPERVISOR_UNKNOWN_ARM_TIMEOUT="${FM_TEST_UNKNOWN_ARM_TIMEOUT:-20}" \
+  FM_HERDR_SUPERVISOR_UNKNOWN_ARM_RETRY_LIMIT="${FM_TEST_UNKNOWN_ARM_RETRY_LIMIT:-3}" \
   FM_HERDR_SUPERVISOR_READY_TIMEOUT="${FM_TEST_READY_TIMEOUT:-15}" \
   FM_HERDR_SUPERVISOR_RETRY_BASE=0 \
   FM_HERDR_SUPERVISOR_RETRY_MAX="${FM_TEST_RETRY_MAX:-0}" \
@@ -774,7 +777,7 @@ out=$(run_supervisor "$HOME13" "$FAKEBIN" ensure 2>&1)
 assert_contains "$out" "herdr-supervisor: started" "a verified absent incomplete create can be retried"
 find "$HOME13/state" -maxdepth 1 -name '.herdr-supervisor-quarantine.pending.*' -print -quit | grep -q . \
   || fail "invisible incomplete create was not retained as quarantine evidence"
-assert_grep 'invisible after bounded reconciliation' "$HOME13/state/.herdr-supervisor-alarm" \
+assert_grep 'incomplete or ambiguous Herdr create was quarantined' "$HOME13/state/.herdr-supervisor-alarm" \
   "the quarantined incomplete create leaves an actionable alarm"
 assert_absent "$HOME13/state/.herdr-supervisor-pending-cleanup" "quarantining the incomplete create releases the active pending slot"
 stop_loop "$HOME13"
@@ -803,7 +806,17 @@ assert_grep "tab=wPART:t1" "$HOME13B/state/.herdr-supervisor-pending-cleanup" \
   "the pending cleanup receipt preserves the returned tab id"
 [ "$(cat "$HOME13B/arm.count" 2>/dev/null || echo 0)" = 0 ] \
   || fail "a partial establish armed the watcher anyway"
-pass "a partial Herdr create response is refused and names its possible orphan"
+rm -f "$HOME13B/fakestate/create-partial"
+out=$(run_supervisor "$HOME13B" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "herdr-supervisor: started" "a quarantined partial create permits a fresh establish"
+PARTIAL_QUARANTINE=$(find "$HOME13B/state" -maxdepth 1 -name '.herdr-supervisor-quarantine.pending.*' -print -quit)
+[ -n "$PARTIAL_QUARANTINE" ] || fail "partial create quarantine evidence was not retained"
+assert_grep "workspace=wPART" "$PARTIAL_QUARANTINE" \
+  "the quarantine preserves the partial workspace id without adopting it"
+assert_absent "$HOME13B/fakestate/closed-workspaces" \
+  "reconciling a partial response never closes its ambiguous workspace"
+pass "a partial Herdr create response is quarantined without label adoption or cleanup"
+stop_loop "$HOME13B"
 
 # =============================================================================
 # 13c. A Herdr session with no running server is refused loudly. The supervisor
@@ -1063,5 +1076,60 @@ assert_grep 'reason=watcher arm attempt' "$HOME20/state/.herdr-supervisor-alarm-
   "the failed arm remains in the per-attempt alarm history"
 pass "each failed arm leaves durable evidence after a later success"
 stop_loop "$HOME20"
+
+# =============================================================================
+# 21. An unverifiable arm child is abandoned after bounded cleanup, while the
+#     same Herdr-owned supervisor immediately keeps trying fresh arms.
+# =============================================================================
+HOME21=$(new_home unknown-arm-abandon)
+fm_write_meta "$HOME21/state/unknown-arm-task.meta" "window=firstmate:fm-unknown-arm-task"
+cat > "$FAKEBIN/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+pid=
+previous=
+for arg in "$@"; do
+  [ "$previous" = -p ] && pid=$arg
+  previous=$arg
+done
+if [ -n "$pid" ] && [ -f "${FM_HOME:-}/first-unknown-arm.pid" ] \
+  && [ "$pid" = "$(cat "$FM_HOME/first-unknown-arm.pid")" ] \
+  && [[ " $* " == *" lstart="* ]]; then
+  exit 1
+fi
+exec /bin/ps "$@"
+SH
+chmod +x "$FAKEBIN/ps"
+cat > "$HOME21/arm.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+C="${FM_TEST_ARM_COUNT:?}"
+n=$(( $(cat "$C" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$C"
+if [ "$n" -eq 1 ]; then
+  printf '%s\n' "$$" > "$FM_HOME/first-unknown-arm.pid"
+  sleep 10
+fi
+echo "signal: /fake/state/task.status"
+SH
+chmod +x "$HOME21/arm.sh"
+out=$(FM_TEST_UNKNOWN_ARM=1 FM_TEST_UNKNOWN_ARM_TIMEOUT=1 FM_TEST_UNKNOWN_ARM_RETRY_LIMIT=1 \
+  FM_PROC_ROOT_OVERRIDE="$HOME21/fakeproc" run_supervisor "$HOME21" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "herdr-supervisor: started" "an unverifiable arm still establishes the supervisor"
+wait_for 10 arm_count_at_least "$HOME21" 2 \
+  || fail "the supervisor did not launch a fresh arm after abandoning the unknown child"
+assert_present "$HOME21/state/.herdr-supervisor" \
+  "abandoning an unknown arm retains the supervisor binding"
+assert_present "$HOME21/state/.herdr-supervisor-live" \
+  "abandoning an unknown arm retains the supervisor liveness record"
+assert_grep 'abandoning child pid=' "$HOME21/state/.herdr-supervisor-alarm" \
+  "abandoning an unknown arm leaves a durable child diagnostic"
+UNKNOWN_ARM_PID=$(cat "$HOME21/first-unknown-arm.pid" 2>/dev/null || true)
+stop_loop "$HOME21"
+if [ -n "$UNKNOWN_ARM_PID" ]; then
+  kill -TERM "$UNKNOWN_ARM_PID" 2>/dev/null || true
+  wait "$UNKNOWN_ARM_PID" 2>/dev/null || true
+fi
+pass "unknown arm children are abandoned without stopping supervisor recovery"
 
 echo "all fm-herdr-supervisor tests passed"

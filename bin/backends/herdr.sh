@@ -1456,7 +1456,7 @@ fm_backend_herdr_server_ensure() {  # <session>
     for fd_path in /dev/fd/[0-9]*; do
       fd=${fd_path##*/}
       case "$fd" in
-        0|1|2|255|*[!0-9]*) continue ;;
+        *[!0-9]*) continue ;;
       esac
       eval "exec ${fd}>&-" 2>/dev/null || true
     done
