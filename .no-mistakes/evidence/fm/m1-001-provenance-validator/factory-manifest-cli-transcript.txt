@@ -1,0 +1,10 @@
+ok - public CLI exposes all four versioned schemas
+ok - known source reproduces 121 tasks, 8 epics, 193 edges, 0 cycles, 26 waves, and two roots
+ok - source provenance mismatch is rejected
+ok - public API returns a deterministic report for a non-string expected digest
+ok - malformed source fixtures reject mismatches, counts, IDs, edges, and cycles
+ok - normalized manifest validates hashes, routes, DAG waves, roots, and acceptance reachability
+ok - malformed manifest fixtures reject routes, edges, cycles, hash drift, and source drift
+ok - oversized integers, deep JSON, and invalid UTF-8 produce deterministic validation reports
+ok - long dependency chains and lone surrogates are handled safely
+ok - validation leaves source bytes and input directory unchanged
