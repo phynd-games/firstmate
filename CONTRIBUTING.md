@@ -36,8 +36,9 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
 ## Repo conventions
 
 - This repo is a template for running a firstmate orchestrator agent.
-  `AGENTS.md` is the agent's main job description and names when to load bundled firstmate skills; `CLAUDE.md` is a real `@AGENTS.md` pointer to it, and `.claude/skills` is a symlink to `.agents/skills`.
+  `AGENTS.md` is the agent's main job description and names when to load bundled firstmate skills; `CLAUDE.md` is a real `@AGENTS.md` pointer to it, and `.claude/skills` plus `.grok/skills` are symlinks to `.agents/skills`.
 - Only shared material is tracked: `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.tasks.toml`, `.github/workflows/`, `bin/`, `.agents/skills/`, `skills/`, and the checked-in Phynd defaults under `config/`.
+  The canonical instruction bridges and their regression evidence are maintained in [`docs/verification/instruction-sources.md`](docs/verification/instruction-sources.md).
   `.agents/skills/` holds agent-loaded skills that assume a live firstmate home and carry `metadata.internal: true` so installers such as [skills.sh](https://skills.sh) hide them from discovery; `skills/` holds standalone, installer-facing public skills with no firstmate dependency (see the README's "Two-tier skill layout").
   Personal fleet state is gitignored; the checked-in Phynd defaults and local configuration distinction are owned by [`docs/configuration.md`](docs/configuration.md#operational-home-layout-and-state).
   The root `.tasks.toml` is tracked `tasks-axi` config for `data/backlog.md`; compatible `tasks-axi` is the default backend for routine backlog mutations, with the compatibility definition owned by [`docs/configuration.md`](docs/configuration.md) ("Backlog backend").
@@ -93,7 +94,7 @@ bin/fm-test-isolation-proof.sh --jobs 4 --json /tmp/fm-isolation-proof.json   # 
 <!-- Points Claude at AGENTS.md via import; edit AGENTS.md, not this file. -->
 @AGENTS.md
 EOF
-[ "$(readlink .claude/skills)" = "../.agents/skills" ]
+bin/fm-instruction-sources-check.sh
 tmp=$(mktemp -d) && printf 'done: smoke\n' > "$tmp/smoke.status" && FM_STATE_OVERRIDE="$tmp" FM_SIGNAL_GRACE=1 FM_POLL=1 FM_HEARTBEAT=999999 bin/fm-watch-arm.sh  # watcher re-arm smoke test (prints arm status, then an actionable signal)
 ```
 

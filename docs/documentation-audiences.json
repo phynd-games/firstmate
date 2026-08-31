@@ -105,6 +105,10 @@
     {
       "source": "docs/trace-context.md",
       "target": "docs/verification/trace-context.md"
+    },
+    {
+      "source": "CONTRIBUTING.md",
+      "target": "docs/verification/instruction-sources.md"
     }
   ],
   "surfaces": [
@@ -374,6 +378,10 @@
     },
     {
       "path": "docs/verification/dispatch-auth.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/verification/instruction-sources.md",
       "audience": "maintainer-verification"
     },
     {

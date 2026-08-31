@@ -66,7 +66,8 @@ README.md            public overview and development notes
 .github/workflows/   shared CI and PR enforcement, committed
 .tasks.toml          tracked tasks-axi markdown backend config for the default backlog backend (section 10)
 .agents/skills/      firstmate-loaded internal skills, committed; each carries metadata.internal=true for installers
-.claude/skills       symlink to .agents/skills for claude compatibility
+.claude/skills       symlink to .agents/skills for Claude Code compatibility
+.grok/skills         symlink to .agents/skills for Grok Build compatibility
 skills/              standalone public installer-facing skills, committed; not loaded by firstmate
 bin/                 helper scripts, committed; read each script's header before first use
 .env                 optional Relay pairing token; LOCAL, gitignored; presence-gates section 14
