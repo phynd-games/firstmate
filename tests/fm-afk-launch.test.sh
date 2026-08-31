@@ -232,8 +232,7 @@ unit_failed_start_rolls_back_state() {
 }
 
 unit_concurrent_start_serialized() {
-  echo "skip: tmux away-mode launch is historical and Herdr-only entry is enforced"
-  return 0
+  command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found (concurrent start)"; return 0; }
   local st cap_session cap_pane first second rec count
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-concurrent.XXXXXX")
   cap_session="fm-afk-concurrent-cap-$$"
@@ -489,19 +488,16 @@ unit_native_lifecycle() {
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-native.XXXXXX")
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
-  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_NATIVE_TRACKED=1 \
-    FM_AFK_DAEMON_OVERRIDE="$(command -v true)" "$LAUNCH" start-native >/dev/null 2>&1 \
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" start-native >/dev/null 2>&1 \
     && [ "$(cut -f1 "$st/state/.afk-daemon-terminal")" = none ] \
     && [ -e "$st/state/.afk" ] \
-    && [ -e "$st/state/.supervision-claim.pending" ] \
     && [ ! -e "$st/state/.subsuper-escalations" ]; then
     pass "native lifecycle: launcher owns state with no terminal"
   else
     fail "native lifecycle: state preparation or no-terminal record failed"
   fi
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" stop >/dev/null 2>&1
-  if [ ! -e "$st/state/.afk" ] && [ ! -e "$st/state/.afk-daemon-terminal" ] \
-    && [ ! -e "$st/state/.supervision-claim.pending" ]; then
+  if [ ! -e "$st/state/.afk" ] && [ ! -e "$st/state/.afk-daemon-terminal" ]; then
     pass "native lifecycle: uniform stop clears state without closing a terminal"
   else
     fail "native lifecycle: uniform stop retained state"
@@ -517,7 +513,6 @@ unit_native_entry_preserves_prepared_state() {
   : > "$st/state/.subsuper-escalations"
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_STATE_PREPARED=1 bash -c '
     . "$1"
-    fm_supervision_claim_pending_write "$FM_AFK_STATE" 30
     FM_AFK_DAEMON=/bin/true
     fm_afk_start_main
   ' _ "$START" >/dev/null 2>&1
@@ -525,24 +520,6 @@ unit_native_entry_preserves_prepared_state() {
     pass "native entry: launcher-prepared lifecycle state is not rewritten"
   else
     fail "native entry: launcher-prepared lifecycle state was mutated"
-  fi
-  rm -rf "$st"
-}
-
-unit_prepared_claim_flag_requires_owned_claim() {
-  local st
-  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-claim-proof.XXXXXX")
-  mkdir -p "$st/state"
-  : > "$st/state/.afk"
-  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_STATE_PREPARED=1 \
-    FM_SUPERVISION_CLAIM_HELD=1 bash -c '
-      . "$1"
-      FM_AFK_DAEMON=/bin/true
-      ! fm_afk_start_main
-    ' _ "$START" >/dev/null 2>&1; then
-    pass "claim proof: prepared entry rejects an unverified inherited claim"
-  else
-    fail "claim proof: forged inherited claim was accepted"
   fi
   rm -rf "$st"
 }
@@ -621,54 +598,49 @@ unit_stop_malformed_record_fails_closed() {
   rm -rf "$st"
 }
 
-unit_herdr_claim_is_retained_until_daemon_ready() {
-  local st
-  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-herdr-claim.XXXXXX")
+unit_tmux_planned_record_and_collision() {
+  local st first second
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-tmux-plan.XXXXXX")
   mkdir -p "$st/state"
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
     . "$1"
-    fm_backend_source() { return 0; }
-    fm_backend_herdr_server_ensure() { return 0; }
-    fm_backend_herdr_cli() {
-      if [ "$2 $3" = "workspace create" ]; then
-        printf "%s" "{\"result\":{\"workspace\":{\"workspace_id\":\"ws-claim\"},\"root_pane\":{\"pane_id\":\"pane-claim\"}}}"
-      elif [ "$2 $3" = "pane run" ]; then
-        return 0
+    tmux() {
+      if [ "$1" = new-session ]; then
+        [ -s "$FM_AFK_LAUNCH_RECORD" ] || return 9
+        printf "%s" "$4" > "$FM_HOME/created-name"
+        return 1
       fi
-      return 0
+      [ "$1" != kill-session ] || : > "$FM_HOME/killed"
+      return 1
     }
-    fm_afk_launch_entry_cmd() { printf /bin/true; }
-    fm_afk_launch_commit_terminal() {
-      fm_lock_owned_by_current "$FM_AFK_LAUNCH_STATE/.supervision-claim.lock" || return 1
-      : > "$FM_HOME/ready-proof"
-    }
-    fm_supervision_claim_acquire "$FM_AFK_LAUNCH_STATE/.supervision-claim.lock" 10
-    fm_afk_launch_create_herdr lab:captain herdr
-    [ -e "$FM_HOME/ready-proof" ]
-  ' _ "$LAUNCH" && [ -e "$st/ready-proof" ] \
-    && [ -d "$st/state/.supervision-claim.lock" ]; then
-    pass "Herdr launch: ownership claim remains held through daemon readiness"
+    ! fm_afk_launch_create_tmux captain:0 tmux
+  ' _ "$LAUNCH" && [ ! -e "$st/state/.afk-daemon-terminal" ] && [ ! -e "$st/killed" ]; then
+    pass "tmux launch: planned exact target is recorded before creation and removed on failure"
   else
-    fail "Herdr launch: readiness proof ran after the ownership claim was released"
+    fail "tmux launch: creation began before exact target publication"
   fi
+  first=$(cat "$st/created-name")
   rm -rf "$st"
-}
 
-unit_tmux_launch_is_unreachable_even_in_legacy_lane() {
-  local st
-  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-tmux-disabled.XXXXXX")
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-tmux-unique.XXXXXX")
   mkdir -p "$st/state"
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
     . "$1"
-    tmux() { : > "$FM_HOME/tmux-called"; return 0; }
-    FM_BACKEND_LEGACY_TEST_LANE=1
-    if fm_afk_launch_create_tmux captain:0 tmux; then
-      exit 1
+    tmux() {
+      [ "$1" != new-session ] || { printf "%s" "$4" > "$FM_HOME/created-name"; return 1; }
+      [ "$1" != kill-session ] || : > "$FM_HOME/killed"
+      return 1
+    }
+    ! fm_afk_launch_create_tmux captain:0 tmux
+  ' _ "$LAUNCH" && [ ! -e "$st/killed" ]; then
+    second=$(cat "$st/created-name")
+    if [ "$first" != "$second" ]; then
+      pass "tmux launch: unique names eliminate collision teardown"
+    else
+      fail "tmux launch: consecutive launches reused a session name"
     fi
-  ' _ "$LAUNCH" && [ ! -e "$st/state/.afk-daemon-terminal" ] && [ ! -e "$st/tmux-called" ]; then
-    pass "tmux launch: legacy lane cannot create a detached terminal"
   else
-    fail "tmux launch: disabled creator invoked tmux or wrote a record"
+    fail "tmux launch: creation failure attempted session teardown"
   fi
   rm -rf "$st"
 }
@@ -916,10 +888,39 @@ e2e_herdr() {
 }
 
 # ---------------------------------------------------------------------------
-# The historical tmux topology smoke is intentionally no longer active.
+# E2E tmux: topology invariant (captain window untouched; daemon in a separate
+# detached session).
 # ---------------------------------------------------------------------------
 e2e_tmux() {
-  echo "skip: tmux away-mode launch is historical and Herdr-only entry is enforced"
+  command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found (tmux e2e)"; return 0; }
+  local cap_session home_tmp cap_pane before during after rec
+  cap_session="fm-afk-launch-cap-$$"
+  home_tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-tmux-home.XXXXXX")
+  tmux new-session -d -s "$cap_session" 2>/dev/null || { fail "tmux e2e: could not create captain session"; rm -rf "$home_tmp"; return 0; }
+  TRACK_TMUX_SESSIONS="$TRACK_TMUX_SESSIONS $cap_session"
+  cap_pane=$(tmux display-message -p -t "$cap_session" '#{pane_id}')
+  before=$(tmux list-panes -t "$cap_session" | wc -l | tr -d ' ')
+
+  FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
+    FM_SUPERVISOR_TARGET="$cap_pane" FM_SUPERVISOR_BACKEND=tmux FM_AFK_LAUNCH_ENTRY="$SLEEPER" \
+    "$LAUNCH" start >/dev/null 2>&1
+
+  during=$(tmux list-panes -t "$cap_session" | wc -l | tr -d ' ')
+  rec=$(cut -f2 "$home_tmp/state/.afk-daemon-terminal" 2>/dev/null || true)
+  TRACK_TMUX_SESSIONS="$TRACK_TMUX_SESSIONS $rec"
+  if [ "$before" = "$during" ]; then pass "tmux e2e: captain window pane count unchanged after start (no split-window)"; else fail "tmux e2e: captain window pane count changed ($before -> $during)"; fi
+  if [ -n "$rec" ] && tmux has-session -t "$rec" 2>/dev/null && [ "$rec" != "$cap_session" ]; then pass "tmux e2e: daemon launched in a separate detached session"; else fail "tmux e2e: no separate daemon session ($rec)"; fi
+
+  FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
+    FM_SUPERVISOR_TARGET="$cap_pane" FM_SUPERVISOR_BACKEND=tmux "$LAUNCH" stop >/dev/null 2>&1
+
+  after=$(tmux list-panes -t "$cap_session" | wc -l | tr -d ' ')
+  if [ "$after" = "$before" ]; then pass "tmux e2e: captain window pane count unchanged after stop"; else fail "tmux e2e: captain window changed ($before -> $after)"; fi
+  if [ -n "$rec" ] && ! tmux has-session -t "$rec" 2>/dev/null; then pass "tmux e2e: daemon session killed by exact id on stop"; else fail "tmux e2e: daemon session leaked ($rec)"; fi
+  if [ ! -e "$home_tmp/state/.afk-daemon-terminal" ] && [ ! -e "$home_tmp/state/.afk" ]; then pass "tmux e2e: record + .afk cleared on stop"; else fail "tmux e2e: record or .afk not cleared"; fi
+
+  tmux kill-session -t "$cap_session" 2>/dev/null || true
+  rm -rf "$home_tmp" 2>/dev/null || true
 }
 
 unit_clear_stale
@@ -940,13 +941,11 @@ unit_readiness_failure_preserves_unconfirmed_record
 unit_tmux_absence_distinguishes_probe_failure
 unit_native_lifecycle
 unit_native_entry_preserves_prepared_state
-unit_prepared_claim_flag_requires_owned_claim
 unit_close_failure_preserves_record
 unit_record_publication_atomic
 unit_malformed_record_fails_closed
 unit_stop_malformed_record_fails_closed
-unit_herdr_claim_is_retained_until_daemon_ready
-unit_tmux_launch_is_unreachable_even_in_legacy_lane
+unit_tmux_planned_record_and_collision
 unit_stop_validates_before_signal
 unit_lock_requires_complete_metadata
 unit_stop_surfaces_afk_removal_failure

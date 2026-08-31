@@ -239,6 +239,9 @@ run_supervisor() {  # <home> <fakebin> <args...>
   FM_HERDR_SUPERVISOR_READY_TIMEOUT="${FM_TEST_READY_TIMEOUT:-15}" \
   FM_HERDR_SUPERVISOR_RETRY_BASE=0 \
   FM_HERDR_SUPERVISOR_RETRY_MAX="${FM_TEST_RETRY_MAX:-0}" \
+  FM_HERDR_SUPERVISOR_RAPID_CYCLE_SECONDS="${FM_HERDR_SUPERVISOR_RAPID_CYCLE_SECONDS:-1}" \
+  FM_HERDR_SUPERVISOR_RAPID_CYCLE_LIMIT="${FM_HERDR_SUPERVISOR_RAPID_CYCLE_LIMIT:-20}" \
+  FM_HERDR_SUPERVISOR_RAPID_CYCLE_FLOOR="${FM_HERDR_SUPERVISOR_RAPID_CYCLE_FLOOR:-5}" \
   FM_HERDR_SUPERVISOR_IDLE_INTERVAL=1 \
   HERDR_SESSION=default \
   "$supervisor" "$@"
@@ -483,6 +486,103 @@ wait_for 20 arm_count_at_least "$HOME5" 3 \
 pass "one establish keeps re-arming the watcher across many actionable closes"
 
 # =============================================================================
+# 5b. Identical rapid cycles back off before re-arming and write one alarm for
+#     the episode without enqueueing a self-triggering supervisor wake.
+# =============================================================================
+HOME5B=$(new_home rapid-cycle)
+fm_write_meta "$HOME5B/state/rapid-task.meta" "window=firstmate:fm-rapid-task"
+cat > "$HOME5B/arm.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+C="${FM_TEST_ARM_COUNT:?}"
+n=$(( $(cat "$C" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$C"
+sleep 0.5
+echo "signal: /fake/state/task.status"
+SH
+chmod +x "$HOME5B/arm.sh"
+out=$(FM_HERDR_SUPERVISOR_RAPID_CYCLE_SECONDS=10 \
+  FM_HERDR_SUPERVISOR_RAPID_CYCLE_LIMIT=2 \
+  FM_HERDR_SUPERVISOR_RAPID_CYCLE_FLOOR=1 \
+  run_supervisor "$HOME5B" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "herdr-supervisor: started" "rapid-cycle fixture establishes a supervisor"
+wait_for 10 test -f "$HOME5B/state/.herdr-supervisor-rapid-episode" \
+  || fail "identical rapid cycles did not create their episode marker"
+before=$(cat "$HOME5B/arm.count")
+sleep 0.2
+after=$(cat "$HOME5B/arm.count")
+[ "$after" = "$before" ] || fail "the rapid-cycle floor did not delay the next arm"
+wait_for 5 arm_count_at_least "$HOME5B" $((before + 1)) \
+  || fail "rapid-cycle supervision did not resume after its floor delay"
+rows=$(awk '/check: herdr-supervisor/ { count++ } END { print count + 0 }' \
+  "$HOME5B/state/.wake-queue" 2>/dev/null || echo 0)
+[ "$rows" -le 1 ] || fail "rapid-cycle alarm appended $rows self-triggering queue rows"
+assert_grep 'watcher cycles have been closing' "$HOME5B/state/.herdr-supervisor-alarm" \
+  "rapid cycles leave one durable alarm"
+pass "identical rapid cycles back off and emit one non-self-triggering alarm"
+stop_loop "$HOME5B"
+
+# =============================================================================
+# 5c. A rapid episode clears only after three successful non-rapid cycles.
+# =============================================================================
+HOME5C=$(new_home stable-cycle)
+fm_write_meta "$HOME5C/state/stable-task.meta" "window=firstmate:fm-stable-task"
+cat > "$HOME5C/arm.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+C="${FM_TEST_ARM_COUNT:?}"
+n=$(( $(cat "$C" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$C"
+sleep 2
+echo "signal: /fake/state/task.status"
+SH
+chmod +x "$HOME5C/arm.sh"
+out=$(FM_HERDR_SUPERVISOR_RAPID_CYCLE_SECONDS=1 \
+  run_supervisor "$HOME5C" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "herdr-supervisor: started" "stable-cycle fixture establishes a supervisor"
+wait_for 5 arm_count_at_least "$HOME5C" 1 || fail "stable-cycle arm did not start"
+printf 'reason=previous rapid episode\n' > "$HOME5C/state/.herdr-supervisor-alarm"
+: > "$HOME5C/state/.herdr-supervisor-rapid-episode"
+sleep 2.5
+assert_present "$HOME5C/state/.herdr-supervisor-alarm" \
+  "one non-rapid cycle does not clear the alarm"
+wait_for 12 arm_count_at_least "$HOME5C" 4 \
+  || fail "stable-cycle fixture did not produce three non-rapid cycles"
+assert_absent "$HOME5C/state/.herdr-supervisor-alarm" \
+  "three successful non-rapid cycles clear the alarm"
+pass "rapid alarms clear only after three stable non-rapid cycles"
+stop_loop "$HOME5C"
+
+# =============================================================================
+# 5d. The deterministic Herdr loop executes several cycles without invoking
+#     any AI agent or model executable even when tripwires lead PATH.
+# =============================================================================
+HOME5D=$(new_home zero-ai-runtime)
+make_arm_stub "$HOME5D/arm.sh" ok
+fm_write_meta "$HOME5D/state/ai-task.meta" "window=firstmate:fm-ai-task"
+mkdir -p "$HOME5D/fakebin"
+cp "$FAKEBIN/herdr" "$HOME5D/fakebin/herdr"
+cp "$FAKEBIN/herdr-workspace-control" "$HOME5D/fakebin/herdr-workspace-control"
+for agent in pi claude codex opencode cursor grok kimi muse; do
+  cat > "$HOME5D/fakebin/$agent" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "$agent" > "\${FM_HOME}/ai-tripwire-fired"
+exit 99
+SH
+  chmod +x "$HOME5D/fakebin/$agent"
+done
+out=$(FM_HERDR_SUPERVISOR_RAPID_CYCLE_SECONDS=0 \
+  FM_HERDR_SUPERVISOR_RAPID_CYCLE_FLOOR=0 \
+  run_supervisor "$HOME5D" "$HOME5D/fakebin" ensure 2>&1)
+assert_contains "$out" "herdr-supervisor: started" "the zero-AI fixture establishes a supervisor"
+wait_for 10 arm_count_at_least "$HOME5D" 3 \
+  || fail "the zero-AI fixture did not complete several real arm cycles"
+assert_absent "$HOME5D/ai-tripwire-fired" \
+  "the Herdr runtime loop never invokes an AI executable"
+pass "the Herdr runtime loop completes cycles without AI agents or model calls"
+stop_loop "$HOME5D"
+
+# =============================================================================
 # 6. ensure is idempotent: a second call attaches to the same generation and
 #    starts no second owner.
 # =============================================================================
@@ -500,8 +600,8 @@ assert_contains "$out" "recorded Herdr pane and process" \
 pass "the public run path requires its recorded Herdr pane and process"
 
 # =============================================================================
-# 6b. A live watcher with a stale beacon is restarted only after its home,
-#      path, and process identity are all verified.
+# 6b. A live watcher with a stale beacon is handed to the plain arm, whose
+#      identity-safe singleton path handles stale recovery.
 # =============================================================================
 HOME6B=$(new_home stale-watcher)
 fm_write_meta "$HOME6B/state/stale-task.meta" "window=firstmate:fm-stale-task"
@@ -523,9 +623,11 @@ SH
 chmod +x "$HOME6B/arm.sh"
 out=$(FM_WATCHER_STALE_GRACE=1 run_supervisor "$HOME6B" "$FAKEBIN" ensure 2>&1)
 assert_contains "$out" "herdr-supervisor: started" "a stale watcher still allows supervisor establishment"
-wait_for 10 grep -q -- '--restart' "$HOME6B/arm.args" \
-  || fail "a live stale watcher was not sent through the bounded restart path"
-pass "a stale watcher beacon uses the identity-verified restart path"
+wait_for 10 test -f "$HOME6B/arm.args" \
+  || fail "the plain arm was not launched for a stale watcher"
+[ -z "$(cat "$HOME6B/arm.args")" ] \
+  || fail "the supervisor passed the forbidden restart mode to the arm"
+pass "a stale watcher beacon uses the plain arm singleton path"
 kill "$STALE_WATCHER_PID" 2>/dev/null || true
 wait "$STALE_WATCHER_PID" 2>/dev/null || true
 stop_loop "$HOME6B"
@@ -1114,6 +1216,7 @@ echo "signal: /fake/state/task.status"
 SH
 chmod +x "$HOME21/arm.sh"
 out=$(FM_TEST_UNKNOWN_ARM=1 FM_TEST_UNKNOWN_ARM_TIMEOUT=1 FM_TEST_UNKNOWN_ARM_RETRY_LIMIT=1 \
+  FM_HERDR_SUPERVISOR_RAPID_CYCLE_SECONDS=999999 \
   FM_PROC_ROOT_OVERRIDE="$HOME21/fakeproc" run_supervisor "$HOME21" "$FAKEBIN" ensure 2>&1)
 assert_contains "$out" "herdr-supervisor: started" "an unverifiable arm still establishes the supervisor"
 wait_for 10 arm_count_at_least "$HOME21" 2 \

@@ -225,6 +225,34 @@ fm_pi_extension_owns_supervision() {
   fm_pi_extension_loaded "$state/$marker" "$version" "$lock"
 }
 
+# fm_herdr_supervisor_owns_supervision <state> <home>
+# True when the local Herdr continuity owner has a current, live, identity-
+# matched process and a fresh supervisor heartbeat. This deliberately performs
+# no Herdr calls because the verdict runs on every guard path.
+fm_herdr_supervisor_owns_supervision() {
+  local state=$1 home=$2 record="$1/.herdr-supervisor" live="$1/.herdr-supervisor-live"
+  local heartbeat="$1/.herdr-supervisor-heartbeat" version mode recorded_home generation live_generation
+  local loop_pid loop_identity current_identity age grace
+  [ -f "$record" ] && [ -f "$live" ] && [ -f "$heartbeat" ] || return 1
+  version=$(sed -n 's/^version=//p' "$record" | sed -n '1p')
+  mode=$(sed -n 's/^mode=//p' "$record" | sed -n '1p')
+  recorded_home=$(sed -n 's/^fm_home=//p' "$record" | sed -n '1p')
+  generation=$(sed -n 's/^generation=//p' "$record" | sed -n '1p')
+  live_generation=$(sed -n 's/^generation=//p' "$live" | sed -n '1p')
+  [ "$version" = 1 ] && [ "$mode" = active ] && [ "$recorded_home" = "$home" ] || return 1
+  [ -n "$generation" ] && [ "$live_generation" = "$generation" ] || return 1
+  loop_pid=$(sed -n 's/^loop_pid=//p' "$live" | sed -n '1p')
+  loop_identity=$(sed -n 's/^loop_identity=//p' "$live" | sed -n '1p')
+  [ -n "$loop_pid" ] && [ -n "$loop_identity" ] || return 1
+  fm_pid_alive "$loop_pid" || return 1
+  current_identity=$(fm_pid_identity "$loop_pid" 2>/dev/null || true)
+  [ -n "$current_identity" ] && [ "$current_identity" = "$loop_identity" ] || return 1
+  grace=${FM_HERDR_SUPERVISOR_HEARTBEAT_GRACE:-120}
+  case "$grace" in ''|*[!0-9]*|0) return 1 ;; esac
+  age=$(fm_path_age "$heartbeat")
+  [ "$age" -lt "$grace" ]
+}
+
 # fm_watcher_supervision_verdict <state> <watch-path> [grace] [home] [root]
 # Model-aware "is supervision healthy right now" verdict for the pull warning
 # guard (bin/fm-guard.sh), NOT the arm layer or the turn-end guard. Sets:
@@ -272,7 +300,11 @@ fm_watcher_supervision_verdict() {
     # shellcheck disable=SC2034 # Read by callers after the function returns.
     FM_WATCHER_VERDICT_OK=true
   elif [ "$fresh" = true ]; then
-    if [ "$model" = extension ] && fm_watcher_lock_unheld "$state" \
+    if fm_watcher_lock_unheld "$state" \
+      && fm_herdr_supervisor_owns_supervision "$state" "$home"; then
+      # shellcheck disable=SC2034 # Read by callers after fm_watcher_supervision_verdict returns.
+      FM_WATCHER_VERDICT_OK=true
+    elif [ "$model" = extension ] && fm_watcher_lock_unheld "$state" \
       && fm_pi_extension_owns_supervision "$state" "$root"; then
       # shellcheck disable=SC2034 # Read by callers after the function returns.
       FM_WATCHER_VERDICT_OK=true

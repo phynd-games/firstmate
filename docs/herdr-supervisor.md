@@ -39,7 +39,7 @@ It is not a second lifecycle authority.
 
 - It starts nothing but `bin/fm-watch-arm.sh`.
   The arm layer stays the only thing that starts, attaches to, or verifies a watcher, and `state/.watch.lock` stays the only singleton.
-- It uses the plain attach-or-start arm for healthy watchers, and uses `--restart` only for a live watcher whose home, path, process identity, and beacon staleness are all verified.
+- It always uses the plain attach-or-start arm, whose own singleton logic handles stale or dead watcher locks.
   A second supervisor that somehow raced past the establish lock attaches to the live watcher rather than evicting it, so the one-watcher singleton holds even under a duplicate arm.
 - It never writes `state/.last-watcher-beat`.
   Only the watcher touches that beacon, so no helper can make a wedged watcher look alive.
@@ -96,20 +96,21 @@ Recovery is bounded, idempotent, and generation-safe.
 | --- | --- |
 | Watcher exits on a wake | The loop re-arms immediately; the wake is already durable on the queue |
 | Arm crashes, is killed, or fails | Every attempt leaves a durable alarm, ledger entry, and queue escalation; bounded exponential retry runs in rounds of five attempts by default while the tracked continuity owner remains alive |
-| Stale or dead watcher lock | A dead holder is reclaimed by the arm layer's own self-eviction and steal path; an identity-verified live holder with a stale beacon is replaced through the arm's bounded `--restart` path |
-| Stale or missing watcher beacon | An identity-verified live holder is replaced through the arm's bounded `--restart` path; unknown holders fail closed with durable escalation |
+| Stale or dead watcher lock | The arm layer's own self-eviction and steal path reclaims a stale holder while preserving a live singleton |
+| Stale or missing watcher beacon | The plain arm rechecks the holder and recovers through its bounded identity-safe path; unknown holders fail closed with durable escalation |
 | Supervisor process killed | Unhealthy at the next `ensure`, which establishes a fresh generation |
 | Supervisor wedged but alive | Its heartbeat goes stale and it reads unhealthy, even though the process and pane still check out |
 | Herdr pane closed or moved | The pane binding stops matching and it reads unhealthy |
 | Primary harness session replaced | Nothing happens; the supervisor is not bound to that process |
 | Herdr server or session replaced | The old binding is retained as generation-named quarantine evidence without closing through the new server; once the named server is available again, `ensure` can establish a fresh generation |
 | Duplicate arm | Only the generation the binding record names may arm; every other generation stands down |
-| Rapid repeated cycles | A floor delay plus one durable diagnostic, never a stop, because a busy fleet does produce fast cycles |
+| Rapid repeated cycles | Identical rapid cycles receive the floor delay before re-arming and create at most one durable alarm per episode, never a stop |
 | Herdr server not running | Refused with a durable diagnostic naming the missing server; no server is ever started from here |
 | Herdr CLI hangs | Bounded and treated as a failed read, so no caller can be wedged |
 
 Every failed or ambiguous establish and every failed arm attempt writes `state/.herdr-supervisor-alarm` and appends one `check: herdr-supervisor` record to the durable wake queue.
-The latest alarm is retained after a later successful cycle, and each alarm is appended to `state/.herdr-supervisor-alarm-history` for per-attempt evidence.
+Rapid-cycle alarms use `state/.herdr-supervisor-rapid-episode` and do not append a self-triggering wake.
+The alarm clears only after three consecutive successful non-rapid cycles, and each alarm is appended to `state/.herdr-supervisor-alarm-history` for per-attempt evidence.
 When another owner is provable, the Herdr loop remains alive as a standby and rechecks ownership until it can resume arming.
 That reuses the channels that already exist rather than inventing one, so the lapse reaches the captain through the normal drain.
 
@@ -159,7 +160,8 @@ All under `state/`, all private to the home.
 - `.herdr-supervisor-pending-cleanup` - an exact session, socket, workspace, tab, and pane receipt retained across uncertain establish or retirement cleanup.
 - `.herdr-supervisor-quarantine.<generation>` - an exact old binding retained when the recorded Herdr server or pane identity can no longer be proven safe to close.
 - `.herdr-supervisor-quarantine.pending.<generation>` - an incomplete create receipt retained when bounded visibility reconciliation cannot prove that Herdr created nothing.
-- `.herdr-supervisor-alarm` - the latest durable actionable diagnostic; it remains available after later recovery so the last failed attempt is not erased.
+- `.herdr-supervisor-alarm` - the latest durable actionable diagnostic, retained until three consecutive successful non-rapid cycles prove stability.
+- `.herdr-supervisor-rapid-episode` - the durable marker preventing repeated rapid-cycle alarms in one episode.
 - `.herdr-supervisor-alarm-history` - the append-only per-attempt alarm history.
 - `.herdr-supervisor-emergency` - fallback evidence when alarm or queue persistence fails.
 - `.herdr-supervisor-blocked` - the exact arm pid and identity retained while an unresolved arm child prevents safe replacement.
