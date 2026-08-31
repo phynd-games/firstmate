@@ -1084,7 +1084,15 @@ if ! fm_lock_try_acquire "$WATCH_LOCK"; then
 fi
 WATCHER_RECOVERY_PENDING=0
 if [ -n "${FM_LOCK_RECOVERED_PID:-}" ]; then
-  WATCHER_RECOVERY_PENDING=1
+  if [ "${FM_WATCH_RESTART:-0}" = 1 ]; then
+    WATCHER_RECOVERY_PENDING=1
+  else
+    fm_recovery_marker_snapshot "$WATCHER_DOWNTIME_MARKER" || true
+    case "$FM_RECOVERY_MARKER_TOKEN" in
+      acked:*) ;;
+      *) WATCHER_RECOVERY_PENDING=1 ;;
+    esac
+  fi
 fi
 if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" != 1 ]; then
   if ! fm_recovery_marker_reopen_announced "$WATCHER_DOWNTIME_MARKER"; then
@@ -1170,6 +1178,12 @@ resurface_after_downtime() {
       exit 1
     fi
     [ "$FM_RECOVERY_MARKER_ACTION" = recover ] || return 0
+  fi
+  if [ "$WATCHER_RECOVERY_PENDING" -eq 1 ]; then
+    fm_recovery_marker_snapshot "$WATCHER_DOWNTIME_MARKER" || true
+    if [[ "$FM_RECOVERY_MARKER_TOKEN" == acked:* ]] && [ ! -s "$FM_WAKE_QUEUE" ]; then
+      return 0
+    fi
   fi
   wake "check: rearm-resurface"
 }

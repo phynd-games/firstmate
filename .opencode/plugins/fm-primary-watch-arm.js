@@ -1,9 +1,11 @@
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.js";
 
 const COORDINATOR_KEY = "__firstmateOpenCodeWatchArm";
+const adapterRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 // 35s on Windows so the budget stays above arm's MSYS confirm default (30s in
 // bin/fm-watch-arm.sh): a slow but successful Git Bash cold start must not be
 // SIGTERMed mid-confirmation. Conditioned on win32 so other platforms keep 12s.
@@ -131,9 +133,12 @@ async function sessionOwnsLock(paths) {
         return false;
       }
       if (!recorded) return false;
+      const identityScript = existsSync(`${paths.root}/bin/fm-wake-lib.sh`)
+        ? `${paths.root}/bin/fm-wake-lib.sh`
+        : `${adapterRoot}/bin/fm-wake-lib.sh`;
       const identity = await runProcess(
         "bash",
-        ["-c", ". \"$FM_ROOT_OVERRIDE/bin/fm-wake-lib.sh\" && fm_pid_identity \"$1\"", "fm-opencode-lock-identity", lockPid],
+        ["-c", ". \"$1\" && fm_pid_identity \"$2\"", "fm-opencode-lock-identity", identityScript, lockPid],
         {
           cwd: paths.root,
           encoding: "utf8",

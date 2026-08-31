@@ -496,6 +496,7 @@ if [ "$mode" = handling-delivered ]; then
 fi
 
 if [ "$mode" = restart ]; then
+  export FM_WATCH_RESTART=1
   restart_recorded_watcher_lock
   clear_rc=$?
   if [ "$clear_rc" -eq 3 ]; then
@@ -634,7 +635,6 @@ cleanup_child() {
     attempts=$((attempts + 1))
   done
   if [ "$attempts" -ge "$max_attempts" ]; then
-    arm_publish_failure "watcher arm child termination could not be confirmed"
     return 1
   fi
   if [ -n "$child_out" ]; then
@@ -686,8 +686,8 @@ handle_arm_signal() {
     hold_child_tracked
     exit "$rc"
   fi
-  arm_publish_failure "watcher arm interrupted by $signal" \
-    || printf 'watcher: emergency diagnostic persistence failed\n' >&2
+  fm_recovery_transition "$STATE/.watcher-down" publish downtime >/dev/null 2>&1 \
+    || printf 'watcher: recovery state could not be persisted\n' >&2
   cycle_log_append "$rc" "$signal" arm-interrupted none
   exit "$rc"
 }
@@ -776,6 +776,8 @@ while :; do
       cycle_refresh_lock_before
       if ! handling_generation=$(handling_successor_generation); then
         if ! cleanup_child; then
+          arm_publish_failure "watcher arm child termination could not be confirmed" \
+            || printf 'watcher: emergency diagnostic persistence failed\n' >&2
           cycle_log_append 1 none handling-handoff-termination-unconfirmed none
           echo "watcher: FAILED - watcher termination could not be confirmed" >&2
           hold_child_tracked
@@ -816,6 +818,8 @@ done
 trap - HUP TERM INT
 print_watch_output "$child_out"
 if ! cleanup_child; then
+  arm_publish_failure "watcher arm child termination could not be confirmed" \
+    || printf 'watcher: emergency diagnostic persistence failed\n' >&2
   cycle_log_append 1 none confirmation-timeout-termination-unconfirmed none
   echo "watcher: FAILED - watcher termination could not be confirmed" >&2
   hold_child_tracked

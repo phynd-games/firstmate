@@ -952,6 +952,37 @@ fm_lock_try_acquire() {
     return 1
   fi
 
+  # A steal lock is itself the serialization primitive for stale-lock
+  # recovery.  It cannot recursively acquire another steal lock when its
+  # recorded holder is stale: that creates an unbounded .steal path and can
+  # eventually fail with ENAMETOOLONG.  Reclaim a stale steal lock by moving
+  # it aside atomically, then make one bounded replacement attempt.
+  case "$lockdir" in
+    *.steal)
+      if [ -L "$lockdir" ]; then
+        steal_owner=$(fm_lock_link_owner "$lockdir" 2>/dev/null || true)
+        fm_lock_points_to_owner "$lockdir" "$steal_owner" || {
+          FM_LOCK_HELD_PID=$pid
+          return 1
+        }
+      elif [ ! -d "$lockdir" ]; then
+        FM_LOCK_HELD_PID=$pid
+        return 1
+      fi
+      cur="$lockdir.reclaim.${BASHPID:-$$}"
+      if ! mv "$lockdir" "$cur" 2>/dev/null; then
+        FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
+        return 1
+      fi
+      fm_lock_remove_path "$cur" || return 1
+      if fm_lock_try_create "$lockdir"; then
+        return 0
+      fi
+      FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
+      return 1
+      ;;
+  esac
+
   steal="$lockdir.steal"
   if ! fm_lock_try_acquire "$steal"; then
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
