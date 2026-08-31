@@ -211,7 +211,9 @@ family_for_basename() {
       printf '%s\n' backend-dispatch
       ;;
     fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|fm-tmux-agent-liveness.test.sh|\
-    fm-backend-zellij-smoke.test.sh|fm-backend-cmux-smoke.test.sh)
+    fm-backend-zellij-smoke.test.sh|fm-backend-cmux-smoke.test.sh|\
+    fm-backend-zellij.test.sh|fm-backend-cmux.test.sh|fm-backend-orca.test.sh|\
+    fm-teardown-endpoint-safety.test.sh)
       printf '%s\n' legacy-adapter
       ;;
     fm-pr-check-security.test.sh|fm-pr-merge.test.sh|fm-review-diff.test.sh|\
@@ -1720,6 +1722,9 @@ else
       export TMP="$work/tmp"
       unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
         FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
+      if [ "$family" = legacy-adapter ]; then
+        export FM_ROOT_OVERRIDE="$ROOT"
+      fi
       cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
       bash "$script" >"$work/output" 2>&1

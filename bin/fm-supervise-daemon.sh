@@ -500,14 +500,16 @@ migrate_watcher_pause_markers() {  # <state>
   local state=$1 meta win task key last watcher_key backend
   for meta in "$state"/*.meta; do
     [ -e "$meta" ] || continue
+    task=$(basename "$meta"); task=${task%.meta}
     backend=$(fm_backend_of_meta "$meta" 2>/dev/null || true)
-    [ "$backend" = herdr ] || continue
+    if [ "$backend" != herdr ] && ! fm_backend_policy_legacy_lane; then
+      continue
+    fi
     if ! fm_backend_validate_task_endpoint "$meta" "$task"; then
       continue
     fi
     win=$FM_BACKEND_VALIDATED_TARGET
     [ -n "$win" ] || continue
-    task=$(basename "$meta"); task=${task%.meta}
     key=$(_stale_key "$task")
     watcher_key=$(_stale_key "$win")
     last=$(last_status_line "$state/$task.status")

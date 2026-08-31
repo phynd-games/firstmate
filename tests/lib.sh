@@ -38,8 +38,6 @@ export FM_GATE_REFUSE_BYPASS=1
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export FM_BACKEND_TEST_HARNESS=1
-export FM_BACKEND_TEST_ROOT="$ROOT"
 export FM_BACKEND_LEGACY_TEST_LANE=1
 
 # --- reporters --------------------------------------------------------------
@@ -81,12 +79,6 @@ fm_test_pid_identity() {
 }
 
 FM_TEST_OWNER_IDENTITY=$(fm_test_pid_identity "$$") || return 1
-
-FM_BACKEND_TEST_CAPABILITY_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-harness-capability.XXXXXX") || return 1
-printf '%s\n' "$$-${RANDOM:-0}" > "$FM_BACKEND_TEST_CAPABILITY_FILE" || return 1
-exec 9< "$FM_BACKEND_TEST_CAPABILITY_FILE"
-rm -f "$FM_BACKEND_TEST_CAPABILITY_FILE"
-export FM_BACKEND_TEST_CAPABILITY_FD=9
 
 fm_test_cleanup() {
   local d

@@ -92,7 +92,9 @@ config_push_validate_primary_backend() {
     fi
     unset FM_CONFIG_INHERIT_BACKEND_OVERRIDE
     if [ -n "$selected" ]; then
-      fm_backend_policy_legacy_adapter_allowed "$selected" || return 1
+      if [ "$selected" != "$FM_BACKEND_ACTIVE" ]; then
+        fm_backend_policy_legacy_adapter_allowed "$selected" || return 1
+      fi
       FM_CONFIG_INHERIT_BACKEND_OVERRIDE=$selected
       export FM_CONFIG_INHERIT_BACKEND_OVERRIDE
     fi

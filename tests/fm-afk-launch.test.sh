@@ -13,7 +13,6 @@
 #   only the terminal lifecycle.
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export FM_BACKEND_TEST_HARNESS=1 FM_BACKEND_TEST_ROOT="$ROOT"
 LAUNCH="$ROOT/bin/fm-afk-launch.sh"
 START="$ROOT/bin/fm-afk-start.sh"
 

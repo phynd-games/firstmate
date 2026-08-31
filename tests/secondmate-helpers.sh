@@ -101,6 +101,167 @@ SH
   printf '%s\n' "$fakebin"
 }
 
+# A deterministic Herdr fixture for backend-neutral secondmate behavior. It
+# models only the public calls needed by spawn/send/teardown and keeps all
+# endpoint identity in a JSON state file.
+make_fake_herdr() {
+  local dir=$1 fakebin="$1/fakebin"
+  mkdir -p "$fakebin"
+  printf '{"next":1,"workspaces":[],"tabs":[],"synthetic_closed":false}' > "$dir/herdr-state.json"
+  : > "$dir/herdr.log"
+  cat > "$fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+state=${FM_FAKE_HERDR_STATE:-$(cd "$(dirname "$0")/.." && pwd)/herdr-state.json}
+log=${FM_FAKE_HERDR_LOG:-${FM_FAKE_TMUX_LOG:-$(cd "$(dirname "$0")/.." && pwd)/herdr.log}}
+printf '%s\n' "$*" >> "$log"
+save() { local tmp="$state.tmp.$$"; cat > "$tmp" && mv "$tmp" "$state"; }
+cmd=${1:-}; sub=${2:-}
+ws= label= pane= tab=
+args=("$@")
+for ((i=0; i<${#args[@]}; i++)); do
+  case "${args[$i]}" in
+    --workspace) ws=${args[$((i+1))]:-} ;;
+    --label) label=${args[$((i+1))]:-} ;;
+  esac
+done
+case "$cmd $sub" in
+  "status --json") printf '%s\n' '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true,"status":"running","compatible":true,"protocol":14}}' ;;
+  "session list") printf '{"sessions":[{"name":"%s","running":true,"socket_path":"/tmp/fm-fake-herdr.sock"}]}\n' "${HERDR_SESSION:-default}" ;;
+  "workspace list")
+    if [ "${FM_FAKE_HERDR_SYNTHETIC_ENDPOINT:-0}" = 1 ] \
+      && [ "$(jq '.workspaces | length' "$state")" = 0 ] \
+      && [ "$(jq -r '.synthetic_closed // false' "$state")" != true ]; then
+      printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","label":"fixture","focused":true,"active_tab_id":"w1:t1"}]}}'
+    else
+      jq '{result:{workspaces:.workspaces}}' "$state"
+    fi
+    ;;
+  "workspace create")
+    n=$(jq -r '.next' "$state"); wsid="w$n"; tabid="$wsid:t$((n+1))"; paneid="$wsid:p$((n+1))"
+    jq --arg w "$wsid" --arg l "$label" --arg t "$tabid" --arg p "$paneid" \
+      '(.workspaces |= map(.focused = false))
+       | (.tabs |= map(.focused = false))
+       | (.workspaces += [{workspace_id:$w,label:$l,focused:true,active_tab_id:$t}])
+       | .tabs += [{tab_id:$t,workspace_id:$w,pane_id:$p,label:"1",focused:true}]
+       | .next += 2' "$state" | save
+    printf '{"result":{"workspace":{"workspace_id":"%s"},"tab":{"tab_id":"%s"},"root_pane":{"pane_id":"%s"}}}\n' "$wsid" "$tabid" "$paneid" ;;
+  "tab list")
+    if [ "${FM_FAKE_HERDR_SYNTHETIC_ENDPOINT:-0}" = 1 ] \
+      && [ "$ws" = w1 ] && [ "$(jq '.tabs | length' "$state")" = 0 ] \
+      && [ "$(jq -r '.synthetic_closed // false' "$state")" != true ]; then
+      printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","workspace_id":"w1","pane_id":"w1:p1","label":"1","focused":true},{"tab_id":"w1:t2","workspace_id":"w1","pane_id":"w1:p2","label":"2","focused":false},{"tab_id":"w1:t3","workspace_id":"w1","pane_id":"w1:p3","label":"3","focused":false}]}}'
+    else
+      jq --arg w "$ws" '{result:{tabs:[.tabs[]|select(.workspace_id==$w)]}}' "$state"
+    fi
+    ;;
+  "pane list")
+    if [ "${FM_FAKE_HERDR_SYNTHETIC_ENDPOINT:-0}" = 1 ] \
+      && [ "$ws" = w1 ] && [ "$(jq '.tabs | length' "$state")" = 0 ] \
+      && [ "$(jq -r '.synthetic_closed // false' "$state")" != true ]; then
+      printf '%s\n' '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"},{"pane_id":"w1:p2","tab_id":"w1:t2"},{"pane_id":"w1:p3","tab_id":"w1:t3"}]}}'
+    else
+      jq --arg w "$ws" '{result:{panes:[.tabs[]|select(.workspace_id==$w)|{pane_id:.pane_id,tab_id:.tab_id}]}}' "$state"
+    fi
+    ;;
+  "tab create")
+    n=$(jq -r '.next' "$state"); tabid="$ws:t$n"; paneid="$ws:p$n"
+    jq --arg w "$ws" --arg t "$tabid" --arg p "$paneid" --arg l "$label" \
+      '([.tabs[] | select(.workspace_id == $w and .focused == true)] | length) as $focused
+       | .tabs += [{tab_id:$t,workspace_id:$w,pane_id:$p,label:$l,focused:($focused == 0)}]
+       | if $focused == 0 then .workspaces |= map(if .workspace_id == $w then .focused = true | .active_tab_id = $t else . end) else . end
+       | .next += 1' "$state" | save
+    printf '{"result":{"tab":{"tab_id":"%s"},"root_pane":{"pane_id":"%s"}}}\n' "$tabid" "$paneid" ;;
+  "pane get")
+    pane=${3:-}
+    if jq -e --arg p "$pane" '[.tabs[]|select(.pane_id==$p)]|length == 0' "$state" >/dev/null; then
+      if [ "$(jq -r '.synthetic_closed // false' "$state")" != true ] \
+        && [ "$(jq -r --arg p "$pane" '((.closed_panes // []) | index($p)) == null' "$state")" = true ] \
+        && [[ "$pane" =~ ^w1:p[0-9]+$ ]]; then
+        tab=${pane#*:}
+        printf '%s\n' '{"result":{"pane":{"pane_id":"'"$pane"'","tab_id":"w1:t'"${tab#p}"'","workspace_id":"w1","foreground_cwd":"'"${FM_FAKE_PANE_PATH:-/tmp}"'"}}}'
+      else
+        printf '%s\n' '{"error":{"code":"pane_not_found"}}'
+      fi
+    else
+      jq --arg p "$pane" --arg cwd "${FM_FAKE_PANE_PATH:-/tmp}" '([.tabs[]|select(.pane_id==$p)][0]) as $t | {result:{pane:{pane_id:$t.pane_id,tab_id:$t.tab_id,workspace_id:$t.workspace_id,foreground_cwd:$cwd}}}' "$state"
+    fi ;;
+  "pane close") pane=${3:-}; jq --arg p "$pane" --argjson synthetic "${FM_FAKE_HERDR_SYNTHETIC_ENDPOINT:-0}" '
+    ([.tabs[] | select(.pane_id == $p)][0]) as $removed
+    | (if $synthetic == 1 then .closed_panes = (((.closed_panes // []) + [$p]) | unique)
+       elif $p | test("^w1:p[0-9]+$") then .synthetic_closed = true else . end)
+    | (.tabs |= [.[] | select(.pane_id != $p)])
+    | if ($removed.focused // false) then
+        ([.tabs[] | select(.workspace_id == $removed.workspace_id)][0]) as $next
+        | (.tabs |= map(if .workspace_id == $removed.workspace_id then .focused = (.tab_id == ($next.tab_id // "")) else . end))
+        | (.workspaces |= map(if .workspace_id == $removed.workspace_id then .active_tab_id = ($next.tab_id // "") else . end))
+      else . end
+  ' "$state" | save ;;
+  "tab close") tab=${3:-}; jq --arg t "$tab" '.tabs |= [.[]|select(.tab_id != $t)]' "$state" | save ;;
+  "workspace close") ws=${3:-}; jq --arg w "$ws" '.workspaces |= [.[]|select(.workspace_id != $w)] | .tabs |= [.[]|select(.workspace_id != $w)]' "$state" | save ;;
+  "agent get")
+    pane=${3:-}
+    if [[ "$pane" =~ ^w1:p[0-9]+$ ]]; then
+      printf '%s\n' '{"result":{"agent":{"agent_status":"idle"}}}'
+    else
+      printf '%s\n' '{"error":{"code":"agent_not_found"}}'
+    fi
+    ;;
+  "pane read")
+    if [ -n "${FM_FAKE_HERDR_CAPTURE:-}" ] && [ -f "$FM_FAKE_HERDR_CAPTURE" ]; then
+      cat "$FM_FAKE_HERDR_CAPTURE"
+    else
+      printf '❯\n'
+    fi
+    ;;
+  "pane send-text")
+    if [ -n "${FM_FAKE_LAUNCH_LOG:-}" ]; then
+      printf '%s\n' "${4:-}" >> "$FM_FAKE_LAUNCH_LOG"
+    fi
+    ;;
+  "pane run"|"pane send-keys") : ;;
+  *) : ;;
+esac
+SH
+  chmod +x "$fakebin/herdr"
+cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf 'treehouse %s\n' "$*" >> "${FM_FAKE_HERDR_LOG:-${FM_FAKE_TMUX_LOG:-/dev/null}}"
+case "${1:-}" in
+  get)
+    if [ "${2:-}" = --help ]; then
+      printf '%s\n' 'Usage: treehouse get [--lease]'
+      exit 0
+    fi
+    holder=
+    shift
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --lease) ;;
+        --lease-holder) shift; holder=${1:-} ;;
+        --lease-holder=*) holder=${1#--lease-holder=} ;;
+      esac
+      shift
+    done
+    if [ -n "${FM_FAKE_TREEHOUSE_HOME:-}" ]; then
+      mkdir -p "$FM_FAKE_TREEHOUSE_HOME"
+      [ -z "${FM_FAKE_TREEHOUSE_LEASE_FILE:-}" ] || printf '%s\n' "$holder" > "$FM_FAKE_TREEHOUSE_LEASE_FILE"
+      printf '%s\n' "$FM_FAKE_TREEHOUSE_HOME"
+    fi
+    ;;
+  return)
+  shift
+  [ -z "${FM_FAKE_TREEHOUSE_RETURN_FAIL:-}" ] || exit 17
+  [ -z "${FM_FAKE_TREEHOUSE_LEASE_FILE:-}" ] || rm -f "$FM_FAKE_TREEHOUSE_LEASE_FILE"
+  rm -rf -- "${2:-}"
+  ;;
+esac
+SH
+  chmod +x "$fakebin/treehouse"
+  printf '%s\n' "$fakebin"
+}
+
 # A fake no-mistakes that touches .no-mistakes-init / .no-mistakes-doctor markers.
 make_fake_no_mistakes() {
   local dir=$1 fakebin

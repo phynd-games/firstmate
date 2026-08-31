@@ -36,9 +36,8 @@ fm_git_identity fmtest fmtest@example.invalid
 TMP_ROOT=$(fm_test_tmproot fm-backend-herdr-only)
 
 # Every marker the environment could contribute, stripped for every case.
-STRIP=(-u FM_BACKEND_LEGACY_TEST_LANE -u FM_BACKEND -u FM_BACKEND_TEST_HARNESS
-  -u FM_BACKEND_TEST_ROOT -u FM_BACKEND_TEST_OWNER_PID -u FM_BACKEND_TEST_OWNER_IDENTITY
-  -u FM_BACKEND_TEST_CAPABILITY_FD
+STRIP=(-u FM_BACKEND_LEGACY_TEST_LANE -u FM_BACKEND
+  -u FM_STATE_OVERRIDE -u FM_CONFIG_OVERRIDE -u FM_ROOT_OVERRIDE
   -u TMUX -u TMUX_PANE
   -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID
   -u HERDR_SOCKET_PATH -u HERDR_SESSION -u CMUX_WORKSPACE_ID -u CMUX_SURFACE_ID
@@ -96,30 +95,27 @@ LEGACY_NAMES="tmux zellij orca cmux"
 # --- selection --------------------------------------------------------------
 
 test_known_sets_are_herdr_only() {
-  local out config="$TMP_ROOT/known-config" lane_config="$TMP_ROOT/lane-config"
+  local out config="$TMP_ROOT/known-config"
   mkdir -p "$config"
-  mkdir -p "$lane_config"
   printf 'herdr\n' > "$config/backend"
   run_capture active-herdr lib_probe "FM_CONFIG_OVERRIDE=$config" -- 'fm_backend_name'
   [ "$RC" -eq 0 ] && [ "$OUT" = herdr ] || fail "active public selection must accept declared herdr: rc=$RC out=$OUT err=$ERR"
   run_capture active-tmux lib_probe -- 'fm_backend_validate_spawn tmux'
   assert_refusal "active public spawn validation for tmux" "resolves 'tmux'"
-  run_capture retired-lane policy_env "FM_CONFIG_OVERRIDE=$lane_config" FM_BACKEND_LEGACY_TEST_LANE=1 -- \
+  run_capture retired-lane policy_env FM_BACKEND_LEGACY_TEST_LANE=1 \
+    "FM_HOME=$TMP_ROOT/retired-lane-home" -- \
     bash -c '. "$1/bin/fm-backend.sh"; fm_backend_name' _ "$ROOT"
   assert_refusal "the retired legacy lane" "declares no backend identity"
   pass "public backend selection accepts Herdr and refuses retained adapters"
 }
 
-test_legacy_lane_requires_harness_identity() {
-  local config="$TMP_ROOT/untrusted-lane-config" forged="$TMP_ROOT/forged-capability"
-  mkdir -p "$config"
-  printf 'tmux\n' > "$config/backend"
-  run_capture untrusted-lane lib_probe "FM_CONFIG_OVERRIDE=$config" FM_BACKEND_LEGACY_TEST_LANE=1 -- 'exec 9>&-; fm_backend_name'
-  assert_refusal "an untrusted legacy-lane marker" "$config/backend resolves 'tmux'"
-  printf 'forged\n' > "$forged"
-  run_capture forged-lane lib_probe "FM_CONFIG_OVERRIDE=$config" "FM_FORGED_CAPABILITY=$forged" FM_BACKEND_LEGACY_TEST_LANE=1 -- 'exec 9<"$FM_FORGED_CAPABILITY"; fm_backend_source tmux'
-  assert_refusal "a forged retained-adapter capability" "resolves 'tmux'"
-  pass "retained-adapter activation remains disabled even with forged test markers"
+test_legacy_lane_requires_test_world() {
+  local home="$TMP_ROOT/untrusted-lane-home"
+  mkdir -p "$home/config"
+  printf 'tmux\n' > "$home/config/backend"
+  run_capture untrusted-lane lib_probe "FM_HOME=$home" FM_BACKEND_LEGACY_TEST_LANE=1 -- 'fm_backend_name'
+  assert_refusal "a lane marker without a test-world override" "$home/config/backend resolves 'tmux'"
+  pass "retained-adapter activation requires a test-world override"
 }
 
 test_name_refuses_absent_or_empty_config() {
@@ -344,6 +340,23 @@ test_endpoint_presence_failure_remains_typed() {
   '
   [ "$RC" -eq 2 ] || fail "presence read failure must remain typed: rc=$RC out=$OUT err=$ERR"
   pass "Herdr endpoint confirmation propagates presence-read failures"
+}
+
+test_pane_presence_requires_complete_identity() {
+  run_capture pane-presence-malformed lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() { printf "%s" '\''{"result":{"pane":{"pane_id":"pane1"}}}'\''; }
+    fm_backend_herdr_pane_presence_state fmtest pane1 ws1 tab1
+  '
+  [ "$RC" -eq 2 ] || fail "malformed pane presence must remain typed: rc=$RC out=$OUT"
+
+  run_capture pane-presence-mismatch lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() { printf "%s" '\''{"result":{"pane":{"pane_id":"pane1","workspace_id":"other","tab_id":"tab1"}}}'\''; }
+    fm_backend_herdr_pane_presence_state fmtest pane1 ws1 tab1
+  '
+  [ "$RC" -eq 2 ] || fail "mis-targeted pane presence must remain typed: rc=$RC out=$OUT"
+  pass "Herdr pane presence requires a complete matching workspace and tab identity"
 }
 
 test_recovery_agent_failures_refuse_before_replacement() {
@@ -739,7 +752,7 @@ test_bootstrap_reports_the_policy_diagnostic() {
 }
 
 test_known_sets_are_herdr_only
-test_legacy_lane_requires_harness_identity
+test_legacy_lane_requires_test_world
 test_name_refuses_absent_or_empty_config
 test_name_refuses_every_non_herdr_config_value
 test_name_refuses_every_non_herdr_fm_backend_value
@@ -754,6 +767,7 @@ test_workspace_schema_failure_refuses_before_creation
 test_endpoint_identity_mismatch_refuses
 test_kill_refuses_planner_and_focus_failures_before_close
 test_endpoint_presence_failure_remains_typed
+test_pane_presence_requires_complete_identity
 test_recovery_agent_failures_refuse_before_replacement
 test_spawn_refuses_non_herdr_selection_before_side_effects
 test_spawn_refuses_missing_or_incapable_herdr_without_fallback

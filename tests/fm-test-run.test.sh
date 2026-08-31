@@ -347,6 +347,14 @@ test_exclude_family() {
   legacy=$("$RUNNER" --list --lane legacy-adapter)
   assert_contains "$legacy" 'tests/fm-backend-tmux-smoke.test.sh' \
     "legacy-adapter lane must own tmux conformance"
+  assert_contains "$legacy" 'tests/fm-backend-zellij.test.sh' \
+    "legacy-adapter lane must own zellij conformance"
+  assert_contains "$legacy" 'tests/fm-backend-cmux.test.sh' \
+    "legacy-adapter lane must own cmux conformance"
+  assert_contains "$legacy" 'tests/fm-backend-orca.test.sh' \
+    "legacy-adapter lane must own orca conformance"
+  assert_contains "$legacy" 'tests/fm-teardown-endpoint-safety.test.sh' \
+    "legacy-adapter lane must own teardown endpoint conformance"
   if printf '%s\n' $("$RUNNER" --list --lane portable-serial) | grep -Fq 'tests/fm-backend-tmux-smoke.test.sh'; then
     fail "portable-serial must not schedule legacy-adapter tests"
   fi

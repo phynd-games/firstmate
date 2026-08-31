@@ -515,6 +515,29 @@ test_housekeeping_paused_resumed_cleared() {
   pass "a busy pane cannot gate the pause clear once its crew's status no longer declares the wait"
 }
 
+test_migrate_watcher_pause_markers_uses_metadata_task() {
+  local dir state task win seen
+  dir=$(make_supercase migrate-valid-herdr)
+  state="$dir/state"
+  task=migrate-w12
+  win=herdr-session:herdr-pane
+  printf 'paused: waiting for the upstream tool\n' > "$state/$task.status"
+  printf 'backend=herdr\n' > "$state/$task.meta"
+  (
+    seen=
+    fm_backend_of_meta() { printf 'herdr\n'; }
+    fm_backend_validate_task_endpoint() {
+      seen=$2
+      FM_BACKEND_VALIDATED_TARGET=herdr-session:herdr-pane
+      return 0
+    }
+    reconcile_pause_tracking() { :; }
+    migrate_watcher_pause_markers "$state"
+    [ "$seen" = "$task" ] || exit 1
+  ) || fail "valid Herdr metadata was not validated with its filename-derived task"
+  pass "pause-marker migration validates and reconciles a valid Herdr task record"
+}
+
 # The inverse of test_housekeeping_paused_resumed_cleared, and the first half of
 # issue #3149. A declared wait can legitimately hold a pane BUSY - a worker parked on
 # a long foreground call it keeps live for as long as the wait lasts - so a busy
@@ -2129,6 +2152,7 @@ test_housekeeping_resumed_stale_cleared
 test_housekeeping_paused_resurfaces_and_resets
 test_housekeeping_captain_held_resurfaces_and_resets
 test_housekeeping_paused_resumed_cleared
+test_migrate_watcher_pause_markers_uses_metadata_task
 test_housekeeping_busy_declared_wait_matures_its_window
 test_housekeeping_paused_unpaused_cleared
 test_housekeeping_captain_held_resolved_cleared

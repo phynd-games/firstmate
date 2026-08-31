@@ -38,15 +38,10 @@ FM_BACKEND_ACTIVE="herdr"
 FM_BACKEND_RETAINED_LEGACY="tmux zellij orca cmux"
 
 fm_backend_policy_legacy_lane() {
-  local capability_fd=${FM_BACKEND_TEST_CAPABILITY_FD:-}
+  # This is a test-harness convention gate, not an in-process security boundary.
+  # Its containment claim is that no fleet code path sets these variables.
   [ "${FM_BACKEND_LEGACY_TEST_LANE:-}" = 1 ] || return 1
-  [ "${FM_BACKEND_TEST_HARNESS:-}" = 1 ] || return 1
-  [ "${FM_GATE_REFUSE_BYPASS:-}" = 1 ] || return 1
-  [ -n "${FM_BACKEND_TEST_ROOT:-}" ] || return 1
-  [ -f "$FM_BACKEND_TEST_ROOT/tests/lib.sh" ] || return 1
-  case "$capability_fd" in ''|*[!0-9]*) return 1 ;; esac
-  [ -r "/dev/fd/$capability_fd" ] || return 1
-  return 0
+  [ -n "${FM_STATE_OVERRIDE:-}${FM_CONFIG_OVERRIDE:-}${FM_ROOT_OVERRIDE:-}" ]
 }
 
 fm_backend_policy_legacy_adapter_allowed() {

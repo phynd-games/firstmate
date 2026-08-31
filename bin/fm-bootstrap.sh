@@ -1028,6 +1028,24 @@ missing_tool_diagnostic() {
 # never told tmux is missing, and only orca drops treehouse. A backend value with
 # no verified dependency set is reported before the universal checks continue.
 COMMON_TOOLS="node git gh no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi"
+
+materialize_primary_backend() {
+  local backend_file="$CONFIG/backend"
+  if [ -e "$backend_file" ] || [ -L "$backend_file" ]; then
+    return 0
+  fi
+  mkdir -p "$CONFIG"
+  printf 'herdr\n' > "$backend_file"
+  chmod 600 "$backend_file"
+}
+
+# Only the locked mutable bootstrap may create the missing declaration. This
+# happens before selection so the same invocation resolves and proves Herdr.
+if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase \
+  && [ "${FM_BOOTSTRAP_LOCKED:-0}" = 1 ]; then
+  materialize_primary_backend
+fi
+
 # fm_backend_name refuses anything but a declared herdr (AGENTS.md hard rule 6);
 # its one-line diagnostic is captured here and surfaced as the BACKEND_INVALID
 # line so the digest carries the remediation instead of a bare name.
@@ -1356,16 +1374,6 @@ startup_memory_budget_setup() {
   fi
 }
 
-materialize_primary_backend() {
-  local backend_file="$CONFIG/backend"
-  if [ -e "$backend_file" ] || [ -L "$backend_file" ]; then
-    return 0
-  fi
-  mkdir -p "$CONFIG"
-  printf 'herdr\n' > "$backend_file"
-  chmod 600 "$backend_file"
-}
-
 if [ "${1:-}" = "install" ]; then
   shift
   [ $# -gt 0 ] || { echo "usage: fm-bootstrap.sh install <tool>..." >&2; exit 1; }
@@ -1389,10 +1397,6 @@ fi
 # never repeats it: the local pass that ran first already closed that window.
 if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase; then
   "$SCRIPT_DIR/fm-pr-check-migrate.sh" || true
-  if [ "${FM_BOOTSTRAP_LOCKED:-0}" = 1 ] \
-    && [ ! -e "$CONFIG/backend" ] && [ ! -L "$CONFIG/backend" ]; then
-    materialize_primary_backend
-  fi
   startup_memory_budget_setup
 fi
 

@@ -704,7 +704,7 @@ case "${1:-}" in
     printf '%s\n' '{"sessions":[{"name":"default","running":true}]}'
     ;;
   pane)
-    printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p1"}}}'
+    printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1"}}}'
     ;;
   agent)
     printf '%s\n' '{"result":{"agent":{"agent_status":"idle"}}}'
@@ -1009,6 +1009,34 @@ ROWS
   pass "bootstrap validates crew-dispatch.json and reports malformed or unverified configs"
 }
 
+test_locked_fresh_home_materializes_herdr_before_resolution() {
+  local case_dir fakebin home backend out
+  case_dir="$TMP_ROOT/fresh-herdr"
+  home="$case_dir/home"
+  mkdir -p "$home/state"
+  fakebin=$(make_fake_toolchain "$case_dir")
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$case_dir/root" \
+    FM_BOOTSTRAP_LOCKED=1 FM_BOOTSTRAP_NETWORK=skip \
+    "$ROOT/bin/fm-bootstrap.sh" 2>&1) || fail "locked fresh bootstrap refused after materializing Herdr: $out"
+  backend="$home/config/backend"
+  [ "$(cat "$backend")" = herdr ] || fail "locked fresh bootstrap did not materialize Herdr"
+  [ "$(wc -l < "$backend" | tr -d ' ')" = 1 ] || fail "materialized backend declaration was not exactly one line"
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$case_dir/root" \
+    FM_BOOTSTRAP_LOCKED=1 FM_BOOTSTRAP_NETWORK=skip \
+    "$ROOT/bin/fm-bootstrap.sh" 2>&1) || fail "idempotent locked bootstrap refused: $out"
+  [ "$(cat "$backend")" = herdr ] || fail "idempotent bootstrap changed the Herdr declaration"
+
+  rm -f "$backend"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$case_dir/root" \
+    FM_BOOTSTRAP_LOCKED=1 FM_BOOTSTRAP_DETECT_ONLY=1 FM_BOOTSTRAP_NETWORK=skip \
+    "$ROOT/bin/fm-bootstrap.sh" 2>&1) || true
+  [ ! -e "$backend" ] || fail "detect-only bootstrap materialized backend configuration"
+  pass "locked bootstrap materializes Herdr before selection and detect-only stays read-only"
+}
+
+test_locked_fresh_home_materializes_herdr_before_resolution
 test_bootstrap_reporting
 test_no_mistakes_min_version
 test_gh_axi_min_version

@@ -2335,7 +2335,16 @@ if [ "$RELAUNCH" -eq 1 ]; then
   relaunch_wt_real=$(real_path_or_raw "$WT")
   relaunch_seen=
   for _ in $(seq 1 10); do
-    relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
+    relaunch_seen=$(spawn_current_path "$WT_TARGET"); current_path_rc=$?
+    case "$current_path_rc" in
+      0|1) ;;
+      2)
+        fm_backend_policy_refuse "task $ID Herdr current-path read" herdr \
+          "The native Herdr endpoint read failed while verifying the recorded worktree. Repair Herdr, then verify with 'herdr status --json'. Task state is preserved."
+        exit 2
+        ;;
+      *) exit 1 ;;
+    esac
     [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ] || break
     sleep 0.5
   done
@@ -2369,7 +2378,16 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # inter-poll sleep as confirmation, not a whole extra cycle on top.
   candidate=""
   for _ in $(seq 1 60); do
-    p=$(spawn_current_path "$WT_TARGET" || true)
+    p=$(spawn_current_path "$WT_TARGET"); current_path_rc=$?
+    case "$current_path_rc" in
+      0|1) ;;
+      2)
+        fm_backend_policy_refuse "task $ID Herdr current-path read" herdr \
+          "The native Herdr endpoint read failed while verifying the worktree. Repair Herdr, then verify with 'herdr status --json'. Task state is preserved."
+        exit 2
+        ;;
+      *) exit 1 ;;
+    esac
     if [ -n "$p" ]; then
       p_real=$(real_path_or_raw "$p")
       if [ "$p_real" != "$PROJ_ABS_REAL" ]; then

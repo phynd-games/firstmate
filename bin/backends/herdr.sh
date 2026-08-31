@@ -1042,7 +1042,7 @@ fm_backend_herdr_workspace_move_capable() {  # <session>
 # to hold one provably lone idle recognized shell.
 fm_backend_herdr_emptying_close_plan() {  # <session> <pane-id> <workspace-id> <tab-id> <focused-workspace-id>
   local session=$1 pane_id=$2 ws_id=$3 tab_id=$4 focused_ws=$5
-  local tabs panes list indices workspace_count target_count focused_count r rest a len capable socket mover response move_status shell_pid before_order
+  local tabs panes list indices tab_count target_tab_count pane_count target_pane_count workspace_count target_count focused_count r rest a len capable socket mover response move_status shell_pid before_order
   [ -n "$ws_id" ] && [ -n "$tab_id" ] && [ -n "$focused_ws" ] || return 2
   if tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$ws_id" 2>/dev/null); then
     :
@@ -1052,10 +1052,13 @@ fm_backend_herdr_emptying_close_plan() {  # <session> <pane-id> <workspace-id> <
   printf '%s' "$tabs" | jq -e '(.result.tabs | type) == "array"' >/dev/null 2>&1 || {
     return 2
   }
-  printf '%s' "$tabs" | jq -e --arg tab "$tab_id" '
-    (.result.tabs | type) == "array" and (.result.tabs | length) == 1
-    and .result.tabs[0].tab_id == $tab
-  ' >/dev/null 2>&1 || return 2
+  tab_count=$(printf '%s' "$tabs" | jq -r '.result.tabs | length' 2>/dev/null) || return 2
+  target_tab_count=$(printf '%s' "$tabs" | jq -r --arg tab "$tab_id" '[.result.tabs[] | select(.tab_id == $tab)] | length' 2>/dev/null) || return 2
+  case "$tab_count:$target_tab_count" in
+    1:1) ;;
+    *:1) printf 'plain\n'; return 0 ;;
+    *) return 2 ;;
+  esac
   if panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$ws_id" 2>/dev/null); then
     :
   else
@@ -1064,10 +1067,13 @@ fm_backend_herdr_emptying_close_plan() {  # <session> <pane-id> <workspace-id> <
   printf '%s' "$panes" | jq -e '(.result.panes | type) == "array"' >/dev/null 2>&1 || {
     return 2
   }
-  printf '%s' "$panes" | jq -e --arg pane "$pane_id" '
-    (.result.panes | type) == "array" and (.result.panes | length) == 1
-    and .result.panes[0].pane_id == $pane
-  ' >/dev/null 2>&1 || return 2
+  pane_count=$(printf '%s' "$panes" | jq -r '.result.panes | length' 2>/dev/null) || return 2
+  target_pane_count=$(printf '%s' "$panes" | jq -r --arg pane "$pane_id" '[.result.panes[] | select(.pane_id == $pane)] | length' 2>/dev/null) || return 2
+  case "$pane_count:$target_pane_count" in
+    1:1) ;;
+    *:1) printf 'plain\n'; return 0 ;;
+    *) return 2 ;;
+  esac
   if list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null); then
     :
   else
@@ -1145,7 +1151,7 @@ fm_backend_herdr_emptying_close_plan() {  # <session> <pane-id> <workspace-id> <
   if shell_pid=$(fm_backend_herdr_pane_idle_shell_pid "$session" "$pane_id"); then
     printf 'death %s\n' "$shell_pid"
   else
-    return 2
+    return 1
   fi
 }
 
@@ -1988,7 +1994,8 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace> [<launcher-
 # fm_backend_herdr_pane_presence_state: classify one exact pane get response
 # as dead|present|unknown from its JSON body, never from process exit status.
 fm_backend_herdr_pane_presence_state() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 out code pid native_rc cli_rc=0
+  local session=$1 pane_id=$2 expected_workspace=${3:-} expected_tab=${4:-}
+  local out code pid native_rc cli_rc=0
   if out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>&1); then
     cli_rc=0
   else
@@ -2011,12 +2018,19 @@ fm_backend_herdr_pane_presence_state() {  # <session> <pane_id>
     printf 'unknown'
     return 0
   fi
-  pid=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
-  [ "$pid" = "$pane_id" ] && { printf 'present'; return 0; }
-  fm_backend_herdr_native_failure_rc "$out"
-  native_rc=$?
-  [ "$native_rc" -eq 2 ] && return 2
-  printf 'unknown'
+  if ! printf '%s' "$out" | jq -e --arg pane "$pane_id" --arg workspace "$expected_workspace" --arg tab "$expected_tab" '
+    (.result.pane | type) == "object"
+    and (.result.pane.pane_id | type) == "string"
+    and (.result.pane.workspace_id | type) == "string"
+    and (.result.pane.tab_id | type) == "string"
+    and .result.pane.pane_id == $pane
+    and ($workspace == "" or .result.pane.workspace_id == $workspace)
+    and ($tab == "" or .result.pane.tab_id == $tab)
+  ' >/dev/null 2>&1; then
+    return 2
+  fi
+  printf 'present'
+  return 0
 }
 
 fm_backend_herdr_workspace_presence_state() {  # <session> <workspace_id>
