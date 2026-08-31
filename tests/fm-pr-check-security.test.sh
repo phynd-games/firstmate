@@ -247,34 +247,71 @@ surface_change_digest() {
 surface_transition_binding_digest() {
   local surface=$1 evidence_ref=$2 evidence_digest=$3 change_digest=$4 evidence_hex=$5
   local consequence_ref=$6 consequence_side=$7 consequence_digest=$8 consequence_hex=$9
-  local fix_ref=${10} fix_side=${11} fix_digest=${12} fix_hex=${13}
-  printf '%s\n' "$surface|$evidence_ref|$evidence_digest|$change_digest|$evidence_hex|$consequence_ref|$consequence_side|$consequence_digest|$consequence_hex|$fix_ref|$fix_side|$fix_digest|$fix_hex" | fm_pr_sha256_stream
+  local fix_ref=${10} fix_side=${11} fix_digest=${12} fix_hex=${13} behavior_digest=${14}
+  printf '%s\n' "$surface|$evidence_ref|$evidence_digest|$change_digest|$evidence_hex|$consequence_ref|$consequence_side|$consequence_digest|$consequence_hex|$fix_ref|$fix_side|$fix_digest|$fix_hex|$behavior_digest" | fm_pr_sha256_stream
+}
+
+surface_behavior_digest() {
+  local surface=$1 evidence_ref=$2 consequence_ref=$3 consequence_side=$4 consequence_digest=$5 consequence_hex=$6
+  local fix_ref=$7 fix_side=$8 fix_digest=$9 fix_hex=${10} change_digest=${11} behavior=${12} action=${13}
+  printf '%s\n' "$surface|$evidence_ref|$consequence_ref|$consequence_side|$consequence_digest|$consequence_hex|$fix_ref|$fix_side|$fix_digest|$fix_hex|$change_digest|$behavior|$action" | fm_pr_sha256_stream
 }
 
 surface_review_record() {
   local label=$1 surface=$2 file=$3 new_digest=$4 new_hex=$5 old_digest=$6 old_hex=$7 change_digest=$8 binding
+  local behavior behavior_digest action
+  case "$surface" in
+    authority) behavior=non-authorizing; action=retain-owner ;;
+    security) behavior=provenance-bound; action=retain-boundary ;;
+    path) behavior=path-safe; action=retain-validation ;;
+    failure) behavior=fail-closed; action=retain-refusal ;;
+    tests) behavior=behavioral; action=retain-regression ;;
+    documentation) behavior=contract-aligned; action=retain-contract ;;
+    delivery) behavior=no-mistakes-owned; action=retain-no-mistakes ;;
+  esac
   [ -n "$old_hex" ] || {
     surface_review_single_record "$label" "$surface" "$file" "$new_digest" "$new_hex" "$change_digest"
     return
   }
-  binding=$(surface_transition_binding_digest "$surface" "$file:2" "$new_digest" "$change_digest" "$new_hex" "$file:2" old "$old_digest" "$old_hex" "$file:2" new "$new_digest" "$new_hex") || return 1
-  printf '%s: reviewed; surface=%s; files=%s; evidence=%s:2 sha256=%s change-sha256=%s line-hex=%s hunk=%s:2; consequence=anchor=%s:2 side=old sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 binding=%s; fix=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 binding=%s\n' \
-    "$label" "$surface" "$file" "$file" "$new_digest" "$change_digest" "$new_hex" "$file" "$file" "$old_digest" "$change_digest" "$old_hex" "$file" "$binding" "$file" "$new_digest" "$change_digest" "$new_hex" "$file" "$binding"
+  behavior_digest=$(surface_behavior_digest "$surface" "$file:2" "$file:2" old "$old_digest" "$old_hex" "$file:2" new "$new_digest" "$new_hex" "$change_digest" "$behavior" "$action") || return 1
+  binding=$(surface_transition_binding_digest "$surface" "$file:2" "$new_digest" "$change_digest" "$new_hex" "$file:2" old "$old_digest" "$old_hex" "$file:2" new "$new_digest" "$new_hex" "$behavior_digest") || return 1
+  printf '%s: reviewed; surface=%s; files=%s; evidence=%s:2 sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 behavior-sha256=%s; consequence=anchor=%s:2 side=old sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 behavior-sha256=%s binding=%s; fix=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 behavior-sha256=%s binding=%s\n' \
+    "$label" "$surface" "$file" "$file" "$new_digest" "$change_digest" "$new_hex" "$file" "$behavior_digest" "$file" "$old_digest" "$change_digest" "$old_hex" "$file" "$behavior_digest" "$binding" "$file" "$new_digest" "$change_digest" "$new_hex" "$file" "$behavior_digest" "$binding"
 }
 
 surface_review_single_record() {
-  local label=$1 surface=$2 file=$3 digest=$4 line_hex=$5 change_digest=$6 binding
-  binding=$(surface_transition_binding_digest "$surface" "$file:2" "$digest" "$change_digest" "$line_hex" "$file:2" new "$digest" "$line_hex" "$file:2" new "$digest" "$line_hex") || return 1
-  printf '%s: reviewed; surface=%s; files=%s; evidence=%s:2 sha256=%s change-sha256=%s line-hex=%s hunk=%s:2; consequence=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 binding=%s; fix=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 binding=%s\n' \
-    "$label" "$surface" "$file" "$file" "$digest" "$change_digest" "$line_hex" "$file" "$file" "$digest" "$change_digest" "$line_hex" "$file" "$binding" "$file" "$digest" "$change_digest" "$line_hex" "$file" "$binding"
+  local label=$1 surface=$2 file=$3 digest=$4 line_hex=$5 change_digest=$6 binding behavior action behavior_digest
+  case "$surface" in
+    authority) behavior=non-authorizing; action=retain-owner ;;
+    security) behavior=provenance-bound; action=retain-boundary ;;
+    path) behavior=path-safe; action=retain-validation ;;
+    failure) behavior=fail-closed; action=retain-refusal ;;
+    tests) behavior=behavioral; action=retain-regression ;;
+    documentation) behavior=contract-aligned; action=retain-contract ;;
+    delivery) behavior=no-mistakes-owned; action=retain-no-mistakes ;;
+  esac
+  behavior_digest=$(surface_behavior_digest "$surface" "$file:2" "$file:2" new "$digest" "$line_hex" "$file:2" new "$digest" "$line_hex" "$change_digest" "$behavior" "$action") || return 1
+  binding=$(surface_transition_binding_digest "$surface" "$file:2" "$digest" "$change_digest" "$line_hex" "$file:2" new "$digest" "$line_hex" "$file:2" new "$digest" "$line_hex" "$behavior_digest") || return 1
+  printf '%s: reviewed; surface=%s; files=%s; evidence=%s:2 sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 behavior-sha256=%s; consequence=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 behavior-sha256=%s binding=%s; fix=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 behavior-sha256=%s binding=%s\n' \
+    "$label" "$surface" "$file" "$file" "$digest" "$change_digest" "$line_hex" "$file" "$behavior_digest" "$file" "$digest" "$change_digest" "$line_hex" "$file" "$behavior_digest" "$binding" "$file" "$digest" "$change_digest" "$line_hex" "$file" "$behavior_digest" "$binding"
 }
 
 surface_review_single_record_at_line() {
-  local label=$1 surface=$2 file=$3 line=$4 digest=$5 line_hex=$6 change_digest=$7 side=${8:-new} binding reference
+  local label=$1 surface=$2 file=$3 line=$4 digest=$5 line_hex=$6 change_digest=$7 side=${8:-new} binding reference behavior action behavior_digest
+  case "$surface" in
+    authority) behavior=non-authorizing; action=retain-owner ;;
+    security) behavior=provenance-bound; action=retain-boundary ;;
+    path) behavior=path-safe; action=retain-validation ;;
+    failure) behavior=fail-closed; action=retain-refusal ;;
+    tests) behavior=behavioral; action=retain-regression ;;
+    documentation) behavior=contract-aligned; action=retain-contract ;;
+    delivery) behavior=no-mistakes-owned; action=retain-no-mistakes ;;
+  esac
   reference="$file:$line"
-  binding=$(surface_transition_binding_digest "$surface" "$reference" "$digest" "$change_digest" "$line_hex" "$reference" "$side" "$digest" "$line_hex" "$reference" "$side" "$digest" "$line_hex") || return 1
-  printf '%s: reviewed; surface=%s; files=%s; evidence=%s sha256=%s change-sha256=%s line-hex=%s hunk=%s; consequence=anchor=%s side=%s sha256=%s change-sha256=%s line-hex=%s hunk=%s binding=%s; fix=anchor=%s side=%s sha256=%s change-sha256=%s line-hex=%s hunk=%s binding=%s\n' \
-    "$label" "$surface" "$file" "$reference" "$digest" "$change_digest" "$line_hex" "$reference" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$reference" "$binding" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$reference" "$binding"
+  behavior_digest=$(surface_behavior_digest "$surface" "$reference" "$reference" "$side" "$digest" "$line_hex" "$reference" "$side" "$digest" "$line_hex" "$change_digest" "$behavior" "$action") || return 1
+  binding=$(surface_transition_binding_digest "$surface" "$reference" "$digest" "$change_digest" "$line_hex" "$reference" "$side" "$digest" "$line_hex" "$reference" "$side" "$digest" "$line_hex" "$behavior_digest") || return 1
+  printf '%s: reviewed; surface=%s; files=%s; evidence=%s sha256=%s change-sha256=%s line-hex=%s hunk=%s behavior-sha256=%s; consequence=anchor=%s side=%s sha256=%s change-sha256=%s line-hex=%s hunk=%s behavior-sha256=%s binding=%s; fix=anchor=%s side=%s sha256=%s change-sha256=%s line-hex=%s hunk=%s behavior-sha256=%s binding=%s\n' \
+    "$label" "$surface" "$file" "$reference" "$digest" "$change_digest" "$line_hex" "$reference" "$behavior_digest" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$reference" "$behavior_digest" "$binding" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$reference" "$behavior_digest" "$binding"
 }
 
 write_self_review_report() {
@@ -867,6 +904,26 @@ PY
   set -e
   [ "$rc" -ne 0 ] || fail "PR-ready path accepted a forge base different from the approved base"
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "forge base mismatch left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  python3 - "$report" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = re.sub(r"behavior-sha256=[0-9a-f]{64}", "behavior-sha256=" + "0" * 64, text, count=1)
+path.write_text(text, encoding="utf-8")
+PY
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/103 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a forged surface behavior proof"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "forged surface behavior proof left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
   run_check_entry "$dir" task-a https://github.com/o/r/pull/103 >/dev/null \
     || fail "PR-ready path rejected a valid durable self-review report"
   FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" "$SELF_REVIEW_CHECK" task-a no-mistakes >/dev/null \

@@ -633,7 +633,7 @@ fm_pr_self_review_report_valid() {
       n = split(value, parts, "; ")
       if (n != 6 || parts[1] != "reviewed" || parts[2] != "surface=" surface) return 0
       if (parts[3] !~ /^files=[^;[:space:]][^;]*$/) return 0
-      if (parts[4] !~ /^evidence=[^;[:space:]][^;]*:[1-9][0-9]* sha256=[0-9a-f]+ change-sha256=[0-9a-f]+ line-hex=[0-9a-f]+ hunk=[^;[:space:]][^;]*$/) return 0
+      if (parts[4] !~ /^evidence=[^;[:space:]][^;]*:[1-9][0-9]* sha256=[0-9a-f]+ change-sha256=[0-9a-f]+ line-hex=[0-9a-f]+ hunk=[^;[:space:]][^;]* behavior-sha256=[0-9a-f]+$/) return 0
       reference = parts[4]
       sub(/^evidence=/, "", reference)
       evidence_hash = reference
@@ -648,9 +648,10 @@ fm_pr_self_review_report_valid() {
       sub(/ sha256=.*/, "", reference)
       hunk = parts[4]
       sub(/^.* hunk=/, "", hunk)
+      sub(/ behavior-sha256=.*/, "", hunk)
       if (hunk != reference) return 0
-      if (parts[5] !~ /^consequence=anchor=[^;[:space:]][^;]*:[1-9][0-9]* side=(old|new) sha256=[0-9a-f]+ change-sha256=[0-9a-f]+ line-hex=[0-9a-f]+ hunk=[^;[:space:]][^;]* binding=[0-9a-f]+$/) return 0
-      if (parts[6] !~ /^fix=anchor=[^;[:space:]][^;]*:[1-9][0-9]* side=(old|new) sha256=[0-9a-f]+ change-sha256=[0-9a-f]+ line-hex=[0-9a-f]+ hunk=[^;[:space:]][^;]* binding=[0-9a-f]+$/) return 0
+      if (parts[5] !~ /^consequence=anchor=[^;[:space:]][^;]*:[1-9][0-9]* side=(old|new) sha256=[0-9a-f]+ change-sha256=[0-9a-f]+ line-hex=[0-9a-f]+ hunk=[^;[:space:]][^;]* behavior-sha256=[0-9a-f]+ binding=[0-9a-f]+$/) return 0
+      if (parts[6] !~ /^fix=anchor=[^;[:space:]][^;]*:[1-9][0-9]* side=(old|new) sha256=[0-9a-f]+ change-sha256=[0-9a-f]+ line-hex=[0-9a-f]+ hunk=[^;[:space:]][^;]* behavior-sha256=[0-9a-f]+ binding=[0-9a-f]+$/) return 0
       if (line_hex !~ /^[0-9a-f]+$/ || length(line_hex) % 2 != 0) return 0
       return 1
     }
@@ -724,7 +725,7 @@ EOF
     return 0
   }
   local line finding_path finding_file finding_line surface_files surface_file review_root
-  local surface_evidence evidence_ref evidence_rest evidence_file evidence_line evidence_side evidence_hash evidence_change_hash evidence_line_hex evidence_hunk_id evidence_hunk_shape hunk_old_count hunk_new_count line_content actual_evidence_hash actual_change_hash actual_line_hex surface_review_files surface_evidence_files surface_evidence_refs surface_evidence_hunks changed_path surface_name surface_consequence surface_fix surface_behavior surface_action surface_binding surface_body surface_unaffected_files surface_unaffected_binding surface_unaffected_expected_binding consequence_ref consequence_file consequence_side consequence_hash consequence_change_hash consequence_line_hex consequence_hunk consequence_rest consequence_line fix_ref fix_file fix_side fix_hash fix_change_hash fix_line_hex fix_hunk fix_rest fix_line
+  local surface_evidence evidence_ref evidence_rest evidence_file evidence_line evidence_side evidence_hash evidence_change_hash evidence_line_hex evidence_behavior_hash evidence_hunk_id evidence_hunk_shape hunk_old_count hunk_new_count line_content actual_evidence_hash actual_change_hash actual_line_hex surface_review_files surface_evidence_files surface_evidence_refs surface_evidence_hunks changed_path surface_name surface_consequence surface_fix surface_behavior surface_action surface_binding surface_behavior_hash surface_body surface_unaffected_files surface_unaffected_binding surface_unaffected_expected_binding consequence_ref consequence_file consequence_side consequence_hash consequence_change_hash consequence_line_hex consequence_behavior_hash consequence_hunk consequence_rest consequence_line fix_ref fix_file fix_side fix_hash fix_change_hash fix_line_hex fix_behavior_hash fix_hunk fix_rest fix_line
   surface_review_files=
   surface_evidence_files=
   surface_evidence_refs=
@@ -1004,6 +1005,8 @@ EOF
     evidence_change_hash=${evidence_change_hash%% *}
     evidence_line_hex=${evidence_rest#*line-hex=}
     evidence_line_hex=${evidence_line_hex%% *}
+    evidence_behavior_hash=${evidence_rest#*behavior-sha256=}
+    evidence_behavior_hash=${evidence_behavior_hash%% *}
     surface_consequence=${line#*; consequence=}
     surface_consequence=${surface_consequence%%; fix=*}
     surface_fix=${line#*; fix=}
@@ -1020,7 +1023,10 @@ EOF
     consequence_change_hash=${consequence_change_hash%% line-hex=*}
     consequence_line_hex=${consequence_rest#*line-hex=}
     consequence_line_hex=${consequence_line_hex%% hunk=*}
+    consequence_behavior_hash=${consequence_rest#*behavior-sha256=}
+    consequence_behavior_hash=${consequence_behavior_hash%% binding=*}
     consequence_hunk=${consequence_rest#*hunk=}
+    consequence_hunk=${consequence_hunk%% behavior-sha256=*}
     consequence_hunk=${consequence_hunk%% binding=*}
     fix_ref=${surface_fix#anchor=}
     fix_ref=${fix_ref%% side=*}
@@ -1033,7 +1039,10 @@ EOF
     fix_change_hash=${fix_change_hash%% line-hex=*}
     fix_line_hex=${fix_rest#*line-hex=}
     fix_line_hex=${fix_line_hex%% hunk=*}
+    fix_behavior_hash=${fix_rest#*behavior-sha256=}
+    fix_behavior_hash=${fix_behavior_hash%% binding=*}
     fix_hunk=${fix_rest#*hunk=}
+    fix_hunk=${fix_hunk%% behavior-sha256=*}
     fix_hunk=${fix_hunk%% binding=*}
     fm_pr_review_path_syntax_valid "$evidence_file" || return 1
     evidence_file=$FM_PR_REVIEW_PATH
@@ -1045,6 +1054,10 @@ EOF
     esac
     [ "${#evidence_change_hash}" -eq 64 ] || return 1
     case "$evidence_change_hash" in
+      *[!0-9a-f]*) return 1 ;;
+    esac
+    [ "${#evidence_behavior_hash}" -eq 64 ] || return 1
+    case "$evidence_behavior_hash" in
       *[!0-9a-f]*) return 1 ;;
     esac
     [ "${#evidence_line_hex}" -gt 0 ] || return 1
@@ -1069,6 +1082,11 @@ EOF
     [ $(( ${#consequence_line_hex} % 2 )) -eq 0 ] || return 1
     [ $(( ${#fix_line_hex} % 2 )) -eq 0 ] || return 1
     case "$consequence_hash$consequence_line_hex$fix_hash$fix_line_hex" in
+      *[!0-9a-f]*) return 1 ;;
+    esac
+    [ "${#consequence_behavior_hash}" -eq 64 ] || return 1
+    [ "${#fix_behavior_hash}" -eq 64 ] || return 1
+    case "$consequence_behavior_hash$fix_behavior_hash" in
       *[!0-9a-f]*) return 1 ;;
     esac
     fm_pr_review_surface_file_valid "$evidence_file" "$surface_files" || return 1
@@ -1106,9 +1124,13 @@ EOF
     fi
     fm_pr_review_line_evidence_valid "$evidence_file" "$consequence_line" "$consequence_side" "$consequence_hash" "$consequence_line_hex" || return 1
     fm_pr_review_line_evidence_valid "$evidence_file" "$fix_line" "$fix_side" "$fix_hash" "$fix_line_hex" || return 1
-    surface_binding=$(printf '%s\n' "$surface_name|$evidence_ref|$evidence_hash|$evidence_change_hash|$evidence_line_hex|$consequence_ref|$consequence_side|$consequence_hash|$consequence_line_hex|$fix_ref|$fix_side|$fix_hash|$fix_line_hex" | fm_pr_sha256_stream) || return 1
-    [ "$surface_consequence" = "anchor=$consequence_ref side=$consequence_side sha256=$consequence_hash change-sha256=$evidence_change_hash line-hex=$consequence_line_hex hunk=$consequence_ref binding=$surface_binding" ] || return 1
-    [ "$surface_fix" = "anchor=$fix_ref side=$fix_side sha256=$fix_hash change-sha256=$evidence_change_hash line-hex=$fix_line_hex hunk=$fix_ref binding=$surface_binding" ] || return 1
+    surface_behavior_hash=$(printf '%s\n' "$surface_name|$evidence_ref|$consequence_ref|$consequence_side|$consequence_hash|$consequence_line_hex|$fix_ref|$fix_side|$fix_hash|$fix_line_hex|$evidence_change_hash|$surface_behavior|$surface_action" | fm_pr_sha256_stream) || return 1
+    [ "$evidence_behavior_hash" = "$surface_behavior_hash" ] || return 1
+    [ "$consequence_behavior_hash" = "$surface_behavior_hash" ] || return 1
+    [ "$fix_behavior_hash" = "$surface_behavior_hash" ] || return 1
+    surface_binding=$(printf '%s\n' "$surface_name|$evidence_ref|$evidence_hash|$evidence_change_hash|$evidence_line_hex|$consequence_ref|$consequence_side|$consequence_hash|$consequence_line_hex|$fix_ref|$fix_side|$fix_hash|$fix_line_hex|$surface_behavior_hash" | fm_pr_sha256_stream) || return 1
+    [ "$surface_consequence" = "anchor=$consequence_ref side=$consequence_side sha256=$consequence_hash change-sha256=$evidence_change_hash line-hex=$consequence_line_hex hunk=$consequence_ref behavior-sha256=$surface_behavior_hash binding=$surface_binding" ] || return 1
+    [ "$surface_fix" = "anchor=$fix_ref side=$fix_side sha256=$fix_hash change-sha256=$evidence_change_hash line-hex=$fix_line_hex hunk=$fix_ref behavior-sha256=$surface_behavior_hash binding=$surface_binding" ] || return 1
     surface_evidence_hunks="$surface_evidence_hunks$evidence_hunk_id"$'\n'
     evidence_file=$(fm_pr_review_path_encode "$evidence_file") || return 1
     surface_evidence_files="$surface_evidence_files$evidence_file
