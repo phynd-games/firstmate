@@ -621,6 +621,29 @@ PY
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "unchanged-file surface evidence left a runnable poll"
 
   write_self_review_report "$dir/home" task-a
+  authority_digest=$(sed -n '1p' "$dir/wt/bin/fm-pr-check.sh" | fm_pr_sha256_stream)
+  authority_line_hex=$(awk 'NR == 1 { printf "%s", $0 }' "$dir/wt/bin/fm-pr-check.sh" | od -An -tx1 | tr -d ' \n')
+  authority_change_digest=$(surface_change_digest "$dir" bin/fm-pr-check.sh)
+  authority_binding=$(surface_binding_digest authority bin/fm-pr-check.sh:1 "$authority_digest" "$authority_change_digest" "$authority_line_hex" non-authorizing retain-owner)
+  authority_record="Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:1 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$authority_line_hex hunk=bin/fm-pr-check.sh:1; consequence=anchor=bin/fm-pr-check.sh:1 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$authority_line_hex behavior=non-authorizing binding=$authority_binding; fix=anchor=bin/fm-pr-check.sh:1 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$authority_line_hex action=retain-owner binding=$authority_binding"
+  python3 - "$report" "$authority_record" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+record = sys.argv[2]
+text = path.read_text(encoding="utf-8")
+text = "\n".join(record if line.startswith("Authority: ") else line for line in text.split("\n"))
+path.write_text(text, encoding="utf-8")
+PY
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted an unchanged context line as surface evidence"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "unchanged context evidence left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
   python3 - "$report" "$dir/wt/bin/fm-pr-check.sh" <<'PY'
 import hashlib
 import pathlib

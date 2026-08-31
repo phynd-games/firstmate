@@ -738,7 +738,7 @@ EOF
     return 0
   }
   local line finding_path finding_file finding_line surface_files surface_file review_root
-  local surface_evidence evidence_ref evidence_rest evidence_file evidence_line evidence_hash evidence_change_hash evidence_line_hex evidence_hunk_id line_content actual_evidence_hash actual_change_hash actual_line_hex surface_review_files surface_evidence_files surface_evidence_refs surface_evidence_hunks changed_path surface_name surface_consequence surface_fix surface_behavior surface_action surface_binding surface_body surface_unaffected_files surface_unaffected_binding surface_unaffected_expected_binding
+  local surface_evidence evidence_ref evidence_rest evidence_file evidence_line evidence_side evidence_hash evidence_change_hash evidence_line_hex evidence_hunk_id line_content actual_evidence_hash actual_change_hash actual_line_hex surface_review_files surface_evidence_files surface_evidence_refs surface_evidence_hunks changed_path surface_name surface_consequence surface_fix surface_behavior surface_action surface_binding surface_body surface_unaffected_files surface_unaffected_binding surface_unaffected_expected_binding
   surface_review_files=
   surface_evidence_files=
   surface_evidence_refs=
@@ -874,7 +874,41 @@ EOF
       '
   }
   fm_pr_review_changed_line_valid() {
-    fm_pr_review_hunk_id "$1" "$2" >/dev/null
+    local review_file=$1 review_line=$2 side=${3:-new}
+    case "$side" in
+      old|new) ;;
+      *) return 1 ;;
+    esac
+    git -C "$worktree" diff --no-color --unified=0 "$merge_base_sha" "$head_sha" -- "$review_file" |
+      awk -v target="$review_line" -v side="$side" '
+        function range_start(value, parts) {
+          sub(/^[-+]/, "", value)
+          split(value, parts, ",")
+          return parts[1] + 0
+        }
+        /^@@ / {
+          old_line = range_start($2)
+          new_line = range_start($3)
+          next
+        }
+        /^\+\+\+ / { next }
+        /^--- / { next }
+        /^\+/ {
+          if (side == "new" && new_line == target) found = 1
+          new_line++
+          next
+        }
+        /^-/ {
+          if (side == "old" && old_line == target) found = 1
+          old_line++
+          next
+        }
+        {
+          old_line++
+          new_line++
+        }
+        END { exit found ? 0 : 1 }
+      '
   }
   while IFS= read -r changed_path || [ -n "$changed_path" ]; do
     fm_pr_review_path_syntax_valid "$changed_path" || return 1
@@ -925,6 +959,7 @@ EOF
     surface_evidence=${surface_evidence%%; consequence=*}
     evidence_ref=${surface_evidence%% sha256=*}
     evidence_rest=${surface_evidence#"$evidence_ref" }
+    evidence_side=new
     evidence_hash=${evidence_rest#sha256=}
     evidence_hash=${evidence_hash%% *}
     evidence_change_hash=${evidence_rest#*change-sha256=}
@@ -958,12 +993,15 @@ EOF
     esac
     fm_pr_review_surface_file_valid "$evidence_file" "$surface_files" || return 1
     fm_pr_changed_path_valid "$evidence_file" || return 1
+    if ! fm_pr_review_changed_line_valid "$evidence_file" "$evidence_line" new; then
+      evidence_side=old
+      fm_pr_review_changed_line_valid "$evidence_file" "$evidence_line" old || return 1
+    fi
     evidence_hunk_id=$(fm_pr_review_hunk_id "$evidence_file" "$evidence_line") || return 1
-    if [ -f "$worktree/$evidence_file" ] && [ ! -L "$worktree/$evidence_file" ] \
-      && git -C "$worktree" ls-files --error-unmatch -- "$evidence_file" >/dev/null 2>&1; then
-      line_content=$(awk -v target="$evidence_line" 'NR == target { print; found = 1; exit } END { if (!found) exit 1 }' "$worktree/$evidence_file") || return 1
+    if [ "$evidence_side" = new ] && [ "$(git -C "$worktree" cat-file -t "$head_sha:$evidence_file" 2>/dev/null)" = blob ]; then
+      line_content=$(git -C "$worktree" show "$head_sha:$evidence_file" | awk -v target="$evidence_line" 'NR == target { print; found = 1; exit } END { if (!found) exit 1 }') || return 1
       actual_evidence_hash=$(printf '%s\n' "$line_content" | fm_pr_sha256_stream) || return 1
-    elif [ "$(git -C "$worktree" cat-file -t "$merge_base_sha:$evidence_file" 2>/dev/null)" = blob ]; then
+    elif [ "$evidence_side" = old ] && [ "$(git -C "$worktree" cat-file -t "$merge_base_sha:$evidence_file" 2>/dev/null)" = blob ]; then
       line_content=$(git -C "$worktree" show "$merge_base_sha:$evidence_file" | awk -v target="$evidence_line" 'NR == target { print; found = 1; exit } END { if (!found) exit 1 }') || return 1
       actual_evidence_hash=$(printf '%s\n' "$line_content" | fm_pr_sha256_stream) || return 1
     fi
