@@ -95,7 +95,7 @@ run_setup() {
   # shellcheck disable=SC2016
   make_mock "$mock_bin/pi" 'case "${1:-}" in --version) echo "pi fixture" ;; *) exit 0 ;; esac'
   printf '%s\n' '{"unrelated":{"keep":true},"defaultModel":"obsolete"}' > "$home/pi-agent/settings.json"
-  HOME="$home" SHELL=/bin/zsh PATH="$mock_bin:$NODE_BIN_DIR:/usr/bin:/bin:/usr/sbin:/sbin" \
+  HOME="$home" FM_HOME="$home" SHELL=/bin/zsh PATH="$mock_bin:$NODE_BIN_DIR:/usr/bin:/bin:/usr/sbin:/sbin" \
     PI_CODING_AGENT_HOME="$home/pi-agent" PHYND_PROJECT_DIR="$home/project" \
     "$repo/bin/fm-setup-phynd.sh" > "$output"
 }
