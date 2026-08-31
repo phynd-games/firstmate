@@ -28,6 +28,7 @@ GitHub Actions and Dependabot are exempt so their automation keeps working, but 
 
 6. Run `no-mistakes` to attach to the pipeline, watch findings, authorize auto-fixes, and review ask-user findings as needed.
    Follow the installed no-mistakes version's SKILL.md and live `axi` help for gate mechanics.
+   If the pipeline applies a fix or any later commit changes the branch, push the resulting head through `no-mistakes` again so the PR attestation matches the current commit.
 7. Once the pipeline passes, it pushes the branch to your fork and opens the PR against the parent repo for you.
 
 See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/) for the full first-run walkthrough.
