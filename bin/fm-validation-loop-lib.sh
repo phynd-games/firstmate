@@ -156,6 +156,37 @@ _fm_vloop_journal_get() {  # <journal-content> <key>
   printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1
 }
 
+_fm_vloop_journal_valid() {  # <journal-content>
+  local stored=$1 key value version phase active
+  for key in version run head status phase findings_sig progress_sig fix_rounds themes heads last_observed last_progress active stop_reason; do
+    printf '%s\n' "$stored" | grep -q "^$key=" || return 1
+  done
+  version=$(_fm_vloop_journal_get "$stored" version)
+  [ "$version" = 1 ] || return 1
+  status=$(_fm_vloop_journal_get "$stored" status)
+  [ -n "$status" ] || return 1
+  phase=$(_fm_vloop_journal_get "$stored" phase)
+  case "$phase" in
+    running|fixing|ci|gate|terminal|coarse) ;;
+    *) return 1 ;;
+  esac
+  active=$(_fm_vloop_journal_get "$stored" active)
+  case "$active" in 0|1) ;; *) return 1 ;; esac
+  value=$(_fm_vloop_journal_get "$stored" fix_rounds)
+  case "$value" in ''|*[!0-9]*) return 1 ;; esac
+  for key in last_observed last_progress; do
+    value=$(_fm_vloop_journal_get "$stored" "$key")
+    case "$value" in ''|*[!0-9]*) return 1 ;; esac
+  done
+  if [ "$phase" != coarse ]; then
+    for key in run head; do
+      value=$(_fm_vloop_journal_get "$stored" "$key")
+      [ -n "$value" ] || return 1
+    done
+  fi
+  return 0
+}
+
 # Bump <sig> in a "sig:count sig:count ..." theme list, appending a new sig.
 _fm_vloop_themes_bump() {  # <themes> <sig>
   local themes=$1 sig=$2 out='' entry found=0 count
@@ -292,7 +323,11 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
     return 0
   fi
   content=$(cat "$ev" 2>/dev/null) || return 0
-  [ -f "$journal" ] && [ ! -L "$journal" ] && stored=$(cat "$journal" 2>/dev/null || true)
+  if [ -e "$journal" ] || [ -L "$journal" ]; then
+    [ -f "$journal" ] && [ ! -L "$journal" ] || return 2
+    stored=$(cat "$journal" 2>/dev/null) || return 2
+    _fm_vloop_journal_valid "$stored" || return 2
+  fi
   s_run=$(_fm_vloop_journal_get "$stored" run)
   s_phase=$(_fm_vloop_journal_get "$stored" phase)
   s_status=$(_fm_vloop_journal_get "$stored" status)
@@ -315,8 +350,7 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
       # counters and run identity stay untouched.
       status=$(fm_nm_trim "${first#coarse:}")
       [ -n "$status" ] || return 2
-      last_progress=$s_last_progress
-      [ "$status" = "$s_status" ] || last_progress=$now
+      last_progress=$now
       case "$status" in
         completed|failed|cancelled) active=0 ;;
         *) active=1 ;;
@@ -327,7 +361,7 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
         printf 'run=%s\n' "$s_run"
         printf 'head=%s\n' "$(_fm_vloop_journal_get "$stored" head)"
         printf 'status=%s\n' "$status"
-        printf 'phase=%s\n' "$s_phase"
+        printf 'phase=coarse\n'
         printf 'findings_sig=%s\n' "$s_findings_sig"
         printf 'progress_sig=%s\n' "$s_progress_sig"
         printf 'fix_rounds=%s\n' "$s_fix_rounds"
@@ -440,8 +474,22 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
 fm_vloop_verdict() {  # <state> <id>
   local state=$1 id=$2 journal stored now active stop_reason
   journal=$(fm_vloop_journal_path "$state" "$id")
-  [ -f "$journal" ] && [ ! -L "$journal" ] || { printf 'continue'; return 0; }
-  stored=$(cat "$journal" 2>/dev/null) || { printf 'continue'; return 0; }
+  if [ ! -e "$journal" ] && [ ! -L "$journal" ]; then
+    printf 'continue'
+    return 0
+  fi
+  if [ -L "$journal" ] || [ ! -f "$journal" ]; then
+    printf 'stop validation-loop journal unreadable or incomplete; recover in the same copy'
+    return 1
+  fi
+  stored=$(cat "$journal" 2>/dev/null) || {
+    printf 'stop validation-loop journal unreadable or incomplete; recover in the same copy'
+    return 1
+  }
+  if ! _fm_vloop_journal_valid "$stored"; then
+    printf 'stop validation-loop journal unreadable or incomplete; recover in the same copy'
+    return 1
+  fi
   active=$(_fm_vloop_journal_get "$stored" active)
   [ "$active" = 1 ] || { printf 'continue'; return 0; }
   now=$(_fm_vloop_now)
@@ -452,7 +500,10 @@ fm_vloop_verdict() {  # <state> <id>
   fi
   stop_reason=$(_fm_vloop_time_stop_reason "$stored" "$now")
   if [ -n "$stop_reason" ]; then
-    _fm_vloop_record_stop "$state" "$id" "$stop_reason" || true
+    if ! _fm_vloop_record_stop "$state" "$id" "$stop_reason"; then
+      printf 'stop %s' "$stop_reason"
+      return 1
+    fi
     printf 'stop %s' "$stop_reason"
     return 0
   fi
@@ -463,7 +514,18 @@ fm_vloop_verdict() {  # <state> <id>
 fm_vloop_reason() {  # <state> <id>
   local journal stored
   journal=$(fm_vloop_journal_path "$1" "$2")
-  [ -f "$journal" ] && [ ! -L "$journal" ] || return 0
-  stored=$(cat "$journal" 2>/dev/null) || return 0
+  [ -e "$journal" ] || [ -L "$journal" ] || return 0
+  if [ -L "$journal" ] || [ ! -f "$journal" ]; then
+    printf 'validation-loop journal unreadable or incomplete; recover in the same copy'
+    return 0
+  fi
+  stored=$(cat "$journal" 2>/dev/null) || {
+    printf 'validation-loop journal unreadable or incomplete; recover in the same copy'
+    return 0
+  }
+  if ! _fm_vloop_journal_valid "$stored"; then
+    printf 'validation-loop journal unreadable or incomplete; recover in the same copy'
+    return 0
+  fi
   _fm_vloop_journal_get "$stored" stop_reason
 }

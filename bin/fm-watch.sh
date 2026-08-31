@@ -786,8 +786,14 @@ surface_nonterminal_stale() {  # <window> <hash> [reason]
 }
 
 surface_validation_limit() {  # <window> <hash> <task>
-  local win=$1 h=$2 task=$3 reason
+  local win=$1 h=$2 task=$3 reason verdict
   reason=$(fm_vloop_reason "$STATE" "$task")
+  if [ -z "$reason" ]; then
+    verdict=$(fm_vloop_verdict "$STATE" "$task" 2>/dev/null || true)
+    case "$verdict" in
+      stop\ *) reason=${verdict#stop } ;;
+    esac
+  fi
   [ -n "$reason" ] || reason="automatic continuation limit reached"
   surface_nonterminal_stale "$win" "$h" \
     "stale: $win (validation loop limit: $reason - automatic continuation stopped deterministically; branch and run custody preserved; inspect and recover in the same copy via stuck-crewmate-recovery, never a duplicate worker or a skipped check)"
@@ -1447,7 +1453,9 @@ EOF
             wake "stale: $w"
           fi
         elif validation_loop_stopped "$task"; then
-          surface_validation_limit "$w" "$h" "$task"
+          if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ] || [ -e "$ssf" ]; then
+            surface_validation_limit "$w" "$h" "$task"
+          fi
         elif stale_is_terminal "$w" "$STATE"; then
           # The log's last line is captain-relevant - but that alone is not
           # proof the crew is actually done: a crew's own status log gets no

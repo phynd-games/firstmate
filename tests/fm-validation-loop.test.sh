@@ -252,6 +252,21 @@ test_malformed_evidence_stop() {
   pass "malformed evidence stop: incomplete run evidence fails closed at the absorb boundary"
 }
 
+test_malformed_journal_stop() {
+  local state fakebin dir
+  dir=$(make_case vloop-malformed-journal); state="$dir/state"; fakebin="$dir/fakebin"
+  printf 'version=1\nactive=1\n' > "$state/broken.validation-loop"
+  export FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh"
+  export FM_FAKE_CREW_STATE='state: working · source: pane · harness busy (native)'
+  [ "$(STATE=$state crew_absorb_class broken)" = limit ] \
+    || fail "an incomplete validation journal was absorbed as working"
+  [ "$(fm_vloop_reason "$state" broken)" = \
+    'validation-loop journal unreadable or incomplete; recover in the same copy' ] \
+    || fail "an incomplete validation journal did not expose its recovery reason"
+  unset FM_FAKE_CREW_STATE
+  pass "malformed journal stop: incomplete loop state fails closed"
+}
+
 # --- required regression: stale pipeline evidence ------------------------------
 # An active run recorded in the journal with no readable run evidence within
 # the freshness bound stops continuation even though the pane still reads busy.
@@ -374,6 +389,18 @@ test_stall_stop_and_progress_resume() {
   pass "stall: frozen evidence stops, recovery resumes, ci waits are exempt"
 }
 
+test_coarse_evidence_does_not_enforce_stall() {
+  local state ev dir
+  dir=$(make_case vloop-coarse); state="$dir/state"; ev="$dir/ev"
+  ev_running "$ev" 01RUN running pending; fold "$state" coarse "$ev" 1000
+  printf 'coarse: running\n' > "$ev"
+  FM_VLOOP_STALL_SECS=1 FM_VLOOP_EVIDENCE_MAX_AGE_SECS=99999 \
+    fold "$state" coarse "$ev" 2000
+  [ "$(FM_VLOOP_STALL_SECS=1 FM_VLOOP_EVIDENCE_MAX_AGE_SECS=99999 verdict_at "$state" coarse 3000)" = continue ] \
+    || fail "coarse evidence inherited a running-phase stall bound"
+  pass "coarse evidence: fallback status never enforces the running/fixing stall bound"
+}
+
 test_head_transition_is_coherent() {
   local state ev dir v
   dir=$(make_case vloop-head-transition); state="$dir/state"; ev="$dir/ev"
@@ -461,10 +488,12 @@ test_near_complete_continuation
 test_repeated_finding_stop
 test_unknown_state_stop
 test_malformed_evidence_stop
+test_malformed_journal_stop
 test_stale_pipeline_evidence
 test_recovery_handoff
 test_fix_round_bound_semantics
 test_stall_stop_and_progress_resume
+test_coarse_evidence_does_not_enforce_stall
 test_head_transition_is_coherent
 test_threshold_overrides_cannot_disable_bounds
 test_watcher_surfaces_validation_loop_limit
