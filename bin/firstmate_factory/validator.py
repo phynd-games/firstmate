@@ -633,7 +633,7 @@ def _validate_execution_task(task: Any, path: str, errors: Errors) -> dict[str, 
 
 
 def validate_execution_manifest_bytes(
-    data: bytes, source_data: bytes
+    data: bytes, source_data: bytes, expected_sha256: str
 ) -> dict[str, Any]:
     """Validate a normalized manifest and its bound immutable source bytes."""
     errors = Errors()
@@ -674,11 +674,28 @@ def validate_execution_manifest_bytes(
     source_sha256 = hashlib.sha256(source_data).hexdigest()
     source_provenance: dict[str, Any] = {
         "actual_sha256": source_sha256,
+        "expected_sha256": expected_sha256,
         "bound_sha256": None,
         "matches": False,
+        "expected_matches": False,
         "source_valid": False,
     }
     source_task_ids: set[str] | None = None
+    source_report = validate_source_bytes(source_data, expected_sha256)
+    source_provenance["expected_matches"] = source_report["provenance"]["matches"]
+    source_provenance["source_valid"] = source_report["valid"]
+    source_provenance["validation_errors"] = source_report["errors"]
+    source_graph = source_report.get("graph", {})
+    if isinstance(source_graph, dict):
+        task_ids = source_graph.get("task_ids")
+        if isinstance(task_ids, list):
+            source_task_ids = {task_id for task_id in task_ids if isinstance(task_id, str)}
+    if not source_provenance["expected_matches"]:
+        errors.add(
+            "manifest.source-provenance-mismatch",
+            "$.expected_sha256",
+            "supplied source bytes do not match the independently expected SHA-256",
+        )
     if len(source_graph_bindings) != 1:
         errors.add(
             "manifest.source-binding",
@@ -690,17 +707,6 @@ def validate_execution_manifest_bytes(
         bound_sha256 = binding["sha256"]
         source_provenance["bound_sha256"] = bound_sha256
         source_provenance["matches"] = bound_sha256 == source_sha256
-        if isinstance(bound_sha256, str):
-            source_report = validate_source_bytes(source_data, bound_sha256)
-            source_provenance["source_valid"] = source_report["valid"]
-            source_provenance["validation_errors"] = source_report["errors"]
-            source_graph = source_report.get("graph", {})
-            if isinstance(source_graph, dict):
-                task_ids = source_graph.get("task_ids")
-                if isinstance(task_ids, list):
-                    source_task_ids = {task_id for task_id in task_ids if isinstance(task_id, str)}
-        else:
-            source_provenance["validation_errors"] = []
         if bound_sha256 != source_sha256:
             errors.add(
                 "manifest.source-hash-mismatch",

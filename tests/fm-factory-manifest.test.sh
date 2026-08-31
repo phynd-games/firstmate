@@ -225,8 +225,8 @@ PY
 test_normalized_manifest() {
   local manifest="$TMP_ROOT/manifest.json" report="$TMP_ROOT/manifest-report.json" second="$TMP_ROOT/manifest-report-second.json"
   write_manifest valid "$manifest"
-  "$CLI" validate-manifest --manifest "$manifest" --source "$SOURCE" >"$report" || fail "normalized execution manifest did not validate"
-  "$CLI" validate-manifest --manifest "$manifest" --source "$SOURCE" >"$second" || fail "repeat execution manifest validation failed"
+  "$CLI" validate-manifest --manifest "$manifest" --source "$SOURCE" --expected-sha256 "$SOURCE_SHA" >"$report" || fail "normalized execution manifest did not validate"
+  "$CLI" validate-manifest --manifest "$manifest" --source "$SOURCE" --expected-sha256 "$SOURCE_SHA" >"$second" || fail "repeat execution manifest validation failed"
   cmp -s "$report" "$second" || fail "execution manifest validation report is not byte-stable"
   json_assert "$report" "r['valid'] is True and r['manifest_hash']['matches'] is True and r['source_provenance']['source_valid'] is True" "valid manifest report differs"
   json_assert "$report" "r['graph']['task_count'] == 3 and r['graph']['roots'] == ['M1-001', 'M1-002'] and r['graph']['wave_count'] == 2" "manifest graph facts differ"
@@ -240,7 +240,7 @@ run_invalid_manifest() {
   report="$TMP_ROOT/manifest-$mode-report.json"
   write_manifest "$mode" "$manifest"
   set +e
-  "$CLI" validate-manifest --manifest "$manifest" --source "$SOURCE" >"$report"
+  "$CLI" validate-manifest --manifest "$manifest" --source "$SOURCE" --expected-sha256 "$SOURCE_SHA" >"$report"
   rc=$?
   set -e
   [ "$rc" -eq 1 ] || fail "$mode manifest fixture should exit 1, got $rc"
@@ -258,11 +258,34 @@ test_malformed_manifest_fixtures() {
   write_manifest valid "$manifest"
   mutate_source count-mismatch "$source"
   set +e
-  "$CLI" validate-manifest --manifest "$manifest" --source "$source" >"$report"
+  "$CLI" validate-manifest --manifest "$manifest" --source "$source" --expected-sha256 "$SOURCE_SHA" >"$report"
   rc=$?
   set -e
   [ "$rc" -eq 1 ] || fail "source-drift manifest fixture should exit 1, got $rc"
   error_codes_include "$report" manifest.source-hash-mismatch
+
+  write_manifest valid "$manifest"
+  mutate_source count-mismatch "$source"
+  python3 - "$manifest" "$source" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+manifest_path, source_path = map(pathlib.Path, sys.argv[1:])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+manifest["source"][0]["sha256"] = hashlib.sha256(source_path.read_bytes()).hexdigest()
+canonical = (json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
+manifest["manifest_hash"] = hashlib.sha256(canonical).hexdigest()
+manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+PY
+  set +e
+  "$CLI" validate-manifest --manifest "$manifest" --source "$source" --expected-sha256 "$SOURCE_SHA" >"$report"
+  rc=$?
+  set -e
+  [ "$rc" -eq 1 ] || fail "self-updated source digest should exit 1, got $rc"
+  error_codes_include "$report" manifest.source-provenance-mismatch
+  json_assert "$report" "r['source_provenance']['expected_matches'] is False and r['source_provenance']['matches'] is True" "self-updated source digest bypassed independent provenance"
   pass "malformed manifest fixtures reject routes, edges, cycles, hash drift, and source drift"
 }
 
@@ -339,11 +362,11 @@ test_long_chain_and_surrogate_inputs() {
   local unicode_manifest="$TMP_ROOT/unicode-manifest.json" unicode_report="$TMP_ROOT/unicode-report.json"
   local surrogate_manifest="$TMP_ROOT/surrogate-manifest.json" surrogate_report="$TMP_ROOT/surrogate-report.json" rc
   write_long_chain_manifest "$long_manifest"
-  "$CLI" validate-manifest --manifest "$long_manifest" --source "$SOURCE" >"$long_report" || fail "long dependency chain should validate without recursion failure"
+  "$CLI" validate-manifest --manifest "$long_manifest" --source "$SOURCE" --expected-sha256 "$SOURCE_SHA" >"$long_report" || fail "long dependency chain should validate without recursion failure"
   json_assert "$long_report" "r['valid'] is True and r['graph']['task_count'] == 1001 and r['graph']['cycle_count'] == 0 and r['graph']['wave_count'] == 1001" "long dependency chain report differs"
 
   write_manifest nonbmp-title "$unicode_manifest"
-  "$CLI" validate-manifest --manifest "$unicode_manifest" --source "$SOURCE" >"$unicode_report" || fail "valid escaped surrogate pair should validate"
+  "$CLI" validate-manifest --manifest "$unicode_manifest" --source "$SOURCE" --expected-sha256 "$SOURCE_SHA" >"$unicode_report" || fail "valid escaped surrogate pair should validate"
   json_assert "$unicode_report" "r['valid'] is True" "valid escaped surrogate pair should not be rejected"
 
   write_manifest valid "$surrogate_manifest"
@@ -358,7 +381,7 @@ doc["tasks"][0]["title"] = "\ud800"
 path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 PY
   set +e
-  "$CLI" validate-manifest --manifest "$surrogate_manifest" --source "$SOURCE" >"$surrogate_report"
+  "$CLI" validate-manifest --manifest "$surrogate_manifest" --source "$SOURCE" --expected-sha256 "$SOURCE_SHA" >"$surrogate_report"
   rc=$?
   set -e
   [ "$rc" -eq 1 ] || fail "lone surrogate input should exit 1, got $rc"

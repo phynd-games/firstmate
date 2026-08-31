@@ -4,7 +4,8 @@
 Usage:
   fm-factory-manifest.py validate-source --source FILE --expected-sha256 HEX
       [--acceptance-task ID]
-  fm-factory-manifest.py validate-manifest --manifest FILE --source FILE
+  fm-factory-manifest.py validate-manifest --manifest FILE --source FILE \
+      --expected-sha256 HEX
   fm-factory-manifest.py schema source|execution-manifest|task|route
 
 Every successful command writes one canonical JSON document to stdout.
@@ -52,6 +53,7 @@ def _parser() -> argparse.ArgumentParser:
         "--source", required=True, metavar="FILE",
         help="immutable source task graph bound by the manifest",
     )
+    manifest.add_argument("--expected-sha256", required=True, metavar="HEX")
 
     schema = subparsers.add_parser(
         "schema", help="print one bundled versioned JSON Schema"
@@ -82,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
             valid = output["valid"]
         else:
             output = validate_execution_manifest_bytes(
-                _read(args.manifest), _read(args.source)
+                _read(args.manifest), _read(args.source), args.expected_sha256
             )
             valid = output["valid"]
     except ValueError as exc:
