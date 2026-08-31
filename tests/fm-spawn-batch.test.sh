@@ -31,7 +31,7 @@ run_spawn() {
 # Ship spawns carry an explicit delivery contract (AGENTS.md section 7); the
 # batch path takes one shared pair of flags for every pair.
 run_ship_spawn() {
-  run_spawn "$@" --mode no-mistakes --yolo off
+  run_spawn "$@" --harness codex --mode no-mistakes --yolo off
 }
 
 # Every pair in a batch is dispatched even though the first one fails; the loop

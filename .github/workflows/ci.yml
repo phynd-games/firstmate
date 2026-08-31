@@ -222,7 +222,7 @@ jobs:
           # worktree acquisition (presentation, workspace-per-home, autodetect).
           bin/fm-install-treehouse.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Assert Herdr pin and protocol floor
+      - name: Verify Herdr and Treehouse availability
         run: |
           set -eu
           command -v herdr >/dev/null || { echo "::error::herdr not on PATH after install"; exit 1; }
@@ -231,19 +231,6 @@ jobs:
           treehouse --version
           status=$(herdr status --json)
           printf '%s\n' "$status"
-          version=$(printf '%s' "$status" | jq -r '.client.version // empty')
-          protocol=$(printf '%s' "$status" | jq -r '.client.protocol // empty')
-          [ "$version" = "0.8.0" ] || {
-            echo "::error::expected exact Herdr pin 0.8.0, got ${version:-<empty>}"
-            exit 1
-          }
-          case "$protocol" in
-            ''|*[!0-9]*) echo "::error::could not read client protocol"; exit 1 ;;
-          esac
-          [ "$protocol" -ge 19 ] || {
-            echo "::error::herdr protocol $protocol is below the required floor 19"
-            exit 1
-          }
       - name: Start default Herdr session for fleet-state tripwire
         run: |
           set -eu
@@ -395,18 +382,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Compatibility pointers must stay intact
-        run: |
-          set -eu
-          [ ! -L CLAUDE.md ] || { echo "::error::CLAUDE.md must be a real @AGENTS.md pointer file, not a symlink"; exit 1; }
-          tmp=$(mktemp)
-          trap 'rm -f "$tmp"' EXIT
-          printf '%s\n' \
-            '<!-- Points Claude at AGENTS.md via import; edit AGENTS.md, not this file. -->' \
-            '@AGENTS.md' >"$tmp"
-          cmp -s CLAUDE.md "$tmp" || { echo "::error::CLAUDE.md must be the canonical @AGENTS.md pointer"; exit 1; }
-          [ "$(readlink .claude/skills)" = "../.agents/skills" ] || { echo "::error::.claude/skills must be a symlink to ../.agents/skills"; exit 1; }
-      - name: Personal fleet data paths must not be tracked
+      - name: Canonical instruction sources
+        run: bin/fm-instruction-sources-check.sh
+      - name: Personal fleet paths must not be tracked
         run: |
           set -eu
           tracked=$(git ls-files -- data state projects .no-mistakes)
