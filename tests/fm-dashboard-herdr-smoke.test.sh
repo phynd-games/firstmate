@@ -29,6 +29,34 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the her
 command -v python3 >/dev/null 2>&1 || { echo "skip: python3 not found"; exit 0; }
 command -v curl >/dev/null 2>&1 || { echo "skip: curl not found"; exit 0; }
 
+# The real server refuses to bind unless its bounded build containment is
+# available.  GitHub's Linux runner can provide `unshare` while denying the
+# namespace operation, so check the capability rather than treating the
+# server's deliberate fail-closed response as a Herdr lifecycle failure.
+containment_available() {
+  case "$(uname -s)" in
+    Linux)
+      command -v unshare >/dev/null 2>&1 || return 1
+      unshare --pid --fork --mount-proc --kill-child=9 true >/dev/null 2>&1
+      ;;
+    Darwin)
+      command -v sandbox-exec >/dev/null 2>&1 || return 1
+      if sandbox-exec -p '(version 1) (allow default) (deny network-inbound)' \
+        python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0))' \
+        >/dev/null 2>&1; then
+        return 1
+      fi
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+containment_available || {
+  echo "skip: dashboard Herdr smoke requires available process containment"
+  exit 0
+}
+
 LAB_SESSION=$("$LAB" name fm-dash-smoke) || { echo "skip: could not name a lab session"; exit 0; }
 
 lab_teardown() {
