@@ -687,10 +687,18 @@ hold_child_tracked() {
       blocked=1
     fi
     if [ "$blocked" -eq 1 ]; then
-      wait "$child" 2>/dev/null || true
-      child=;
-      arm_blocked_clear
-      break
+      child_status
+      status=$?
+      case "$status" in
+        0)
+          wait "$child" 2>/dev/null || true
+          child=;
+          arm_blocked_clear
+          break
+        ;;
+        1|2) sleep 1 ;;
+      esac
+      continue
     fi
     child_status
     status=$?

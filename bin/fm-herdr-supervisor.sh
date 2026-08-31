@@ -93,6 +93,7 @@ LIVE_LOCK="$STATE/.herdr-supervisor-live.lock"
 LAUNCHER="$STATE/.herdr-supervisor-launch.sh"
 PENDING="$STATE/.herdr-supervisor-pending-cleanup"
 AWAY_AMBIGUOUS="$STATE/.herdr-away-daemon-ambiguous"
+HANDOFF_AMBIGUOUS="$STATE/.herdr-supervision-handoff-ambiguous"
 QUARANTINE_PREFIX="$STATE/.herdr-supervisor-quarantine"
 RECORD_LOCK="$STATE/.herdr-supervisor.lock"
 HEARTBEAT="$STATE/.herdr-supervisor-heartbeat"
@@ -102,10 +103,7 @@ EMERGENCY="$STATE/.herdr-supervisor-emergency"
 BLOCKED="$STATE/.herdr-supervisor-blocked"
 LEDGER="$STATE/.herdr-supervisor.log"
 SUPERVISION_CLAIM="$STATE/.supervision-claim.lock"
-# FM_WATCH_ARM_SCRIPT is the same seam the Pi extension already uses to name the
-# arm it launches; honoring it here keeps one spelling for "which arm script"
-# and gives the deterministic tests a real arm to drive without a live watcher.
-ARM="${FM_WATCH_ARM_SCRIPT:-$SCRIPT_DIR/fm-watch-arm.sh}"
+ARM="$SCRIPT_DIR/fm-watch-arm.sh"
 
 RECORD_VERSION=1
 # The supervisor's own beacon is independent of state/.last-watcher-beat: only
@@ -794,6 +792,18 @@ harness_owner_provable() {
     HS_DEFER_REASON="a native away-mode owner is completing its ownership handoff"
     return 0
   fi
+  if fm_supervision_claim_pending_expired_live "$STATE"; then
+    HS_DEFER_REASON="a native away-mode handoff reservation expired while its owner remains live"
+    if [ "$read_only" = 0 ]; then
+      local handoff_key
+      handoff_key=$(fm_supervision_claim_pending_key "$STATE" 2>/dev/null || printf unknown)
+      if [ "$(cat "$HANDOFF_AMBIGUOUS" 2>/dev/null || printf '')" != "$handoff_key" ]; then
+        printf '%s\n' "$handoff_key" > "$HANDOFF_AMBIGUOUS" 2>/dev/null || true
+        escalate "the native away-mode handoff reservation expired while its launcher remains live; refusing a second continuity owner"
+      fi
+    fi
+    return 0
+  fi
   if [ -e "$STATE/.afk" ]; then
     away_state=$(
       . "$SCRIPT_DIR/fm-afk-start.sh" >/dev/null 2>&1
@@ -1175,7 +1185,6 @@ establish() {  # <reason>
     printf 'export FM_ROOT_OVERRIDE=%s\n' "$(shell_quote "$FM_ROOT")"
     printf 'export FM_STATE_OVERRIDE=%s\n' "$(shell_quote "$STATE")"
     printf 'export FM_CONFIG_OVERRIDE=%s\n' "$(shell_quote "$CONFIG")"
-    printf 'export FM_WATCH_ARM_SCRIPT=%s\n' "$(shell_quote "$ARM")"
     [ -z "${FM_GUARD_GRACE:-}" ] || printf 'export FM_GUARD_GRACE=%s\n' "$(shell_quote "$FM_GUARD_GRACE")"
     [ -z "${FM_WATCHER_STALE_GRACE:-}" ] || printf 'export FM_WATCHER_STALE_GRACE=%s\n' "$(shell_quote "$FM_WATCHER_STALE_GRACE")"
     [ -z "${FM_ARM_CONFIRM_TIMEOUT:-}" ] || printf 'export FM_ARM_CONFIRM_TIMEOUT=%s\n' "$(shell_quote "$FM_ARM_CONFIRM_TIMEOUT")"
@@ -1492,6 +1501,11 @@ cmd_ensure() {  # <reason>
   if ! fm_supervision_claim_pending_reclaim "$STATE"; then
     fm_lock_release "$SUPERVISION_CLAIM"
     escalate "the expired away-mode ownership handoff could not be reconciled"
+    return 1
+  fi
+  if fm_supervision_claim_pending_expired_live "$STATE"; then
+    fm_lock_release "$SUPERVISION_CLAIM"
+    escalate "the native away-mode handoff reservation expired while its launcher remains live; refusing a second continuity owner"
     return 1
   fi
   if [ -f "$BLOCKED" ]; then
@@ -1820,7 +1834,7 @@ watcher_stale_lock_verified() {
   lock_home=$(cat "$lockdir/fm-home" 2>/dev/null || printf '')
   lock_path=$(cat "$lockdir/watcher-path" 2>/dev/null || printf '')
   lock_identity=$(cat "$lockdir/pid-identity" 2>/dev/null || printf '')
-  [ "$lock_home" = "$FM_HOME" ] && [ "$lock_path" = "$SCRIPT_DIR/fm-watch.sh" ] || return 1
+  [ "$lock_home" = "$FM_HOME" ] && [ "$lock_path" = "$FM_ROOT/bin/fm-watch.sh" ] || return 1
   [ -n "$lock_identity" ] || return 1
   current_identity=$(fm_pid_identity "$pid" 2>/dev/null || printf '')
   if [ "$current_identity" != "$lock_identity" ]; then
@@ -1830,7 +1844,7 @@ watcher_stale_lock_verified() {
     STALE_WATCHER_IDENTITY=$lock_identity
     return 0
   else
-    fm_watcher_lock_matches_pid "$STATE" "$SCRIPT_DIR/fm-watch.sh" "$pid" "$FM_HOME" || return 1
+    fm_watcher_lock_matches_pid "$STATE" "$FM_ROOT/bin/fm-watch.sh" "$pid" "$FM_HOME" || return 1
   fi
   STALE_WATCHER_PID=$pid
   STALE_WATCHER_IDENTITY=$lock_identity
@@ -1940,7 +1954,12 @@ cmd_run() {
             ledger_append handoff "another continuity owner became provable while the unresolved arm child remained live; retaining tracked ownership"
             LOOP_ARM_UNRESOLVED_HANDOFF_REPORTED=1
           fi
-          wait "${LOOP_ARM_PID:-}" 2>/dev/null || true
+          process_state=$(ps -o stat= -p "${LOOP_ARM_PID:-}" 2>/dev/null | tr -d '[:space:]')
+          if [ -z "$process_state" ] || [[ "$process_state" == Z* ]]; then
+            wait "${LOOP_ARM_PID:-}" 2>/dev/null || true
+          else
+            sleep 0.5
+          fi
           continue
         fi
         if [ "$(date +%s)" -ge "$LOOP_ARM_UNRESOLVED_NEXT" ]; then

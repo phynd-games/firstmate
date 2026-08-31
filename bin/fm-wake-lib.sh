@@ -386,7 +386,7 @@ fm_lock_pending_supervision_handoff() {
   case "$lockdir" in
     */.supervision-claim.lock)
       state=${lockdir%/.supervision-claim.lock}
-      fm_supervision_claim_pending "$state"
+      fm_supervision_claim_pending_occupied "$state"
       ;;
     *) return 1 ;;
   esac
@@ -1076,7 +1076,14 @@ fm_supervision_claim_pending_write() {
 }
 
 fm_supervision_claim_pending() {
-  local state=$1 pending="$1/.supervision-claim.pending" deadline owner_pid owner_identity current_identity
+  local state=$1 result
+  fm_supervision_claim_pending_state "$state"
+  result=$?
+  [ "$result" -eq 0 ]
+}
+
+fm_supervision_claim_pending_state() {
+  local state=$1 pending="$1/.supervision-claim.pending" deadline owner_pid owner_identity current_identity now
   [ -f "$pending" ] || return 1
   read -r deadline < "$pending" || return 1
   case "$deadline" in
@@ -1088,7 +1095,41 @@ fm_supervision_claim_pending() {
   fm_pid_alive "$owner_pid" || return 1
   current_identity=$(fm_pid_identity "$owner_pid" 2>/dev/null || true)
   [ -n "$current_identity" ] && [ "$current_identity" = "$owner_identity" ] || return 1
-  return 0
+  now=$(date +%s) || return 1
+  [ "$deadline" -gt "$now" ] && return 0
+  return 2
+}
+
+fm_supervision_claim_pending_expired_live() {
+  local state=$1 result
+  fm_supervision_claim_pending_state "$state"
+  result=$?
+  [ "$result" -eq 2 ]
+}
+
+fm_supervision_claim_pending_occupied() {
+  local state=$1 pending="$1/.supervision-claim.pending" deadline owner_pid owner_identity current_identity
+  [ -f "$pending" ] || return 1
+  read -r deadline < "$pending" || return 1
+  case "$deadline" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  owner_pid=$(sed -n 's/^pid=//p' "$pending" 2>/dev/null | head -n 1)
+  owner_identity=$(sed -n 's/^pid-identity=//p' "$pending" 2>/dev/null | head -n 1)
+  [ -n "$owner_pid" ] && [ -n "$owner_identity" ] || return 1
+  fm_pid_alive "$owner_pid" || return 1
+  current_identity=$(fm_pid_identity "$owner_pid" 2>/dev/null || true)
+  [ -n "$current_identity" ] && [ "$current_identity" = "$owner_identity" ]
+}
+
+fm_supervision_claim_pending_key() {
+  local state=$1 pending="$1/.supervision-claim.pending" deadline owner_pid owner_identity
+  [ -f "$pending" ] || return 1
+  read -r deadline < "$pending" || return 1
+  owner_pid=$(sed -n 's/^pid=//p' "$pending" 2>/dev/null | head -n 1)
+  owner_identity=$(sed -n 's/^pid-identity=//p' "$pending" 2>/dev/null | head -n 1)
+  [ -n "$owner_pid" ] && [ -n "$owner_identity" ] || return 1
+  printf '%s:%s:%s\n' "$deadline" "$owner_pid" "$owner_identity"
 }
 
 fm_supervision_claim_pending_reclaim() {

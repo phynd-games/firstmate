@@ -214,7 +214,15 @@ new_home() {  # <name> -> echoes home dir
 # run_supervisor: invoke the real script with one home's environment.
 run_supervisor() {  # <home> <fakebin> <args...>
   local home=$1 fakebin=$2
+  local supervisor_root supervisor
   shift 2
+  supervisor_root="$home/supervisor-root"
+  mkdir -p "$supervisor_root/bin"
+  cp "$ROOT"/bin/*.sh "$supervisor_root/bin/"
+  cp -R "$ROOT/bin/backends" "$supervisor_root/bin/"
+  cp "$home/arm.sh" "$supervisor_root/bin/fm-watch-arm.sh"
+  chmod +x "$supervisor_root/bin"/*.sh
+  supervisor="$supervisor_root/bin/fm-herdr-supervisor.sh"
   PATH="$fakebin:$PATH" \
   FM_HOME="$home" \
   FM_ROOT_OVERRIDE="$ROOT" \
@@ -223,7 +231,6 @@ run_supervisor() {  # <home> <fakebin> <args...>
   FM_FAKE_HERDR_STATE="$home/fakestate" \
   FM_PROC_ROOT_OVERRIDE="${FM_PROC_ROOT_OVERRIDE:-}" \
   FM_TEST_ARM_COUNT="$home/arm.count" \
-  FM_WATCH_ARM_SCRIPT="$home/arm.sh" \
   FM_HERDR_WORKSPACE_CONTROL_HELPER="$fakebin/herdr-workspace-control" \
   FM_SUPERVISION_MODEL="${FM_TEST_SUPERVISION_MODEL:-extension}" \
   FM_HERDR_SUPERVISOR_READY_TIMEOUT="${FM_TEST_READY_TIMEOUT:-15}" \
@@ -231,7 +238,7 @@ run_supervisor() {  # <home> <fakebin> <args...>
   FM_HERDR_SUPERVISOR_RETRY_MAX="${FM_TEST_RETRY_MAX:-0}" \
   FM_HERDR_SUPERVISOR_IDLE_INTERVAL=1 \
   HERDR_SESSION=default \
-  "$SUPERVISOR" "$@"
+  "$supervisor" "$@"
 }
 
 # stop_loop: end a home's supervisor loop so a test never leaks a process.
