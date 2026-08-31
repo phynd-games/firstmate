@@ -393,3 +393,9 @@ jobs:
             printf '%s\n' "$tracked"
             exit 1
           fi
+          unexpected_config=$(git ls-files -- config | grep -Ev '^(config/backend|config/crew-dispatch\.json|config/herdr-presentation-spaces)$' || true)
+          if [ -n "$unexpected_config" ]; then
+            echo "::error::Unapproved local config paths are tracked in git:"
+            printf '%s\n' "$unexpected_config"
+            exit 1
+          fi
