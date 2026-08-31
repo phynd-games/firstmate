@@ -355,6 +355,13 @@ test_exclude_family() {
     "legacy-adapter lane must own orca conformance"
   assert_contains "$legacy" 'tests/fm-teardown-endpoint-safety.test.sh' \
     "legacy-adapter lane must own teardown endpoint conformance"
+  local cmux zellij
+  cmux=$("$RUNNER" --list --family cmux)
+  assert_contains "$cmux" 'tests/fm-backend-cmux-smoke.test.sh' \
+    "cmux family must select its smoke suite"
+  zellij=$("$RUNNER" --list --family zellij)
+  assert_contains "$zellij" 'tests/fm-backend-zellij-smoke.test.sh' \
+    "zellij family must select its smoke suite"
   if printf '%s\n' $("$RUNNER" --list --lane portable-serial) | grep -Fq 'tests/fm-backend-tmux-smoke.test.sh'; then
     fail "portable-serial must not schedule legacy-adapter tests"
   fi

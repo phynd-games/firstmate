@@ -490,11 +490,12 @@ test_workspace_ensure_refuses_an_ambiguous_label_with_no_launcher() {
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w7","label":"firstmate"}]}}\n' > "$resp/1.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_ensure fmtest /tmp' "$ROOT" 2>&1 )
+    bash -c '. "$0/bin/fm-backend-policy-lib.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_ensure fmtest /tmp' "$ROOT" 2>&1 )
   status=$?
   expect_code 3 "$status" "two same-labeled home workspaces with no launcher identity must refuse"
-  assert_contains "$out" "labeled 'firstmate'" "the ambiguity refusal did not name the duplicated label"
-  assert_contains "$out" "w1 w7" "the ambiguity refusal did not name the candidate workspaces"
+  assert_contains "$out" "REFUSED: Herdr workspace inventory for home label 'firstmate'" "the ambiguity refusal did not use the policy diagnostic"
+  assert_contains "$out" "docs/herdr-backend.md" "the ambiguity refusal did not name the label-collision guidance"
+  [ "$(printf '%s\n' "$out" | grep -c '^REFUSED: ')" -eq 1 ] || fail "workspace ambiguity must emit exactly one policy refusal"
   assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create' "an ambiguous placement must not mint a third same-labeled workspace"
   pass "fm_backend_herdr_workspace_ensure: refuses to guess between two same-labeled home workspaces"
 }
@@ -520,10 +521,10 @@ test_container_ensure_refuses_an_ambiguous_home_label() {
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w7","label":"firstmate"}]}}\n' > "$resp/1.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" 2>&1 )
+    bash -c '. "$0/bin/fm-backend-policy-lib.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" 2>&1 )
   status=$?
   [ "$status" -ne 0 ] || fail "container_ensure must fail when the home workspace is ambiguous"
-  assert_contains "$out" "labeled 'firstmate'" "container_ensure buried the specific ambiguity it refused"
+  assert_contains "$out" "docs/herdr-backend.md" "container_ensure buried the specific ambiguity it refused"
   assert_not_contains "$out" "failed to ensure herdr workspace" "container_ensure added a generic message over the specific one"
   pass "fm_backend_herdr_container_ensure: surfaces the exact ambiguous-placement refusal instead of a generic failure"
 }
@@ -2829,6 +2830,19 @@ test_workspace_find_matches_only_this_homes_own_label() {
   pass "fm_backend_herdr_workspace_find: matches only THIS home's own label among several coexisting workspaces"
 }
 
+test_workspace_find_refuses_a_matching_workspace_without_an_id() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/find-invalid-id"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"workspaces":[{"label":"firstmate"}]}}\n' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_find_all fmtest' "$ROOT" 2>&1)
+  status=$?
+  expect_code 2 "$status" "a matching workspace without a non-empty id must be a typed failure"
+  [ -z "$out" ] || fail "invalid workspace inventory must not emit a usable id: $out"
+  pass "fm_backend_herdr_workspace_find: rejects a matching workspace without a valid id"
+}
+
 # --- list_live: scoped to this home's own workspace only ---------------------
 
 test_list_live_scoped_to_this_homes_workspace_only() {
@@ -4523,6 +4537,7 @@ test_projection_reclaim_refusal_matrix_is_non_mutating
 test_projection_reclaim_replaces_only_exact_husk_and_advances_binding
 test_projection_recovery_is_read_only_and_refuses_live_duplicate_risk
 test_workspace_find_matches_only_this_homes_own_label
+test_workspace_find_refuses_a_matching_workspace_without_an_id
 test_list_live_scoped_to_this_homes_workspace_only
 test_parse_target
 test_normalize_key

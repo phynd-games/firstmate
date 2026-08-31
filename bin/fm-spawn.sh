@@ -2064,8 +2064,13 @@ case "$BACKEND" in
         if [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; then
           herdr_projection_existing_meta_allows_flat "$STATE/$ID.meta" || exit 1
         fi
-        fm_backend_herdr_projection_recovery_allows_flat \
-          "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID" || exit 1
+        if fm_backend_herdr_projection_recovery_allows_flat \
+          "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID"; then
+          :
+        else
+          HERDR_RECOVERY_FLAT_STATUS=$?
+          exit "$HERDR_RECOVERY_FLAT_STATUS"
+        fi
         if [ "${HERDR_RECOVERY_BACKEND:-}" = herdr ]; then
           set +e
           FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_reclaim_task \
@@ -2088,6 +2093,7 @@ case "$BACKEND" in
               ;;
             2)
               spawn_herdr_presentation_order_lock_release
+              [ "${FM_BACKEND_HERDR_PROJECTION_RECLAIM_NATIVE_FAILURE:-0}" = 1 ] && exit 2
               ;;
             *) exit 1 ;;
           esac

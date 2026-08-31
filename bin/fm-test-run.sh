@@ -210,8 +210,13 @@ family_for_basename() {
     fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh)
       printf '%s\n' backend-dispatch
       ;;
+    fm-backend-cmux-smoke.test.sh)
+      printf '%s\n' cmux
+      ;;
+    fm-backend-zellij-smoke.test.sh)
+      printf '%s\n' zellij
+      ;;
     fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|fm-tmux-agent-liveness.test.sh|\
-    fm-backend-zellij-smoke.test.sh|fm-backend-cmux-smoke.test.sh|\
     fm-backend-zellij.test.sh|fm-backend-cmux.test.sh|fm-backend-orca.test.sh|\
     fm-teardown-endpoint-safety.test.sh)
       printf '%s\n' legacy-adapter
@@ -226,12 +231,6 @@ family_for_basename() {
     fm-bearings-board-render.test.sh|fm-bearings-snapshot.test.sh|\
     fm-fleet-snapshot-view.test.sh)
       printf '%s\n' snapshot-bearings
-      ;;
-    fm-backend-cmux-smoke.test.sh)
-      printf '%s\n' cmux
-      ;;
-    fm-backend-zellij-smoke.test.sh)
-      printf '%s\n' zellij
       ;;
     *)
       printf '%s\n' unclassified

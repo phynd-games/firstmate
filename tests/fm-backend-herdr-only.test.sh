@@ -360,8 +360,8 @@ test_pane_presence_requires_complete_identity() {
 }
 
 test_recovery_agent_failures_refuse_before_replacement() {
-  local replacement_marker="$TMP_ROOT/reclaim-replacement"
-  rm -f "$replacement_marker"
+  local replacement_marker="$TMP_ROOT/reclaim-replacement" state_marker="$TMP_ROOT/reclaim-post-state"
+  rm -f "$replacement_marker" "$state_marker"
   run_capture reclaim-agent-failure lib_probe "REPLACEMENT_MARKER=$replacement_marker" -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
     fm_backend_herdr_projection_journal_snapshot() {
@@ -384,6 +384,48 @@ test_recovery_agent_failures_refuse_before_replacement() {
   [ "$RC" -eq 2 ] || fail "reclaim agent read failure must remain typed: rc=$RC out=$OUT err=$ERR"
   [ ! -e "$replacement_marker" ] || fail "reclaim agent read failure must not create a replacement"
 
+  run_capture reclaim-post-replacement-agent-failure lib_probe "STATE_MARKER=$state_marker" -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_projection_journal_snapshot() {
+      FM_BACKEND_HERDR_JOURNAL_VERSION=2
+      FM_BACKEND_HERDR_JOURNAL_HOME=/tmp/reclaim-home
+      FM_BACKEND_HERDR_JOURNAL_SESSION=fmtest
+      FM_BACKEND_HERDR_JOURNAL_WORKSPACE_ID=ws1
+      FM_BACKEND_HERDR_JOURNAL_TAB_ID=tab1
+      FM_BACKEND_HERDR_JOURNAL_PANE_ID=pane1
+      FM_BACKEND_HERDR_JOURNAL_PARENT_LABEL=parent
+      FM_BACKEND_HERDR_JOURNAL_TASK_LABEL=task
+      FM_BACKEND_HERDR_JOURNAL_PROJECTION_ID=projection
+    }
+    fm_backend_herdr_projection_home_identity() { printf /tmp/reclaim-home; }
+    fm_backend_herdr_projection_live_binding_matches() { return 0; }
+    fm_backend_herdr_projection_focus_snapshot() { printf "ws0\tactive-tab"; }
+    fm_backend_herdr_projection_focus_restore() { :; }
+    fm_backend_herdr_projection_reclaim_rollback() { :; }
+    fm_backend_herdr_projection_close_pane_focus_preserving() { :; }
+    fm_backend_herdr_pane_agent_state() {
+      state_reads=$(cat "$STATE_MARKER" 2>/dev/null | tr -cd '0-9')
+      [ -n "$state_reads" ] || state_reads=0
+      state_reads=$((state_reads + 1))
+      printf '%s\n' "$state_reads" > "$STATE_MARKER"
+      if [ "$state_reads" -lt 3 ]; then
+        printf no-agent
+      else
+        return 2
+      fi
+    }
+    fm_backend_herdr_cli() {
+      case "$*" in
+        *"tab create"*) printf "%s" '\''{"result":{"tab":{"tab_id":"tab2"},"root_pane":{"pane_id":"pane2"}}}'\'' ;;
+        *"tab get"*) printf "%s" '\''{"result":{"tab":{"tab_id":"tab2","workspace_id":"ws1"}}}'\'' ;;
+        *"pane get"*) printf "%s" '\''{"result":{"pane":{"pane_id":"pane2","tab_id":"tab2","workspace_id":"ws1"}}}'\'' ;;
+      esac
+    }
+    fm_backend_herdr_projection_reclaim_task fmtest journal task /tmp/reclaim-home ws1 tab1 pane1 parent task /tmp
+  '
+  assert_refusal "post-replacement Herdr agent read" "presentation reclaim agent read" "after closing the old pane"
+  [ "$RC" -eq 2 ] || fail "post-replacement agent read failure must retain typed status: rc=$RC"
+
   run_capture quarantine-agent-failure lib_probe -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
     fm_backend_herdr_projection_journal_token() { printf token; }
@@ -398,6 +440,7 @@ test_recovery_agent_failures_refuse_before_replacement() {
     fm_backend_herdr_projection_recovery_allows_flat fmtest journal task
   '
   [ "$RC" -eq 2 ] || fail "quarantine agent read failure must remain typed: rc=$RC out=$OUT err=$ERR"
+  assert_refusal "quarantine Herdr agent read" "quarantined Herdr presentation agent read"
   pass "Herdr recovery refuses agent-read failures before replacement or fallback"
 }
 

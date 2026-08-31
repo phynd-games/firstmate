@@ -1578,6 +1578,10 @@ fm_backend_herdr_workspace_find_all() {  # <session>
   # ALWAYS return empty and every spawn mint a fresh "firstmate" workspace
   # (the workspace leak).
   printf '%s' "$list" | jq -e '(.result.workspaces | type) == "array"' >/dev/null 2>&1 || return 2
+  printf '%s' "$list" | jq -e --arg want "$label" '
+    [.result.workspaces[] | select(.label == $want)]
+    | all(.[]; .workspace_id | if type == "string" then length > 0 else false end)
+  ' >/dev/null 2>&1 || return 2
   printf '%s' "$list" | jq -r --arg want "$label" \
     '.result.workspaces[] | select(.label == $want) | .workspace_id' 2>/dev/null
 }
@@ -1908,7 +1912,10 @@ fm_backend_herdr_workspace_ensure() {  # <session> <cwd> [<launcher-relationship
   fi
   count=$(printf '%s' "$matches" | grep -c '[^[:space:]]' || true)
   if [ "$count" -gt 1 ]; then
-    echo "error: ${count} herdr workspaces in session '$session' are labeled '$label' (${matches//$'\n'/ }) and this spawn has no herdr parent pane to identify which one is its own; rename or close the extras, or run firstmate inside the workspace its workers belong in" >&2
+    if declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
+      fm_backend_policy_refuse "Herdr workspace inventory for home label '$label'" "$label" \
+        "Resolve the home-label collision using the label-collision guidance in docs/herdr-backend.md." || true
+    fi
     return 3
   fi
   wsid=${matches%%$'\n'*}
@@ -2528,6 +2535,7 @@ fm_backend_herdr_projection_reclaim_rollback() {  # <session> <new-pane>
 fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <home> <meta-workspace> <meta-tab> <meta-pane> <parent-label> <task-label> <cwd>
   local session=$1 journal=$2 id=$3 home=$4 meta_workspace=$5 meta_tab=$6 meta_pane=$7
   local parent_label=$8 task_label=$9 cwd=${10} canonical_home state state_rc=0 focus_before active_tab out new_tab new_pane info close_status
+  FM_BACKEND_HERDR_PROJECTION_RECLAIM_NATIVE_FAILURE=0
   FM_BACKEND_HERDR_PROJECTION_TAB_ID=""
   FM_BACKEND_HERDR_PROJECTION_PANE_ID=""
   fm_backend_herdr_projection_journal_snapshot "$journal" "$id" || return 1
@@ -2623,6 +2631,11 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
   fi
   if [ "$state_rc" -ne 0 ]; then
     fm_backend_herdr_projection_reclaim_rollback "$session" "$new_pane" || true
+    if [ "$state_rc" -eq 2 ]; then
+      FM_BACKEND_HERDR_PROJECTION_RECLAIM_NATIVE_FAILURE=1
+      fm_backend_policy_refuse "Herdr presentation reclaim agent read for $id" herdr \
+        "The native Herdr agent get operation failed after replacement. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+    fi
     return "$state_rc"
   fi
   case "$state" in
@@ -2658,7 +2671,22 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
     echo "warning: herdr presentation reclaim for $id could not close the exact old husk; spawning flat" >&2
     return 2
   fi
-  if [ "$(fm_backend_herdr_pane_agent_state "$session" "$meta_pane")" != dead ]; then
+  state_rc=0
+  if state=$(fm_backend_herdr_pane_agent_state "$session" "$meta_pane"); then
+    :
+  else
+    state_rc=$?
+  fi
+  if [ "$state_rc" -ne 0 ]; then
+    fm_backend_herdr_projection_reclaim_rollback "$session" "$new_pane" || true
+    if [ "$state_rc" -eq 2 ]; then
+      FM_BACKEND_HERDR_PROJECTION_RECLAIM_NATIVE_FAILURE=1
+      fm_backend_policy_refuse "Herdr presentation reclaim agent read for $id" herdr \
+        "The native Herdr agent get operation failed after closing the old pane. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+    fi
+    return "$state_rc"
+  fi
+  if [ "$state" != dead ]; then
     fm_backend_herdr_projection_reclaim_rollback "$session" "$new_pane" || return 1
     return 1
   fi
@@ -2734,6 +2762,10 @@ fm_backend_herdr_projection_recovery_allows_flat() {  # <session> <journal> <tas
         :
       else
         state_rc=$?
+      fi
+      if [ "$state_rc" -eq 2 ]; then
+        fm_backend_policy_refuse "quarantined Herdr presentation agent read for $id" herdr \
+          "The native Herdr agent get operation failed while checking the quarantined presentation. Repair Herdr, then verify the named session with 'herdr status --json'." || true
       fi
       [ "$state_rc" -eq 0 ] || return "$state_rc"
       case "$state" in
