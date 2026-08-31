@@ -197,6 +197,25 @@ test_routine_note_coalescing() {
   pass "routine-note coalescing: duplicates coalesce; failures, decisions, PR/CI changes, and loop stops render"
 }
 
+test_note_signature_read_failures_render_and_line_boundaries() {
+  local home
+  home="$TMP_ROOT/note-signature-failures"
+  mkdir -p "$home/state"
+  gate() { FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-render --task "$1"; }
+
+  printf 'failed: a\nfailed: b\n' > "$home/state/task-lines.status"
+  [ "$(gate task-lines)" = render ] || fail "the first line-boundary signature did not render"
+  printf 'failed: afailed: b\n' > "$home/state/task-lines.status"
+  [ "$(gate task-lines)" = render ] || fail "distinct status line boundaries were coalesced"
+
+  printf 'failed: initial\n' > "$home/state/task-read.status"
+  [ "$(gate task-read)" = render ] || fail "the first readable status did not render"
+  rm -f "$home/state/task-read.status"
+  mkdir "$home/state/task-read.status"
+  [ "$(gate task-read)" = render ] || fail "an unreadable status source was coalesced"
+  pass "note signature: read failures render and status line boundaries remain distinct"
+}
+
 # --- lease contract -----------------------------------------------------------
 
 test_lease_exclusivity_release_stale_and_sweep() {
@@ -593,6 +612,7 @@ test_branch_prompt_is_byte_stable_and_above_cache_floor
 test_outcome_store_is_append_only_with_cursor_reads
 test_outcome_startup_replay_preserves_silence
 test_routine_note_coalescing
+test_note_signature_read_failures_render_and_line_boundaries
 test_lease_exclusivity_release_stale_and_sweep
 test_mutating_scripts_refuse_the_other_actors_lease
 test_main_owned_actions_refuse_the_branch_actor

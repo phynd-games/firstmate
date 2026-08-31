@@ -77,28 +77,40 @@ usage() {
 # captain-relevant status lines, its recorded PR identity, and its recorded
 # validation-loop stop. Plain multi-line text, compared verbatim.
 note_novelty_signature() { # <task>
-  local statusf metaf journal line
+  local statusf metaf journal line status meta loop_stop
   statusf="$STATE/$1.status"
   metaf="$STATE/$1.meta"
   journal="$STATE/$1.validation-loop"
   # shellcheck source=bin/fm-classify-lib.sh
   . "$SCRIPT_DIR/fm-classify-lib.sh"
   printf 'captain-relevant-status='
-  if [ -f "$statusf" ] && [ ! -L "$statusf" ]; then
+  if [ -e "$statusf" ] || [ -L "$statusf" ]; then
+    [ -f "$statusf" ] && [ ! -L "$statusf" ] || return 1
+    status=$(cat "$statusf") || return 1
     while IFS= read -r line || [ -n "$line" ]; do
       [ -n "$line" ] || continue
-      if status_is_captain_relevant "$line"; then printf '%s' "$line"; fi
-    done < "$statusf"
+      if status_is_captain_relevant "$line"; then printf '%s\n' "$line"; fi
+    done <<< "$status"
   fi
   printf '\n'
   printf 'pr='
-  [ -f "$metaf" ] && grep '^pr=' "$metaf" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\n' || true
+  if [ -e "$metaf" ] || [ -L "$metaf" ]; then
+    [ -f "$metaf" ] && [ ! -L "$metaf" ] || return 1
+    meta=$(cat "$metaf") || return 1
+    printf '%s\n' "$meta" | grep '^pr=' | tail -1 | cut -d= -f2- | tr -d '\n' || true
+  fi
   printf '\n'
   printf 'pr_head='
-  [ -f "$metaf" ] && grep '^pr_head=' "$metaf" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\n' || true
+  if [ -n "${meta:-}" ]; then
+    printf '%s\n' "$meta" | grep '^pr_head=' | tail -1 | cut -d= -f2- | tr -d '\n' || true
+  fi
   printf '\n'
   printf 'loop-stop='
-  [ -f "$journal" ] && grep '^stop_reason=' "$journal" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\n' || true
+  if [ -e "$journal" ] || [ -L "$journal" ]; then
+    [ -f "$journal" ] && [ ! -L "$journal" ] || return 1
+    loop_stop=$(cat "$journal") || return 1
+    printf '%s\n' "$loop_stop" | grep '^stop_reason=' | tail -1 | cut -d= -f2- | tr -d '\n' || true
+  fi
   printf '\n'
 }
 
@@ -260,7 +272,11 @@ case "$CMD" in
     esac
     MARKER="$STATE/.branch-note-sig-$TASK"
     fm_lock_acquire_wait "$LOCK"
-    SIG=$(note_novelty_signature "$TASK")
+    if ! SIG=$(note_novelty_signature "$TASK"); then
+      fm_lock_release "$LOCK"
+      printf 'render\n'
+      exit 0
+    fi
     LAST=$(cat "$MARKER" 2>/dev/null || true)
     if [ -n "$LAST" ] && [ "$SIG" = "$LAST" ]; then
       fm_lock_release "$LOCK"

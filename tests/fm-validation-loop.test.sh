@@ -119,7 +119,7 @@ new_state() {  # <name>
 
 # Fold one fixture at a virtual epoch.
 fold() {  # <state> <id> <evidence-file> <epoch>
-  FM_VLOOP_NOW=$4 fm_vloop_observe "$1" "$2" "$3" || fail "fm_vloop_observe failed for $3"
+  FM_VLOOP_NOW=$4 fm_vloop_observe "$1" "$2" "$3" "${5:-}" || fail "fm_vloop_observe failed for $3"
 }
 
 verdict_at() {  # <state> <id> <epoch>
@@ -258,13 +258,49 @@ test_malformed_journal_stop() {
   printf 'version=1\nactive=1\n' > "$state/broken.validation-loop"
   export FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh"
   export FM_FAKE_CREW_STATE='state: working · source: pane · harness busy (native)'
-  [ "$(STATE=$state crew_absorb_class broken)" = limit ] \
+  [ "$(STATE=$state crew_absorb_class broken)" = none ] \
     || fail "an incomplete validation journal was absorbed as working"
   [ "$(fm_vloop_reason "$state" broken)" = \
     'validation-loop journal unreadable or incomplete; recover in the same copy' ] \
     || fail "an incomplete validation journal did not expose its recovery reason"
+  cat > "$state/bogus.validation-loop" <<'EOF'
+version=1
+run=01RUN
+head=abc1234
+status=bogus
+phase=running
+findings_sig=
+progress_sig=abc
+fix_rounds=0
+themes=
+heads=abc1234
+last_observed=1000
+last_progress=1000
+active=1
+stop_reason=
+EOF
+  [ "$(FM_VLOOP_NOW=2000 fm_vloop_verdict "$state" bogus 2>/dev/null || true)" = \
+    'stop validation-loop journal unreadable or incomplete; recover in the same copy' ] \
+    || fail "an unrecognized journal status continued"
   unset FM_FAKE_CREW_STATE
-  pass "malformed journal stop: incomplete loop state fails closed"
+  pass "malformed journal stop: incomplete and unrecognized loop state fails closed"
+}
+
+test_journal_write_failure_stops_closed() {
+  local state ev dir rc
+  dir=$(make_case vloop-write-failure); state="$dir/state"; ev="$dir/ev"
+  ev_running "$ev" 01RUN running pending; fold "$state" writefail "$ev" 1000
+  if FM_VLOOP_NOW=9000 bash -c '
+    . "$1/bin/fm-validation-loop-lib.sh"
+    _fm_vloop_record_stop() { return 1; }
+    fm_vloop_observe "$2" writefail "$3"
+  ' _ "$ROOT" "$state" "$dir/missing-evidence"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  [ "$rc" -ne 0 ] || fail "a time-stop journal write failure was reported as success"
+  pass "journal write failure: time-based stop propagation fails closed"
 }
 
 # --- required regression: stale pipeline evidence ------------------------------
@@ -401,15 +437,53 @@ test_coarse_evidence_does_not_enforce_stall() {
   pass "coarse evidence: fallback status never enforces the running/fixing stall bound"
 }
 
+test_head_change_set_is_bounded() {
+  local state ev dir repo old_head new_head v
+  dir=$(make_case vloop-change-set); state="$dir/state"; ev="$dir/ev"; repo="$dir/repo"
+  git init -q "$repo"
+  git -C "$repo" config user.email test@example.com
+  git -C "$repo" config user.name test
+  printf 'base\n' > "$repo/file"
+  git -C "$repo" add file && git -C "$repo" commit -qm base
+  old_head=$(git -C "$repo" rev-parse HEAD)
+  printf 'one\n' > "$repo/file"
+  git -C "$repo" commit -qam one
+  printf 'two\n' > "$repo/file"
+  git -C "$repo" commit -qam two
+  new_head=$(git -C "$repo" rev-parse HEAD)
+  ev_running "$ev" 01RUN running pending
+  sed -i.bak "s/abc1234/$old_head/" "$ev" && rm -f "$ev.bak"
+  fold "$state" changes "$ev" 1000 "$repo"
+  sed -i.bak "s/$old_head/$new_head/" "$ev" && rm -f "$ev.bak"
+  FM_VLOOP_MAX_CHANGE_COMMITS=1 fold "$state" changes "$ev" 1010 "$repo"
+  v=$(FM_VLOOP_MAX_CHANGE_COMMITS=1 verdict_at "$state" changes 1020)
+  case "$v" in
+    stop*"incoherent head transition"*) ;;
+    *) fail "an overlarge head change set continued: '$v'" ;;
+  esac
+  pass "head change set: an overlarge transition stops instead of refreshing progress"
+}
+
 test_head_transition_is_coherent() {
-  local state ev dir v
-  dir=$(make_case vloop-head-transition); state="$dir/state"; ev="$dir/ev"
-  ev_running "$ev" 01RUN running pending; fold "$state" head "$ev" 1000
-  sed -i.bak 's/abc1234/def5678/' "$ev" && rm -f "$ev.bak"
-  fold "$state" head "$ev" 1010
+  local state ev dir v repo old_head new_head
+  dir=$(make_case vloop-head-transition); state="$dir/state"; ev="$dir/ev"; repo="$dir/repo"
+  git init -q "$repo"
+  git -C "$repo" config user.email test@example.com
+  git -C "$repo" config user.name test
+  printf 'one\n' > "$repo/file"
+  git -C "$repo" add file && git -C "$repo" commit -qm one
+  old_head=$(git -C "$repo" rev-parse HEAD)
+  printf 'two\n' > "$repo/file"
+  git -C "$repo" commit -qam two
+  new_head=$(git -C "$repo" rev-parse HEAD)
+  ev_running "$ev" 01RUN running pending
+  sed -i.bak "s/abc1234/$old_head/" "$ev" && rm -f "$ev.bak"
+  fold "$state" head "$ev" 1000 "$repo"
+  sed -i.bak "s/$old_head/$new_head/" "$ev" && rm -f "$ev.bak"
+  fold "$state" head "$ev" 1010 "$repo"
   [ "$(verdict_at "$state" head 1020)" = continue ] || fail "a first head advance stopped"
-  sed -i.bak 's/def5678/abc1234/' "$ev" && rm -f "$ev.bak"
-  fold "$state" head "$ev" 1030
+  sed -i.bak "s/$new_head/$old_head/" "$ev" && rm -f "$ev.bak"
+  fold "$state" head "$ev" 1030 "$repo"
   v=$(verdict_at "$state" head 1040)
   case "$v" in
     stop*"incoherent head transition"*) ;;
@@ -489,11 +563,13 @@ test_repeated_finding_stop
 test_unknown_state_stop
 test_malformed_evidence_stop
 test_malformed_journal_stop
+test_journal_write_failure_stops_closed
 test_stale_pipeline_evidence
 test_recovery_handoff
 test_fix_round_bound_semantics
 test_stall_stop_and_progress_resume
 test_coarse_evidence_does_not_enforce_stall
+test_head_change_set_is_bounded
 test_head_transition_is_coherent
 test_threshold_overrides_cannot_disable_bounds
 test_watcher_surfaces_validation_loop_limit

@@ -48,6 +48,8 @@
 #                                               stays fresh enough to justify
 #                                               continuation with no new
 #                                               readable run evidence
+#   FM_VLOOP_MAX_CHANGE_COMMITS   default 64    commits accepted in one
+#                                               coherent head transition
 #
 # JOURNAL. state/<id>.validation-loop, key=value lines, rewritten atomically
 # (tmp + mv) by fm_vloop_observe only; removed by teardown with the task's
@@ -76,6 +78,7 @@ FM_VLOOP_MAX_FIX_ROUNDS_DEFAULT=6
 FM_VLOOP_MAX_SAME_THEME_DEFAULT=2
 FM_VLOOP_STALL_SECS_DEFAULT=3600
 FM_VLOOP_EVIDENCE_MAX_AGE_SECS_DEFAULT=7200
+FM_VLOOP_MAX_CHANGE_COMMITS_DEFAULT=64
 fm_vloop_journal_path() {  # <state> <id>
   printf '%s/%s.validation-loop' "$1" "$2"
 }
@@ -156,6 +159,13 @@ _fm_vloop_journal_get() {  # <journal-content> <key>
   printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1
 }
 
+_fm_vloop_status_valid() {  # <status>
+  case "$1" in
+    running|fixing|ci|awaiting_approval|fix_review|completed|failed|cancelled) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 _fm_vloop_journal_valid() {  # <journal-content>
   local stored=$1 key value version phase active
   for key in version run head status phase findings_sig progress_sig fix_rounds themes heads last_observed last_progress active stop_reason; do
@@ -164,7 +174,7 @@ _fm_vloop_journal_valid() {  # <journal-content>
   version=$(_fm_vloop_journal_get "$stored" version)
   [ "$version" = 1 ] || return 1
   status=$(_fm_vloop_journal_get "$stored" status)
-  [ -n "$status" ] || return 1
+  _fm_vloop_status_valid "$status" || return 1
   phase=$(_fm_vloop_journal_get "$stored" phase)
   case "$phase" in
     running|fixing|ci|gate|terminal|coarse) ;;
@@ -183,6 +193,8 @@ _fm_vloop_journal_valid() {  # <journal-content>
       value=$(_fm_vloop_journal_get "$stored" "$key")
       [ -n "$value" ] || return 1
     done
+  else
+    case "$status" in running|completed|failed|cancelled) ;; *) return 1 ;; esac
   fi
   return 0
 }
@@ -229,6 +241,7 @@ fm_vloop_evidence_valid() {  # <content>
     [ -n "$value" ] || return 1
     case "$value" in *[[:space:]]*) return 1 ;; esac
   done
+  _fm_vloop_status_valid "$(fm_nm_strip_quotes "$(fm_nm_field "$content" status)")" || return 1
   return 0
 }
 
@@ -241,12 +254,16 @@ _fm_vloop_head_seen() {  # <heads> <head>
 }
 
 _fm_vloop_head_advance_valid() {  # <worktree> <old-head> <new-head>
-  local worktree=$1 old_head=$2 new_head=$3 old_full new_full
-  [ -n "$worktree" ] || return 0
+  local worktree=$1 old_head=$2 new_head=$3 old_full new_full change_commits max_change
+  [ -n "$worktree" ] || return 1
   old_full=$(git -C "$worktree" rev-parse --verify "${old_head}^{commit}" 2>/dev/null) || return 1
   new_full=$(git -C "$worktree" rev-parse --verify "${new_head}^{commit}" 2>/dev/null) || return 1
   [ "$old_full" = "$new_full" ] && return 1
-  git -C "$worktree" merge-base --is-ancestor "$old_full" "$new_full" 2>/dev/null
+  git -C "$worktree" merge-base --is-ancestor "$old_full" "$new_full" 2>/dev/null || return 1
+  fm_nm_head_matches_worktree "$worktree" "$new_full" || return 1
+  change_commits=$(git -C "$worktree" rev-list --count "$old_full..$new_full" 2>/dev/null) || return 1
+  max_change=$(_fm_vloop_bound "${FM_VLOOP_MAX_CHANGE_COMMITS:-}" "$FM_VLOOP_MAX_CHANGE_COMMITS_DEFAULT")
+  [ "$change_commits" -le "$max_change" ] || return 1
 }
 
 _fm_vloop_record_stop() {  # <state> <id> <reason>
@@ -298,8 +315,10 @@ _fm_vloop_time_stop_reason() {  # <journal-content> <now>
 _fm_vloop_record_time_stop() {  # <state> <id> <now>
   local state=$1 id=$2 now=$3 journal stored reason
   journal=$(fm_vloop_journal_path "$state" "$id")
-  [ -f "$journal" ] && [ ! -L "$journal" ] || return 0
-  stored=$(cat "$journal" 2>/dev/null) || return 0
+  [ -e "$journal" ] || [ -L "$journal" ] || return 0
+  [ -f "$journal" ] && [ ! -L "$journal" ] || return 1
+  stored=$(cat "$journal" 2>/dev/null) || return 1
+  _fm_vloop_journal_valid "$stored" || return 1
   reason=$(_fm_vloop_time_stop_reason "$stored" "$now")
   [ -n "$reason" ] || return 0
   _fm_vloop_record_stop "$state" "$id" "$reason"
@@ -319,7 +338,7 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   journal=$(fm_vloop_journal_path "$state" "$id")
   now=$(_fm_vloop_now)
   if [ ! -f "$ev" ] || [ ! -s "$ev" ]; then
-    _fm_vloop_record_time_stop "$state" "$id" "$now"
+    _fm_vloop_record_time_stop "$state" "$id" "$now" || return 1
     return 0
   fi
   content=$(cat "$ev" 2>/dev/null) || return 0
@@ -377,7 +396,7 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
       ;;
     *)
       fm_vloop_evidence_valid "$content" || {
-        _fm_vloop_record_stop "$state" "$id" "validation evidence malformed or incomplete for task $id" || true
+        _fm_vloop_record_stop "$state" "$id" "validation evidence malformed or incomplete for task $id" || return 1
         return 2
       }
       ;;
