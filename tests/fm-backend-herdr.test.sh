@@ -14,6 +14,8 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck source=tests/herdr-test-safety.sh
 . "$(dirname "${BASH_SOURCE[0]}")/herdr-test-safety.sh"
+# shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
+. "$ROOT/bin/fm-timeout-lib.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; exit 0; }
 
@@ -57,6 +59,9 @@ if [ -f "$RESP/$n.exit" ]; then
   exit "$(cat "$RESP/$n.exit")"
 fi
 if [ "${1:-}" = server ] && [ -n "${FM_HERDR_SERVER_DELAY:-}" ]; then
+  if [ -n "${FM_HERDR_SERVER_FD_PROBE:-}" ] && [ -e /dev/fd/9 ]; then
+    printf 'inherited\n' > "$FM_HERDR_SERVER_FD_PROBE"
+  fi
   [ -z "${FM_HERDR_SERVER_PID_FILE:-}" ] || printf '%s\n' "$$" > "$FM_HERDR_SERVER_PID_FILE"
   exec sleep "$FM_HERDR_SERVER_DELAY"
 fi
@@ -529,32 +534,27 @@ test_container_ensure_starts_server_and_workspace() {
 }
 
 test_server_ensure_does_not_wait_for_a_long_lived_server_in_command_substitution() {
-  local dir log resp fb out caller_pid server_pid i
+  local dir log resp fb out server_pid status
   dir="$TMP_ROOT/server-command-substitution"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"server":{"running":false}}\n' > "$resp/1.out"
   printf '{"server":{"running":true}}\n' > "$resp/3.out"
   fb=$(make_herdr_fakebin "$dir")
-  out="$dir/out"
-  (
-    PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-      FM_HERDR_SCRIPT_STATUS=1 FM_HERDR_SERVER_DELAY=30 FM_HERDR_SERVER_PID_FILE="$dir/server.pid" \
-      bash -c '. "$0/bin/backends/herdr.sh"; result=$(fm_backend_herdr_server_ensure fmtest); printf "result=%s\n" "$result"' "$ROOT"
-  ) > "$out" 2>&1 &
-  caller_pid=$!
-  for i in $(seq 1 50); do
-    [ -f "$out" ] && break
-    sleep 0.1
-  done
-  if [ ! -f "$out" ]; then
-    kill "$caller_pid" 2>/dev/null || true
-    wait "$caller_pid" 2>/dev/null || true
-    fail "server_ensure remained blocked inside command substitution"
-  fi
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    FM_HERDR_SCRIPT_STATUS=1 FM_HERDR_SERVER_DELAY=30 FM_HERDR_SERVER_PID_FILE="$dir/server.pid" \
+    FM_HERDR_SERVER_FD_PROBE="$dir/fd-probe" \
+    fm_run_timed 5 bash -c '
+      exec 9>"$2/fd-probe"
+      . "$0/bin/backends/herdr.sh"
+      result=$(fm_backend_herdr_server_ensure fmtest)
+      printf "result=%s\n" "$result"
+    ' "$ROOT" _ "$dir")
+  status=$?
+  [ "$status" -eq 0 ] || fail "server_ensure command substitution exceeded the hard timeout (status $status)"
   server_pid=$(cat "$dir/server.pid" 2>/dev/null || printf '')
   [ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null || true
-  wait "$caller_pid" 2>/dev/null || true
-  assert_contains "$(cat "$out")" "result=" "server_ensure completed through command substitution"
-  pass "fm_backend_herdr_server_ensure: does not wait for the long-lived server child inside command substitution"
+  [ ! -s "$dir/fd-probe" ] || fail "server_ensure leaked an inherited descriptor into the long-lived server"
+  assert_contains "$out" "result=" "server_ensure completed through command substitution"
+  pass "fm_backend_herdr_server_ensure: command substitutions return without inherited descriptors"
 }
 
 test_container_ensure_reuses_existing_workspace() {

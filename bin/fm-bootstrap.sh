@@ -79,6 +79,8 @@
 #          max(20, 5 + 3 * origin-backed project clone count). A timed-out
 #          refresh relays any completed fm-fleet-sync.sh output before the
 #          aggregate timeout skip line with timeout and elapsed seconds.
+#          Herdr watcher continuity bootstrap is bounded by
+#          FM_HERDR_SUPERVISOR_BOOTSTRAP_TIMEOUT (default 45s).
 #          Set FM_FLEET_PRUNE=0 to skip branch pruning during that refresh.
 #          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the seven MUTATING sweeps
 #          (PR-check migration, secondmate_sync, secondmate_liveness_sweep,
@@ -167,6 +169,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # deferred network stage sets, so an ordinary bootstrap run records nothing.
 # shellcheck source=bin/fm-timing-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-timing-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 # Network-phase selection (see the header). An unrecognized value resolves to
 # `all` so a malformed override runs every step rather than silently dropping a
@@ -272,6 +276,14 @@ fleet_sync_bootstrap_timeout() {
   timeout=$((5 + (3 * count)))
   [ "$timeout" -ge 20 ] || timeout=20
   echo "$timeout"
+}
+
+herdr_supervisor_bootstrap_timeout() {
+  local timeout=${FM_HERDR_SUPERVISOR_BOOTSTRAP_TIMEOUT:-45}
+  case "$timeout" in
+    ''|*[!0-9]*|0) printf '45\n' ;;
+    *) printf '%s\n' "$timeout" ;;
+  esac
 }
 
 fleet_sync_relay_filtered_output() {
@@ -983,46 +995,6 @@ x_mode_remove_artifact() {
 # only when it actually removed artifacts. It never touches the watcher itself;
 # applying a cadence transition to a running watcher is the caller's job via
 # the emitted harness-aware supervision repair instruction.
-# herdr_supervisor_sweep: keep this home's Herdr-hosted watcher continuity owner
-# established whenever supervision is needed and nothing else provably owns it.
-#
-# This is the automatic half of the fix for the 2026-08-29 supervision lapse: a
-# home whose primary harness never loaded its continuity owner had NOBODY to
-# start the next watcher cycle, and no session-start check repaired it - the Pi
-# extension diagnostic only advises restarting Pi. bin/fm-herdr-supervisor.sh
-# owns every decision here (eligibility, deference to a provable owner,
-# idempotence, identity, and bounded retry); this sweep only calls it and
-# surfaces what it says.
-#
-# Local, never network. It runs only on the locked mutating path, alongside the
-# other local sweep, so a read-only session neither establishes nor disturbs a
-# supervisor. Silent on the ordinary outcomes - already healthy, deliberately
-# deferred, not eligible, nothing in flight - because a routine confirmation is
-# not a diagnostic.
-herdr_supervisor_sweep() {
-  local out status lock_pid lock_identity current_identity
-  . "$SCRIPT_DIR/fm-wake-lib.sh"
-  lock_pid=$(cat "$STATE/.lock" 2>/dev/null || true)
-  lock_identity=$(cat "$STATE/.lock-pid-identity" 2>/dev/null || true)
-  current_identity=$(fm_pid_identity "$lock_pid" 2>/dev/null || true)
-  [ -n "$lock_identity" ] && [ -n "$current_identity" ] \
-    && [ "$current_identity" = "$lock_identity" ] \
-    && fm_session_lock_owned_by_self "$STATE" || return 0
-  out=$("$SCRIPT_DIR/fm-herdr-supervisor.sh" ensure --reason 'session start' 2>&1)
-  status=$?
-  if [ "$status" -ne 0 ]; then
-    printf 'HERDR_SUPERVISOR: %s\n' "$(printf '%s' "$out" | tr '\n' ' ')"
-    return 0
-  fi
-  case "$out" in
-    *'herdr-supervisor: started'*)
-      [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" != 1 ] \
-        || printf 'BOOTSTRAP_INFO: %s\n' "$(printf '%s' "$out" | tr '\n' ' ')"
-      ;;
-  esac
-  return 0
-}
-
 x_mode_setup() {
   local env_file token shim cadence shim_body cadence_body tool missing shim_home
   env_file="$FM_HOME/.env"
@@ -1110,6 +1082,53 @@ EOF
   x_mode_write_if_changed "$cadence" "$cadence_body" 600 || { fmx_arm_failed; return 0; }
 
   echo "FMX: X mode on - relay poll armed via state/x-watch.check.sh; 30s watcher cadence in config/x-mode.env"
+}
+
+# herdr_supervisor_sweep: keep this home's Herdr-hosted watcher continuity owner
+# established whenever supervision is needed and nothing else provably owns it.
+#
+# This is the automatic half of the fix for the 2026-08-29 supervision lapse: a
+# home whose primary harness never loaded its continuity owner had NOBODY to
+# start the next watcher cycle, and no session-start check repaired it - the Pi
+# extension diagnostic only advises restarting Pi. bin/fm-herdr-supervisor.sh
+# owns every decision here (eligibility, deference to a provable owner,
+# idempotence, identity, and bounded retry); this sweep only calls it and
+# surfaces what it says.
+#
+# Local, never network. It runs only on the locked mutating path, alongside the
+# other local sweep, so a read-only session neither establishes nor disturbs a
+# supervisor. Silent on the ordinary outcomes - already healthy, deliberately
+# deferred, not eligible, nothing in flight - because a routine confirmation is
+# not a diagnostic.
+herdr_supervisor_sweep() {
+  local out status lock_pid lock_identity current_identity timeout started elapsed
+  . "$SCRIPT_DIR/fm-wake-lib.sh"
+  lock_pid=$(cat "$STATE/.lock" 2>/dev/null || true)
+  lock_identity=$(cat "$STATE/.lock-pid-identity" 2>/dev/null || true)
+  current_identity=$(fm_pid_identity "$lock_pid" 2>/dev/null || true)
+  [ -n "$lock_identity" ] && [ -n "$current_identity" ] \
+    && [ "$current_identity" = "$lock_identity" ] \
+    && fm_session_lock_owned_by_self "$STATE" || return 0
+  timeout=$(herdr_supervisor_bootstrap_timeout)
+  started=$SECONDS
+  out=$(fm_run_timed "$timeout" "$SCRIPT_DIR/fm-herdr-supervisor.sh" ensure --reason 'session start' 2>&1)
+  status=$?
+  elapsed=$((SECONDS - started))
+  if [ "$status" -eq 124 ]; then
+    printf 'HERDR_SUPERVISOR: ensure timed out (timeout=%ss elapsed=%ss)\n' "$timeout" "$elapsed"
+    return 0
+  fi
+  if [ "$status" -ne 0 ]; then
+    printf 'HERDR_SUPERVISOR: %s\n' "$(printf '%s' "$out" | tr '\n' ' ')"
+    return 0
+  fi
+  case "$out" in
+    *'herdr-supervisor: started'*)
+      [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" != 1 ] \
+        || printf 'BOOTSTRAP_INFO: %s\n' "$(printf '%s' "$out" | tr '\n' ' ')"
+      ;;
+  esac
+  return 0
 }
 
 crew_dispatch_validate() {

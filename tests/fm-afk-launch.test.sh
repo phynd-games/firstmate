@@ -18,7 +18,6 @@
 #   sleeper replaces the real daemon (FM_AFK_LAUNCH_ENTRY) so the test observes
 #   only the terminal lifecycle.
 set -u
-export FM_BACKEND_LEGACY_TEST_LANE=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAUNCH="$ROOT/bin/fm-afk-launch.sh"
@@ -622,49 +621,54 @@ unit_stop_malformed_record_fails_closed() {
   rm -rf "$st"
 }
 
-unit_tmux_planned_record_and_collision() {
-  local st first second
-  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-tmux-plan.XXXXXX")
+unit_herdr_claim_is_retained_until_daemon_ready() {
+  local st
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-herdr-claim.XXXXXX")
   mkdir -p "$st/state"
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
     . "$1"
-    tmux() {
-      if [ "$1" = new-session ]; then
-        [ -s "$FM_AFK_LAUNCH_RECORD" ] || return 9
-        printf "%s" "$4" > "$FM_HOME/created-name"
-        return 1
+    fm_backend_source() { return 0; }
+    fm_backend_herdr_server_ensure() { return 0; }
+    fm_backend_herdr_cli() {
+      if [ "$2 $3" = "workspace create" ]; then
+        printf "%s" "{\"result\":{\"workspace\":{\"workspace_id\":\"ws-claim\"},\"root_pane\":{\"pane_id\":\"pane-claim\"}}}"
+      elif [ "$2 $3" = "pane run" ]; then
+        return 0
       fi
-      [ "$1" != kill-session ] || : > "$FM_HOME/killed"
-      return 1
+      return 0
     }
-    ! fm_afk_launch_create_tmux captain:0 tmux
-  ' _ "$LAUNCH" && [ ! -e "$st/state/.afk-daemon-terminal" ] && [ ! -e "$st/killed" ]; then
-    pass "tmux launch: planned exact target is recorded before creation and removed on failure"
+    fm_afk_launch_entry_cmd() { printf /bin/true; }
+    fm_afk_launch_commit_terminal() {
+      fm_lock_owned_by_current "$FM_AFK_LAUNCH_STATE/.supervision-claim.lock" || return 1
+      : > "$FM_HOME/ready-proof"
+    }
+    fm_supervision_claim_acquire "$FM_AFK_LAUNCH_STATE/.supervision-claim.lock" 10
+    fm_afk_launch_create_herdr lab:captain herdr
+    [ -e "$FM_HOME/ready-proof" ]
+  ' _ "$LAUNCH" && [ -e "$st/ready-proof" ] \
+    && [ -d "$st/state/.supervision-claim.lock" ]; then
+    pass "Herdr launch: ownership claim remains held through daemon readiness"
   else
-    fail "tmux launch: creation began before exact target publication"
+    fail "Herdr launch: readiness proof ran after the ownership claim was released"
   fi
-  first=$(cat "$st/created-name")
   rm -rf "$st"
+}
 
-  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-tmux-unique.XXXXXX")
+unit_tmux_launch_is_unreachable_even_in_legacy_lane() {
+  local st
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-tmux-disabled.XXXXXX")
   mkdir -p "$st/state"
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
     . "$1"
-    tmux() {
-      [ "$1" != new-session ] || { printf "%s" "$4" > "$FM_HOME/created-name"; return 1; }
-      [ "$1" != kill-session ] || : > "$FM_HOME/killed"
-      return 1
-    }
-    ! fm_afk_launch_create_tmux captain:0 tmux
-  ' _ "$LAUNCH" && [ ! -e "$st/killed" ]; then
-    second=$(cat "$st/created-name")
-    if [ "$first" != "$second" ]; then
-      pass "tmux launch: unique names eliminate collision teardown"
-    else
-      fail "tmux launch: consecutive launches reused a session name"
+    tmux() { : > "$FM_HOME/tmux-called"; return 0; }
+    FM_BACKEND_LEGACY_TEST_LANE=1
+    if fm_afk_launch_create_tmux captain:0 tmux; then
+      exit 1
     fi
+  ' _ "$LAUNCH" && [ ! -e "$st/state/.afk-daemon-terminal" ] && [ ! -e "$st/tmux-called" ]; then
+    pass "tmux launch: legacy lane cannot create a detached terminal"
   else
-    fail "tmux launch: creation failure attempted session teardown"
+    fail "tmux launch: disabled creator invoked tmux or wrote a record"
   fi
   rm -rf "$st"
 }
@@ -941,7 +945,8 @@ unit_close_failure_preserves_record
 unit_record_publication_atomic
 unit_malformed_record_fails_closed
 unit_stop_malformed_record_fails_closed
-unit_tmux_planned_record_and_collision
+unit_herdr_claim_is_retained_until_daemon_ready
+unit_tmux_launch_is_unreachable_even_in_legacy_lane
 unit_stop_validates_before_signal
 unit_lock_requires_complete_metadata
 unit_stop_surfaces_afk_removal_failure

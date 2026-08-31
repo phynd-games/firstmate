@@ -11,8 +11,8 @@
 # by SPLITTING the captain's active pane visibly shrinks it - the regression this
 # script fixes. Instead this creates a non-visible tracked terminal (a herdr tab/
 # workspace with --no-focus) that never touches the captain's active tab, and
-# NEVER uses shell `&` (which herdr/codex can reap). The old tmux launch is only
-# retained for legacy test coverage and exact-record cleanup.
+# NEVER uses shell `&` (which herdr/codex can reap). Historical tmux records remain
+# readable for exact cleanup, but no tmux terminal is launched.
 #
 # Correct supervisor targeting: the daemon finds the captain pane to inject into
 # from its OWN inherited env (discover_supervisor_target). Running it in a
@@ -37,8 +37,8 @@
 #   fm-afk-launch.sh reconcile Close a recorded-but-dead daemon terminal by exact
 #                              id and drop the record (recovery after a crash).
 #
-# Supported active backend: herdr. The historical tmux launch is available only
-# to the legacy test lane; other backends refuse loudly.
+# Supported active backend: herdr. Historical tmux records can be reconciled;
+# terminal creation is Herdr-only.
 #
 # Test seam: FM_AFK_LAUNCH_ENTRY overrides the command run in the created
 # terminal (default bin/fm-afk-start.sh), so a topology test can run a harmless
@@ -449,54 +449,14 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
     fm_afk_launch_close_recorded || true
     return 1
   fi
-  if ! fm_afk_launch_release_claim_for_handoff; then
-    fm_afk_launch_log "failed to release the ownership claim for daemon handoff"
-    FM_AFK_REC_BACKEND=herdr
-    FM_AFK_REC_TARGET="$session:$pane"
-    fm_afk_launch_close_recorded || true
-    return 1
-  fi
   fm_afk_launch_commit_terminal herdr "$session:$pane" "$wsid" 1 || return 1
   fm_afk_launch_log "daemon launched in non-visible herdr workspace $wsid (pane $session:$pane), supervising $captain_target"
 }
 
-# Historical tmux launch retained only for the legacy test lane and exact-record
-# reconciliation; active away-mode entry is Herdr-only.
+# Historical cleanup records are still supported, but creation is disabled.
 fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
-  local captain_target=$1 captain_backend=$2 session entry cmd hash nonce
-  if [ "${FM_BACKEND_LEGACY_TEST_LANE:-0}" != 1 ]; then
-    fm_afk_launch_log "historical tmux away-mode launch is disabled; use Herdr"
-    return 1
-  fi
-  hash=$(printf '%s' "$FM_HOME" | cksum | cut -d' ' -f1)
-  nonce="$$-${RANDOM:-0}-$(date '+%s')"
-  session="fm-afk-daemon-$hash-$nonce"
-  entry=$(fm_afk_launch_entry_cmd)
-  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q FM_AFK_STATE_PREPARED=1 FM_AFK_HANDOFF=1 %q' \
-    "$FM_HOME" "$captain_target" "$captain_backend" "$entry")
-  if ! fm_afk_launch_record_write tmux "$session" ""; then
-    fm_afk_launch_log "failed to persist planned tmux daemon session '$session'"
-    return 1
-  fi
-  if ! tmux new-session -d -s "$session" "$cmd" 2>/dev/null; then
-    fm_afk_launch_log "failed to create detached tmux daemon session '$session'"
-    if ! rm -f "$FM_AFK_LAUNCH_RECORD"; then
-      fm_afk_launch_log "failed to remove planned tmux daemon record after creation failure"
-    fi
-    return 1
-  fi
-  if ! fm_supervision_claim_pending_write "$FM_AFK_LAUNCH_STATE" "${FM_AFK_NATIVE_HANDOFF_TIMEOUT:-30}"; then
-    fm_afk_launch_log "failed to refresh the ownership claim reservation for daemon handoff"
-    rm -f "$FM_AFK_LAUNCH_RECORD"
-    return 1
-  fi
-  if ! fm_afk_launch_release_claim_for_handoff; then
-    fm_afk_launch_log "failed to release the ownership claim for daemon handoff"
-    rm -f "$FM_AFK_LAUNCH_RECORD"
-    return 1
-  fi
-  fm_afk_launch_commit_terminal tmux "$session" "" 1 || return 1
-  fm_afk_launch_log "daemon launched in detached tmux session '$session', supervising $captain_target"
+  fm_afk_launch_log "historical tmux away-mode launch is disabled; use Herdr"
+  return 1
 }
 
 fm_afk_launch_start() {

@@ -103,8 +103,6 @@ lock_snapshot() {
 
 WATCH_DELIVERY_LOG="$STATE/.watch-deliveries.log"
 WATCH_DELIVERY_LOCK="$STATE/.watch-deliveries.lock"
-ARM_BLOCKED="$STATE/.watch-arm-blocked"
-
 ARM_CLAIM_HELD=0
 if [ "${FM_WATCH_ARM_CLAIM_REQUIRED:-0}" = 1 ]; then
   if ! fm_supervision_claim_acquire "$STATE/.supervision-claim.lock" "${FM_WATCH_ARM_CLAIM_TRIES:-100}"; then
@@ -119,22 +117,6 @@ arm_release_claim() {
     fm_lock_release "$STATE/.supervision-claim.lock" || true
     ARM_CLAIM_HELD=0
   fi
-}
-
-arm_blocked_write() {
-  local reason=$1 tmp
-  tmp=$(mktemp "$ARM_BLOCKED.tmp.XXXXXX") || return 1
-  if ! {
-    printf 'pid=%s\nidentity=%s\nat=%s\nreason=%s\n' \
-      "$ARM_PID" "${child_identity:-unknown}" "$(date +%s)" "$reason"
-  } > "$tmp" 2>/dev/null || ! chmod 0600 "$tmp" 2>/dev/null || ! mv -f "$tmp" "$ARM_BLOCKED" 2>/dev/null; then
-    rm -f "$tmp" 2>/dev/null || true
-    return 1
-  fi
-}
-
-arm_blocked_clear() {
-  rm -f "$ARM_BLOCKED" 2>/dev/null || true
 }
 
 cycle_active=0
@@ -662,8 +644,7 @@ cleanup_child() {
 }
 
 hold_child_tracked() {
-  local status next_report=0 now reason hold_seconds=${FM_WATCH_ARM_UNKNOWN_CHILD_HOLD_SECONDS:-60}
-  local hold_deadline blocked=0
+  local status next_report=0 now reason hold_seconds=${FM_WATCH_ARM_UNKNOWN_CHILD_HOLD_SECONDS:-60} hold_deadline
   case "$hold_seconds" in ''|*[!0-9]*|0) hold_seconds=60 ;; esac
   hold_deadline=$(( $(date +%s) + hold_seconds ))
   while [ -n "$child" ]; do
@@ -672,38 +653,23 @@ hold_child_tracked() {
       break
     fi
     now=$(date +%s)
-    reason="watcher arm child remains live but its process identity cannot be confirmed"
-    if [ "$blocked" -eq 0 ] && [ "$now" -ge "$next_report" ]; then
+    reason="watcher arm child remains live but its process identity cannot be confirmed (pid=${child:-unknown} identity=${child_identity:-unknown})"
+    if [ "$now" -ge "$next_report" ]; then
       arm_publish_failure "$reason" || printf 'watcher: emergency diagnostic persistence failed\n' >&2
       next_report=$((now + 20))
     fi
-    if [ "$blocked" -eq 0 ] && [ "$now" -ge "$hold_deadline" ]; then
-      arm_publish_failure "$reason; bounded cleanup window exhausted; retaining explicit child ownership" \
+    if [ "$now" -ge "$hold_deadline" ]; then
+      reason="$reason; bounded cleanup window exhausted; abandoning arm ownership without signaling an unverifiable child"
+      arm_publish_failure "$reason" \
         || printf 'watcher: emergency diagnostic persistence failed\n' >&2
-      arm_emergency_write "$reason; bounded cleanup window exhausted; retaining explicit child ownership" \
+      arm_emergency_write "$reason" \
         || printf 'watcher: emergency diagnostic persistence failed\n' >&2
-      arm_blocked_write "$reason; bounded cleanup window exhausted; retaining explicit child ownership" \
-        || printf 'watcher: blocked-child state persistence failed\n' >&2
-      blocked=1
-    fi
-    if [ "$blocked" -eq 1 ]; then
-      child_status
-      status=$?
-      case "$status" in
-        0)
-          wait "$child" 2>/dev/null || true
-          child=;
-          arm_blocked_clear
-          break
-        ;;
-        1|2) sleep 1 ;;
-      esac
-      continue
+      return 125
     fi
     child_status
     status=$?
     case "$status" in
-      0) wait "$child" 2>/dev/null || true; child=; arm_blocked_clear; break ;;
+      0) wait "$child" 2>/dev/null || true; child=; break ;;
       1|2) sleep 1 ;;
     esac
   done
