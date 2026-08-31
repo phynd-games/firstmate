@@ -366,6 +366,34 @@ test_pane_presence_requires_complete_identity() {
   pass "Herdr pane presence requires a complete matching workspace and tab identity"
 }
 
+test_target_ready_rechecks_recorded_native_identity() {
+  run_capture target-identity-recheck lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_session_capability_check() { return 0; }
+    fm_backend_herdr_cli() {
+      printf "%s" '\''{"result":{"pane":{"pane_id":"pane1","workspace_id":"other","tab_id":"tab1"}}}'\''
+    }
+    FM_BACKEND_HERDR_EXPECTED_TARGET=fmtest:pane1
+    FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=ws1
+    FM_BACKEND_HERDR_EXPECTED_TAB_ID=tab1
+    fm_backend_herdr_target_ready fmtest:pane1
+  '
+  [ "$RC" -eq 2 ] || fail "target readiness must refuse a pane rebound to another workspace: rc=$RC out=$OUT err=$ERR"
+  pass "Herdr target readiness rechecks the recorded workspace and tab identity"
+}
+
+test_quarantine_server_failure_is_a_typed_refusal() {
+  run_capture quarantine-server-failure lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_projection_journal_token() { printf token; }
+    fm_backend_herdr_server_ensure() { return 2; }
+    fm_backend_herdr_projection_recovery_allows_flat fmtest journal task
+  '
+  [ "$RC" -eq 2 ] || fail "quarantine server failure must remain typed: rc=$RC out=$OUT err=$ERR"
+  assert_refusal "quarantine Herdr server failure" "native Herdr server health check failed"
+  pass "Herdr quarantine recovery surfaces server failures as one typed refusal"
+}
+
 test_recovery_agent_failures_refuse_before_replacement() {
   local replacement_marker="$TMP_ROOT/reclaim-replacement" state_marker="$TMP_ROOT/reclaim-post-state"
   rm -f "$replacement_marker" "$state_marker"
@@ -440,7 +468,7 @@ test_recovery_agent_failures_refuse_before_replacement() {
     fm_backend_herdr_cli() {
       case "$*" in
         *"workspace list"*) printf "%s" '\''{"result":{"workspaces":[{"workspace_id":"ws1","label":"firstmate/task · p:token"}]}}'\'' ;;
-        *"pane list"*) printf "%s" '\''{"result":{"panes":[{"pane_id":"pane1"}]}}'\'' ;;
+        *"pane list"*) printf "%s" '\''{"result":{"panes":[{"pane_id":"pane1","workspace_id":"ws1","tab_id":"ws1:tab1"}]}}'\'' ;;
       esac
     }
     fm_backend_herdr_pane_agent_state() { return 2; }
@@ -905,6 +933,8 @@ test_endpoint_identity_mismatch_refuses
 test_kill_refuses_planner_and_focus_failures_before_close
 test_endpoint_presence_failure_remains_typed
 test_pane_presence_requires_complete_identity
+test_target_ready_rechecks_recorded_native_identity
+test_quarantine_server_failure_is_a_typed_refusal
 test_recovery_agent_failures_refuse_before_replacement
 test_spawn_refuses_non_herdr_selection_before_side_effects
 test_spawn_refuses_missing_or_incapable_herdr_without_fallback

@@ -2352,7 +2352,7 @@ teardown_herdr_require_prerequisites() {  # <task-id>
 }
 
 teardown_herdr_preflight_target() {  # <target> <task-id>
-  local target=$1 task_id=$2 session pane presence lock_path verified_lock_path lock_session held_path attempt
+  local target=$1 task_id=$2 session pane presence presence_rc=0 lock_path verified_lock_path lock_session held_path attempt
   session=${target%%:*}
   pane=${target#*:}
   if [ -z "$session" ] || [ -z "$pane" ] || [ "$pane" = "$target" ]; then
@@ -2364,7 +2364,17 @@ teardown_herdr_preflight_target() {  # <target> <task-id>
   session=$FM_BACKEND_HERDR_SESSION
   pane=$FM_BACKEND_HERDR_PANE
   fm_backend_herdr_capability_preflight "teardown endpoint $task_id" "$session" || return $?
-  presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane")
+  if presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane" \
+    "${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}" "${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}"); then
+    presence_rc=0
+  else
+    presence_rc=$?
+  fi
+  if [ "$presence_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "teardown task $task_id Herdr endpoint identity" herdr \
+      "The native Herdr pane identity check failed or returned an unhealthy response. Repair Herdr, then verify with 'herdr status --json'. Task state is preserved." || true
+    return 2
+  fi
   case "$presence" in
     dead|present) ;;
     *)

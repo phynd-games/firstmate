@@ -884,7 +884,7 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
     return 1
   fi
   if [ -n "$required_agent_state" ]; then
-    state=$(fm_backend_herdr_pane_agent_state "$session" "$pane_id")
+    state=$(fm_backend_herdr_pane_agent_state "$session" "$pane_id" "$target_ws" "$target_tab")
     FM_BACKEND_HERDR_PROJECTION_CLOSE_AGENT_STATE=$state
     [ "$state" = "$required_agent_state" ] || return 1
   fi
@@ -1615,8 +1615,8 @@ fm_backend_herdr_endpoint_identity() {  # <session> <workspace> <tab> <pane>
   printf '%s' "$out" | jq -e --arg workspace "$expected_workspace" --arg tab "$expected_tab" --arg pane "$expected_pane" '
     (.result.pane | type) == "object"
     and .result.pane.pane_id == $pane
-    and .result.pane.workspace_id == $workspace
-    and .result.pane.tab_id == $tab
+    and ($workspace == "" or .result.pane.workspace_id == $workspace)
+    and ($tab == "" or .result.pane.tab_id == $tab)
   ' >/dev/null 2>&1 && return 0
   return 1
 }
@@ -2004,7 +2004,7 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace> [<launcher-
 # as dead|present|unknown from its JSON body, never from process exit status.
 fm_backend_herdr_pane_presence_state() {  # <session> <pane_id>
   local session=$1 pane_id=$2 expected_workspace=${3:-} expected_tab=${4:-}
-  local out code pid native_rc cli_rc=0
+  local out code native_rc cli_rc=0
   if out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>&1); then
     cli_rc=0
   else
@@ -2121,9 +2121,10 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 #              change as "the pane exists"). The caller must fail safe toward
 #              refusal here, never toward closing - this is the conservative
 #              backstop the husk check depends on.
-fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 out code presence presence_rc status native_rc cli_rc=0
-  presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
+fm_backend_herdr_pane_agent_state() {  # <session> <pane_id> [expected-workspace] [expected-tab]
+  local session=$1 pane_id=$2 expected_workspace=${3:-} expected_tab=${4:-}
+  local out code presence presence_rc status native_rc cli_rc=0
+  presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id" "$expected_workspace" "$expected_tab")
   presence_rc=$?
   [ "$presence_rc" -eq 2 ] && return 2
   if [ "$presence" != present ]; then
@@ -2175,11 +2176,15 @@ fm_backend_herdr_tab_is_husk() {  # <session> <pane_id>
 # a confirmed agent-less pane is `dead`, a registered agent is `alive`, and an
 # unexpected or failed API read is `unreadable`.
 fm_backend_herdr_agent_state() {  # <target>
-  local target=$1 ready_rc=0 state state_rc
+  local target=$1 ready_rc=0 state state_rc expected_workspace='' expected_tab=''
   fm_backend_herdr_parse_target "$target" || { printf 'unreadable'; return 0; }
   fm_backend_herdr_target_ready "$target" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
-  if state=$(fm_backend_herdr_pane_agent_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"); then
+  if [ "${FM_BACKEND_HERDR_EXPECTED_TARGET:-}" = "$target" ]; then
+    expected_workspace=${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}
+    expected_tab=${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}
+  fi
+  if state=$(fm_backend_herdr_pane_agent_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" "$expected_workspace" "$expected_tab"); then
     :
   else
     state_rc=$?
@@ -2569,7 +2574,7 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
     echo "warning: herdr presentation binding for $id has an ambiguous, renamed, foreign, or non-nested live shape; spawning flat" >&2
     return 2
   fi
-  if state=$(fm_backend_herdr_pane_agent_state "$session" "$meta_pane"); then
+  if state=$(fm_backend_herdr_pane_agent_state "$session" "$meta_pane" "$meta_workspace" "$meta_tab"); then
     :
   else
     state_rc=$?
@@ -2628,7 +2633,7 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
     return 2
   fi
   state_rc=0
-  if state=$(fm_backend_herdr_pane_agent_state "$session" "$meta_pane"); then
+  if state=$(fm_backend_herdr_pane_agent_state "$session" "$meta_pane" "$meta_workspace" "$meta_tab"); then
     :
   else
     state_rc=$?
@@ -2636,6 +2641,7 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
   if [ "$state_rc" -ne 0 ]; then
     fm_backend_herdr_projection_reclaim_rollback "$session" "$new_pane" || true
     if [ "$state_rc" -eq 2 ]; then
+      # shellcheck disable=SC2034
       FM_BACKEND_HERDR_PROJECTION_RECLAIM_NATIVE_FAILURE=1
       fm_backend_policy_refuse "Herdr presentation reclaim agent read for $id" herdr \
         "The native Herdr agent get operation failed after replacement. Repair Herdr, then verify the named session with 'herdr status --json'." || true
@@ -2676,7 +2682,7 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
     return 2
   fi
   state_rc=0
-  if state=$(fm_backend_herdr_pane_agent_state "$session" "$meta_pane"); then
+  if state=$(fm_backend_herdr_pane_agent_state "$session" "$meta_pane" "$meta_workspace" "$meta_tab"); then
     :
   else
     state_rc=$?
@@ -2684,6 +2690,7 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
   if [ "$state_rc" -ne 0 ]; then
     fm_backend_herdr_projection_reclaim_rollback "$session" "$new_pane" || true
     if [ "$state_rc" -eq 2 ]; then
+      # shellcheck disable=SC2034
       FM_BACKEND_HERDR_PROJECTION_RECLAIM_NATIVE_FAILURE=1
       fm_backend_policy_refuse "Herdr presentation reclaim agent read for $id" herdr \
         "The native Herdr agent get operation failed after closing the old pane. Repair Herdr, then verify the named session with 'herdr status --json'." || true
@@ -2721,7 +2728,7 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
 # One or more matches allow flat fallback only when every pane is positively
 # dead or agent-free; a live or unknown pane refuses a duplicate launch.
 fm_backend_herdr_projection_recovery_allows_flat() {  # <session> <journal> <task-id>
-  local session=$1 journal=$2 id=$3 token list wsids count wsid panes pane_ids pane state state_rc=0
+  local session=$1 journal=$2 id=$3 token list wsids count wsid panes pane_ids pane pane_workspace pane_tab state state_rc=0 server_rc=0
   fm_backend_herdr_projection_recovery_refuse() {
     local detail=$1
     if declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
@@ -2732,10 +2739,14 @@ fm_backend_herdr_projection_recovery_allows_flat() {  # <session> <journal> <tas
     echo "error: malformed herdr presentation journal for $id; refusing duplicate launch" >&2
     return 1
   }
-  fm_backend_herdr_server_ensure "$session" || {
-    echo "error: could not inspect the quarantined herdr presentation for $id; refusing duplicate launch" >&2
-    return 1
-  }
+  if fm_backend_herdr_server_ensure "$session"; then
+    :
+  else
+    server_rc=$?
+    fm_backend_herdr_projection_recovery_refuse \
+      "The native Herdr server health check failed while checking the quarantined presentation. Repair Herdr, then verify with 'herdr status --json'."
+    return "$server_rc"
+  fi
   list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || {
     fm_backend_herdr_projection_recovery_refuse \
       "The native Herdr workspace list failed while checking the quarantined presentation. Repair Herdr, then verify with 'herdr status --json'."
@@ -2771,20 +2782,25 @@ fm_backend_herdr_projection_recovery_allows_flat() {  # <session> <journal> <tas
         "The native Herdr pane list failed for quarantined presentation workspace $wsid. Repair Herdr, then verify with 'herdr status --json'."
       return 1
     }
-    if ! printf '%s' "$panes" | jq -e '
+    if ! printf '%s' "$panes" | jq -e --arg workspace "$wsid" '
       (.result.panes | type) == "array"
       and all(.result.panes[]; (. | type) == "object"
         and (.pane_id | type) == "string"
-        and (.pane_id | length) > 0)
+        and (.pane_id | length) > 0
+        and (.workspace_id | type) == "string"
+        and (.workspace_id | length) > 0
+        and .workspace_id == $workspace
+        and (.tab_id | type) == "string"
+        and (.tab_id | length) > 0)
     ' >/dev/null 2>&1; then
       fm_backend_herdr_projection_recovery_refuse \
         "The native Herdr pane list response was malformed for quarantined presentation workspace $wsid. Repair Herdr, then verify with 'herdr status --json'."
       return 1
     fi
-    pane_ids=$(printf '%s' "$panes" | jq -r '.result.panes[] | .pane_id' 2>/dev/null)
-    while IFS= read -r pane; do
+    pane_ids=$(printf '%s' "$panes" | jq -r '.result.panes[] | [.pane_id, .workspace_id, .tab_id] | @tsv' 2>/dev/null)
+    while IFS=$'\t' read -r pane pane_workspace pane_tab; do
       state_rc=0
-      if state=$(fm_backend_herdr_pane_agent_state "$session" "$pane"); then
+      if state=$(fm_backend_herdr_pane_agent_state "$session" "$pane" "$pane_workspace" "$pane_tab"); then
         :
       else
         state_rc=$?
@@ -2837,8 +2853,18 @@ fm_backend_herdr_parse_target() {  # <target>
 }
 
 fm_backend_herdr_target_ready() {  # <target>
+  local expected_workspace='' expected_tab='' expected_target='' identity_rc=0
   fm_backend_herdr_parse_target "$1" || return 1
   fm_backend_herdr_session_capability_check "$FM_BACKEND_HERDR_SESSION" || return 2
+  expected_target=${FM_BACKEND_HERDR_EXPECTED_TARGET:-}
+  if [ "$expected_target" = "$1" ]; then
+    expected_workspace=${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}
+    expected_tab=${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}
+  fi
+  fm_backend_herdr_endpoint_identity \
+    "$FM_BACKEND_HERDR_SESSION" "$expected_workspace" "$expected_tab" \
+    "$FM_BACKEND_HERDR_PANE" || identity_rc=$?
+  [ "$identity_rc" -eq 0 ] || return 2
   return 0
 }
 

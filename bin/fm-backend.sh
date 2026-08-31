@@ -533,6 +533,12 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   local session pane recorded_session workspace tab terminal worktree_id surface identity_rc
   FM_BACKEND_VALIDATED_BACKEND=
   FM_BACKEND_VALIDATED_TARGET=
+  # shellcheck disable=SC2034
+  FM_BACKEND_HERDR_EXPECTED_TARGET=
+  # shellcheck disable=SC2034
+  FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=
+  # shellcheck disable=SC2034
+  FM_BACKEND_HERDR_EXPECTED_TAB_ID=
   [ -f "$meta" ] && [ ! -L "$meta" ] || {
     fm_backend_policy_refuse "task $id endpoint record" "" \
       "Repair or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
@@ -672,6 +678,12 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
             ;;
         esac
       fi
+      # shellcheck disable=SC2034
+      FM_BACKEND_HERDR_EXPECTED_TARGET=$window
+      # shellcheck disable=SC2034
+      FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=$workspace
+      # shellcheck disable=SC2034
+      FM_BACKEND_HERDR_EXPECTED_TAB_ID=$tab
       ;;
     zellij)
       [ "$binding" = "$id" ] || {

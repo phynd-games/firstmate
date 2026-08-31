@@ -2103,9 +2103,15 @@ case "$BACKEND" in
       elif [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ]; then
         # Session lock path resolution and exact parent binding both need a
         # live named-session socket before journal publication.
-        if ! fm_backend_herdr_server_ensure "$HERDR_SES"; then
-          echo "warning: herdr presentation could not ensure its session server; using the ordinary flat layout without projection" >&2
-        elif [ "${FM_BACKEND_HERDR_PRESENTATION_PREFERENCE:-default}" = default ] \
+        if fm_backend_herdr_server_ensure "$HERDR_SES"; then
+          :
+        else
+          HERDR_SERVER_STATUS=$?
+          fm_backend_policy_refuse "task $ID Herdr presentation server" herdr \
+            "The native Herdr server health check failed before presentation launch. Repair Herdr, then verify with 'herdr status --json'. Task state is preserved." || true
+          exit "$HERDR_SERVER_STATUS"
+        fi
+        if [ "${FM_BACKEND_HERDR_PRESENTATION_PREFERENCE:-default}" = default ] \
           && ! fm_backend_herdr_presentation_default_supported "$STATE" "$HERDR_SES"; then
           :
         elif spawn_herdr_presentation_order_lock_acquire "$HERDR_SES"; then
