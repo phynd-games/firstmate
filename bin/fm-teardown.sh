@@ -2806,18 +2806,22 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
     # Swallowing them left a wrong active workspace with no operator-visible
     # signal at all. The close stays non-fatal exactly as before: the presence
     # gate below is what decides whether any durable record may be removed.
+    FM_BACKEND_HERDR_OPERATION_LOCK_HELD=1
     fm_backend_herdr_projection_close_pane_focus_preserving \
       "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE" || true
+    unset FM_BACKEND_HERDR_OPERATION_LOCK_HELD
   else
     echo "warning: herdr presentation focus lock unavailable; refusing a concurrent focus-unsafe pane close" >&2
   fi
 elif [ "$BACKEND" = herdr ]; then
   if teardown_herdr_session_lock_held "$TEARDOWN_HERDR_SESSION"; then
+    FM_BACKEND_HERDR_OPERATION_LOCK_HELD=1
     if fm_backend_herdr_kill_serialized "$TEARDOWN_HERDR_SESSION" "$TEARDOWN_HERDR_PANE" 2>/dev/null; then
       kill_rc=0
     else
       kill_rc=$?
     fi
+    unset FM_BACKEND_HERDR_OPERATION_LOCK_HELD
     if [ "$kill_rc" -eq 2 ]; then
       fm_backend_policy_refuse "teardown Herdr endpoint for task $ID" herdr \
         "The verified Herdr session became unavailable during teardown. Repair Herdr, then verify the named session with 'herdr status --json'."
@@ -2830,8 +2834,19 @@ elif [ "$BACKEND" != orca ]; then
   fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
 fi
 if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
-  if [ "$(fm_backend_herdr_pane_agent_state "$HERDR_PRESENTATION_SESSION" \
-    "$HERDR_PRESENTATION_PANE" "$HERDR_PRESENTATION_WORKSPACE" "$HERDR_PRESENTATION_TAB")" = dead ]; then
+  presentation_agent_state=
+  if presentation_agent_state=$(fm_backend_herdr_pane_agent_state "$HERDR_PRESENTATION_SESSION" \
+    "$HERDR_PRESENTATION_PANE" "$HERDR_PRESENTATION_WORKSPACE" "$HERDR_PRESENTATION_TAB"); then
+    presentation_agent_rc=0
+  else
+    presentation_agent_rc=$?
+  fi
+  if [ "$presentation_agent_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "teardown Herdr presentation for task $ID" herdr \
+      "The native Herdr agent read failed before presentation cleanup. Repair Herdr, then verify the named session with 'herdr status --json'."
+    exit 1
+  fi
+  if [ "$presentation_agent_rc" -eq 0 ] && [ "$presentation_agent_state" = dead ]; then
     rm -f "$HERDR_PRESENTATION_JOURNAL"
   else
     echo "warning: exact herdr task-pane close could not be confirmed for $ID; retaining the presentation journal and attempting no workspace cleanup" >&2

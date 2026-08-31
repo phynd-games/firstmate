@@ -419,7 +419,8 @@ fm_send_resolve_target() {  # <raw-target>
       else
         assumed=tmux
       fi
-      if fm_backend_target_exists "$assumed" "$raw"; then
+      if fm_backend_target_exists "$assumed" "$raw" "" \
+        "${HERDR_WORKSPACE_ID:-}" "${HERDR_TAB_ID:-}"; then
         :
       else
         target_exists_rc=$?

@@ -1694,6 +1694,47 @@ fm_backend_herdr_endpoint_identity() {  # <session> <workspace> <tab> <pane>
   return 2
 }
 
+fm_backend_herdr_identity_bound_operation() {  # <session> <workspace> <tab> <pane> <operation> [args...]
+  local session=$1 expected_workspace=$2 expected_tab=$3 pane_id=$4 operation=$5
+  local lock_path='' lock_held=0 attempt=0 out op_rc=0 identity_rc=0
+  shift 5
+  [ -n "$session" ] && [ -n "$expected_workspace" ] && [ -n "$expected_tab" ] \
+    && [ -n "$pane_id" ] && [ -n "$operation" ] || return 2
+  if [ "${FM_BACKEND_HERDR_OPERATION_LOCK_HELD:-0}" != 1 ]; then
+    if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
+      # shellcheck source=bin/fm-wake-lib.sh
+      . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/fm-wake-lib.sh"
+    fi
+    lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") || return 2
+    while [ "$attempt" -lt 50 ]; do
+      if fm_lock_try_acquire "$lock_path"; then
+        lock_held=1
+        break
+      fi
+      sleep 0.1
+      attempt=$((attempt + 1))
+    done
+    [ "$lock_held" -eq 1 ] || return 2
+  fi
+  if fm_backend_herdr_pane_get_checked "$session" "$expected_workspace" "$expected_tab" "$pane_id" 1 >/dev/null; then
+    identity_rc=0
+  else
+    identity_rc=$?
+  fi
+  if [ "$identity_rc" -ne 0 ]; then
+    [ "$lock_held" -eq 1 ] && fm_lock_release "$lock_path" || true
+    return "$identity_rc"
+  fi
+  if out=$(fm_backend_herdr_cli "$session" pane "$operation" "$pane_id" "$@" 2>&1); then
+    op_rc=0
+  else
+    op_rc=$?
+  fi
+  [ -z "$out" ] || printf '%s' "$out"
+  [ "$lock_held" -eq 1 ] && fm_lock_release "$lock_path" || true
+  return "$op_rc"
+}
+
 # fm_backend_herdr_workspace_find: this HOME's own workspace id inside
 # <session>, or empty (never creates). Read-only, safe for recovery/list
 # paths, which address panes they already recorded and only need a container
@@ -1904,8 +1945,16 @@ fm_backend_herdr_workspace_prune_seeded_default_tab() {  # <session> <workspace_
   case "$tab_count" in ''|*[!0-9]*|0|1) return 0 ;; esac
   current_label=$(printf '%s' "$tabs" | jq -r --arg t "$tab_id" '.result.tabs[] | select(.tab_id == $t) | .label' 2>/dev/null)
   [ "$current_label" = "1" ] || return 0
-  pane_id=$(fm_backend_herdr_pane_for_tab "$session" "$wsid" "$tab_id") || return 0
-  [ -n "$pane_id" ] || return 0
+  if pane_id=$(fm_backend_herdr_pane_for_tab "$session" "$wsid" "$tab_id"); then
+    :
+  else
+    if declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
+      fm_backend_policy_refuse "Herdr seeded-tab pane inventory for $tab_id" herdr \
+        "The native Herdr pane inventory failed or was ambiguous before pruning the seeded tab. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+    fi
+    return 2
+  fi
+  [ -n "$pane_id" ] || return 2
   if agent_out=$(fm_backend_herdr_agent_status_raw "$session" "$pane_id" "$wsid" "$tab_id"); then
     :
   else
@@ -2103,8 +2152,9 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace> [<launcher-
 
 # fm_backend_herdr_pane_presence_state: classify one exact pane get response
 # as dead|present|unknown from a successful, identity-checked JSON response.
-fm_backend_herdr_pane_presence_state() {  # <session> <pane_id>
+fm_backend_herdr_pane_presence_state() {  # <session> <pane_id> <workspace> <tab>
   local session=$1 pane_id=$2 expected_workspace=${3:-} expected_tab=${4:-} pane_rc=0
+  [ -n "$expected_workspace" ] && [ -n "$expected_tab" ] || return 2
   fm_backend_herdr_pane_get_checked "$session" "$expected_workspace" "$expected_tab" "$pane_id" 1 >/dev/null || pane_rc=$?
   case "$pane_rc" in
     0) printf 'present'; return 0 ;;
@@ -2142,7 +2192,8 @@ fm_backend_herdr_workspace_presence_state() {  # <session> <workspace_id>
 fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id> [expected-workspace] [expected-tab]
   local session=$1 pane_id=$2 expected_workspace=${3:-} expected_tab=${4:-}
   local presence presence_rc close_out close_rc native_rc
-  if close_out=$(fm_backend_herdr_cli "$session" pane close "$pane_id" 2>&1); then
+  if close_out=$(fm_backend_herdr_identity_bound_operation \
+    "$session" "$expected_workspace" "$expected_tab" "$pane_id" close); then
     close_rc=0
   else
     close_rc=$?
@@ -2153,6 +2204,12 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id> [expec
     [ "$native_rc" -eq 2 ] && return 2
     [ "$native_rc" -eq 1 ] && return 0
     return 1
+  fi
+  if [ -n "$(printf '%s' "$close_out" | jq -r '.error.code // empty' 2>/dev/null || true)" ]; then
+    native_rc=0
+    fm_backend_herdr_native_failure_rc "$close_out" || native_rc=$?
+    [ "$native_rc" -eq 1 ] && return 0
+    return 2
   fi
   if presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id" "$expected_workspace" "$expected_tab"); then
     presence_rc=0
@@ -3064,10 +3121,14 @@ fm_backend_herdr_send_response_ok() {
 # spawn-time commands (treehouse get, the GOTMPDIR export). `pane run` types
 # the command and submits it in one call (verified).
 fm_backend_herdr_send_text_line() {  # <target> <text>
-  local ready_rc=0 out native_rc
+  local ready_rc=0 out native_rc expected_workspace expected_tab
   fm_backend_herdr_target_ready "$1" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
-  if out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane run "$FM_BACKEND_HERDR_PANE" "$2" 2>&1); then
+  expected_workspace=$FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID
+  expected_tab=$FM_BACKEND_HERDR_EXPECTED_TAB_ID
+  if out=$(fm_backend_herdr_identity_bound_operation \
+    "$FM_BACKEND_HERDR_SESSION" "$expected_workspace" "$expected_tab" \
+    "$FM_BACKEND_HERDR_PANE" run "$2"); then
     fm_backend_herdr_send_response_ok "$out" && return 0
   fi
   fm_backend_herdr_native_failure_rc "$out"
@@ -3081,10 +3142,14 @@ fm_backend_herdr_send_text_line() {  # <target> <text>
 # Verified: `pane send-text` does NOT auto-submit (contrary to the addendum's
 # original guess); it behaves exactly like tmux's `-l` literal send.
 fm_backend_herdr_send_literal() {  # <target> <text>
-  local ready_rc=0 out native_rc
+  local ready_rc=0 out native_rc expected_workspace expected_tab
   fm_backend_herdr_target_ready "$1" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
-  if out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane send-text "$FM_BACKEND_HERDR_PANE" "$2" 2>&1); then
+  expected_workspace=$FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID
+  expected_tab=$FM_BACKEND_HERDR_EXPECTED_TAB_ID
+  if out=$(fm_backend_herdr_identity_bound_operation \
+    "$FM_BACKEND_HERDR_SESSION" "$expected_workspace" "$expected_tab" \
+    "$FM_BACKEND_HERDR_PANE" send-text "$2"); then
     fm_backend_herdr_send_response_ok "$out" && return 0
   fi
   fm_backend_herdr_native_failure_rc "$out"
@@ -3113,11 +3178,15 @@ fm_backend_herdr_normalize_key() {  # <key>
 # fm_backend_herdr_send_key: one named special key. Mirrors fm-send.sh's --key
 # path (tmux's `send-keys -t T key`).
 fm_backend_herdr_send_key() {  # <target> <key>
-  local ready_rc=0 key out native_rc
+  local ready_rc=0 key out native_rc expected_workspace expected_tab
   fm_backend_herdr_target_ready "$1" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
   key=$(fm_backend_herdr_normalize_key "$2")
-  if out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane send-keys "$FM_BACKEND_HERDR_PANE" "$key" 2>&1); then
+  expected_workspace=$FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID
+  expected_tab=$FM_BACKEND_HERDR_EXPECTED_TAB_ID
+  if out=$(fm_backend_herdr_identity_bound_operation \
+    "$FM_BACKEND_HERDR_SESSION" "$expected_workspace" "$expected_tab" \
+    "$FM_BACKEND_HERDR_PANE" send-keys "$key"); then
     fm_backend_herdr_send_response_ok "$out" && return 0
   fi
   fm_backend_herdr_native_failure_rc "$out"
@@ -3140,13 +3209,17 @@ fm_backend_herdr_send_key() {  # <target> <key>
 # always request a generous fetch far above any realistic viewport height, then
 # trim to the caller's requested bound ourselves with `tail`.
 fm_backend_herdr_capture() {  # <target> <lines>
-  local ready_rc=0 lines=${2:-200} fetch out native_rc
+  local ready_rc=0 lines=${2:-200} fetch out native_rc expected_workspace expected_tab
   fm_backend_herdr_target_ready "$1" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
+  expected_workspace=$FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID
+  expected_tab=$FM_BACKEND_HERDR_EXPECTED_TAB_ID
   case "$lines" in ''|*[!0-9]*) lines=200 ;; esac
   fetch=$lines
   case "$fetch" in ''|*[!0-9]*) fetch=200 ;; *) [ "$fetch" -ge 200 ] || fetch=200 ;; esac
-  if ! out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane read "$FM_BACKEND_HERDR_PANE" --source recent --lines "$fetch" 2>&1); then
+  if ! out=$(fm_backend_herdr_identity_bound_operation \
+    "$FM_BACKEND_HERDR_SESSION" "$expected_workspace" "$expected_tab" \
+    "$FM_BACKEND_HERDR_PANE" read --source recent --lines "$fetch"); then
     fm_backend_herdr_native_failure_rc "$out"
     native_rc=$?
     [ "$native_rc" -eq 1 ] && return 1
@@ -3162,13 +3235,17 @@ fm_backend_herdr_capture() {  # <target> <lines>
 }
 
 fm_backend_herdr_capture_ansi() {  # <target> <lines>
-  local ready_rc=0 lines=${2:-200} fetch out native_rc
+  local ready_rc=0 lines=${2:-200} fetch out native_rc expected_workspace expected_tab
   fm_backend_herdr_target_ready "$1" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
+  expected_workspace=$FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID
+  expected_tab=$FM_BACKEND_HERDR_EXPECTED_TAB_ID
   case "$lines" in ''|*[!0-9]*) lines=200 ;; esac
   fetch=$lines
   case "$fetch" in ''|*[!0-9]*) fetch=200 ;; *) [ "$fetch" -ge 200 ] || fetch=200 ;; esac
-  if ! out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane read "$FM_BACKEND_HERDR_PANE" --source recent --lines "$fetch" --format ansi 2>&1); then
+  if ! out=$(fm_backend_herdr_identity_bound_operation \
+    "$FM_BACKEND_HERDR_SESSION" "$expected_workspace" "$expected_tab" \
+    "$FM_BACKEND_HERDR_PANE" read --source recent --lines "$fetch" --format ansi); then
     fm_backend_herdr_native_failure_rc "$out"
     native_rc=$?
     [ "$native_rc" -eq 1 ] && return 1
@@ -3627,7 +3704,7 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
 }
 
 fm_backend_herdr_kill() {  # <target>
-  local ready_rc=0
+  local ready_rc=0 prior_lock_held=${FM_BACKEND_HERDR_OPERATION_LOCK_HELD:-0}
   fm_backend_herdr_target_ready "$1" || ready_rc=$?
   [ "$ready_rc" -eq 0 ] || return "$ready_rc"
   local session=$FM_BACKEND_HERDR_SESSION pane=$FM_BACKEND_HERDR_PANE
@@ -3648,7 +3725,13 @@ fm_backend_herdr_kill() {  # <target>
   fi
   if [ "$lock_held" = 1 ]; then
     local kill_rc=0
+    FM_BACKEND_HERDR_OPERATION_LOCK_HELD=1
     fm_backend_herdr_kill_serialized "$session" "$pane" || kill_rc=$?
+    if [ "$prior_lock_held" = 1 ]; then
+      FM_BACKEND_HERDR_OPERATION_LOCK_HELD=1
+    else
+      unset FM_BACKEND_HERDR_OPERATION_LOCK_HELD
+    fi
     fm_lock_release "$lock_path" || true
     [ "$kill_rc" -eq 0 ] && return 0
     return "$kill_rc"
@@ -3832,10 +3915,26 @@ fm_backend_herdr_wait_for_working() {  # <session> <pane_id> <budget-seconds> <p
 # of <session>, via one pane list call filtered by tab_id (never assumes a
 # tab-number/pane-number correspondence - herdr numbers them independently).
 fm_backend_herdr_pane_for_tab() {  # <session> <workspace_id> <tab_id>
-  local session=$1 wsid=$2 tab_id=$3 panes
-  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$wsid" 2>/dev/null) || return 1
-  printf '%s' "$panes" | jq -r --arg tab "$tab_id" \
-    '.result.panes[]? | select(.tab_id == $tab) | .pane_id' 2>/dev/null | head -1
+  local session=$1 wsid=$2 tab_id=$3 panes pane_ids pane_count cli_rc=0
+  if panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$wsid" 2>/dev/null); then
+    cli_rc=0
+  else
+    cli_rc=$?
+  fi
+  [ "$cli_rc" -eq 0 ] || return 2
+  printf '%s' "$panes" | jq -e --arg workspace "$wsid" '
+    (.result.panes | type) == "array"
+    and all(.result.panes[]; (. | type) == "object"
+      and (.pane_id | type) == "string" and (.pane_id | length) > 0
+      and (.workspace_id | type) == "string" and (.workspace_id | length) > 0
+      and .workspace_id == $workspace
+      and (.tab_id | type) == "string" and (.tab_id | length) > 0)
+  ' >/dev/null 2>&1 || return 2
+  pane_ids=$(printf '%s' "$panes" | jq -r --arg tab "$tab_id" \
+    '.result.panes[] | select(.tab_id == $tab) | .pane_id' 2>/dev/null) || return 2
+  pane_count=$(printf '%s\n' "$pane_ids" | awk 'NF { n++ } END { print n + 0 }')
+  [ "$pane_count" -eq 1 ] || return 2
+  printf '%s' "$pane_ids"
 }
 
 # fm_backend_herdr_resolve_bare_selector: the live-tab-listing fallback for an

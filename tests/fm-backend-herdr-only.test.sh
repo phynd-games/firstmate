@@ -422,6 +422,27 @@ test_shared_pane_identity_boundary_is_typed_and_fail_closed() {
   pass "shared Herdr pane identity boundary preserves typed failures and explicit absence"
 }
 
+test_identity_bound_operation_refuses_rebound_before_mutation() {
+  local marker="$TMP_ROOT/identity-bound-operation"
+  rm -f "$marker"
+  run_capture identity-bound-operation-rebound lib_probe "OP_MARKER=$marker" -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_presentation_session_lock_path() { printf /tmp/fm-herdr-operation-lock; }
+    fm_lock_try_acquire() { return 0; }
+    fm_lock_release() { return 0; }
+    fm_backend_herdr_cli() {
+      case "$2 $3" in
+        "pane get") printf "%s" '\''{"result":{"pane":{"pane_id":"pane1","workspace_id":"other","tab_id":"tab1"}}}'\'' ;;
+        "pane send-text") : > "$OP_MARKER" ;;
+      esac
+    }
+    fm_backend_herdr_identity_bound_operation fmtest ws1 tab1 pane1 send-text payload
+  '
+  [ "$RC" -eq 2 ] || fail "identity-bound operation must refuse a rebound pane: rc=$RC out=$OUT"
+  [ ! -e "$marker" ] || fail "identity-bound operation mutated a rebound pane"
+  pass "identity-bound Herdr operations refuse a rebound pane before mutation"
+}
+
 test_pane_presence_not_found_is_idempotently_dead() {
   run_capture pane-presence-not-found lib_probe -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
@@ -1111,6 +1132,7 @@ test_kill_refuses_planner_and_focus_failures_before_close
 test_endpoint_presence_failure_remains_typed
 test_pane_presence_requires_complete_identity
 test_shared_pane_identity_boundary_is_typed_and_fail_closed
+test_identity_bound_operation_refuses_rebound_before_mutation
 test_pane_presence_not_found_is_idempotently_dead
 test_agent_state_rejects_rebound_identity_and_failed_body
 test_seeded_tab_inventory_failure_refuses_before_prune

@@ -438,7 +438,9 @@ deliver_interrupt() {
 
 verify_interrupt_running() {
   local proof after target_rc
-  if fm_backend_target_exists "$BACKEND" "$T" "$LABEL"; then
+  if fm_backend_target_exists "$BACKEND" "$T" "$LABEL" \
+    "${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}" \
+    "${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}"; then
     :
   else
     target_rc=$?

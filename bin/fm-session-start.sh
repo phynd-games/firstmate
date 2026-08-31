@@ -877,7 +877,9 @@ for meta in "$STATE"/*.meta; do
       else
         case "$backend" in
           herdr)
-          if fm_backend_target_exists "$backend" "${target:-$window}" "fm-$id"; then
+          if fm_backend_target_exists "$backend" "${target:-$window}" "fm-$id" \
+            "${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}" \
+            "${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}"; then
             printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"
           else
             endpoint_rc=$?

@@ -52,7 +52,8 @@ fm_afk_start_preflight() {
   backend=$(discover_supervisor_backend) || return 1
   fm_backend_validate "$backend" || return 1
   target=$(discover_supervisor_target) || return 1
-  fm_backend_target_exists "$backend" "$target" || return $?
+  fm_backend_target_exists "$backend" "$target" "" \
+    "${HERDR_WORKSPACE_ID:-}" "${HERDR_TAB_ID:-}" || return $?
 }
 
 fm_afk_start_usage() {
