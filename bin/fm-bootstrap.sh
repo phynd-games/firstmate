@@ -1036,9 +1036,6 @@ fi
 [ "$BACKEND_VALID" -eq 1 ] || BACKEND_TOOLS=""
 TOOLS="$BACKEND_TOOLS $COMMON_TOOLS"
 SECONDMATE_RUNTIME_VALID=0
-if [ "$BACKEND_VALID" -eq 1 ] && bootstrap_secondmate_runtime_preflight; then
-  SECONDMATE_RUNTIME_VALID=1
-fi
 NO_MISTAKES_MIN=1.46.0
 # AXI-FAMILY FLOOR POLICY. Every axi-family floor is the CURRENT LATEST published
 # version of that tool, captain-bumped periodically to keep the whole fleet on the
@@ -1468,6 +1465,10 @@ fi
 local_phase && detect_local_config
 
 if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
+  if [ "$BACKEND_VALID" -eq 1 ] && network_phase \
+    && bootstrap_secondmate_runtime_preflight; then
+    SECONDMATE_RUNTIME_VALID=1
+  fi
   # secondmate_sync consumes SECONDMATE_RESPAWNED_IDS from the liveness sweep, so
   # those two always run together in the same phase. Clone refresh does not
   # depend on them, so it starts in the background and overlaps their wall clock.

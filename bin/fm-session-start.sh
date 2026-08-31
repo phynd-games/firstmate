@@ -818,6 +818,22 @@ for meta in "$STATE"/*.meta; do
   fi
   window=$(fm_meta_get "$meta" window)
   target=
+  if [ -z "$(fm_meta_get "$meta" remote_host)" ]; then
+    recorded_backend=$backend
+    if [ "$recorded_backend" = herdr ]; then
+      if fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1; then
+        backend=$FM_BACKEND_VALIDATED_BACKEND
+        target=$FM_BACKEND_VALIDATED_TARGET
+      else
+        local_identity_valid=2
+      fi
+    else
+      case "$recorded_backend" in
+        absent|tmux|zellij|orca|cmux) local_identity_valid=0 ;;
+        *) local_identity_valid=2 ;;
+      esac
+    fi
+  fi
   if [ -z "$window" ] && [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
     remote_backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
     case "$remote_backend" in
@@ -854,20 +870,6 @@ for meta in "$STATE"/*.meta; do
           ;;
       esac
     else
-      recorded_backend=$backend
-      if [ "$recorded_backend" = herdr ]; then
-        if fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1; then
-          backend=$FM_BACKEND_VALIDATED_BACKEND
-          target=$FM_BACKEND_VALIDATED_TARGET
-        else
-          local_identity_valid=2
-        fi
-      else
-        case "$recorded_backend" in
-          absent|tmux|zellij|orca|cmux) local_identity_valid=0 ;;
-          *) local_identity_valid=2 ;;
-        esac
-      fi
       if [ "$local_identity_valid" -eq 0 ]; then
         printf 'endpoint: legacy record, read-only (backend=%s window=%s); Herdr is the sole supported runtime - see docs/configuration.md "Legacy task records"\n' "${recorded_backend:-absent}" "$window"
       elif [ "$local_identity_valid" -eq 2 ]; then

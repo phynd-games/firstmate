@@ -513,7 +513,12 @@ task_json_lines() {
     fi
 
     if [ "$remote_identity_valid" -eq 0 ] || [ "$local_identity_valid" -eq 0 ]; then
-      current_json=$(jq -n --arg detail "legacy-record: remote backend=$(meta_value "$meta" remote_backend) is not herdr; record is read-only" '{state:"unknown",source:"legacy-backend",detail:$detail,raw:""}')
+      if [ -n "$remote_host" ]; then
+        recorded_backend=$(meta_value "$meta" remote_backend)
+      else
+        recorded_backend=$(meta_value "$meta" backend)
+      fi
+      current_json=$(jq -n --arg detail "legacy-record: backend=${recorded_backend:-absent} is not herdr; record is read-only" '{state:"unknown",source:"legacy-backend",detail:$detail,raw:""}')
     elif [ "$remote_identity_valid" -eq 2 ] || [ "$local_identity_valid" -eq 2 ]; then
       current_json=$(jq -n --arg detail "remote backend identity is ambiguous or invalid; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\"" '{state:"unknown",source:"backend-identity",detail:$detail,raw:""}')
     else
