@@ -841,31 +841,6 @@ harness_owner_provable() {
   return 1
 }
 
-herdr_blocked_write() {
-  local reason=$1 tmp pid=${LOOP_ARM_PID:-unknown} identity=${LOOP_ARM_IDENTITY:-unknown}
-  tmp=$(mktemp "$BLOCKED.tmp.XXXXXX") || return 1
-  if ! {
-    printf 'generation=%s\n' "$LOOP_GENERATION"
-    printf 'pid=%s\n' "$pid"
-    printf 'pid-identity=%s\n' "$identity"
-    printf 'at=%s\nreason=%s\n' "$(date +%s)" "$reason"
-  } > "$tmp" 2>/dev/null || ! chmod 0600 "$tmp" 2>/dev/null || ! mv -f "$tmp" "$BLOCKED" 2>/dev/null; then
-    rm -f "$tmp" 2>/dev/null || true
-    return 1
-  fi
-}
-
-herdr_blocked_child_live() {
-  local pid identity current
-  pid=$(sed -n 's/^pid=//p' "$BLOCKED" 2>/dev/null | head -n 1)
-  identity=$(sed -n 's/^pid-identity=//p' "$BLOCKED" 2>/dev/null | head -n 1)
-  [ -n "$pid" ] || return 2
-  fm_pid_alive "$pid" || return 1
-  [ -n "$identity" ] || return 2
-  current=$(fm_pid_identity "$pid" 2>/dev/null || true)
-  [ -n "$current" ] && [ "$current" = "$identity" ] || return 2
-}
-
 herdr_blocked_clear() {
   rm -f "$BLOCKED" 2>/dev/null
 }
@@ -1458,7 +1433,7 @@ reconcile_pending_locked() {
 }
 
 cmd_ensure() {  # <reason>
-  local reason=$1 rc preference
+  local reason=$1 rc preference blocked_reason
   preference=$(hs_config_preference)
   if ! supervisor_eligible; then
     if [ "$preference" = off ] && [ -f "$PENDING" ]; then
@@ -1509,21 +1484,11 @@ cmd_ensure() {  # <reason>
     return 1
   fi
   if [ -f "$BLOCKED" ]; then
-    herdr_blocked_child_live
-    rc=$?
-    if [ "$rc" -eq 0 ]; then
-      fm_lock_release "$SUPERVISION_CLAIM"
-      escalate "the previous Herdr arm remains live with unresolved identity; replacement is blocked"
-      return 1
-    fi
-    if [ "$rc" -eq 2 ]; then
-      fm_lock_release "$SUPERVISION_CLAIM"
-      escalate "the previous Herdr arm has ambiguous blocked-child identity; replacement is blocked"
-      return 1
-    fi
+    blocked_reason=$(sed -n 's/^reason=//p' "$BLOCKED" 2>/dev/null | head -n 1)
+    escalate "discarding stale unresolved arm record; its child may still be live (${blocked_reason:-no reason recorded})"
     if ! herdr_blocked_clear; then
       fm_lock_release "$SUPERVISION_CLAIM"
-      escalate "the stale Herdr blocked-child record could not be cleared"
+      escalate "the stale Herdr unresolved arm record could not be cleared"
       return 1
     fi
   fi
@@ -1663,6 +1628,30 @@ loop_release_live() {
     rm -f "$LIVE" 2>/dev/null || true
   fi
   fm_lock_release "$LIVE_LOCK"
+}
+
+loop_abandon_unresolved_arm() {
+  local reason pid identity arm_out
+  pid=${LOOP_ARM_PID:-unknown}
+  identity=${LOOP_ARM_IDENTITY:-unknown}
+  arm_out=${LOOP_ARM_OUT:-}
+  reason="the arm identity remained unknown after $UNKNOWN_ARM_RETRY_LIMIT bounded termination attempts; abandoning child pid=$pid identity=$identity and retiring generation=$LOOP_GENERATION"
+  escalate "$reason"
+  ledger_append arm-abandoned "pid=$pid identity=$identity"
+  herdr_blocked_clear || true
+  LOOP_ARM_PID=
+  LOOP_ARM_IDENTITY=
+  LOOP_ARM_UNRESOLVED=0
+  LOOP_ARM_UNRESOLVED_NEXT=0
+  LOOP_ARM_UNRESOLVED_ATTEMPTS=0
+  if ! cmd_retire "$reason"; then
+    escalate "$reason; exact supervisor generation retirement failed and remains for reconciliation"
+  fi
+  loop_release_claim || true
+  loop_release_live || true
+  [ -z "$arm_out" ] || rm -f "$arm_out" 2>/dev/null || true
+  LOOP_ARM_OUT=
+  exit 1
 }
 
 # loop_publish_live writes ONLY the live record, so it never contends with the
@@ -1896,7 +1885,7 @@ cmd_run() {
   local self out rc reason failures=0 rapid=0 started ended elapsed delay process_state arm_match
   local LOOP_ARM_OUT
   local LOOP_ARM_UNRESOLVED=0 LOOP_ARM_UNRESOLVED_NEXT=0 LOOP_ARM_UNRESOLVED_REPORTED=0
-  local LOOP_ARM_UNRESOLVED_ATTEMPTS=0 LOOP_ARM_UNRESOLVED_BLOCKED=0 LOOP_ARM_UNRESOLVED_HANDOFF_REPORTED=0
+  local LOOP_ARM_UNRESOLVED_ATTEMPTS=0
 
   self=${BASHPID:-$$}
   LOOP_OWNER_PID=$self
@@ -1937,58 +1926,31 @@ cmd_run() {
         LOOP_ARM_IDENTITY=
         LOOP_ARM_UNRESOLVED=0
         LOOP_ARM_UNRESOLVED_ATTEMPTS=0
-        LOOP_ARM_UNRESOLVED_BLOCKED=0
         LOOP_ARM_UNRESOLVED_REPORTED=0
-        LOOP_ARM_UNRESOLVED_HANDOFF_REPORTED=0
         [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT" 2>/dev/null || true
         LOOP_ARM_OUT=
         LOOP_ARM_UNRESOLVED_NEXT=0
         herdr_blocked_clear || true
         loop_release_claim || true
       else
-        if [ "$LOOP_ARM_UNRESOLVED_BLOCKED" -eq 1 ]; then
-          if [ "$(hs_config_preference)" = off ] && [ "$LOOP_ARM_UNRESOLVED_HANDOFF_REPORTED" -eq 0 ]; then
-            escalate "config/herdr-supervisor is off but the unresolved arm child is still live; retaining tracked ownership"
-            LOOP_ARM_UNRESOLVED_HANDOFF_REPORTED=1
-          elif harness_owner_provable 1 && [ "$LOOP_ARM_UNRESOLVED_HANDOFF_REPORTED" -eq 0 ]; then
-            ledger_append handoff "another continuity owner became provable while the unresolved arm child remained live; retaining tracked ownership"
-            LOOP_ARM_UNRESOLVED_HANDOFF_REPORTED=1
-          fi
-          process_state=$(ps -o stat= -p "${LOOP_ARM_PID:-}" 2>/dev/null | tr -d '[:space:]')
-          if [ -z "$process_state" ] || [[ "$process_state" == Z* ]]; then
-            wait "${LOOP_ARM_PID:-}" 2>/dev/null || true
-          else
-            sleep 0.5
-          fi
-          continue
-        fi
         if [ "$(date +%s)" -ge "$LOOP_ARM_UNRESOLVED_NEXT" ]; then
           LOOP_ARM_UNRESOLVED_ATTEMPTS=$((LOOP_ARM_UNRESOLVED_ATTEMPTS + 1))
           if [ "$LOOP_ARM_UNRESOLVED_ATTEMPTS" -ge "$UNKNOWN_ARM_RETRY_LIMIT" ]; then
-            escalate "the arm identity remained unknown after $UNKNOWN_ARM_RETRY_LIMIT bounded termination attempts; retaining the tracked child and supervisor binding"
-            LOOP_ARM_UNRESOLVED_BLOCKED=1
-            LOOP_ARM_UNRESOLVED_REPORTED=1
-            LOOP_ARM_UNRESOLVED_HANDOFF_REPORTED=0
-            herdr_blocked_write "the arm identity remained unknown after $UNKNOWN_ARM_RETRY_LIMIT bounded termination attempts; retaining the tracked child and supervisor binding" \
-              || escalate "the unresolved Herdr arm could not persist its blocked-child record"
-            sleep 0.5
-            continue
+            loop_abandon_unresolved_arm
           fi
           if [ "$(hs_config_preference)" = off ]; then
             escalate "config/herdr-supervisor is off but the arm identity remains unknown; retaining the child and supervisor binding"
           elif harness_owner_provable; then
-            ledger_append handoff "another continuity owner is provable while the arm identity remains unknown; retaining the child and supervisor binding"
+            ledger_append handoff "another continuity owner is provable while the arm identity remains unknown; retaining the child until bounded cleanup"
           else
-            escalate "the arm identity remains unknown after its bounded wait; retaining the tracked child and supervisor binding"
+            escalate "the arm identity remains unknown after its bounded wait; retaining the child until bounded cleanup"
           fi
           LOOP_ARM_UNRESOLVED_REPORTED=0
           if loop_stop_arm; then
             [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT" 2>/dev/null || true
             LOOP_ARM_OUT=
             LOOP_ARM_UNRESOLVED_ATTEMPTS=0
-            LOOP_ARM_UNRESOLVED_BLOCKED=0
             LOOP_ARM_UNRESOLVED_REPORTED=0
-            LOOP_ARM_UNRESOLVED_HANDOFF_REPORTED=0
             herdr_blocked_clear || true
             loop_release_claim || true
           else
@@ -2062,8 +2024,6 @@ cmd_run() {
     fi
     LOOP_ARM_PID=$!
     LOOP_ARM_UNRESOLVED_ATTEMPTS=0
-    LOOP_ARM_UNRESOLVED_BLOCKED=0
-    LOOP_ARM_UNRESOLVED_HANDOFF_REPORTED=0
     herdr_blocked_clear || true
     if loop_capture_arm_identity; then
       arm_match=0
@@ -2104,10 +2064,7 @@ cmd_run() {
         LOOP_ARM_UNRESOLVED=1
         LOOP_ARM_UNRESOLVED_ATTEMPTS=1
         if [ "$LOOP_ARM_UNRESOLVED_ATTEMPTS" -ge "$UNKNOWN_ARM_RETRY_LIMIT" ]; then
-          escalate "the arm identity remained unknown after $UNKNOWN_ARM_RETRY_LIMIT bounded termination attempts; retaining the tracked child and supervisor binding"
-          LOOP_ARM_UNRESOLVED_BLOCKED=1
-          herdr_blocked_write "the arm identity remained unknown after $UNKNOWN_ARM_RETRY_LIMIT bounded termination attempts; retaining the tracked child and supervisor binding" \
-            || escalate "the unresolved Herdr arm could not persist its blocked-child record"
+          loop_abandon_unresolved_arm
         fi
         LOOP_ARM_UNRESOLVED_NEXT=$(( $(date +%s) + UNKNOWN_ARM_TIMEOUT + 1 ))
         continue
