@@ -1009,6 +1009,102 @@ PY
   pass "PR-ready path binds small-diff evidence to applicable surfaces"
 }
 
+test_pr_ready_requires_unaffected_scope_for_unrelated_surface_evidence() {
+  local dir report fixture_digest fixture_change_digest fixture_line_hex rc
+  dir=$(make_case unrelated-surface-evidence)
+  git -C "$dir/wt" reset --hard -q main
+  printf '%s\n' 'changed fixture' >> "$dir/wt/fixture.txt"
+  git -C "$dir/wt" add fixture.txt
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm unrelated-surface
+  write_self_review_report "$dir/home" task-a
+  report="$dir/home/data/task-a/pr-self-review.md"
+  fixture_digest=$(self_review_line_digest "$dir" fixture.txt)
+  fixture_change_digest=$(surface_change_digest_for_file "$dir" fixture.txt)
+  fixture_line_hex=$(self_review_line_hex "$dir" fixture.txt)
+  python3 - "$report" "$fixture_digest" "$fixture_change_digest" "$fixture_line_hex" <<'PY'
+import hashlib
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+digest, change_digest, line_hex = sys.argv[2:5]
+behaviors = {
+    "Authority": "non-authorizing",
+    "Security": "provenance-bound",
+    "Path": "path-safe",
+    "Failure": "fail-closed",
+    "Tests": "behavioral",
+    "Documentation": "contract-aligned",
+    "Delivery": "no-mistakes-owned",
+}
+actions = {
+    "Authority": "retain-owner",
+    "Security": "retain-boundary",
+    "Path": "retain-validation",
+    "Failure": "retain-refusal",
+    "Tests": "retain-regression",
+    "Documentation": "retain-contract",
+    "Delivery": "retain-no-mistakes",
+}
+changed_files = re.search(r"(?m)^Changed files: ([0-9a-f]{64})$", report.read_text(encoding="utf-8")).group(1)
+def binding(surface):
+    return hashlib.sha256((surface.lower() + "|fixture.txt:2|" + digest + "|" + change_digest + "|" + line_hex + "|" + behaviors[surface] + "|" + actions[surface] + "\n").encode()).hexdigest()
+def record(surface):
+    ref = "fixture.txt:2"
+    value = binding(surface)
+    return f"{surface}: reviewed; surface={surface.lower()}; files=fixture.txt; evidence={ref} sha256={digest} change-sha256={change_digest} line-hex={line_hex} hunk={ref}; consequence=anchor={ref} sha256={digest} change-sha256={change_digest} line-hex={line_hex} behavior={behaviors[surface]} binding={value}; fix=anchor={ref} sha256={digest} change-sha256={change_digest} line-hex={line_hex} action={actions[surface]} binding={value}"
+def unaffected(surface):
+    value = hashlib.sha256((surface.lower() + "|unaffected|fixture.txt|" + changed_files + "|" + behaviors[surface] + "|" + actions[surface] + "\n").encode()).hexdigest()
+    return f"{surface}: reviewed; surface={surface.lower()}; scope=unaffected; files=fixture.txt; rationale=no applicable changed {surface.lower()} surface; binding={value}"
+text = report.read_text(encoding="utf-8")
+for surface in behaviors:
+    text = re.sub(rf"(?m)^{surface}: .*", record(surface), text, count=1)
+report.write_text(text, encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/114 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted reused evidence for an unrelated one-file diff"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "reused unrelated evidence left a runnable poll"
+  fm_write_meta "$dir/home/state/task-a.meta" \
+    "window=firstmate:fm-task-a" "worktree=$dir/wt" 'project=x' \
+    'review_base_ref=main' "review_base_sha=$(git -C "$dir/wt" rev-parse main)" \
+    'kind=ship' 'mode=no-mistakes'
+  python3 - "$report" <<'PY'
+import hashlib
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+text = report.read_text(encoding="utf-8")
+changed_files = re.search(r"(?m)^Changed files: ([0-9a-f]{64})$", text).group(1)
+behaviors = {
+    "Authority": ("non-authorizing", "retain-owner"),
+    "Security": ("provenance-bound", "retain-boundary"),
+    "Path": ("path-safe", "retain-validation"),
+    "Failure": ("fail-closed", "retain-refusal"),
+    "Tests": ("behavioral", "retain-regression"),
+    "Documentation": ("contract-aligned", "retain-contract"),
+    "Delivery": ("no-mistakes-owned", "retain-no-mistakes"),
+}
+def record(surface):
+    behavior, action = behaviors[surface]
+    value = hashlib.sha256((surface.lower() + "|unaffected|fixture.txt|" + changed_files + "|" + behavior + "|" + action + "\n").encode()).hexdigest()
+    return f"{surface}: reviewed; surface={surface.lower()}; scope=unaffected; files=fixture.txt; rationale=no applicable changed {surface.lower()} surface; binding={value}"
+for surface in behaviors:
+    text = re.sub(rf"(?m)^{surface}: .*", record(surface), text, count=1)
+report.write_text(text, encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/115 >/dev/null \
+    || fail "PR-ready path rejected an explicit unaffected-surface rationale"
+  pass "PR-ready path requires explicit scope for unrelated surfaces"
+}
+
 test_local_landing_refuses_advanced_default_after_review() {
   local dir fake_root base_head task_head advanced_head rc
   dir="$TMP_ROOT/local-landing-stale-base"
@@ -4515,6 +4611,7 @@ test_gitlab_merged_poll_retires() {
 test_parser_matrix
 test_pr_ready_requires_durable_self_review
 test_pr_ready_rejects_unrelated_small_diff_surface_evidence
+test_pr_ready_requires_unaffected_scope_for_unrelated_surface_evidence
 test_local_landing_refuses_advanced_default_after_review
 test_direct_pr_creation_requires_self_review
 test_gitlab_merge_watch
