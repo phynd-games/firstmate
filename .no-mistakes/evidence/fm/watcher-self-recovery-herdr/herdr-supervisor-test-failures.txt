@@ -1,0 +1,12 @@
+Targeted validation evidence for 9544185
+
+Command: bash tests/fm-herdr-supervisor.test.sh
+Observed: the deterministic suite passed the incident continuity, stale beacon/PID/heartbeat, generation replacement, Herdr restart, bounded failure, quarantine, and timeout cases, then failed:
+  not ok - terminating the supervisor left its foreground arm child alive
+
+Command: bash tests/fm-herdr-supervisor-smoke.test.sh
+Observed before cleanup: the real Herdr session established a tracked supervisor, Herdr process-info matched the published loop pid, and one establish re-armed the real watcher. The duplicate-arm case then failed:
+  not ok - a duplicate real arm did not attach to the existing watcher
+The smoke diagnostics showed a live supervisor binding and repeated cycle records, but no duplicate-arm attachment result.
+
+Conclusion: the focused validation cannot claim the required exact-child cleanup or duplicate-arm singleton guarantees.
