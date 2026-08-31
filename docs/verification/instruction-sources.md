@@ -56,18 +56,30 @@ The dashboard root returned HTTP 500 with a rebuild failure, `/api/v1/overview` 
 
 This record makes no all-clear claim, and PR #2 was not merged.
 
-The owning safe reruns and focused checks are:
+The owning runtime records and safe checks are:
 
 ```sh
-HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
-  tests/fm-backend-herdr-respawn-idem-e2e.test.sh
-HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
-  bin/fm-test-run.sh --lane real-herdr-gated
-tests/fm-dashboard-api.test.sh
-tests/fm-dashboard-start.test.sh
+herdr --version
+herdr status --json | jq -c '{client:.client.protocol,server:.server.protocol}'
+herdr api schema --json | jq -c '{protocol,schema_version,subscription_events:.schemas.subscription_event["$defs"].SubscriptionEventKind.enum}'
+bin/fm-test-run.sh tests/fm-watch-recovery-loop.test.sh
 ```
 
-The Herdr lab isolation contract is documented in [`docs/herdr-backend.md`](../herdr-backend.md#destructive-lab-safety), and the restart-husk evidence is maintained in [`docs/verification/runtime-backends.md`](runtime-backends.md#prune-and-respawn).
+The 2026-08-31 Herdr read-only checks reported `herdr 0.8.2`, client and server protocol 20, a running compatible server with `live_handoff=true` and `detached_server_daemon=true`, and schema protocol 20 with `pane.output_matched`, `pane.agent_status_changed`, and `pane.scroll_changed` subscription events.
+
+[`docs/verification/runtime-backends.md`](runtime-backends.md#prune-and-respawn) owns the Herdr version, status, schema, named-lab isolation, and restart checks.
+
+The observed read-only status and normalized schema outputs were:
+
+```text
+herdr 0.8.2
+{"client":{"version":"0.8.2","channel":"stable","protocol":20,"binary":"/Users/criz/.local/bin/herdr","session":null},"server":{"status":"running","running":true,"version":"0.8.2","protocol":20,"capabilities":{"live_handoff":true,"detached_server_daemon":true},"compatible":true,"socket":"/Users/criz/.config/herdr/herdr.sock","session":null,"restart_needed":false},"update":{"restart_needed":false}}
+{"protocol":20,"schema_version":1,"subscription_events":["pane.output_matched","pane.agent_status_changed","pane.scroll_changed"]}
+```
+
+[`docs/verification/supervision.md`](supervision.md#watcher-continuity) owns watcher continuity and records the `bin/fm-test-run.sh tests/fm-watch-recovery-loop.test.sh` output, including `FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0`.
+
+No local dashboard test command exists in this branch, so the failed dashboard/API observations remain recorded here without referring to nonexistent test paths.
 
 ## Regression commands
 
