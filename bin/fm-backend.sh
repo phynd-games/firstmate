@@ -966,7 +966,7 @@ fm_backend_resolve_selector() {  # <raw-target> <state-dir>
 
 # fm_backend_capture: bounded plain-text session capture.
 fm_backend_capture() {  # <backend> <target> <lines> [expected-label]
-  local backend=$1 target
+  local backend=$1 target op_rc
   shift
   target=${1:-}
   fm_backend_source "$backend" "capture" "${target%%:*}" || return $?
@@ -978,11 +978,59 @@ fm_backend_capture() {  # <backend> <target> <lines> [expected-label]
     cmux) fm_backend_cmux_capture "$@" ;;
     *) echo "error: no capture implementation for backend '$backend'" >&2; return 1 ;;
   esac
+  op_rc=$?
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr capture for $target" herdr \
+      "The native Herdr pane read failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
+}
+
+fm_backend_send_literal() {  # <backend> <target> <text> [expected-label]
+  local backend=$1 target op_rc
+  shift
+  target=${1:-}
+  fm_backend_source "$backend" "send literal" "${target%%:*}" || return $?
+  case "$backend" in
+    tmux) fm_backend_tmux_send_literal "$@" ;;
+    herdr) fm_backend_herdr_send_literal "$@" ;;
+    zellij) fm_backend_zellij_send_literal "$@" ;;
+    orca) fm_backend_orca_send_literal "$@" ;;
+    cmux) fm_backend_cmux_send_literal "$@" ;;
+    *) echo "error: no send-literal implementation for backend '$backend'" >&2; return 1 ;;
+  esac
+  op_rc=$?
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr send-text for $target" herdr \
+      "The native Herdr send-text operation failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
+}
+
+fm_backend_send_text_line() {  # <backend> <target> <text> [expected-label]
+  local backend=$1 target op_rc
+  shift
+  target=${1:-}
+  fm_backend_source "$backend" "send text line" "${target%%:*}" || return $?
+  case "$backend" in
+    tmux) fm_backend_tmux_send_text_line "$@" ;;
+    herdr) fm_backend_herdr_send_text_line "$@" ;;
+    zellij) fm_backend_zellij_send_text_line "$@" ;;
+    orca) fm_backend_orca_send_text_line "$@" ;;
+    cmux) fm_backend_cmux_send_text_line "$@" ;;
+    *) echo "error: no send-text-line implementation for backend '$backend'" >&2; return 1 ;;
+  esac
+  op_rc=$?
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr send-text for $target" herdr \
+      "The native Herdr send-text operation failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
 }
 
 # fm_backend_send_key: one backend-supported named special key.
 fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
-  local backend=$1 target
+  local backend=$1 target op_rc
   shift
   target=${1:-}
   fm_backend_source "$backend" "send key" "${target%%:*}" || return $?
@@ -994,13 +1042,19 @@ fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
     cmux) fm_backend_cmux_send_key "$@" ;;
     *) echo "error: no send-key implementation for backend '$backend'" >&2; return 1 ;;
   esac
+  op_rc=$?
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr send-keys for $target" herdr \
+      "The native Herdr send-keys operation failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
 }
 
 # fm_backend_send_text_submit: type text once, then submit and verify,
 # retrying only the submission (never retyping). Echoes the backend's
 # proof-carrying verdict; callers require exact empty for confirmed delivery.
 fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sleep> <settle> [expected-label]
-  local backend=$1 target
+  local backend=$1 target op_rc
   shift
   target=${1:-}
   fm_backend_source "$backend" "send text" "${target%%:*}" || return $?
@@ -1012,13 +1066,19 @@ fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sl
     cmux) fm_backend_cmux_send_text_submit "$@" ;;
     *) echo "error: no send-text implementation for backend '$backend'" >&2; return 1 ;;
   esac
+  op_rc=$?
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr send-text for $target" herdr \
+      "The native Herdr send-text, send-keys, or agent get operation failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
 }
 
 # fm_backend_kill: remove the task's session endpoint (best-effort; a
 # nonexistent/already-gone target is not an error - callers already swallow
 # failures here exactly as the inline `tmux kill-window ... || true` did).
 fm_backend_kill() {  # <backend> <target>
-  local backend=$1 target
+  local backend=$1 target op_rc
   shift
   [ -n "${1:-}" ] || { echo "error: refusing empty backend kill target" >&2; return 1; }
   target=$1
@@ -1031,6 +1091,12 @@ fm_backend_kill() {  # <backend> <target>
     cmux) fm_backend_cmux_kill "$@" ;;
     *) echo "error: no kill implementation for backend '$backend'" >&2; return 1 ;;
   esac
+  op_rc=$?
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr endpoint cleanup for $target" herdr \
+      "The native Herdr cleanup operation failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
 }
 
 fm_backend_remove_worktree() {  # <backend> <worktree-id>
@@ -1061,7 +1127,7 @@ fm_backend_worktree_path() {  # <backend> <worktree-id>
 # fm-crew-state.sh also corroborates native idle verdicts with the recorded
 # harness's signature before treating a no-run crew as not busy.
 fm_backend_busy_state() {  # <backend> <target>
-  local backend=$1 target
+  local backend=$1 target op_rc
   shift
   target=${1:-}
   fm_backend_source "$backend" "busy state" "${target%%:*}"
@@ -1074,6 +1140,12 @@ fm_backend_busy_state() {  # <backend> <target>
     herdr) fm_backend_herdr_busy_state "$@" ;;
     *) printf 'unknown' ;;
   esac
+  op_rc=$?
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr busy state for $target" herdr \
+      "The native Herdr agent get operation failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
 }
 
 # fm_backend_composer_state: classify the composer/input area of <target> as
@@ -1089,7 +1161,7 @@ fm_backend_busy_state() {  # <backend> <target>
 # assumption; zellij's classifier reads `dump-screen --ansi`, which replaced
 # its old no-classifier content-diff reporting.
 fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pending|pending-unproven|unknown
-  local backend=$1 target
+  local backend=$1 target op_rc
   shift
   target=${1:-}
   fm_backend_source "$backend" "composer state" "${target%%:*}"
@@ -1106,6 +1178,12 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
     zellij) fm_backend_zellij_composer_state "$@" ;;
     *) printf 'unknown' ;;
   esac
+  op_rc=$?
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr composer state for $target" herdr \
+      "The native Herdr pane or agent read failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
 }
 
 # fm_backend_target_exists: cheap, READ-ONLY existence check - does the
@@ -1188,7 +1266,7 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
 # agent-process recovery path has not been empirically validated. Orca and cmux
 # do not support secondmate spawns.
 fm_backend_agent_state() {  # <backend> <target>
-  local backend=$1 target=$2
+  local backend=$1 target=$2 state op_rc=0
   fm_backend_source "$backend" "agent state" "${target%%:*}"
   local source_rc=$?
   if [ "$source_rc" -ne 0 ]; then
@@ -1196,10 +1274,26 @@ fm_backend_agent_state() {  # <backend> <target>
     return "$source_rc"
   fi
   case "$backend" in
-    tmux) fm_backend_tmux_agent_state "$target" ;;
-    herdr) fm_backend_herdr_agent_state "$target" ;;
-    *) printf 'unverified' ;;
+    tmux)
+      fm_backend_tmux_agent_state "$target"
+      op_rc=$?
+      ;;
+    herdr)
+      if state=$(fm_backend_herdr_agent_state "$target"); then
+        printf '%s' "$state"
+      else
+        op_rc=$?
+      fi
+      ;;
+    *)
+      printf 'unverified'
+      ;;
   esac
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr agent state for $target" herdr \
+      "The native Herdr agent get operation failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
 }
 
 # Backward-compatible three-state view for existing callers. An

@@ -2243,13 +2243,7 @@ fi
 # worktree-detection steps below must never reference an unbound WT_TARGET under set -u.
 : "${WT_TARGET:=$T}"
 spawn_send_text_line() {  # <target> <text>
-  case "$BACKEND" in
-    tmux) fm_backend_tmux_send_text_line "$1" "$2" ;;
-    herdr) fm_backend_herdr_send_text_line "$1" "$2" ;;
-    zellij) fm_backend_zellij_send_text_line "$1" "$2" "$W" ;;
-    orca) fm_backend_orca_send_text_line "$1" "$2" ;;
-    cmux) fm_backend_cmux_send_text_line "$1" "$2" "$W" ;;
-  esac
+  fm_backend_send_text_line "$BACKEND" "$1" "$2" "$W"
 }
 spawn_current_path() {  # <target>
   case "$BACKEND" in
@@ -2260,22 +2254,10 @@ spawn_current_path() {  # <target>
   esac
 }
 spawn_send_literal() {  # <target> <text>
-  case "$BACKEND" in
-    tmux) fm_backend_tmux_send_literal "$1" "$2" ;;
-    herdr) fm_backend_herdr_send_literal "$1" "$2" ;;
-    zellij) fm_backend_zellij_send_literal "$1" "$2" "$W" ;;
-    orca) fm_backend_orca_send_literal "$1" "$2" ;;
-    cmux) fm_backend_cmux_send_literal "$1" "$2" "$W" ;;
-  esac
+  fm_backend_send_literal "$BACKEND" "$1" "$2" "$W"
 }
 spawn_send_key() {  # <target> <key>
-  case "$BACKEND" in
-    tmux) fm_backend_tmux_send_key "$1" "$2" ;;
-    herdr) fm_backend_herdr_send_key "$1" "$2" ;;
-    zellij) fm_backend_zellij_send_key "$1" "$2" "$W" ;;
-    orca) fm_backend_orca_send_key "$1" "$2" ;;
-    cmux) fm_backend_cmux_send_key "$1" "$2" "$W" ;;
-  esac
+  fm_backend_send_key "$BACKEND" "$1" "$2" "$W"
 }
 
 kimi_capture() {

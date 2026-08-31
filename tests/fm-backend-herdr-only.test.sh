@@ -251,9 +251,42 @@ test_selector_resolution_has_no_tmux_fallback() {
   [ "$RC" -ne 0 ] && [ -z "$OUT" ] || fail "a bare window name must not resolve: rc=$RC out=$OUT"
   assert_contains "$ERR" "bare window names are not resolvable because Herdr is the sole supported runtime backend" "bare selector diagnostic"
   [ ! -s "$log" ] || fail "bare selector resolution must not search a tmux inventory"
-  run_capture explicit lib_probe -- "fm_backend_herdr_version_check() { return 0; }; fm_backend_of_selector 'default:w9:p9' 'default:w9:p9' '$state'"
+  run_capture explicit lib_probe -- "fm_backend_herdr_capability_preflight() { return 0; }; fm_backend_of_selector 'default:w9:p9' 'default:w9:p9' '$state'"
   [ "$RC" -eq 0 ] && [ "$OUT" = herdr ] || fail "an explicit unmatched target is a herdr endpoint, got rc=$RC out=$OUT"
   pass "selector resolution: bare names refuse without a tmux inventory search, explicit targets are herdr"
+}
+
+test_native_herdr_failures_are_policy_refusals() {
+  run_capture send-key-failure lib_probe -- '
+    fm_backend_herdr_capability_check() { return 0; }
+    fm_backend_herdr_session_capability_check() { return 0; }
+    fm_backend_source herdr
+    fm_backend_herdr_send_key() { return 2; }
+    fm_backend_send_key herdr default:w1:p1 Enter
+  '
+  assert_refusal "a post-preflight Herdr send failure" "send-keys operation failed after preflight"
+  pass "post-preflight Herdr native failures surface one policy-owned refusal"
+}
+
+test_ambiguous_close_planning_refuses_without_output() {
+  run_capture ambiguous-close lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() { printf "%s" '{"result":{"tabs":[{"tab_id":"other"}]}}'; }
+    fm_backend_herdr_emptying_close_plan fmtest pane1 ws1 tab1 ws0
+  '
+  [ "$RC" -eq 2 ] && [ -z "$OUT" ] || fail "ambiguous close planning must return 2 with no plan output: rc=$RC out=$OUT"
+  pass "ambiguous Herdr close planning refuses before selecting a close strategy"
+}
+
+test_workspace_list_failure_refuses_before_creation() {
+  run_capture workspace-list-failure lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_workspace_label() { printf firstmate; }
+    fm_backend_herdr_cli() { return 1; }
+    fm_backend_herdr_workspace_ensure fmtest /tmp other-home
+  '
+  [ "$RC" -eq 2 ] && [ -z "$OUT" ] || fail "workspace list failure must remain typed and produce no workspace id: rc=$RC out=$OUT"
+  pass "failed Herdr workspace listing refuses before workspace creation"
 }
 
 # --- fm-spawn ----------------------------------------------------------------
@@ -615,6 +648,9 @@ test_name_accepts_declared_herdr
 test_runtime_markers_never_select
 test_dispatchers_refuse_retained_adapters_without_running_them
 test_selector_resolution_has_no_tmux_fallback
+test_native_herdr_failures_are_policy_refusals
+test_ambiguous_close_planning_refuses_without_output
+test_workspace_list_failure_refuses_before_creation
 test_spawn_refuses_non_herdr_selection_before_side_effects
 test_spawn_refuses_missing_or_incapable_herdr_without_fallback
 test_invalid_backend_state_fails_closed

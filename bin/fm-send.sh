@@ -247,13 +247,17 @@ fm_send_id_from_meta() {  # <meta-file>
 # control-plane capability table (bin/fm-control-lib.sh) rather than a second
 # copy here - the same table bin/fm-control.sh's interrupt verb reads.
 fm_send_clear_after_interrupt() {  # <key>
-  local key=$1 family clear
+  local key=$1 family clear send_rc
   [ "$key" = Escape ] || return 0
   family=$(fm_control_harness_family "$TARGET_HARNESS") || return 0
   clear=$(fm_control_interrupt_clear_key "$family") || return 0
   [ -n "$clear" ] || return 0
   [ "$TARGET_BACKEND" != remote ] || return 0
-  if ! fm_backend_send_key "$TARGET_BACKEND" "$T" "$clear" "$EXPECTED_LABEL"; then
+  if fm_backend_send_key "$TARGET_BACKEND" "$T" "$clear" "$EXPECTED_LABEL"; then
+    :
+  else
+    send_rc=$?
+    [ "$send_rc" -eq 2 ] && return 2
     echo "error: Escape reached $T, but the $TARGET_HARNESS composer could not be cleared; it still holds the restored prompt. Clear it before sending the next message." >&2
     return 1
   fi
