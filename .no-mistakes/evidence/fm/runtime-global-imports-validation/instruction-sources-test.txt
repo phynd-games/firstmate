@@ -1,0 +1,11 @@
+Targeted test evidence for commit e0f1a1793e62f106898eb8cbefb64767c5159b0b
+
+fm-instruction-sources-check: ok canonical=.agents/skills claude=pointer grok=attachment-adapter
+Focused regression: canonical bridge pass case and duplicate/dangling/policy/trailing-content rejection cases passed.
+fm-doc-audience-check: ok surfaces=80 local_links=269
+Recovery-loop regression: restart recovery announcement and handling-successor continuity scenarios passed.
+herdr 0.8.2
+Herdr client/server protocol: 20/20; compatible=true; live_handoff=true; detached_server_daemon=true
+Herdr schema protocol=20 schema_version=1 subscription_events=pane.output_matched,pane.agent_status_changed,pane.scroll_changed
+
+The committed verification record documents dashboard root HTTP 500, /api/v1/overview HTTP 404, and one missing required watcher endpoint; these failures are intentionally not represented as an all-clear.
