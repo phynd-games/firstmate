@@ -110,7 +110,7 @@ run_settle_spawn() {
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
-    FM_FAKE_PANE_PATH="$WT_DIR" FM_FAKE_PANE_STALE="$STALE_DIR" \
+    FM_FAKE_PANE_PATH="${FM_FAKE_PANE_PATH_OVERRIDE:-$WT_DIR}" FM_FAKE_PANE_STALE="$STALE_DIR" \
     FM_FAKE_PANE_STALE_READS="$STALE_READS" FM_FAKE_PANE_COUNTFILE="$COUNTFILE" \
     FM_FAKE_BACKEND_LOG="$HOME_DIR/backend.log" FM_FAKE_TREEHOUSE_RETURN_LOG="$HOME_DIR/treehouse-return.log" \
     PATH="$FAKEBIN_DIR:$PATH" \
@@ -138,6 +138,24 @@ test_approved_base_failure_cleans_endpoint_and_worktree() {
   assert_grep "$WT_DIR" "$HOME_DIR/treehouse-return.log" \
     "approved-base failure left the treehouse worktree leased"
   pass "approved-base failure returns the worktree and removes the endpoint"
+}
+
+test_invalid_worktree_validation_cleans_endpoint_and_worktree() {
+  local rec id out status
+  id=settle-invalid-worktree-z5
+  rec=$(make_settle_case settle-invalid-worktree "$id" 0)
+  read_settle_record "$rec"
+
+  set +e
+  out=$(FM_FAKE_PANE_PATH_OVERRIDE="$HOME_DIR" run_settle_spawn "$id")
+  status=$?
+  set -e
+  [ "$status" -ne 0 ] || fail "spawn accepted a non-worktree pane path"
+  assert_grep 'kill-window' "$HOME_DIR/backend.log" \
+    "invalid-worktree validation left the backend endpoint alive"
+  assert_grep "$HOME_DIR" "$HOME_DIR/treehouse-return.log" \
+    "invalid-worktree validation left the leased path unreleased"
+  pass "invalid-worktree validation returns the lease and removes the endpoint"
 }
 
 # A single stale first read (the exact incident) must not be accepted: the
@@ -184,5 +202,6 @@ test_already_settled_pane_costs_one_confirm_sleep() {
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_sleep
 test_approved_base_failure_cleans_endpoint_and_worktree
+test_invalid_worktree_validation_cleans_endpoint_and_worktree
 
 echo "# all fm-spawn-worktree-settle tests passed"

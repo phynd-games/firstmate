@@ -2390,10 +2390,10 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     exit 1
   fi
 
+  if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+    SPAWN_ENDPOINT_WORKTREE=$WT
+  fi
   validate_spawn_worktree "treehouse get" "$T"
-fi
-if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  SPAWN_ENDPOINT_WORKTREE=$WT
 fi
 if [ "$KIND" = ship ]; then
   if [ "$RELAUNCH" -eq 1 ]; then
