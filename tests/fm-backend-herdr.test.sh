@@ -62,6 +62,9 @@ if [ "${1:-}" = server ] && [ -n "${FM_HERDR_SERVER_DELAY:-}" ]; then
   if [ -n "${FM_HERDR_SERVER_FD_PROBE:-}" ] && [ -e /dev/fd/9 ]; then
     printf 'inherited\n' > "$FM_HERDR_SERVER_FD_PROBE"
   fi
+  if [ -n "${FM_HERDR_SERVER_FD255_PROBE:-}" ]; then
+    printf 'inherited\n' >&255 2>/dev/null || true
+  fi
   [ -z "${FM_HERDR_SERVER_PID_FILE:-}" ] || printf '%s\n' "$$" > "$FM_HERDR_SERVER_PID_FILE"
   exec sleep "$FM_HERDR_SERVER_DELAY"
 fi
@@ -542,8 +545,10 @@ test_server_ensure_does_not_wait_for_a_long_lived_server_in_command_substitution
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_SCRIPT_STATUS=1 FM_HERDR_SERVER_DELAY=30 FM_HERDR_SERVER_PID_FILE="$dir/server.pid" \
     FM_HERDR_SERVER_FD_PROBE="$dir/fd-probe" \
+    FM_HERDR_SERVER_FD255_PROBE="$dir/fd-probe-255" \
     fm_run_timed 5 bash -c '
       exec 9>"$2/fd-probe"
+      exec 255>"$2/fd-probe-255"
       . "$0/bin/backends/herdr.sh"
       result=$(fm_backend_herdr_server_ensure fmtest)
       printf "result=%s\n" "$result"
@@ -553,6 +558,7 @@ test_server_ensure_does_not_wait_for_a_long_lived_server_in_command_substitution
   server_pid=$(cat "$dir/server.pid" 2>/dev/null || printf '')
   [ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null || true
   [ ! -s "$dir/fd-probe" ] || fail "server_ensure leaked an inherited descriptor into the long-lived server"
+  [ ! -s "$dir/fd-probe-255" ] || fail "server_ensure leaked fd 255 into the long-lived server"
   assert_contains "$out" "result=" "server_ensure completed through command substitution"
   pass "fm_backend_herdr_server_ensure: command substitutions return without inherited descriptors"
 }

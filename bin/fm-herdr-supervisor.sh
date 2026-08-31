@@ -442,39 +442,6 @@ pending_restore_record() {
   } | record_put
 }
 
-pending_resolve_creation() {
-  local generation session socket socket_identity label list matches workspace count tab pane tries=0 max_tries
-  max_tries=${FM_HERDR_PENDING_RECONCILE_TRIES:-3}
-  case "$max_tries" in ''|*[!0-9]*|0) max_tries=3 ;; esac
-  generation=$(pending_get generation || printf '')
-  session=$(pending_get herdr_session || printf '')
-  socket=$(pending_get herdr_socket || printf '')
-  socket_identity=$(pending_get herdr_socket_identity || printf '')
-  label=$(pending_get create_label || printf '')
-  [ -n "$generation" ] && [ -n "$session" ] && [ -n "$socket" ] \
-    && [ -n "$socket_identity" ] && [ -n "$label" ] || return 1
-  herdr_identity || return 1
-  [ "$HS_SESSION" = "$session" ] && [ "$HS_SOCKET" = "$socket" ] \
-    && [ "$HS_SOCKET_IDENTITY" = "$socket_identity" ] || return 1
-  while [ "$tries" -lt "$max_tries" ]; do
-    list=$(herdr_workspace_control "$socket" "$socket_identity" list 2>/dev/null) || return 1
-    matches=$(printf '%s' "$list" | jq -r --arg label "$label" \
-      'if (.result.workspaces | type) != "array" then error("workspace list is not an array") else .result.workspaces[] | select(.label == $label) | .workspace_id end' 2>/dev/null) || return 1
-    count=$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d '[:space:]')
-    [ "$count" != 0 ] && break
-    tries=$((tries + 1))
-    [ "$tries" -lt "$max_tries" ] && sleep 0.1
-  done
-  [ "$count" != 0 ] || return 2
-  [ "$count" = 1 ] || return 1
-  workspace=$(printf '%s\n' "$matches" | sed -n '1p')
-  tab=$(pending_get tab || printf unknown)
-  pane=$(pending_get pane || printf unknown)
-  [ -n "$tab" ] || tab=unknown
-  [ -n "$pane" ] || pane=unknown
-  pending_put "$generation" "$session" "$socket" "$workspace" "$tab" "$pane" "$socket_identity"
-}
-
 mint_generation() {
   local rand
   rand=$(dd if=/dev/urandom bs=8 count=1 2>/dev/null | od -An -tx1 | tr -d '[:space:]') || rand=
@@ -1175,6 +1142,7 @@ establish() {  # <reason>
     printf 'export FM_HERDR_SUPERVISOR_HEARTBEAT_GRACE=%s\n' "$HEARTBEAT_GRACE"
     printf 'export FM_HERDR_SUPERVISOR_READY_TIMEOUT=%s\n' "$READY_TIMEOUT"
     printf 'export FM_HERDR_SUPERVISOR_UNKNOWN_ARM_TIMEOUT=%s\n' "$UNKNOWN_ARM_TIMEOUT"
+    printf 'export FM_HERDR_SUPERVISOR_UNKNOWN_ARM_RETRY_LIMIT=%s\n' "$UNKNOWN_ARM_RETRY_LIMIT"
     printf 'export FM_HERDR_SUPERVISOR_RETRY_LIMIT=%s\n' "$RETRY_LIMIT"
     printf 'export FM_HERDR_SUPERVISOR_RETRY_BASE=%s\n' "$RETRY_BASE"
     printf 'export FM_HERDR_SUPERVISOR_RETRY_MAX=%s\n' "$RETRY_MAX"
@@ -1378,18 +1346,10 @@ reconcile_pending_locked() {
   record_generation=$(record_get generation || printf '')
   record_workspace=$(record_get workspace || printf '')
   record_cleanup_state=$(record_get cleanup_state || printf open)
-  if [ "$create_state" = creating ] && [ -z "$workspace" ]; then
-    pending_resolve_creation
-    case "$?" in
-      0) ;;
-      2)
-        pending_quarantine "incomplete Herdr create remained invisible after bounded reconciliation" || return 1
-        escalate "incomplete Herdr create was quarantined after bounded reconciliation found no visible workspace" || true
-        return 0
-        ;;
-      *) pending_restore_record quarantine || true; return 1 ;;
-    esac
-    workspace=$(pending_get workspace || printf '')
+  if [ "$create_state" = creating ]; then
+    pending_quarantine "incomplete Herdr create response has no exact cleanup authorization" || return 1
+    escalate "incomplete or ambiguous Herdr create was quarantined without cleanup because its response did not return an exact workspace identity" || true
+    return 0
   fi
   if [ "$record_mode" = active ] \
     && [ "$(record_get generation || printf '')" = "$generation" ] \
@@ -1635,7 +1595,7 @@ loop_abandon_unresolved_arm() {
   pid=${LOOP_ARM_PID:-unknown}
   identity=${LOOP_ARM_IDENTITY:-unknown}
   arm_out=${LOOP_ARM_OUT:-}
-  reason="the arm identity remained unknown after $UNKNOWN_ARM_RETRY_LIMIT bounded termination attempts; abandoning child pid=$pid identity=$identity and retiring generation=$LOOP_GENERATION"
+  reason="the arm identity remained unknown after $UNKNOWN_ARM_RETRY_LIMIT bounded termination attempts; abandoning child pid=$pid identity=$identity while retaining generation=$LOOP_GENERATION"
   escalate "$reason"
   ledger_append arm-abandoned "pid=$pid identity=$identity"
   herdr_blocked_clear || true
@@ -1644,14 +1604,10 @@ loop_abandon_unresolved_arm() {
   LOOP_ARM_UNRESOLVED=0
   LOOP_ARM_UNRESOLVED_NEXT=0
   LOOP_ARM_UNRESOLVED_ATTEMPTS=0
-  if ! cmd_retire "$reason"; then
-    escalate "$reason; exact supervisor generation retirement failed and remains for reconciliation"
-  fi
-  loop_release_claim || true
-  loop_release_live || true
   [ -z "$arm_out" ] || rm -f "$arm_out" 2>/dev/null || true
   LOOP_ARM_OUT=
-  exit 1
+  failures=0
+  rapid=0
 }
 
 # loop_publish_live writes ONLY the live record, so it never contends with the
@@ -1937,6 +1893,7 @@ cmd_run() {
           LOOP_ARM_UNRESOLVED_ATTEMPTS=$((LOOP_ARM_UNRESOLVED_ATTEMPTS + 1))
           if [ "$LOOP_ARM_UNRESOLVED_ATTEMPTS" -ge "$UNKNOWN_ARM_RETRY_LIMIT" ]; then
             loop_abandon_unresolved_arm
+            continue
           fi
           if [ "$(hs_config_preference)" = off ]; then
             escalate "config/herdr-supervisor is off but the arm identity remains unknown; retaining the child and supervisor binding"
@@ -1997,12 +1954,17 @@ cmd_run() {
       exit 1
     }
     LOOP_ARM_OUT=$out
-    if ! fm_supervision_claim_acquire "$SUPERVISION_CLAIM" "$SUPERVISOR_LOCK_TRIES"; then
-      escalate "the continuity ownership claim could not be acquired before arming"
-      sleep "$IDLE_INTERVAL"
-      continue
+    if [ "$LOOP_CLAIM_HELD" -eq 1 ] && ! fm_lock_owned_by_current "$SUPERVISION_CLAIM"; then
+      LOOP_CLAIM_HELD=0
     fi
-    LOOP_CLAIM_HELD=1
+    if [ "$LOOP_CLAIM_HELD" -eq 0 ]; then
+      if ! fm_supervision_claim_acquire "$SUPERVISION_CLAIM" "$SUPERVISOR_LOCK_TRIES"; then
+        escalate "the continuity ownership claim could not be acquired before arming"
+        sleep "$IDLE_INTERVAL"
+        continue
+      fi
+      LOOP_CLAIM_HELD=1
+    fi
     if harness_owner_provable; then
       rm -f "$out" 2>/dev/null || true
       LOOP_ARM_OUT=
@@ -2065,6 +2027,7 @@ cmd_run() {
         LOOP_ARM_UNRESOLVED_ATTEMPTS=1
         if [ "$LOOP_ARM_UNRESOLVED_ATTEMPTS" -ge "$UNKNOWN_ARM_RETRY_LIMIT" ]; then
           loop_abandon_unresolved_arm
+          continue
         fi
         LOOP_ARM_UNRESOLVED_NEXT=$(( $(date +%s) + UNKNOWN_ARM_TIMEOUT + 1 ))
         continue
