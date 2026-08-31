@@ -552,7 +552,9 @@ export default function (pi: ExtensionAPI) {
   // itself the captain-visible outcome, so the captain-facing note is
   // delivered silently (display: false) rather than printed or rendered a
   // second time; routine notes stay rendered except an explicitly silent
-  // no-change heartbeat. The read cursor advances once the note is handed to
+  // no-change heartbeat and a deterministic duplicate of the last rendered
+  // note for that task (the note-render gate below). The read cursor advances
+  // once the note is handed to
   // Pi; a crash inside Pi's
   // own delivery window leaves the outcome durable in the store, where
   // main's fm_branch_outcomes tool still reads it on demand.
@@ -598,7 +600,21 @@ export default function (pi: ExtensionAPI) {
       };
       pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
     } else {
-      const message = { customType: "fm-branch-merge", content: `${MERGE_NOTE_BOAT} ${task}: ${summary}`, display: !(task === "fleet" && silent) };
+      // Deterministic duplicate coalescing for routine notes: once main owns
+      // a task's supervision state, another no-change note about it renders
+      // nothing new, so the note-render gate (fm-branch-outcome.sh, the
+      // contract owner) suppresses rendering when the task's durable novelty
+      // signature - failure/decision/terminal status, PR/CI identity,
+      // validation-loop stop - is unchanged since the last rendered note. The
+      // durable store row, the read cursor, and captain-verdict escalation
+      // are untouched, and a gate that cannot answer fails toward rendering,
+      // never toward silence.
+      let display = !(task === "fleet" && silent);
+      if (display && task !== "fleet") {
+        const gate = runOutcomeScript(["note-render", "--task", task]);
+        if (gate.ok && gate.stdout.startsWith("coalesce")) display = false;
+      }
+      const message = { customType: "fm-branch-merge", content: `${MERGE_NOTE_BOAT} ${task}: ${summary}`, display };
       if (mainStreaming) {
         pi.sendMessage(message, { deliverAs: "nextTurn" });
       } else {
@@ -617,7 +633,7 @@ export default function (pi: ExtensionAPI) {
       name: "fm_branch_report",
       label: "Report supervision outcome",
       description:
-        "Record the outcome of one handled fleet event: write it durably to the outcome store, then merge an append-only note into the captain-facing main conversation. verdict captain surfaces it to the captain in one turn; routine notes render unless silent marks a no-change heartbeat.",
+        "Record the outcome of one handled fleet event: write it durably to the outcome store, then merge an append-only note into the captain-facing main conversation. verdict captain surfaces it to the captain in one turn; routine notes render unless silent marks a no-change heartbeat or the note deterministically duplicates the task's last rendered note (unchanged failure/decision/terminal status, PR/CI identity, and validation-loop state).",
       parameters: Type.Object({
         task: Type.String({ description: "The task id the event belongs to (or 'fleet' for fleet-wide events)" }),
         verdict: Type.Union([Type.Literal("routine"), Type.Literal("captain")], {

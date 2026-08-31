@@ -41,6 +41,23 @@
 #     true, and mark every unread row read. Prints nothing when nothing visible
 #     is unread, so a home that never ran the branch stays silent. Run it only
 #     when the session holds the lock (fm-session-start.sh owns the call site).
+#   fm-branch-outcome.sh note-render --task <id>
+#     Deterministic duplicate coalescing for ROUTINE captain-facing merge
+#     notes, so a task main already owns cannot accumulate repeated no-change
+#     notes at the captain's tail. Prints "render" when the note carries new
+#     information, or "coalesce <reason>" when it duplicates the last rendered
+#     note. New information is a change in the task's durable novelty
+#     signature: its last captain-relevant status line (a new failure,
+#     decision, or terminal result), its recorded pr=/pr_head= (a PR/CI
+#     change), or its recorded validation-loop stop. Watcher-health alarms are
+#     main-only by dispatch construction, so this gate can never suppress
+#     them. The signature rendered last is persisted in
+#     $STATE/.branch-note-sig-<task> (removed by teardown); "render" records
+#     the new signature. Only the caller's captain-facing rendering consults
+#     this - durable store appends, the read cursor, leases, and
+#     captain-verdict escalation are untouched, and a caller that cannot run
+#     this gate must keep rendering (fail toward visible, never toward
+#     silence). The task "fleet" and unsanitizable task ids always render.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,8 +69,37 @@ CURSOR="$STATE/.branch-outcomes-cursor"
 LOCK="$STATE/.branch-outcomes.lock"
 
 usage() {
-  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | list [--recent <n>] | startup-replay" >&2
+  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | list [--recent <n>] | startup-replay | note-render --task <id>" >&2
   exit 2
+}
+
+# The durable novelty signature note-render compares and records: the task's
+# captain-relevant status lines, its recorded PR identity, and its recorded
+# validation-loop stop. Plain multi-line text, compared verbatim.
+note_novelty_signature() { # <task>
+  local statusf metaf journal line
+  statusf="$STATE/$1.status"
+  metaf="$STATE/$1.meta"
+  journal="$STATE/$1.validation-loop"
+  # shellcheck source=bin/fm-classify-lib.sh
+  . "$SCRIPT_DIR/fm-classify-lib.sh"
+  printf 'captain-relevant-status='
+  if [ -f "$statusf" ] && [ ! -L "$statusf" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -n "$line" ] || continue
+      if status_is_captain_relevant "$line"; then printf '%s' "$line"; fi
+    done < "$statusf"
+  fi
+  printf '\n'
+  printf 'pr='
+  [ -f "$metaf" ] && grep '^pr=' "$metaf" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\n' || true
+  printf '\n'
+  printf 'pr_head='
+  [ -f "$metaf" ] && grep '^pr_head=' "$metaf" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\n' || true
+  printf '\n'
+  printf 'loop-stop='
+  [ -f "$journal" ] && grep '^stop_reason=' "$journal" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\n' || true
+  printf '\n'
 }
 
 json_escape() { # <text> -> escaped JSON string content on stdout
@@ -198,6 +244,34 @@ case "$CMD" in
       [ -z "$LAST" ] || advance_cursor "$LAST"
     fi
     fm_lock_release "$LOCK"
+    ;;
+  note-render)
+    [ "${1:-}" = --task ] || usage
+    TASK=${2:-}
+    [ "$#" -eq 2 ] || usage
+    [ -n "$TASK" ] || usage
+    # Fleet-wide notes keep their own silent contract, and an id this gate
+    # cannot safely use as a marker filename is never coalesced: both render.
+    case "$TASK" in
+      fleet|*[!A-Za-z0-9._-]*)
+        printf 'render\n'
+        exit 0
+        ;;
+    esac
+    MARKER="$STATE/.branch-note-sig-$TASK"
+    fm_lock_acquire_wait "$LOCK"
+    SIG=$(note_novelty_signature "$TASK")
+    LAST=$(cat "$MARKER" 2>/dev/null || true)
+    if [ -n "$LAST" ] && [ "$SIG" = "$LAST" ]; then
+      fm_lock_release "$LOCK"
+      printf 'coalesce duplicate routine outcome for %s: no new failure, decision, terminal result, PR/CI change, or validation-loop stop since the last rendered note\n' "$TASK"
+      exit 0
+    fi
+    TMP=$(mktemp "$STATE/.branch-note-sig.XXXXXX")
+    printf '%s\n' "$SIG" > "$TMP"
+    mv -f -- "$TMP" "$MARKER"
+    fm_lock_release "$LOCK"
+    printf 'render\n'
     ;;
   *) usage ;;
 esac

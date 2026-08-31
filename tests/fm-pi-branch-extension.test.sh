@@ -716,6 +716,24 @@ const listedText = listed.content[0].text;
 if (listedText.split("\n").length !== 2 || !listedText.includes("checks green")) {
   throw new Error(`fm_branch_outcomes did not read the store: ${listedText}`);
 }
+// 6. Deterministic routine-note coalescing: a routine note whose task's
+// novelty signature is unchanged since the last rendered note is delivered
+// silently (display: false) instead of rendering another duplicate at the
+// captain's tail, while a genuinely new outcome (a new failure) renders
+// again. Store rows, cursor advancement, and captain-verdict escalation were
+// all asserted unchanged above.
+if (sentToMain[1].message.display !== false) {
+  throw new Error(`a duplicate routine note must be coalesced: display=${sentToMain[1].message.display}`);
+}
+await report.execute("call-5", { task: "task-9", verdict: "routine", summary: "no change again" }, undefined, undefined, {});
+if (sentToMain[3].message.display !== false) {
+  throw new Error(`a repeated no-change routine note must stay coalesced: display=${sentToMain[3].message.display}`);
+}
+writeFileSync(`${home}/state/task-9.status`, "failed: build broke\n");
+await report.execute("call-6", { task: "task-9", verdict: "routine", summary: "worker failed its build" }, undefined, undefined, {});
+if (sentToMain[4].message.display !== true) {
+  throw new Error(`a genuinely new outcome must render: display=${sentToMain[4].message.display}`);
+}
 if (!renderers.has("fm-branch-merge")) throw new Error("merge-note renderer missing");
 const assertRenderedNote = (note, glyph) => {
   const fgCalls = [];
