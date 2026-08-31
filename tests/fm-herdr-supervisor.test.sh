@@ -24,8 +24,6 @@ herdr_forget_inherited_pane
 
 TMP_ROOT=$(fm_test_tmproot fm-herdr-supervisor-tests)
 
-SUPERVISOR="$ROOT/bin/fm-herdr-supervisor.sh"
-
 # --- fake herdr ---------------------------------------------------------------
 #
 # Stateful, file-backed, and deliberately small: it models only what the

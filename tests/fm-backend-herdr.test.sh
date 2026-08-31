@@ -542,6 +542,7 @@ test_server_ensure_does_not_wait_for_a_long_lived_server_in_command_substitution
   printf '{"server":{"running":false}}\n' > "$resp/1.out"
   printf '{"server":{"running":true}}\n' > "$resp/3.out"
   fb=$(make_herdr_fakebin "$dir")
+  # shellcheck disable=SC2016 # the inner bash must expand its positional parameters.
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_SCRIPT_STATUS=1 FM_HERDR_SERVER_DELAY=30 FM_HERDR_SERVER_PID_FILE="$dir/server.pid" \
     FM_HERDR_SERVER_FD_PROBE="$dir/fd-probe" \
