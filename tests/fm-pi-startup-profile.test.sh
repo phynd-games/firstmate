@@ -22,10 +22,8 @@ project_settings="$ROOT/.pi/settings.json"
 [ -L "$project_settings" ] || fail '.pi/settings.json is not a symlink'
 [ "$(readlink "$project_settings")" = ../defaults/pi-settings.json ] \
   || fail '.pi/settings.json is not the tracked relative canonical import'
-[ "$(cd "$(dirname "$project_settings")" && realpath "$(readlink "$project_settings")")" = "$(realpath "$canonical")" ] \
-  || fail 'Pi project settings do not resolve to canonical settings'
 
-node - "$canonical" "$project_settings" <<'NODE' || fail 'canonical Pi captain startup tuple is wrong'
+node - "$canonical" "$project_settings" <<'NODE' || fail 'canonical Pi captain startup tuple or import is wrong'
 const fs = require("node:fs");
 const [canonicalPath, projectPath] = process.argv.slice(2);
 const canonical = JSON.parse(fs.readFileSync(canonicalPath, "utf8"));
@@ -33,12 +31,38 @@ const project = JSON.parse(fs.readFileSync(projectPath, "utf8"));
 const expected = ["openai-codex", "gpt-5.6-sol", "medium"];
 const tuple = [canonical.defaultProvider, canonical.defaultModel, canonical.defaultThinkingLevel];
 if (JSON.stringify(tuple) !== JSON.stringify(expected)) process.exit(1);
+if (fs.realpathSync(projectPath) !== fs.realpathSync(canonicalPath)) process.exit(1);
 if (JSON.stringify(project) !== JSON.stringify(canonical)) process.exit(1);
 for (const key of ["theme", "packages"]) {
   if (canonical[key] === undefined) process.exit(1);
 }
 NODE
-pass 'trusted-clone Pi startup resolves canonical Sol/medium profile without local override'
+
+if command -v pi >/dev/null 2>&1; then
+  pi_agent="$TMP_ROOT/pi-agent"
+  pi_output="$TMP_ROOT/pi-startup.out"
+  mkdir -p "$pi_agent"
+  printf '%s\n' '{"defaultProvider":"openai-codex","defaultModel":"gpt-5.6-luna","defaultThinkingLevel":"xhigh"}' > "$pi_agent/settings.json"
+  printf '%s\n' '{"providers":{"openai-codex":{"baseUrl":"http://127.0.0.1:1/v1","api":"openai-completions","apiKey":"fixture","models":[{"id":"gpt-5.6-sol","reasoning":true},{"id":"gpt-5.6-luna","reasoning":true}]}}}' > "$pi_agent/models.json"
+  if ! printf '%s\n' '{"type":"get_state"}' | \
+    HOME="$TMP_ROOT/home" PI_CODING_AGENT_DIR="$pi_agent" PI_OFFLINE=1 \
+    pi --approve --mode rpc --no-session --no-tools --no-context-files --no-extensions > "$pi_output"; then
+    fail 'trusted-clone Pi startup failed'
+  fi
+  node - "$pi_output" <<'NODE' || fail 'trusted-clone Pi startup ignored the canonical project import'
+const fs = require("node:fs");
+const lines = fs.readFileSync(process.argv[2], "utf8").trim().split("\n");
+const state = lines.map((line) => JSON.parse(line)).find(
+  (item) => item.type === "response" && item.command === "get_state",
+);
+if (!state?.success) process.exit(1);
+const tuple = [state.data.model.provider, state.data.model.id, state.data.thinkingLevel];
+if (JSON.stringify(tuple) !== JSON.stringify(["openai-codex", "gpt-5.6-sol", "medium"])) process.exit(1);
+NODE
+  pass 'trusted-clone Pi startup selects canonical Sol/medium profile over harness-local Luna/xhigh settings'
+else
+  printf 'SKIP: pi not found for trusted-clone startup behavior check\n'
+fi
 
 make_mock() {
   local path=$1 body=$2
