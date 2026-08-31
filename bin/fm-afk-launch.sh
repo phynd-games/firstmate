@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fm-afk-launch.sh - the single owner of the away-mode daemon TERMINAL lifecycle:
-# launch it in a NON-VISIBLE tracked terminal per backend, record its exact id,
-# tear it down by that exact id, and reconcile a leaked one after a crash.
+# launch it in a NON-VISIBLE Herdr-tracked terminal, record its exact id, tear
+# it down by that exact id, and reconcile a leaked one after a crash.
 #
 # Why this exists (docs/herdr-backend.md "Away-mode daemon terminal launch"):
 # bin/fm-afk-start.sh execs the supervise daemon in the FOREGROUND of whatever
@@ -10,8 +10,9 @@
 # native background mechanism (pi) has to manufacture a terminal, and doing that
 # by SPLITTING the captain's active pane visibly shrinks it - the regression this
 # script fixes. Instead this creates a non-visible tracked terminal (a herdr tab/
-# workspace with --no-focus, or a detached tmux session) that never touches the
-# captain's active tab, and NEVER uses shell `&` (which herdr/codex can reap).
+# workspace with --no-focus) that never touches the captain's active tab, and
+# NEVER uses shell `&` (which herdr/codex can reap). The old tmux launch is only
+# retained for legacy test coverage and exact-record cleanup.
 #
 # Correct supervisor targeting: the daemon finds the captain pane to inject into
 # from its OWN inherited env (discover_supervisor_target). Running it in a
@@ -22,7 +23,7 @@
 # Usage:
 #   fm-afk-launch.sh start     Capture the captain pane, then (unless the daemon
 #                              is already running) launch the daemon in a fresh
-#                              non-visible terminal for the detected backend and
+#                              non-visible Herdr terminal and
 #                              record it. Idempotent: an already-running daemon
 #                              just refreshes state/.afk; a recorded-but-dead
 #                              terminal is reconciled (closed by id) first.
@@ -36,8 +37,8 @@
 #   fm-afk-launch.sh reconcile Close a recorded-but-dead daemon terminal by exact
 #                              id and drop the record (recovery after a crash).
 #
-# Supported backends: herdr, tmux. Others (zellij, orca, cmux) have no verified
-# non-visible-launch primitive here yet and refuse loudly.
+# Supported active backend: herdr. The historical tmux launch is available only
+# to the legacy test lane; other backends refuse loudly.
 #
 # Test seam: FM_AFK_LAUNCH_ENTRY overrides the command run in the created
 # terminal (default bin/fm-afk-start.sh), so a topology test can run a harmless
@@ -459,11 +460,14 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
   fm_afk_launch_log "daemon launched in non-visible herdr workspace $wsid (pane $session:$pane), supervising $captain_target"
 }
 
-# Launch the daemon in a detached tmux session (never a split-window in the
-# captain's window). tmux pane ids are server-global, so the daemon reaches the
-# captain pane by its %id from this separate session.
+# Historical tmux launch retained only for the legacy test lane and exact-record
+# reconciliation; active away-mode entry is Herdr-only.
 fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
   local captain_target=$1 captain_backend=$2 session entry cmd hash nonce
+  if [ "${FM_BACKEND_LEGACY_TEST_LANE:-0}" != 1 ]; then
+    fm_afk_launch_log "historical tmux away-mode launch is disabled; use Herdr"
+    return 1
+  fi
   hash=$(printf '%s' "$FM_HOME" | cksum | cut -d' ' -f1)
   nonce="$$-${RANDOM:-0}-$(date '+%s')"
   session="fm-afk-daemon-$hash-$nonce"
@@ -554,9 +558,12 @@ fm_afk_launch_start() {
   if [ "$result" -eq 0 ]; then
     case "$captain_backend" in
       herdr) fm_afk_launch_create_herdr "$captain_target" "$captain_backend"; result=$? ;;
-      tmux)  fm_afk_launch_create_tmux "$captain_target" "$captain_backend"; result=$? ;;
+      tmux)
+        fm_afk_launch_log "tmux away-mode launch is disabled; active continuity requires Herdr"
+        result=1
+        ;;
       *)
-        fm_afk_launch_log "no non-visible daemon-launch primitive for backend '$captain_backend' yet (supported: herdr, tmux)"
+        fm_afk_launch_log "no non-visible Herdr daemon-launch primitive for backend '$captain_backend'"
         result=1
         ;;
     esac
