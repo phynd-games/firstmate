@@ -472,6 +472,7 @@ tests/fm-watch-recovery-loop.test.sh
 tests/fm-wake-queue.test.sh
 tests/fm-subagent-pretool-check.test.sh
 tests/fm-claude-stop-autoarm.test.sh
+tests/fm-herdr-supervisor.test.sh
 tests/fm-turnend-guard.test.sh
 ```
 

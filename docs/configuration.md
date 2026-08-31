@@ -158,7 +158,7 @@ Absent or `auto` is the default scope: host continuity only for a Pi or pi-signe
 `off` disables it entirely.
 Whatever the setting, it stands down while away mode is active or a harness-native owner is provable, so a home never runs two continuity owners.
 
-It runs `bin/fm-watch-arm.sh` normally for healthy watchers and uses `--restart` only after verifying a stale watcher lock holder's exact identity, so the one-watcher singleton and every acknowledgement, merge, teardown, and no-mistakes authority are untouched.
+It always invokes `bin/fm-watch-arm.sh` through its plain attach-or-start path, so the arm layer owns stale-lock recovery and the one-watcher singleton while every acknowledgement, merge, teardown, and no-mistakes authority remains untouched.
 See [`herdr-supervisor.md`](herdr-supervisor.md) for its health predicate, bounded recovery, durable records, and the one boundary it refuses to promise: a dead Herdr server takes its host pane with it.
 The setting is inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
 
