@@ -1009,6 +1009,46 @@ PY
   pass "PR-ready path binds small-diff evidence to applicable surfaces"
 }
 
+test_pr_ready_rejects_multiple_lines_from_one_hunk() {
+  local dir report second_digest second_line_hex change_digest rc
+  dir=$(make_case same-hunk-evidence)
+  git -C "$dir/wt" reset --hard -q main
+  printf '%s\n' 'first changed line' 'second changed line' >> "$dir/wt/bin/fm-pr-check.sh"
+  for fixture_file in \
+    bin/fm-pr-lib.sh bin/fm-pr-self-review-check.sh bin/fm-operational-input.sh \
+    tests/fm-pr-check-security.test.sh .agents/skills/firstmate-pr-self-review/SKILL.md \
+    bin/fm-pr-create.sh; do
+    printf '%s\n' 'changed surface' >> "$dir/wt/$fixture_file"
+  done
+  git -C "$dir/wt" add bin tests .agents
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm same-hunk
+  write_self_review_report "$dir/home" task-a
+  report="$dir/home/data/task-a/pr-self-review.md"
+  second_digest=$(printf '%s\n' 'second changed line' | fm_pr_sha256_stream)
+  second_line_hex=$(printf '%s' 'second changed line' | od -An -tx1 | tr -d ' \n')
+  change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-check.sh)
+  python3 - "$report" "$second_digest" "$second_line_hex" "$change_digest" <<'PY'
+import hashlib
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+digest, line_hex, change_digest = sys.argv[2:5]
+binding = hashlib.sha256(("security|bin/fm-pr-check.sh:3|" + digest + "|" + change_digest + "|" + line_hex + "|provenance-bound|retain-boundary\n").encode()).hexdigest()
+record = "Security: reviewed; surface=security; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:3 sha256=" + digest + " change-sha256=" + change_digest + " line-hex=" + line_hex + " hunk=bin/fm-pr-check.sh:3; consequence=anchor=bin/fm-pr-check.sh:3 sha256=" + digest + " change-sha256=" + change_digest + " line-hex=" + line_hex + " behavior=provenance-bound binding=" + binding + "; fix=anchor=bin/fm-pr-check.sh:3 sha256=" + digest + " change-sha256=" + change_digest + " line-hex=" + line_hex + " action=retain-boundary binding=" + binding
+report.write_text(re.sub(r"(?m)^Security: .*", record, report.read_text(encoding="utf-8"), count=1), encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/116 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted two evidence lines from one diff hunk"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "same-hunk evidence left a runnable poll"
+  pass "PR-ready path requires distinct diff hunks, not merely distinct line references"
+}
+
 test_pr_ready_requires_unaffected_scope_for_unrelated_surface_evidence() {
   local dir report fixture_digest fixture_change_digest fixture_line_hex rc
   dir=$(make_case unrelated-surface-evidence)
@@ -1069,6 +1109,27 @@ PY
   set -e
   [ "$rc" -ne 0 ] || fail "PR-ready path accepted reused evidence for an unrelated one-file diff"
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "reused unrelated evidence left a runnable poll"
+  python3 - "$report" <<'PY'
+import hashlib
+import pathlib
+import re
+
+report = pathlib.Path(__import__("sys").argv[1])
+text = report.read_text(encoding="utf-8")
+changed_files = re.search(r"(?m)^Changed files: ([0-9a-f]{64})$", text).group(1)
+behavior = "non-authorizing"
+action = "retain-owner"
+binding = hashlib.sha256(("authority|unaffected|bin/fm-pr-check.sh|" + changed_files + "|" + behavior + "|" + action + "\n").encode()).hexdigest()
+record = "Authority: reviewed; surface=authority; scope=unaffected; files=bin/fm-pr-check.sh; rationale=no applicable changed authority surface; binding=" + binding
+report.write_text(re.sub(r"(?m)^Authority: .*", record, text, count=1), encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/114 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted an unaffected file outside the target diff"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "unrelated unaffected evidence left a runnable poll"
   fm_write_meta "$dir/home/state/task-a.meta" \
     "window=firstmate:fm-task-a" "worktree=$dir/wt" 'project=x' \
     'review_base_ref=main' "review_base_sha=$(git -C "$dir/wt" rev-parse main)" \
@@ -4611,6 +4672,7 @@ test_gitlab_merged_poll_retires() {
 test_parser_matrix
 test_pr_ready_requires_durable_self_review
 test_pr_ready_rejects_unrelated_small_diff_surface_evidence
+test_pr_ready_rejects_multiple_lines_from_one_hunk
 test_pr_ready_requires_unaffected_scope_for_unrelated_surface_evidence
 test_local_landing_refuses_advanced_default_after_review
 test_direct_pr_creation_requires_self_review

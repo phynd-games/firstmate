@@ -676,6 +676,10 @@ SPAWN_META_PUBLISH_STARTED=0
 SPAWN_TASK_SET_LOCK=
 SPAWN_TASK_SET_LOCK_HELD=0
 SPAWN_FRESHEN_APPROVED_REF=
+SPAWN_ENDPOINT_ABORT_CLEANUP=0
+SPAWN_ENDPOINT_TARGET=
+SPAWN_ENDPOINT_PROJECTED=0
+SPAWN_ENDPOINT_WORKTREE=
 RELAUNCH_REPLACEMENT_PENDING=0
 RELAUNCH_REPLACEMENT_BUSY_GEN=
 RELAUNCH_REPLACEMENT_HARNESS=
@@ -744,6 +748,16 @@ spawn_abort_cleanup() {
   if [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" = 1 ]; then
     HERDR_PRESENTATION_ORDER_LOCK_HELD=0
     fm_lock_release "$HERDR_PRESENTATION_ORDER_LOCK" || true
+  fi
+  if [ "$SPAWN_ENDPOINT_ABORT_CLEANUP" = 1 ]; then
+    SPAWN_ENDPOINT_ABORT_CLEANUP=0
+    if [ "$SPAWN_ENDPOINT_PROJECTED" != 1 ] && [ -n "$SPAWN_ENDPOINT_TARGET" ]; then
+      fm_backend_kill "$BACKEND" "$SPAWN_ENDPOINT_TARGET" "${ZELLIJ_TAB_ID:-}" "${W:-}" 2>/dev/null || true
+    fi
+    if [ -n "$SPAWN_ENDPOINT_WORKTREE" ] && command -v treehouse >/dev/null 2>&1; then
+      ( cd "$PROJ_ABS" && treehouse return --force "$SPAWN_ENDPOINT_WORKTREE" ) >/dev/null 2>&1 || \
+        echo "warning: could not return worktree '$SPAWN_ENDPOINT_WORKTREE' after aborted spawn" >&2
+    fi
   fi
   if [ "$ORCA_ABORT_CLEANUP" = 1 ]; then
     ORCA_ABORT_CLEANUP=0
@@ -1976,6 +1990,8 @@ case "$BACKEND" in
     # stays $T (the name form), which is safe now that rename is disabled.
     WID=$(fm_backend_tmux_create_task "$SES" "$W" "$PROJ_ABS") || exit 1
     WT_TARGET="$WID"
+    SPAWN_ENDPOINT_ABORT_CLEANUP=1
+    SPAWN_ENDPOINT_TARGET=$T
     ;;
   herdr)
     # fm_backend_herdr_workspace_label resolves the target workspace from
@@ -2143,6 +2159,9 @@ EOF
       exit 1
     fi
     T="$HERDR_SES:$HERDR_PANE_ID"
+    SPAWN_ENDPOINT_ABORT_CLEANUP=1
+    SPAWN_ENDPOINT_TARGET=$T
+    SPAWN_ENDPOINT_PROJECTED=$HERDR_PROJECTED
     ;;
   zellij)
     ZELLIJ_SES=$(fm_backend_zellij_container_ensure) || exit 1
@@ -2155,6 +2174,8 @@ EOF
       exit 1
     fi
     T="$ZELLIJ_SES:$ZELLIJ_PANE_ID"
+    SPAWN_ENDPOINT_ABORT_CLEANUP=1
+    SPAWN_ENDPOINT_TARGET=$T
     ;;
   cmux)
     fm_backend_cmux_container_ensure || exit 1
@@ -2167,6 +2188,8 @@ EOF
       exit 1
     fi
     T="$CMUX_WORKSPACE_ID:$CMUX_SURFACE_ID"
+    SPAWN_ENDPOINT_ABORT_CLEANUP=1
+    SPAWN_ENDPOINT_TARGET=$T
     ;;
   orca)
     set +e
@@ -2194,6 +2217,9 @@ EOF
     T="$ORCA_TERMINAL"
     ;;
 esac
+fi
+if [ "$KIND" = secondmate ]; then
+  SPAWN_ENDPOINT_ABORT_CLEANUP=0
 fi
 if [ "$KIND" = secondmate ]; then
   FM_INHERITABLE_CONFIG=trace-context \
@@ -2366,6 +2392,9 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
 
   validate_spawn_worktree "treehouse get" "$T"
 fi
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+  SPAWN_ENDPOINT_WORKTREE=$WT
+fi
 if [ "$KIND" = ship ]; then
   if [ "$RELAUNCH" -eq 1 ]; then
     RESOLVED_REVIEW_BASE=$(git -C "$WT" rev-parse --verify "$REVIEW_BASE_REF^{commit}" 2>/dev/null) || {
@@ -2379,10 +2408,13 @@ if [ "$KIND" = ship ]; then
   fi
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
-  freshen_spawn_worktree_base "$WT" "$REVIEW_BASE_REF" "$REVIEW_BASE_SHA" || exit 1
+  if ! freshen_spawn_worktree_base "$WT" "$REVIEW_BASE_REF" "$REVIEW_BASE_SHA"; then
+    exit 1
+  fi
   if [ -n "$SPAWN_FRESHEN_APPROVED_REF" ]; then
     REVIEW_BASE_REF=$SPAWN_FRESHEN_APPROVED_REF
   fi
+  SPAWN_ENDPOINT_ABORT_CLEANUP=0
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't

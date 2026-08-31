@@ -48,13 +48,24 @@ esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
-  has-session|new-session|new-window|kill-window) exit 0 ;;
+  has-session|new-session|new-window) exit 0 ;;
+  kill-window)
+    printf '%s\n' "$*" >> "${FM_FAKE_BACKEND_LOG:?FM_FAKE_BACKEND_LOG unset}"
+    exit 0
+    ;;
   send-keys) exit 0 ;;
 esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = return ] && [ "${2:-}" = --force ]; then
+  printf '%s\n' "${3:-}" >> "${FM_FAKE_TREEHOUSE_RETURN_LOG:?FM_FAKE_TREEHOUSE_RETURN_LOG unset}"
+fi
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
   printf '%s\n' "$fakebin"
 }
 
@@ -64,7 +75,7 @@ SH
 # entirely, distinct from both the project and the worktree - mirroring the
 # live incident where the stale read was another real firstmate home).
 make_settle_case() {
-  local name=$1 id=$2 stale_reads=$3 case_dir home proj wt stale fakebin countfile
+  local name=$1 id=$2 stale_reads=$3 case_dir home proj wt stale fakebin countfile base_head
   case_dir="$TMP_ROOT/$name"
   home="$case_dir/home"
   proj="$case_dir/project"
@@ -77,7 +88,12 @@ make_settle_case() {
   fm_git_worktree "$proj" "$wt" "wt-$name"
   fm_git_init_commit "$stale"
   mkdir -p "$home/data/$id"
-  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  base_head=$(git -C "$proj" rev-parse HEAD)
+  printf '%s\n' \
+    '# Task' \
+    "brief for $id" \
+    "Target-project approved base: ref=main; sha=$base_head" \
+    '# Setup' > "$home/data/$id/brief.md"
   touch "$home/state/.last-watcher-beat"
   printf '%s\n' "$case_dir|$home|$proj|$wt|$stale|$fakebin|$countfile|$stale_reads"
 }
@@ -96,8 +112,32 @@ run_settle_spawn() {
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
     FM_FAKE_PANE_PATH="$WT_DIR" FM_FAKE_PANE_STALE="$STALE_DIR" \
     FM_FAKE_PANE_STALE_READS="$STALE_READS" FM_FAKE_PANE_COUNTFILE="$COUNTFILE" \
+    FM_FAKE_BACKEND_LOG="$HOME_DIR/backend.log" FM_FAKE_TREEHOUSE_RETURN_LOG="$HOME_DIR/treehouse-return.log" \
     PATH="$FAKEBIN_DIR:$PATH" \
     "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
+}
+
+test_approved_base_failure_cleans_endpoint_and_worktree() {
+  local rec id out status
+  id=settle-invalid-base-z3
+  rec=$(make_settle_case settle-invalid-base "$id" 0)
+  read_settle_record "$rec"
+  printf '%s\n' \
+    '# Task' \
+    'invalid approved base cleanup regression' \
+    'Target-project approved base: ref=main; sha=0000000000000000000000000000000000000000' \
+    '# Setup' > "$HOME_DIR/data/$id/brief.md"
+
+  set +e
+  out=$(run_settle_spawn "$id")
+  status=$?
+  set -e
+  [ "$status" -ne 0 ] || fail "spawn accepted a mismatched approved base"
+  assert_grep 'kill-window' "$HOME_DIR/backend.log" \
+    "approved-base failure left the backend endpoint alive"
+  assert_grep "$WT_DIR" "$HOME_DIR/treehouse-return.log" \
+    "approved-base failure left the treehouse worktree leased"
+  pass "approved-base failure returns the worktree and removes the endpoint"
 }
 
 # A single stale first read (the exact incident) must not be accepted: the
@@ -143,5 +183,6 @@ test_already_settled_pane_costs_one_confirm_sleep() {
 
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_sleep
+test_approved_base_failure_cleans_endpoint_and_worktree
 
 echo "# all fm-spawn-worktree-settle tests passed"

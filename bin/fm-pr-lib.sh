@@ -738,10 +738,11 @@ EOF
     return 0
   }
   local line finding_path finding_file finding_line surface_files surface_file review_root
-  local surface_evidence evidence_ref evidence_rest evidence_file evidence_line evidence_hash evidence_change_hash evidence_line_hex line_content actual_evidence_hash actual_change_hash actual_line_hex surface_review_files surface_evidence_files surface_evidence_refs changed_path surface_name surface_consequence surface_fix surface_behavior surface_action surface_binding surface_body surface_unaffected_files surface_unaffected_binding surface_unaffected_expected_binding
+  local surface_evidence evidence_ref evidence_rest evidence_file evidence_line evidence_hash evidence_change_hash evidence_line_hex evidence_hunk_id line_content actual_evidence_hash actual_change_hash actual_line_hex surface_review_files surface_evidence_files surface_evidence_refs surface_evidence_hunks changed_path surface_name surface_consequence surface_fix surface_behavior surface_action surface_binding surface_body surface_unaffected_files surface_unaffected_binding surface_unaffected_expected_binding
   surface_review_files=
   surface_evidence_files=
   surface_evidence_refs=
+  surface_evidence_hunks=
   fm_pr_review_file_valid() {
     local review_file=$1
     for review_root in "$worktree" "$substrate_root"; do
@@ -837,10 +838,11 @@ EOF
     esac
     return 1
   }
-  fm_pr_review_changed_line_valid() {
-    local review_file=$1 review_line=$2
+  fm_pr_review_hunk_id() {
+    local review_file=$1 review_line=$2 encoded_file
+    encoded_file=$(fm_pr_review_path_encode "$review_file") || return 1
     git -C "$worktree" diff --no-color --unified=0 "$merge_base_sha" "$head_sha" -- "$review_file" |
-      awk -v target="$review_line" '
+      awk -v target="$review_line" -v path="$encoded_file" '
         function range_start(value, parts) {
           sub(/^[-+]/, "", value)
           split(value, parts, ",")
@@ -855,11 +857,24 @@ EOF
           old_count = range_count($2)
           new_start = range_start($3)
           new_count = range_count($3)
-          if (new_count > 0 && target >= new_start && target < new_start + new_count) found = 1
-          if (new_count == 0 && old_count > 0 && target >= old_start && target < old_start + old_count) found = 1
+          hunk = path "|" old_start "," old_count "|" new_start "," new_count
+          if (!found && new_count > 0 && target >= new_start && target < new_start + new_count) {
+            matched_hunk = hunk
+            found = 1
+          }
+          if (!found && new_count == 0 && old_count > 0 && target >= old_start && target < old_start + old_count) {
+            matched_hunk = hunk
+            found = 1
+          }
         }
-        END { exit found ? 0 : 1 }
+        END {
+          if (found) print matched_hunk
+          exit found ? 0 : 1
+        }
       '
+  }
+  fm_pr_review_changed_line_valid() {
+    fm_pr_review_hunk_id "$1" "$2" >/dev/null
   }
   while IFS= read -r changed_path || [ -n "$changed_path" ]; do
     fm_pr_review_path_syntax_valid "$changed_path" || return 1
@@ -893,6 +908,11 @@ EOF
         case "$surface_unaffected_binding" in *[!0-9a-f]*) return 1 ;; esac
         surface_unaffected_expected_binding=$(printf '%s\n' "$surface_name|unaffected|$surface_unaffected_files|$changed_files|$surface_behavior|$surface_action" | fm_pr_sha256_stream) || return 1
         [ "$surface_unaffected_binding" = "$surface_unaffected_expected_binding" ] || return 1
+        while IFS= read -r surface_unaffected_file || [ -n "$surface_unaffected_file" ]; do
+          fm_pr_review_path_syntax_valid "$surface_unaffected_file" || return 1
+          surface_unaffected_file=$FM_PR_REVIEW_PATH
+          fm_pr_changed_path_valid "$surface_unaffected_file" || return 1
+        done < <(printf '%s\n' "$surface_unaffected_files" | tr ',' '\n')
         if fm_pr_review_surface_has_relevant_changed_path "$surface_name"; then return 1; fi
         continue
         ;;
@@ -938,7 +958,7 @@ EOF
     esac
     fm_pr_review_surface_file_valid "$evidence_file" "$surface_files" || return 1
     fm_pr_changed_path_valid "$evidence_file" || return 1
-    fm_pr_review_changed_line_valid "$evidence_file" "$evidence_line" || return 1
+    evidence_hunk_id=$(fm_pr_review_hunk_id "$evidence_file" "$evidence_line") || return 1
     if [ -f "$worktree/$evidence_file" ] && [ ! -L "$worktree/$evidence_file" ] \
       && git -C "$worktree" ls-files --error-unmatch -- "$evidence_file" >/dev/null 2>&1; then
       line_content=$(awk -v target="$evidence_line" 'NR == target { print; found = 1; exit } END { if (!found) exit 1 }' "$worktree/$evidence_file") || return 1
@@ -949,6 +969,7 @@ EOF
     fi
     actual_change_hash=$(git -C "$worktree" diff --no-color --unified=0 "$merge_base_sha" "$head_sha" -- "$evidence_file" | fm_pr_sha256_stream) || return 1
     actual_line_hex=$(printf '%s' "$line_content" | od -An -tx1 | tr -d ' \n') || return 1
+    surface_evidence_hunks="$surface_evidence_hunks$evidence_hunk_id"$'\n'
     evidence_file=$(fm_pr_review_path_encode "$evidence_file") || return 1
     surface_evidence_files="$surface_evidence_files$evidence_file
 "
@@ -958,15 +979,15 @@ EOF
     [ "$actual_change_hash" = "$evidence_change_hash" ] || return 1
     [ "$actual_line_hex" = "$evidence_line_hex" ] || return 1
   done < <(awk '/^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): / { print }' "$report")
-  local unique_surface_evidence_count unique_surface_evidence_ref_count required_surface_evidence_count applicable_surface_count
+  local unique_surface_evidence_count unique_surface_evidence_hunk_count required_surface_evidence_count applicable_surface_count
   unique_surface_evidence_count=$(printf '%s\n' "$surface_evidence_files" | LC_ALL=C sort -u | awk 'NF { count++ } END { print count + 0 }') || return 1
-  unique_surface_evidence_ref_count=$(printf '%s\n' "$surface_evidence_refs" | LC_ALL=C sort -u | awk 'NF { count++ } END { print count + 0 }') || return 1
+  unique_surface_evidence_hunk_count=$(printf '%s\n' "$surface_evidence_hunks" | LC_ALL=C sort -u | awk 'NF { count++ } END { print count + 0 }') || return 1
   applicable_surface_count=$(printf '%s\n' authority security path failure tests documentation delivery | while IFS= read -r surface_name; do
     fm_pr_review_surface_has_relevant_changed_path "$surface_name" && printf '%s\n' 1
   done | awk '{ count += $1 } END { print count + 0 }') || return 1
   required_surface_evidence_count=$applicable_surface_count
   [ "$required_surface_evidence_count" -le "$actual_changed_path_count" ] || required_surface_evidence_count=$actual_changed_path_count
-  [ "$unique_surface_evidence_ref_count" -eq "$applicable_surface_count" ] || return 1
+  [ "$unique_surface_evidence_hunk_count" -eq "$applicable_surface_count" ] || return 1
   [ "$required_surface_evidence_count" -le 7 ] || required_surface_evidence_count=7
   [ "$unique_surface_evidence_count" -ge "$required_surface_evidence_count" ] || return 1
   local actual_substrate_head actual_substrate_changed empty_digest
