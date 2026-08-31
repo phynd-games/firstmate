@@ -366,6 +366,55 @@ test_pane_presence_requires_complete_identity() {
   pass "Herdr pane presence requires a complete matching workspace and tab identity"
 }
 
+test_native_read_failures_do_not_parse_success_bodies() {
+  run_capture endpoint-identity-failed-body lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() {
+      printf "%s" '\''{"result":{"pane":{"pane_id":"pane1","workspace_id":"ws1","tab_id":"tab1"}}}'\''
+      return 1
+    }
+    fm_backend_herdr_endpoint_identity fmtest ws1 tab1 pane1
+  '
+  [ "$RC" -eq 2 ] || fail "failed endpoint identity response must remain typed: rc=$RC out=$OUT"
+
+  run_capture pane-presence-failed-body lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() {
+      printf "%s" '\''{"result":{"pane":{"pane_id":"pane1","workspace_id":"ws1","tab_id":"tab1"}}}'\''
+      return 1
+    }
+    fm_backend_herdr_pane_presence_state fmtest pane1 ws1 tab1
+  '
+  [ "$RC" -eq 2 ] || fail "failed pane presence response must remain typed: rc=$RC out=$OUT"
+
+  run_capture agent-state-failed-body lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_pane_presence_state() { printf present; }
+    fm_backend_herdr_cli() {
+      printf "%s" '\''{"result":{"agent":{"agent_status":"idle"}}}'\''
+      return 1
+    }
+    fm_backend_herdr_pane_agent_state fmtest pane1 ws1 tab1
+  '
+  [ "$RC" -eq 2 ] || fail "failed agent response must remain typed: rc=$RC out=$OUT"
+
+  run_capture current-path-failed-body lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_target_ready() {
+      FM_BACKEND_HERDR_SESSION=fmtest
+      FM_BACKEND_HERDR_PANE=pane1
+      return 0
+    }
+    fm_backend_herdr_cli() {
+      printf "%s" '\''{"result":{"pane":{"pane_id":"pane1","workspace_id":"ws1","tab_id":"tab1","foreground_cwd":"/tmp/work"}}}'\''
+      return 1
+    }
+    fm_backend_herdr_current_path fmtest:pane1
+  '
+  [ "$RC" -eq 2 ] || fail "failed current-path response must remain typed: rc=$RC out=$OUT"
+  pass "Herdr native read failures refuse without parsing schema-shaped response bodies"
+}
+
 test_target_ready_rechecks_recorded_native_identity() {
   run_capture target-identity-recheck lib_probe -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
@@ -419,7 +468,8 @@ test_recovery_agent_failures_refuse_before_replacement() {
   [ "$RC" -eq 2 ] || fail "reclaim agent read failure must remain typed: rc=$RC out=$OUT err=$ERR"
   [ ! -e "$replacement_marker" ] || fail "reclaim agent read failure must not create a replacement"
 
-  run_capture reclaim-post-replacement-agent-failure lib_probe "STATE_MARKER=$state_marker" -- '
+  close_marker="$TMP_ROOT/reclaim-close-marker"
+  run_capture reclaim-pre-close-agent-failure lib_probe "STATE_MARKER=$state_marker" "CLOSE_MARKER=$close_marker" -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
     fm_backend_herdr_projection_journal_snapshot() {
       FM_BACKEND_HERDR_JOURNAL_VERSION=2
@@ -437,13 +487,13 @@ test_recovery_agent_failures_refuse_before_replacement() {
     fm_backend_herdr_projection_focus_snapshot() { printf "ws0\tactive-tab"; }
     fm_backend_herdr_projection_focus_restore() { :; }
     fm_backend_herdr_projection_reclaim_rollback() { :; }
-    fm_backend_herdr_projection_close_pane_focus_preserving() { :; }
+    fm_backend_herdr_projection_close_pane_focus_preserving() { : > "$CLOSE_MARKER"; return 0; }
     fm_backend_herdr_pane_agent_state() {
       state_reads=$(cat "$STATE_MARKER" 2>/dev/null | tr -cd '0-9')
       [ -n "$state_reads" ] || state_reads=0
       state_reads=$((state_reads + 1))
       printf '%s\n' "$state_reads" > "$STATE_MARKER"
-      if [ "$state_reads" -lt 3 ]; then
+      if [ "$state_reads" -lt 2 ]; then
         printf no-agent
       else
         return 2
@@ -458,8 +508,9 @@ test_recovery_agent_failures_refuse_before_replacement() {
     }
     fm_backend_herdr_projection_reclaim_task fmtest journal task /tmp/reclaim-home ws1 tab1 pane1 parent task /tmp
   '
-  assert_refusal "post-replacement Herdr agent read" "presentation reclaim agent read" "after closing the old pane"
-  [ "$RC" -eq 2 ] || fail "post-replacement agent read failure must retain typed status: rc=$RC"
+  assert_refusal "pre-close Herdr agent read" "presentation reclaim agent read" "before closing the old pane"
+  [ "$RC" -eq 2 ] || fail "pre-close agent read failure must retain typed status: rc=$RC"
+  [ ! -e "$close_marker" ] || fail "pre-close agent read failure closed the old pane"
 
   run_capture quarantine-agent-failure lib_probe -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
@@ -933,6 +984,7 @@ test_endpoint_identity_mismatch_refuses
 test_kill_refuses_planner_and_focus_failures_before_close
 test_endpoint_presence_failure_remains_typed
 test_pane_presence_requires_complete_identity
+test_native_read_failures_do_not_parse_success_bodies
 test_target_ready_rechecks_recorded_native_identity
 test_quarantine_server_failure_is_a_typed_refusal
 test_recovery_agent_failures_refuse_before_replacement

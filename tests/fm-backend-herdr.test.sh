@@ -2186,8 +2186,8 @@ test_endpoint_confirmed_gone_gates_on_structured_presence() {
     }
     check present-default "{\"result\":{\"pane\":{\"pane_id\":\"w2:p2\",\"tab_id\":\"w2:t2\",\"workspace_id\":\"w2\"}}}" 0 "" 1
     check present-strict "{\"result\":{\"pane\":{\"pane_id\":\"w2:p2\",\"tab_id\":\"w2:t2\",\"workspace_id\":\"w2\"}}}" 0 strict 1
-    check notfound-default "{\"error\":{\"code\":\"pane_not_found\"}}" 1 "" 0
-    check notfound-strict "{\"error\":{\"code\":\"pane_not_found\"}}" 1 strict 0
+    check notfound-default "{\"error\":{\"code\":\"pane_not_found\"}}" 0 "" 0
+    check notfound-strict "{\"error\":{\"code\":\"pane_not_found\"}}" 0 strict 0
     check unknown-default "" 1 "" 2
     check unknown-strict "" 1 strict 2
     check othererror-default "{\"error\":{\"code\":\"internal\"}}" 1 "" 2
@@ -2974,7 +2974,7 @@ test_current_path_reads_cwd() {
   # Verified pitfall (herdr-verification-p2.md): .result.pane.cwd is frozen at
   # pane-creation time and never updates; .foreground_cwd tracks the live
   # running process (e.g. a treehouse get subshell) and is what must be read.
-  printf '{"result":{"pane":{"pane_id":"w1:p2","cwd":"/tmp/pane-creation-dir","foreground_cwd":"/tmp/fake-worktree"}}}\n' > "$resp/1.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2","cwd":"/tmp/pane-creation-dir","foreground_cwd":"/tmp/fake-worktree"}}}\n' > "$resp/1.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_current_path default:w1:p2' "$ROOT" )
@@ -2988,7 +2988,8 @@ test_current_path_reads_cwd() {
 test_busy_state_working_maps_to_busy() {
   local dir log resp fb out
   dir="$TMP_ROOT/busy-working"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/1.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}\n' > "$resp/1.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_busy_state default:w1:p2' "$ROOT" )
@@ -3000,14 +3001,16 @@ test_busy_state_working_maps_to_busy() {
 test_busy_state_done_and_blocked_map_to_idle() {
   local dir log resp fb out
   dir="$TMP_ROOT/busy-done"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"agent":{"agent_status":"done"}}}\n' > "$resp/1.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}\n' > "$resp/1.out"
+  printf '{"result":{"agent":{"agent_status":"done"}}}\n' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_busy_state default:w1:p2' "$ROOT" )
   [ "$out" = idle ] || fail "agent_status=done should map to idle, got '$out'"
 
   dir="$TMP_ROOT/busy-blocked"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/1.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}\n' > "$resp/1.out"
+  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_busy_state default:w1:p2' "$ROOT" )
@@ -3015,15 +3018,18 @@ test_busy_state_done_and_blocked_map_to_idle() {
   pass "fm_backend_herdr_busy_state: done -> idle, blocked -> idle (surfaced like a stale pane, not suppressed as busy)"
 }
 
-test_busy_state_unknown_on_no_agent() {
-  local dir log resp fb out
+test_busy_state_refuses_failed_agent_read() {
+  local dir log resp fb out status
   dir="$TMP_ROOT/busy-unknown"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '1\n' > "$resp/1.exit"
+  printf '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}\n' > "$resp/1.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '1\n' > "$resp/2.exit"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_busy_state default:w1:p2' "$ROOT" )
-  [ "$out" = unknown ] || fail "a failed agent get should report unknown (the fallback-to-regex cue), got '$out'"
-  pass "fm_backend_herdr_busy_state: unparseable/absent agent state reports unknown, the regex-fallback cue"
+  status=$?
+  [ "$status" -eq 2 ] || fail "a failed agent get should remain a typed refusal, got rc=$status out='$out'"
+  pass "fm_backend_herdr_busy_state: a failed native agent read remains a typed refusal"
 }
 
 # --- composer_state: structural border-row classification --------------------
@@ -4549,7 +4555,7 @@ test_kill_refuses_unconfirmed_close
 test_current_path_reads_cwd
 test_busy_state_working_maps_to_busy
 test_busy_state_done_and_blocked_map_to_idle
-test_busy_state_unknown_on_no_agent
+test_busy_state_refuses_failed_agent_read
 test_composer_state_bare_prompt_is_empty
 test_composer_state_styled_placeholder_draft_is_pending
 test_composer_state_real_text_is_pending
