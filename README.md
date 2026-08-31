@@ -85,6 +85,12 @@ Other operational state under `config/`, `data/`, and `state/` remains local and
 
 ## Working model
 
+Firstmate is a complete autonomous software factory steered by humans.
+Its autonomy is guarded by operational controls, self-review before delivery, project-specific safeguards, and this repository's own governance, rather than by repeated human micro-decisions.
+The fleet decides and records the routine, in-scope calls itself; the captain owns the decisions that genuinely need a human, and the boundaries below are not negotiable.
+[`.agents/skills/ask-user-authority/SKILL.md`](.agents/skills/ask-user-authority/SKILL.md) owns which validation findings are which.
+Phynd Cloud is the concrete project governed this way: <https://github.com/phynd-games/phynd-cloud>.
+
 Talk only to the captain session.
 The captain dispatches implementation, design, investigation, and review work to isolated workers.
 Workers use separate git worktrees and appear in Herdr as visible task workspaces.
