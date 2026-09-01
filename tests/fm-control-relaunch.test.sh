@@ -1260,6 +1260,27 @@ test_promotion_participates_in_the_lifecycle_lock_before_metadata_resolution() {
   pass "fm-promote: promotion participates in lifecycle serialization"
 }
 
+test_promotion_uses_overridden_data_root() {
+  local dir alternate reason out
+  dir=$(new_case promote-data-override rl30)
+  alternate="$dir/alternate-data"
+  mkdir -p "$alternate/rl30"
+  reason='documentation: target=promotion data-root lookup; action=validate alternate brief resolution'
+  fm_write_meta "$dir/home/state/rl30.meta" "window=fmses:fm-rl30" "kind=scout"
+  printf 'scout brief for rl30\nLavish intake contract: not-applicable\nLavish intake reason: %s\n' \
+    "$reason" > "$alternate/rl30/brief.md"
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/home/state" \
+    "$ROOT/bin/fm-lavish-intake.sh" exempt rl30 --reason "$reason" >/dev/null
+  out=$(FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/home/state" \
+    FM_DATA_OVERRIDE="$alternate" "$PROMOTE" rl30 --mode local-only --yolo off 2>&1) \
+    || fail "promotion did not use the overridden data root: $out"
+  assert_contains "$out" "promoted rl30 to ship" \
+    "promotion with an overridden data root did not complete"
+  [ "$(meta_field "$dir" rl30 kind)" = ship ] \
+    || fail "promotion with an overridden data root did not update metadata"
+  pass "fm-promote: promotion resolves the active data override"
+}
+
 # --- 6. fm-spawn --relaunch's own refusals -----------------------------------
 
 test_spawn_relaunch_refuses_a_live_agent() {
@@ -1354,6 +1375,7 @@ test_secondmate_checkpoint_refuses_unreadable_child_state
 test_concurrent_relaunch_is_refused
 test_direct_spawn_relaunch_participates_in_the_lifecycle_lock
 test_promotion_participates_in_the_lifecycle_lock_before_metadata_resolution
+test_promotion_uses_overridden_data_root
 test_spawn_relaunch_refuses_a_live_agent
 test_spawn_relaunch_refuses_contradicting_flags
 test_spawn_relaunch_refuses_an_unrecorded_task
