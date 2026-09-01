@@ -145,7 +145,7 @@ intake_source_path() { printf '%s/procevent/%s.intake\n' "$STATE" "$1"; }
 intake_source_lock_path() { printf '%s/.lavish-intake-source-%s.lock\n' "$STATE" "$1"; }
 
 intake_state_active_for_task() {
-  local task=$1 path source bound registration_task
+  local task=$1 path source bound registration_task marker_task marker_source
   for path in "$(session_path "$task")" "$(intake_hold_path "$task")" "$STATE/$task.lavish-intake-owner"; do
     [ -e "$path" ] || [ -L "$path" ] || continue
     return 0
@@ -153,7 +153,16 @@ intake_state_active_for_task() {
   for path in "$STATE/procevent"/*.intake; do
     [ -e "$path" ] || [ -L "$path" ] || continue
     [ -f "$path" ] && [ ! -L "$path" ] || return 0
-    [ "$(meta_value "$path" task_id)" = "$task" ] && return 0
+    source=${path##*/}
+    source=${source%.intake}
+    [ "$(grep -c '^task_id=' "$path" 2>/dev/null || true)" -eq 1 ] || return 0
+    [ "$(grep -c '^source_id=' "$path" 2>/dev/null || true)" -eq 1 ] || return 0
+    marker_task=$(meta_value "$path" task_id)
+    marker_source=$(meta_value "$path" source_id)
+    fm_task_id_path_safe "$marker_task" || return 0
+    fm_procevent_source_id_valid "$source" || return 0
+    [ "$marker_source" = "$source" ] || return 0
+    [ "$marker_task" = "$task" ] && return 0
   done
   for path in "$STATE/procevent"/*.source; do
     [ -e "$path" ] || [ -L "$path" ] || continue

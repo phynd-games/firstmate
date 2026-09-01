@@ -625,6 +625,8 @@ out=$(PATH="$LAVISH_BIN:$PATH" FM_HOME="$HLT" "$ROOT/bin/fm-procevent.sh" retire
 assert_contains "$out" "retired: $lavish_id" "intake retirement remains idempotent after terminal source retirement"
 assert_present "$HLT/state/procevent/$lavish_id.intake" "terminal intake retirement preserves its teardown ownership marker"
 assert_absent "$HLT/state/decision-bindings/$lavish_id.origin" "terminal intake retirement left its binding"
+out=$(PATH="$LAVISH_BIN:$PATH" FM_HOME="$HLT" "$ROOT/bin/fm-procevent.sh" retire "$lavish_id" --expect-intake-task "$terminal_task")
+assert_contains "$out" "retired: $lavish_id" "marker-only intake retirement is idempotent after record cleanup"
 rm -f "$HLT/state/procevent/$lavish_id.intake"
 pass "one Send & End yields exactly one captured result, automatic retirement, and no recurring poll"
 

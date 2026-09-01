@@ -786,8 +786,10 @@ cmd_retire() {
       && [ "$(awk -F= '$1 == "source_id" { print substr($0, length($1) + 2); exit }' "$marker")" = "$id" ] \
       || { fm_procevent_source_lock_release "$id"; die "current intake marker is not owned by task $expected_task"; }
     bound=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$id" 2>/dev/null || true)
-    [ "$bound" = "$expected_task" ] \
-      || { fm_procevent_source_lock_release "$id"; die "current source binding is not owned by task $expected_task"; }
+    if [ -n "$bound" ]; then
+      [ "$bound" = "$expected_task" ] \
+        || { fm_procevent_source_lock_release "$id"; die "current source binding is not owned by task $expected_task"; }
+    fi
   fi
   if [ -e "$(fm_procevent_claim_path "$id")" ]; then
     if ! fm_procevent_claim_load_locked "$id" 2>/dev/null; then
@@ -812,7 +814,7 @@ cmd_retire() {
       rm -f -- "$(staging_file "$id" "$token")"
     fi
   fi
-  if [ -n "$expected_task" ]; then
+  if [ -n "$expected_task" ] && [ -n "$bound" ]; then
     "$SCRIPT_DIR/fm-captain-hold.sh" unbind "$id" >/dev/null 2>&1 \
       || { fm_procevent_source_lock_release "$id"; die "cannot unbind intake source: $id"; }
     unbound=1

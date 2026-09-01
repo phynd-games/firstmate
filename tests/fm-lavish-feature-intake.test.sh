@@ -437,6 +437,29 @@ test_exemption_rejects_active_intake() {
   pass "Lavish intake: active sessions cannot be replaced by exemptions"
 }
 
+test_exemption_ignores_foreign_valid_marker() {
+  local home out rc
+  home=$(make_home foreign-marker)
+  mkdir -p "$home/state/procevent"
+  printf 'version=1\ntask_id=foreign-a1\nsource_id=lavish-foreignmarker\nowner_token=ownerforeign\n' \
+    > "$home/state/procevent/lavish-foreignmarker.intake"
+  run_intake "$home" exempt local-a1 \
+    --reason 'configuration: target=tests/fm-lavish-feature-intake.test.sh foreign marker; action=exercise exemption ownership behavior' \
+    >/dev/null
+  assert_present "$home/state/local-a1.lavish-intake" \
+    "a valid foreign intake marker blocked an unrelated exemption"
+  printf 'version=1\ntask_id=\nsource_id=lavish-malformed\n' \
+    > "$home/state/procevent/lavish-malformed.intake"
+  set +e
+  out=$(run_intake "$home" exempt malformed-a1 \
+    --reason 'configuration: target=tests/fm-lavish-feature-intake.test.sh malformed marker; action=exercise marker validation behavior' 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a malformed foreign intake marker was ignored"
+  assert_contains "$out" "active" "malformed intake marker refusal was unclear"
+  pass "Lavish intake: foreign markers are ignored and malformed markers fail closed"
+}
+
 # A live session without submitted feedback, or a closed session carrying no
 # feedback, cannot produce a receipt.
 test_absent_and_closed_without_feedback_refused() {
@@ -849,6 +872,7 @@ test_ambiguous_classification_refuses_dispatch
 test_explicit_exemptions_require_reason
 test_brief_exemption_stages_before_receipt
 test_exemption_rejects_active_intake
+test_exemption_ignores_foreign_valid_marker
 test_absent_and_closed_without_feedback_refused
 test_malformed_captured_feedback_refused
 test_missing_intake_session_fails_closed
