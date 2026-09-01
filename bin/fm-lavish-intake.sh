@@ -39,6 +39,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-procevent-lib.sh
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
 
 FIELDS="product_goal intended_users use_cases scope non_goals constraints visual_product_references key_choices acceptance_criteria open_questions"
 RECEIPT_VERSION=1
@@ -96,6 +98,8 @@ sha256_file() {
 
 receipt_path() { printf '%s/%s.lavish-intake\n' "$STATE" "$1"; }
 session_path() { printf '%s/%s.lavish-intake-session\n' "$STATE" "$1"; }
+intake_hold_path() { printf '%s/%s.lavish-intake-hold\n' "$STATE" "$1"; }
+intake_lock_path() { printf '%s/.lavish-intake-%s.lock\n' "$STATE" "$1"; }
 
 meta_value() {
   local file=$1 key=$2
@@ -151,7 +155,7 @@ validate_intake_payload() {
 }
 
 result_is_captured_feedback() {
-  local result=$1 artifact=$2 task=$3 sid seq adapter inbox parent answer_rows found=0 key answer label close payload
+  local result=$1 artifact=$2 task=$3 sid seq adapter inbox parent answer_rows found=0 key answer label close payload session_source
   result=$(real_file "$result") || fail "captured result is not a regular file: $result"
   artifact=$(real_file "$artifact") || fail "artifact is not a regular file: $artifact"
   inbox=$(real_dir "$STATE/procevent-inbox") \
@@ -170,17 +174,21 @@ result_is_captured_feedback() {
   [ "$adapter" = lavish ] || fail "result was not captured by the Lavish adapter"
   [ "$("$SCRIPT_DIR/fm-procevent-lavish.sh" classify "$result")" = feedback ] \
     || fail "captured result is not feedback"
+  [ -f "$(session_path "$task")" ] && [ ! -L "$(session_path "$task")" ] \
+    || fail "no Lavish intake session is recorded for task $task"
+  session_source=$(meta_value "$(session_path "$task")" source_id)
+  [ -n "$session_source" ] && [ "$sid" = "$session_source" ] \
+    || fail "captured result source does not match the active intake session"
   [ "$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$sid" 2>/dev/null || true)" = "$task" ] \
     || fail "Lavish source is not bound to task $task"
   answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers "$result") \
     || fail "captured feedback could not be read"
   while IFS=$'\t' read -r key answer label close; do
     [ -n "${key:-}" ] || continue
-    if [ "$key" = "$task" ]; then
-      [ "$answer" = submitted ] || fail "intake answer must be submitted"
-      [ "$close" = release ] || fail "intake answer must release held work"
-      found=$((found + 1))
-    fi
+    [ "$key" = "$task" ] || fail "captured feedback contains an answer for another task"
+    [ "$answer" = submitted ] || fail "intake answer must be submitted"
+    [ "$close" = release ] || fail "intake answer must release held work"
+    found=$((found + 1))
   done <<EOF
 $answer_rows
 EOF
@@ -246,15 +254,62 @@ START_TASK=
 START_ARTIFACT=
 START_SID=
 START_SESSION_TMP=
+START_LOCK_PATH=
+START_LOCK_HELD=0
+START_HOLD_MARKER_CREATED=0
+START_OWNER_TOKEN=
+START_HOLD_REASON=
 START_HOLD_CREATED=0
 START_BINDING_CREATED=0
 START_SESSION_CREATED=0
 START_SOURCE_PREEXISTING=0
 START_OK=0
 
+start_marker_matches() {
+  local marker
+  marker=$(intake_hold_path "$START_TASK")
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  [ "$(meta_value "$marker" task_id)" = "$START_TASK" ] \
+    && [ "$(meta_value "$marker" owner_token)" = "$START_OWNER_TOKEN" ]
+}
+
+start_task_has_owned_captain_hold() {
+  local show state hold_kind hold_reason
+  show=$(cd "$FM_HOME" && tasks-axi show "$START_TASK" --full 2>/dev/null || true)
+  [ -n "$show" ] || return 1
+  state=$(printf '%s\n' "$show" | sed -n 's/^  state: //p' | head -1)
+  hold_kind=$(printf '%s\n' "$show" | sed -n 's/^  hold_kind: //p' | head -1)
+  hold_reason=$(printf '%s\n' "$show" | sed -n 's/^  hold_reason: //p' | head -1)
+  case "$hold_kind" in
+    ''|null|\"null\"|-|\"-\") hold_kind= ;;
+  esac
+  [ "$state" != done ] && [ "$hold_kind" = captain ] \
+    && [ "$hold_reason" = "$START_HOLD_REASON" ]
+}
+
+write_start_marker() {
+  local marker tmp
+  marker=$(intake_hold_path "$START_TASK")
+  tmp=$(mktemp "$STATE/.lavish-intake-hold.XXXXXX") || fail "cannot stage intake ownership marker"
+  {
+    printf 'version=1\n'
+    printf 'task_id=%s\n' "$START_TASK"
+    printf 'owner_token=%s\n' "$START_OWNER_TOKEN"
+  } > "$tmp"
+  chmod 0600 "$tmp"
+  mv -f -- "$tmp" "$marker"
+  START_HOLD_MARKER_CREATED=1
+}
+
 start_cleanup() {
   local status=$?
-  [ "$START_OK" -eq 1 ] && return "$status"
+  if [ "$START_OK" -eq 1 ]; then
+    if [ "$START_LOCK_HELD" -eq 1 ]; then
+      fm_lock_release "$START_LOCK_PATH" || true
+      START_LOCK_HELD=0
+    fi
+    return "$status"
+  fi
   [ -z "$START_SESSION_TMP" ] || rm -f -- "$START_SESSION_TMP"
   if [ "$START_SESSION_CREATED" -eq 1 ]; then
     rm -f -- "$(session_path "$START_TASK")"
@@ -265,8 +320,17 @@ start_cleanup() {
   if [ -n "$START_SID" ] && [ "$START_SOURCE_PREEXISTING" -eq 0 ]; then
     "$SCRIPT_DIR/fm-procevent-lavish.sh" retire "$START_ARTIFACT" >/dev/null 2>&1 || true
   fi
-  if [ "$START_HOLD_CREATED" -eq 1 ]; then
+  if [ "$START_HOLD_CREATED" -eq 1 ] && start_marker_matches \
+    && start_task_has_owned_captain_hold; then
     "$SCRIPT_DIR/fm-captain-hold.sh" release "$START_TASK" >/dev/null 2>&1 || true
+  fi
+  if [ "$START_HOLD_MARKER_CREATED" -eq 1 ] && start_marker_matches \
+    && ! start_task_has_owned_captain_hold; then
+    rm -f -- "$(intake_hold_path "$START_TASK")"
+  fi
+  if [ "$START_LOCK_HELD" -eq 1 ]; then
+    fm_lock_release "$START_LOCK_PATH" || true
+    START_LOCK_HELD=0
   fi
   return "$status"
 }
@@ -354,7 +418,7 @@ EOF
 }
 
 cmd_start() {
-  local task=${1-} artifact='' reason='' sid mapping tmp task_show state hold_kind
+  local task=${1-} artifact='' reason='' sid mapping tmp task_show state hold_kind hold_reason
   local existing_binding source_path
   shift || true
   validate_task_id "$task"
@@ -371,20 +435,30 @@ cmd_start() {
   [ -n "$artifact" ] || fail "start requires --artifact <artifact.html>"
   [ -n "$reason" ] || reason="Captain review of required feature intake before implementation"
   validate_one_line reason "$reason"
-  [ ! -e "$(receipt_path "$task")" ] && [ ! -L "$(receipt_path "$task")" ] \
-    || fail "intake evidence already exists for task $task"
-  [ ! -e "$(session_path "$task")" ] && [ ! -L "$(session_path "$task")" ] \
-    || fail "intake session already exists for task $task"
   START_TASK=$task
+  START_HOLD_REASON=$reason
+  START_OWNER_TOKEN="${BASHPID:-$$}.$RANDOM"
   START_ARTIFACT=
   START_SID=
   START_SESSION_TMP=
+  START_LOCK_PATH=$(intake_lock_path "$task")
+  START_LOCK_HELD=0
+  START_HOLD_MARKER_CREATED=0
   START_HOLD_CREATED=0
   START_BINDING_CREATED=0
   START_SESSION_CREATED=0
   START_SOURCE_PREEXISTING=0
   START_OK=0
+  mkdir -p "$STATE" || fail "cannot create intake state directory"
   trap start_cleanup EXIT
+  fm_lock_acquire_wait "$START_LOCK_PATH" || fail "could not lock intake task $task"
+  START_LOCK_HELD=1
+  [ ! -e "$(receipt_path "$task")" ] && [ ! -L "$(receipt_path "$task")" ] \
+    || fail "intake evidence already exists for task $task"
+  [ ! -e "$(session_path "$task")" ] && [ ! -L "$(session_path "$task")" ] \
+    || fail "intake session already exists for task $task"
+  [ ! -e "$(intake_hold_path "$task")" ] && [ ! -L "$(intake_hold_path "$task")" ] \
+    || fail "intake ownership already exists for task $task"
   artifact=$(real_file "$artifact") || fail "artifact is not a regular file: $artifact"
   START_ARTIFACT=$artifact
   artifact_fields_present "$artifact"
@@ -397,12 +471,24 @@ cmd_start() {
     ''|null|\"null\"|-|\"-\") hold_kind= ;;
   esac
   if [ "$state" != done ] && [ "$hold_kind" = captain ]; then
-    :
+    fail "task $task already carries an unrelated captain hold"
   elif [ "$state" != done ] && [ -n "$hold_kind" ] && [ "$hold_kind" != - ]; then
     fail "task $task already carries a non-captain hold"
   else
+    write_start_marker
     "$SCRIPT_DIR/fm-captain-hold.sh" hold "$task" --reason "$reason" >/dev/null \
       || fail "could not hold task for Lavish intake"
+    task_show=$(cd "$FM_HOME" && tasks-axi show "$task" --full 2>/dev/null || true)
+    state=$(printf '%s\n' "$task_show" | sed -n 's/^  state: //p' | head -1)
+    hold_kind=$(printf '%s\n' "$task_show" | sed -n 's/^  hold_kind: //p' | head -1)
+    hold_reason=$(printf '%s\n' "$task_show" | sed -n 's/^  hold_reason: //p' | head -1)
+    case "$hold_kind" in
+      ''|null|\"null\"|-|\"-\") hold_kind= ;;
+    esac
+    [ "$state" != done ] && [ "$hold_kind" = captain ] \
+      && [ "$hold_reason" = "$reason" ] \
+      && start_marker_matches \
+      || fail "could not prove intake captain-hold ownership"
     START_HOLD_CREATED=1
   fi
   if lavish-axi "$artifact"; then

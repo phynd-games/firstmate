@@ -94,6 +94,18 @@ prompts[1]{uid,prompt,selector,tag,text}:
 EOF
     return
   fi
+  if [ "$shape" = extra ]; then
+    cat > "$home/lavish-poll.txt" <<EOF
+session:
+  file: $home/intake.html
+  status: feedback
+  session_ended: true
+prompts[2]{uid,prompt,selector,tag,text}:
+  "1","Feature intake submitted\\n\\nContext data:\\n{\\n  \\"question\\": \\"$task\\",\\n  \\"answer\\": \\"submitted\\",\\n  \\"close\\": \\"release\\",\\n  \\"submitted\\": true,\\n  \\"intake\\": { \\"product_goal\\": \\"goal\\" }\\n}","form",choice,"Feature intake submitted"
+  "2","Other answer\\n\\nContext data:\\n{\\n  \\"question\\": \\"other-task\\",\\n  \\"answer\\": \\"submitted\\",\\n  \\"close\\": \\"release\\",\\n  \\"submitted\\": true\\n}","form",choice,"Other answer"
+EOF
+    return
+  fi
   cat > "$home/lavish-poll.txt" <<EOF
 session:
   file: $home/intake.html
@@ -351,6 +363,49 @@ test_successful_captured_feedback_and_followup() {
   pass "Lavish intake: captured feedback releases work and supports exact follow-up"
 }
 
+test_start_rejects_unrelated_captain_hold() {
+  local home artifact out rc hold_reason
+  home=$(make_home unrelated-hold)
+  add_task "$home" held-a1
+  artifact=$home/intake.html
+  run_intake "$home" template held-a1 --output "$artifact" >/dev/null
+  (cd "$home" && tasks-axi hold held-a1 --kind captain --reason 'existing captain decision' >/dev/null)
+  set +e
+  out=$(run_intake "$home" start held-a1 --artifact "$artifact" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "intake claimed an unrelated captain hold"
+  assert_contains "$out" "unrelated captain hold" "unrelated hold refusal was unclear"
+  hold_reason=$(cd "$home" && tasks-axi show held-a1 --full | sed -n 's/^  hold_reason: //p')
+  [ "$hold_reason" = 'existing captain decision' ] || fail "unrelated captain hold was changed"
+  assert_absent "$home/state/held-a1.lavish-intake-hold" "unrelated hold refusal left ownership marker"
+  pass "Lavish intake: unrelated captain holds remain untouched"
+}
+
+test_extra_keyed_feedback_refused() {
+  local home artifact sid result out rc
+  home=$(make_home extra-key)
+  add_task "$home" extra-a1
+  artifact=$home/intake.html
+  run_intake "$home" template extra-a1 --output "$artifact" >/dev/null
+  run_intake "$home" start extra-a1 --artifact "$artifact" >/dev/null
+  sid=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
+  fixture_for "$home" extra-a1 feedback extra
+  run_process_event "$home" "$sid" >/dev/null
+  result=$home/state/procevent-inbox/$sid.1.result
+  set +e
+  out=$(run_intake "$home" record extra-a1 --artifact "$artifact" --result "$result" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "feedback with an extra keyed answer was accepted"
+  assert_contains "$out" "another task" "extra keyed answer refusal was unclear"
+  assert_absent "$home/state/extra-a1.lavish-intake" "extra keyed answer produced intake evidence"
+  (cd "$home" && tasks-axi show extra-a1 --full) | grep -Fq 'hold_kind: captain' \
+    || fail "extra keyed answer released the intake task"
+  pass "Lavish intake: extra keyed answers cannot cross task boundaries"
+}
+
 # Firstmate itself receives the same mandatory gate, without changing any
 # dashboard product surface.
 test_firstmate_self_work_gets_same_gate() {
@@ -375,6 +430,8 @@ test_intake_flag_rejects_exemption
 test_contractless_compatibility_requires_existing_endpoint
 test_start_failure_rolls_back_only_new_state
 test_arm_failure_rolls_back_only_new_state
+test_start_rejects_unrelated_captain_hold
+test_extra_keyed_feedback_refused
 test_successful_captured_feedback_and_followup
 test_firstmate_self_work_gets_same_gate
 printf '# all fm-lavish-feature-intake tests passed\n'

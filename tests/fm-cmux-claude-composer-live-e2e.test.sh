@@ -51,7 +51,9 @@ git -C "$LAB/projects/comms" add README.md
 git -C "$LAB/projects/comms" commit -qm 'fixture: initialize cmux Claude composer probe'
 
 STATUS="$LAB/state/$TASK.status"
-FM_HOME="$LAB" "$ROOT/bin/fm-brief.sh" "$TASK" comms --scout || fail "could not scaffold the Claude probe brief"
+FM_HOME="$LAB" "$ROOT/bin/fm-brief.sh" "$TASK" comms --scout \
+  --not-applicable "live cmux composer probe; no product implementation" \
+  || fail "could not scaffold the Claude probe brief"
 python3 - "$LAB/data/$TASK/brief.md" "$STATUS" <<'PY'
 from pathlib import Path
 import sys

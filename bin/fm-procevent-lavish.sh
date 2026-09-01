@@ -96,6 +96,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
+STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
@@ -389,12 +390,26 @@ cmd_silent() {
 # `<origin>-decision-<key>` identities pre-collapse decks still carry; the
 # security property is the slug SHAPE, which is unchanged.
 cmd_answers() {
-  local file=${1-}
+  local file=${1-} source expected='' session_source session_file
   [ -n "$file" ] || usage
   [ -f "$file" ] && [ ! -L "$file" ] || die "result file does not exist: $file"
+  source=$(fm_procevent_result_source_id "$file" 2>/dev/null || true)
+  if [ -n "$source" ]; then
+    expected=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$source" 2>/dev/null || true)
+    if [ -n "$expected" ] && [ "$expected" != "(any)" ]; then
+      session_file="$STATE/$expected.lavish-intake-session"
+      if [ -f "$session_file" ] && [ ! -L "$session_file" ]; then
+        session_source=$(sed -n 's/^source_id=//p' "$session_file" | head -1)
+        [ "$source" = "$session_source" ] || die "captured result source does not match the active intake session"
+      else
+        expected=''
+      fi
+    fi
+  fi
   perl -MJSON::PP -e '
     use strict; use warnings;
-    my ($path) = @ARGV;
+    my ($path, $expected) = @ARGV;
+    my $strict = defined($expected) && length($expected) && $expected ne "(any)";
     open my $fh, "<", $path or exit 1;
     my (@fields, $want, @rows);
     while (my $line = <$fh>) {
@@ -410,6 +425,7 @@ cmd_answers() {
     }
     close $fh;
     my %seen;
+    my $matched = 0;
     my @out;
     for my $row (@rows) {
       $row =~ s/^\s+//;
@@ -444,6 +460,11 @@ cmd_answers() {
       }
       next unless $key =~ /\A[A-Za-z0-9._-]{1,128}\z/;
       next unless length $answer && length($answer) <= 512;
+      if ($strict) {
+        die "captured result contains an answer for another task\n" unless $key eq $expected;
+        $matched++;
+        die "captured result contains more than one keyed answer\n" if $matched > 1;
+      }
       my $label = defined $f{text} ? $f{text} : "";
       s/[\x00-\x1f\x7f]/ /g for ($answer, $label);
       $label = substr($label, 0, 512);
@@ -452,8 +473,10 @@ cmd_answers() {
       $seen{$key} = scalar @out;
       push @out, length $mode ? "$key\t$answer\t$label\t$mode" : "$key\t$answer\t$label";
     }
+    die "captured result does not contain exactly one answer for its bound task\n"
+      if $strict && $matched != 1;
     print "$_\n" for grep { defined } @out;
-  ' "$file"
+  ' "$file" "$expected"
 }
 
 cmd_intake() {

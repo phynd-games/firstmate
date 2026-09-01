@@ -170,6 +170,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-procevent-lib.sh
+. "$SCRIPT_DIR/fm-procevent-lib.sh"
 # shellcheck source=bin/fm-pending-reply-lib.sh
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
@@ -2813,6 +2815,22 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 status_retire_presentation_task "$STATE" "$ID" || exit 1
+INTAKE_SOURCE=
+INTAKE_SESSION="$STATE/$ID.lavish-intake-session"
+if [ -e "$INTAKE_SESSION" ] || [ -L "$INTAKE_SESSION" ]; then
+  [ -f "$INTAKE_SESSION" ] && [ ! -L "$INTAKE_SESSION" ] \
+    || { echo "error: Lavish intake session is unsafe for $ID; preserving task records" >&2; exit 1; }
+  [ -f "$STATE/$ID.lavish-intake" ] && [ ! -L "$STATE/$ID.lavish-intake" ] \
+    || { echo "error: Lavish intake evidence is missing for $ID; preserving task records" >&2; exit 1; }
+  INTAKE_SOURCE=$(sed -n 's/^source_id=//p' "$INTAKE_SESSION" | head -1)
+  fm_procevent_source_id_valid "$INTAKE_SOURCE" \
+    || { echo "error: Lavish intake source identity is invalid for $ID; preserving task records" >&2; exit 1; }
+  INTAKE_BOUND=$($FM_ROOT/bin/fm-captain-hold.sh binding "$INTAKE_SOURCE" 2>/dev/null || true)
+  [ -z "$INTAKE_BOUND" ] || [ "$INTAKE_BOUND" = "$ID" ] \
+    || { echo "error: Lavish intake source is bound to another task; preserving task records" >&2; exit 1; }
+  "$FM_ROOT/bin/fm-captain-hold.sh" unbind "$INTAKE_SOURCE" >/dev/null \
+    || { echo "error: could not unbind Lavish intake source $INTAKE_SOURCE; preserving task records" >&2; exit 1; }
+fi
 rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
@@ -2821,7 +2839,7 @@ rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.control-relaunch.brief-prior" "$STATE/$ID.control-relaunch.note" \
   "$STATE/$ID.reconcile-nudged" \
   "$STATE/$ID.lavish-intake" "$STATE/$ID.lavish-intake-session" \
-  "$STATE/$ID.lavish-intake-classification"
+  "$STATE/$ID.lavish-intake-classification" "$STATE/$ID.lavish-intake-hold"
 # The steering inbox (bin/fm-task-inbox-lib.sh) is runtime state for the
 # retired endpoint; teardown only runs after landing is confirmed, so any
 # leftover unhandled steer here is moot rather than unlanded work.
