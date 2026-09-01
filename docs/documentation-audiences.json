@@ -157,6 +157,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/lavish-feature-intake/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/phynd-design/SKILL.md",
       "audience": "agent-runtime"
     },

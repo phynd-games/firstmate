@@ -284,6 +284,9 @@ BACKEND_ARG=
 MODE=
 YOLO=
 TRACEPARENT_ARG=
+LAVISH_INTAKE_STATUS=legacy
+LAVISH_INTAKE_EVIDENCE=
+LAVISH_INTAKE_REASON=
 HARNESS_SET=0
 MODEL_SET=0
 EFFORT_SET=0
@@ -1667,6 +1670,23 @@ else
 fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
 
+# New ship and scout briefs carry a deterministic Lavish intake contract. A
+# contractless brief is the compatibility path for work already in flight; a
+# generated required contract is refused before any endpoint or worktree exists.
+if [ "$KIND" != secondmate ]; then
+  if INTAKE_CHECK_OUT=$("$FM_ROOT/bin/fm-lavish-intake.sh" check-brief "$ID" "$BRIEF" 2>&1); then
+    LAVISH_INTAKE_STATUS=$(printf '%s\n' "$INTAKE_CHECK_OUT" | sed -n 's/^status=//p' | head -n 1)
+    LAVISH_INTAKE_EVIDENCE=$(printf '%s\n' "$INTAKE_CHECK_OUT" | sed -n 's/^evidence=//p' | head -n 1)
+    LAVISH_INTAKE_REASON=$(printf '%s\n' "$INTAKE_CHECK_OUT" | sed -n 's/^reason=//p' | head -n 1)
+    if [ "$LAVISH_INTAKE_STATUS" = legacy ]; then
+      echo "warning: $ID brief has no Lavish intake contract; preserving compatibility for in-flight work" >&2
+    fi
+  else
+    echo "error: $ID cannot be dispatched: $INTAKE_CHECK_OUT" >&2
+    exit 1
+  fi
+fi
+
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
   case "$1" in
     no-mistakes) echo 3 ;;
@@ -2704,7 +2724,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects lavish_intake lavish_intake_evidence lavish_intake_reason control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2717,6 +2737,11 @@ preserve_relaunch_meta() {
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
   echo "kind=$KIND"
+  if [ "$KIND" != secondmate ] && [ "$LAVISH_INTAKE_STATUS" != legacy ]; then
+    echo "lavish_intake=$LAVISH_INTAKE_STATUS"
+    [ -z "$LAVISH_INTAKE_EVIDENCE" ] || echo "lavish_intake_evidence=$LAVISH_INTAKE_EVIDENCE"
+    [ -z "$LAVISH_INTAKE_REASON" ] || echo "lavish_intake_reason=$LAVISH_INTAKE_REASON"
+  fi
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
   echo "tasktmp=$TASK_TMP"

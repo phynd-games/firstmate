@@ -6,8 +6,8 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
-#        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--intake <receipt>|--not-applicable <reason>] [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --scout [--intake <receipt>|--not-applicable <reason>] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
@@ -43,6 +43,8 @@
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
+# --intake and --not-applicable are mutually exclusive. A new ship or scout
+# brief without either carries a required gate and cannot be dispatched.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
 # a spawn-time and firstmate-side input only (AGENTS.md section 7).
 # Every scaffold's status protocol distinguishes the configured
@@ -109,6 +111,9 @@ HERDR_LAB=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
+INTAKE_MODE=required
+INTAKE_EVIDENCE=
+INTAKE_REASON=
 POS=()
 want_value=
 for a in "$@"; do
@@ -118,6 +123,8 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
+      intake) INTAKE_EVIDENCE=$a; INTAKE_MODE=submitted ;;
+      not-applicable) INTAKE_REASON=$a; INTAKE_MODE=not-applicable ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -130,6 +137,10 @@ for a in "$@"; do
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
+    --intake) want_value=intake ;;
+    --intake=*) INTAKE_EVIDENCE=${a#*=}; INTAKE_MODE=submitted ;;
+    --not-applicable) want_value=not-applicable ;;
+    --not-applicable=*) INTAKE_REASON=${a#*=}; INTAKE_MODE=not-applicable ;;
     # yolo never reaches the worker: it is firstmate's merge authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -138,6 +149,11 @@ for a in "$@"; do
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
+[ "$INTAKE_MODE" = required ] || {
+  [ "$KIND" != secondmate ] || { echo "error: --intake and --not-applicable apply only to ship or scout briefs" >&2; exit 1; }
+  [ -n "$INTAKE_EVIDENCE" ] || [ -n "$INTAKE_REASON" ] || { echo "error: intake classification requires evidence or a concrete reason" >&2; exit 1; }
+  [ -z "$INTAKE_EVIDENCE" ] || [ -z "$INTAKE_REASON" ] || { echo "error: --intake and --not-applicable are mutually exclusive" >&2; exit 1; }
+}
 
 # Ship delivery mode is an explicit per-task decision (AGENTS.md section 7). A
 # missing or invalid value stops the scaffold rather than silently defaulting.
@@ -171,6 +187,23 @@ fi
 
 BRIEF="$DATA/$ID/brief.md"
 [ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
+
+if [ "$INTAKE_MODE" = submitted ]; then
+  [ -f "$INTAKE_EVIDENCE" ] && [ ! -L "$INTAKE_EVIDENCE" ] || {
+    echo "error: intake evidence does not exist: $INTAKE_EVIDENCE" >&2
+    exit 1
+  }
+  "$FM_ROOT/bin/fm-lavish-intake.sh" verify "$ID" --evidence "$INTAKE_EVIDENCE" >/dev/null \
+    || { echo "error: intake evidence is not valid for task $ID" >&2; exit 1; }
+  INTAKE_EVIDENCE=$(CDPATH='' cd -- "$(dirname "$INTAKE_EVIDENCE")" && pwd -P)/$(basename "$INTAKE_EVIDENCE")
+fi
+if [ "$INTAKE_MODE" = not-applicable ]; then
+  [ -n "$INTAKE_REASON" ] || { echo "error: --not-applicable requires a concrete reason" >&2; exit 1; }
+  "$FM_ROOT/bin/fm-lavish-intake.sh" exempt "$ID" --reason "$INTAKE_REASON" >/dev/null \
+    || { echo "error: could not record not-applicable intake classification for $ID" >&2; exit 1; }
+  INTAKE_EVIDENCE="$STATE/$ID.lavish-intake"
+fi
+
 mkdir -p "$DATA/$ID"
 
 shell_quote() {
@@ -319,12 +352,40 @@ EOF
 HERDR_SECTION=${HERDR_SECTION%$'\n'}
 fi
 
+INTAKE_SECTION=
+if [ "$KIND" != secondmate ]; then
+  case "$INTAKE_MODE" in
+    required)
+      # shellcheck disable=SC2016 # Backticks are literal brief text, not shell evaluation.
+      INTAKE_SECTION=$(printf '%s\n' \
+        '# Lavish feature intake gate' \
+        'Lavish intake contract: required' \
+        'Before implementation, follow `.agents/skills/lavish-feature-intake/SKILL.md` and obtain a submitted Lavish intake receipt.' \
+        'This worker must not implement or dispatch follow-up work while this gate is required.') ;;
+    submitted)
+      INTAKE_SECTION=$(printf '%s\n' \
+        '# Lavish feature intake gate' \
+        'Lavish intake contract: submitted' \
+        "Lavish intake evidence: $INTAKE_EVIDENCE" \
+        'The submitted intake is the accepted product boundary; keep implementation within its scope and acceptance criteria.') ;;
+    not-applicable)
+      INTAKE_SECTION=$(printf '%s\n' \
+        '# Lavish feature intake gate' \
+        'Lavish intake contract: not-applicable' \
+        "Lavish intake evidence: $INTAKE_EVIDENCE" \
+        "Lavish intake reason: $INTAKE_REASON" \
+        'This bounded exemption does not authorize expanding work beyond its stated reason.') ;;
+  esac
+fi
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 # Task
 {TASK}
+
+$INTAKE_SECTION
 
 $HERDR_SECTION
 
@@ -438,6 +499,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 
 # Task
 {TASK}
+
+$INTAKE_SECTION
 
 $HERDR_SECTION
 
