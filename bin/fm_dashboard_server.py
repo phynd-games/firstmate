@@ -523,6 +523,14 @@ def alerts_from(payload: dict, metrics: list[dict]) -> list[dict]:
                     "detail": inventory.get("reason") or "",
                     "sources": [(snapshot.get("backlog") or {}).get("path")]})
     for d in payload.get("degraded") or []:
+        if d.get("source") == "evidence freshness":
+            # This one is not withheld evidence: it is evidence that may not be
+            # of one moment. Saying "not shown" would misreport what happened.
+            out.append({"severity": "warning", "key": "freshness",
+                        "title": "Evidence changed while it was being collected",
+                        "detail": d.get("reason") or "",
+                        "sources": [d.get("path")]})
+            continue
         out.append({"severity": "warning", "key": "degraded",
                     "title": "Evidence not shown: %s" % d.get("source"),
                     "detail": d.get("reason") or "", "sources": [d.get("path")]})
@@ -690,6 +698,17 @@ def build_document(resource: str, payload: dict, generation: int, arg: str | Non
                 rows.append({"task_id": t.get("id"), "url": pr.get("url"),
                              "source": pr.get("source"), "mode": t.get("mode"),
                              "yolo": t.get("yolo"), "sources": _task_sources(t)})
+            elif pr.get("available") is False:
+                # The record this delivery evidence lives in could not be read.
+                # Dropping the row would present an unreadable source as a
+                # worker with nothing to deliver, which is the one thing an
+                # unavailable surface must never look like.
+                rows.append({"task_id": t.get("id"), "url": None,
+                             "available": False,
+                             "reason": pr.get("reason")
+                             or "the recorded delivery evidence could not be read",
+                             "source": pr.get("source"), "mode": t.get("mode"),
+                             "yolo": t.get("yolo"), "sources": _task_sources(t)})
         for r in backlog:
             if r.get("pr_url") and not any(x["url"] == r["pr_url"] for x in rows):
                 rows.append({"task_id": r.get("id"), "url": r.get("pr_url"),
@@ -715,7 +734,11 @@ def build_document(resource: str, payload: dict, generation: int, arg: str | Non
                         [os.path.join(HOME, "config", "startup-memory-budget") if HOME else None])
 
     if resource == "reports":
+        # resolved_path travels with the index: for a record reached through a
+        # symlinked ancestor it names the file the bytes actually came from, which
+        # the recorded path only resolves to.
         index = [{"id": r.get("id"), "path": r.get("path"),
+                  "resolved_path": r.get("resolved_path"),
                   "readable": r.get("readable"), "reason": r.get("reason"),
                   "bytes": r.get("bytes"), "truncated": r.get("truncated"),
                   "modified": r.get("modified")}
@@ -746,16 +769,22 @@ def build_document(resource: str, payload: dict, generation: int, arg: str | Non
         for f in (((payload.get("usage") or {}).get("budget") or {}).get("files") or []):
             listed.append({"surface": "startup memory file",
                            "path": os.path.join(HOME, f.get("file", "")) if HOME else f.get("file")})
+        # A source names the file that was read. Where a recorded path resolved
+        # somewhere else, both are listed rather than one standing in for the other.
         for e in (payload.get("events") or []):
             if e.get("readable"):
-                listed.append({"surface": "events %s" % e.get("task_id"), "path": e.get("path")})
+                listed.append({"surface": "events %s" % e.get("task_id"),
+                               "path": e.get("path"),
+                               "resolved_path": e.get("resolved_path")})
         for t in tasks:
             meta = ((t.get("paths") or {}).get("meta") or {}).get("path")
             if meta:
                 listed.append({"surface": "task record %s" % t.get("id"), "path": meta})
         for r in (reports.get("records") or []):
             if r.get("readable"):
-                listed.append({"surface": "report %s" % r.get("id"), "path": r.get("path")})
+                listed.append({"surface": "report %s" % r.get("id"),
+                               "path": r.get("path"),
+                               "resolved_path": r.get("resolved_path")})
         return envelope(resource, {"sources": listed}, payload, generation, [])
 
     return None

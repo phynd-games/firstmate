@@ -487,8 +487,16 @@ snapshot_herdr_target_state() {  # <target> <expected-label>
       fi
       code=\$(printf '%s' \"\$out\" | jq -r '.error.code // empty' 2>/dev/null)
       if [ -n \"\$code\" ]; then
-        [ \"\$code\" = pane_not_found ] && printf 'dead' || printf 'unknown'
-        exit 0
+        # pane_not_found is an ANSWER: that pane is gone. Every other error code
+        # means the probe itself failed - an unavailable server, a refused
+        # session - and collapsing it to exit-zero 'unknown' would present a
+        # failed probe as a successful one that happened to learn nothing.
+        if [ \"\$code\" = pane_not_found ]; then
+          printf 'dead'
+          exit 0
+        fi
+        printf 'Herdr pane probe failed: %s\\n' \"\$code\" >&2
+        exit 3
       fi
       pid=\$(printf '%s' \"\$out\" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
       [ \"\$pid\" = \"\$FM_BACKEND_HERDR_PANE\" ] && printf 'present' || printf 'unknown'
@@ -510,8 +518,12 @@ snapshot_herdr_agent_alive() {  # <target>
       fi
       pane_code=\$(printf '%s' \"\$pane_out\" | jq -r '.error.code // empty' 2>/dev/null)
       if [ -n \"\$pane_code\" ]; then
-        [ \"\$pane_code\" = pane_not_found ] && printf 'dead' || printf 'unknown'
-        exit 0
+        if [ \"\$pane_code\" = pane_not_found ]; then
+          printf 'dead'
+          exit 0
+        fi
+        printf 'Herdr pane probe failed: %s\\n' \"\$pane_code\" >&2
+        exit 3
       fi
       pane_id=\$(printf '%s' \"\$pane_out\" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
       [ \"\$pane_id\" = \"\$FM_BACKEND_HERDR_PANE\" ] || { printf 'unknown'; exit 0; }
@@ -523,8 +535,12 @@ snapshot_herdr_agent_alive() {  # <target>
       fi
       agent_code=\$(printf '%s' \"\$agent_out\" | jq -r '.error.code // empty' 2>/dev/null)
       if [ -n \"\$agent_code\" ]; then
-        [ \"\$agent_code\" = agent_not_found ] && printf 'dead' || printf 'unknown'
-        exit 0
+        if [ \"\$agent_code\" = agent_not_found ]; then
+          printf 'dead'
+          exit 0
+        fi
+        printf 'Herdr agent probe failed: %s\\n' \"\$agent_code\" >&2
+        exit 3
       fi
       agent_status=\$(printf '%s' \"\$agent_out\" | jq -r '.result.agent.agent_status // empty' 2>/dev/null)
       case \"\$agent_status\" in
@@ -1295,11 +1311,7 @@ case "$FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME" in ''|*[!0-9]*) FM_SNAPSHOT_SECON
 SNAPSHOT_STAT_STYLE=descriptor
 file_mtime_epoch() {
   local info
-  if [ "$#" -ge 2 ] && [ -n "$2" ]; then
-    info=$(snapshot_record_info "$1" "$2") || return 1
-  else
-    info=$(snapshot_record_info "$1") || return 1
-  fi
+  info=$(snapshot_record_info "$1") || return 1
   printf '%s\n' "$info" | jq -r '.mtime_seconds | floor'
 }
 file_mode_octal() {
@@ -1311,7 +1323,7 @@ file_mode_octal() {
 
 registry_secondmates_json() {
   local reg="$DATA/secondmates.md" out rc reason mode script parse_filter output_filter
-  local reg_info input
+  local reg_info input reg_size
   if [ "$LOCAL_ONLY" -eq 1 ] && [ -L "$reg" ]; then
     jq -n --arg path "$reg" --arg observed "$SNAPSHOT_NOW" \
       '{present:true,available:false,complete:false,reason:"refused: the path is a symlink",provenance:"registered-table",path:$path,freshness:{status:"unavailable",observed_at:$observed},records:[],input_truncated:false,records_truncated:false,reasons:["refused: the path is a symlink"],lines_in_window:0,records_in_window:0}'
@@ -1357,11 +1369,14 @@ registry_secondmates_json() {
     parse_filter=$6
     output_filter=$7
     content=$8
-    bytes=$(printf "%s" "$content" | LC_ALL=C wc -c | tr -d " ")
+    size=$9
+    # Truncation is decided by the RECORD's own size, never by counting the
+    # bytes that survived this hand-off: a window whose cut lands on a newline
+    # loses that byte in transit, so a byte count here reported a bounded read
+    # of a much larger table as complete.
     byte_truncated=false
-    if [ "$bytes" -gt "$max_bytes" ]; then
+    if [ "$size" -gt "$max_bytes" ]; then
       byte_truncated=true
-      content=$(printf "%s" "$content" | LC_ALL=C head -c "$max_bytes")
       complete=${content%$'\n'*}
       if [ "$complete" != "$content" ]; then
         content=$complete
@@ -1425,7 +1440,16 @@ JQ
        ],lines_in_window:$lines_in_window,records_in_window:$records_in_window}
 JQ
   )
-  input=$(snapshot_record_bytes "$reg" "$((FM_SNAPSHOT_REGISTRY_BYTES + 1))") || {
+  reg_size=$(printf '%s\n' "$reg_info" | jq -r '.bytes') || reg_size=
+  case "$reg_size" in
+    ''|*[!0-9]*)
+      jq -n --arg path "$reg" --arg observed "$SNAPSHOT_NOW" \
+        --arg reason "registered secondmate table is unreadable" \
+        '{present:true,available:false,complete:false,reason:$reason,provenance:"registered-table",path:$path,freshness:{status:"unavailable",observed_at:$observed},records:[],input_truncated:false,records_truncated:false,reasons:[$reason],lines_in_window:0,records_in_window:0}'
+      return 0
+      ;;
+  esac
+  input=$(snapshot_record_bytes "$reg" "$FM_SNAPSHOT_REGISTRY_BYTES") || {
     jq -n --arg path "$reg" --arg observed "$SNAPSHOT_NOW" \
       --arg reason "registered secondmate table is unreadable" \
       '{present:true,available:false,complete:false,reason:$reason,provenance:"registered-table",path:$path,freshness:{status:"unavailable",observed_at:$observed},records:[],input_truncated:false,records_truncated:false,reasons:[$reason],lines_in_window:0,records_in_window:0}'
@@ -1434,7 +1458,7 @@ JQ
   out=$(fm_run_timed "$FM_SNAPSHOT_REGISTRY_TIMEOUT" bash -c "$script" \
     fm-secondmate-registry "$FM_SNAPSHOT_REGISTRY_LINES" \
     "$FM_SNAPSHOT_REGISTRY_BYTES" "$FM_SNAPSHOT_REGISTRY_RECORDS" "$reg" "$SNAPSHOT_NOW" \
-    "$parse_filter" "$output_filter" "$input" 2>/dev/null)
+    "$parse_filter" "$output_filter" "$input" "$reg_size" 2>/dev/null)
   rc=$?
   if [ "$rc" -eq 0 ] && printf '%s' "$out" | jq -e '
     .available == true and (.records | type) == "array"
@@ -1449,17 +1473,13 @@ JQ
 }
 
 bounded_parent_activities_json() {  # <status-file>
-  local f=$1 root=${2:-} out rc reason script info size input
-  if [ "$#" -ge 2 ] && [ -n "$root" ]; then
-    if ! info=$(snapshot_record_info "$f" "$root"); then
-      reason=$(printf '%s' "$info" | tail -1)
-      info=
-    fi
-  else
-    if ! info=$(snapshot_record_info "$f"); then
-      reason=$(printf '%s' "$info" | tail -1)
-      info=
-    fi
+  # The status log is always this home's own record, so it is read against this
+  # home's roots. There is no caller-supplied containment root: passing another
+  # home's root here refused every read as resolving outside it.
+  local f=$1 out rc reason script info size input window_file
+  if ! info=$(snapshot_record_info "$f"); then
+    reason=$(printf '%s' "$info" | tail -1)
+    info=
   fi
   if [ -z "$info" ]; then
     if [ "$reason" = 'not present' ] || [ ! -e "$f" ]; then
@@ -1474,11 +1494,7 @@ bounded_parent_activities_json() {  # <status-file>
     jq -n '{records:[],available:false,input_truncated:false,retained_truncated:false,reasons:["record metadata is unreadable"],lines_in_window:0,records_in_window:0}'
     return 0
   }
-  if [ "$#" -ge 2 ] && [ -n "$root" ]; then
-    input=$(snapshot_record_tail_bytes "$f" "$FM_SNAPSHOT_PARENT_ACTIVITY_BYTES" "$root") || input=
-  else
-    input=$(snapshot_record_tail_bytes "$f" "$FM_SNAPSHOT_PARENT_ACTIVITY_BYTES") || input=
-  fi
+  input=$(snapshot_record_tail_bytes "$f" "$FM_SNAPSHOT_PARENT_ACTIVITY_BYTES") || input=
   if [ -z "$input" ] && [ "$size" -gt 0 ]; then
     jq -n '{records:[],available:false,input_truncated:false,retained_truncated:false,reasons:["record could not be read"],lines_in_window:0,records_in_window:0}'
     return 0
@@ -1493,8 +1509,9 @@ bounded_parent_activities_json() {  # <status-file>
     max_bytes=$3
     max_records=$4
     size=$5
+    window_file=$6
     . "$classify"
-    content=$(cat) || exit 3
+    content=$(cat "$window_file") || exit 3
     byte_truncated=false
     if [ "$size" -gt "$max_bytes" ]; then
       byte_truncated=true
@@ -1545,11 +1562,29 @@ bounded_parent_activities_json() {  # <status-file>
          records_in_window:$records_in_window}'
 BASH
   )
-  out=$(printf '%s' "$input" | fm_run_timed "$FM_SNAPSHOT_PARENT_ACTIVITY_TIMEOUT" bash -c "$script" \
+  # The classifier runs on the bytes the descriptor-anchored reader already
+  # returned - it must never reopen the record path itself - and they are handed
+  # over in a file this collector owns rather than on stdin. The shared timeout
+  # helper runs its command asynchronously, and stdin delivery across that is not
+  # dependable: an isolated call through its external-timeout or bash mechanism
+  # delivers nothing, while its perl fallback delivers the bytes. An empty window
+  # is indistinguishable from a successful read of nothing, so this hand-off is
+  # made explicit rather than left to depend on which mechanism a host picks.
+  window_file=$(mktemp "${TMPDIR:-/tmp}/fm-parent-activities.XXXXXX" 2>/dev/null) || {
+    jq -n '{records:[],available:false,input_truncated:false,retained_truncated:false,reasons:["the activity window could not be staged"],lines_in_window:0,records_in_window:0}'
+    return 0
+  }
+  printf '%s' "$input" > "$window_file" || {
+    rm -f -- "$window_file"
+    jq -n '{records:[],available:false,input_truncated:false,retained_truncated:false,reasons:["the activity window could not be staged"],lines_in_window:0,records_in_window:0}'
+    return 0
+  }
+  out=$(fm_run_timed "$FM_SNAPSHOT_PARENT_ACTIVITY_TIMEOUT" bash -c "$script" \
     fm-parent-activities "$SCRIPT_DIR/fm-classify-lib.sh" \
     "$FM_SNAPSHOT_PARENT_ACTIVITY_LINES" "$FM_SNAPSHOT_PARENT_ACTIVITY_BYTES" \
-    "$FM_SNAPSHOT_PARENT_ACTIVITIES" "$size" 2>/dev/null)
+    "$FM_SNAPSHOT_PARENT_ACTIVITIES" "$size" "$window_file" 2>/dev/null)
   rc=$?
+  rm -f -- "$window_file"
   if [ "$rc" -eq 0 ] && printf '%s' "$out" | jq -e '
     (.records | type) == "array" and (.available | type) == "boolean"
   ' >/dev/null 2>&1; then
@@ -1715,14 +1750,14 @@ secondmate_current_json() {  # <parent-tasks-json>
     status_file=$(printf '%s' "$task" | jq -r '.paths.status_log.path // ""')
     event_raw=$(printf '%s' "$task" | jq -r '.paths.status_log.last_event.raw // ""')
     event_note=$(printf '%s' "$task" | jq -r '.paths.status_log.last_event.note // ""')
-    if [ -n "$home" ]; then
-      activity_scan=$(bounded_parent_activities_json "$status_file" "$home")
-    else
-      activity_scan=$(bounded_parent_activities_json "$status_file")
-    fi
+    # This is the PARENT's own status log, so it is read against the parent's
+    # roots. Bounding it by the registered child home refused every read as
+    # resolving outside that home, which silently classified an empty activity
+    # window - and an empty window can never contradict the child's own state.
+    activity_scan=$(bounded_parent_activities_json "$status_file")
     activities=$(printf '%s' "$activity_scan" | jq -c '.records')
     decisions=$(printf '%s' "$task" | jq -c '.hints.open_decisions // []')
-    event_epoch=$(file_mtime_epoch "$status_file" "$home") || event_epoch=
+    event_epoch=$(file_mtime_epoch "$status_file") || event_epoch=
     event_age=null
     if [ -n "$event_epoch" ]; then
       event_age=$((SNAPSHOT_EPOCH - event_epoch))
@@ -1931,12 +1966,12 @@ scout_report_lines() {
     printf '%s\n' "$json" >&2
     return "$status"
   fi
-  [ -n "$json" ] || {
-    jq -n '[]'
-    return 0
-  }
+  # No discovery output is not an early exit: every report already linked to a
+  # task is excluded from discovery, so a home whose only reports are linked
+  # produces nothing here and still owes those pointers below.
   {
     while IFS= read -r report_json; do
+      [ -n "$report_json" ] || continue
       if [ "$(printf '%s' "$report_json" | jq -r '.overflow // false')" = true ]; then
         overflow=true
         overflow_count=$((overflow_count + $(printf '%s' "$report_json" | jq -r '.count // 0')))
@@ -1962,6 +1997,19 @@ scout_report_lines() {
       id=$(basename "$(dirname "$report")")
       jq -n --arg id "$id" --arg path "$report" '{id:$id,path:$path}'
     done <<< "$json"
+    # A report already linked to a task is excluded from the BOUNDED discovery
+    # above so the report bound can spend itself on task-linked reports first.
+    # It is still a present report pointer, which is what this field promises
+    # every consumer, so it is listed here rather than disappearing from the
+    # snapshot entirely. A consumer that also reads .tasks[].paths.report
+    # deduplicates by path.
+    while IFS= read -r report; do
+      [ -n "$report" ] || continue
+      id=$(basename "$(dirname "$report")")
+      jq -n --arg id "$id" --arg path "$report" '{id:$id,path:$path,linked:true}'
+    done <<EOF
+$SNAPSHOT_REPORT_EXCLUDE_PATHS
+EOF
     if [ "$overflow" = true ] || [ "$overflow_count" -gt 0 ]; then
       jq -n --argjson count "$overflow_count" \
         '{id:"__scout_report_overflow__",path:"",overflow:true,count:$count}'
@@ -1973,29 +2021,82 @@ scout_report_lines() {
   } | jq -s 'sort_by(.id)'
 }
 
-collector_stamp() {
-  # shellcheck disable=SC2034 # Bound by the read loop and consumed per home below.
-  local local_stamp registry registry_status home_specs live_inputs='' meta meta_text
-  local meta_reason id backend target kind state_result agent_result rc
-  local roots_json
-  roots_json=$(jq -cn --arg state "$STATE" --arg data "$DATA" \
+# --- freshness ---------------------------------------------------------------
+# ONE owner of the freshness stamp, in the one command that reads the evidence.
+# Two rules make it an authority rather than a guess:
+#   - Its inputs are resolved ONCE per run: the bounded fingerprint roots (this
+#     home plus every validated registered secondmate home) and the registry
+#     half of the live inputs.
+#   - `--json` computes its stamp BEFORE it reads a single record. A stamp taken
+#     afterwards would describe a home the payload never saw, so a record that
+#     changed mid-collection would leave pre-change evidence under a post-change
+#     stamp and every later check would match it and reuse the stale payload.
+#     Publishing the pre-read stamp inverts that: the change no longer matches,
+#     so the next check rebuilds.
+# A consumer never derives freshness itself. It reads .freshness.stamp from this
+# document, or asks this command for the current one - both come from here.
+STAMP_INPUTS_READY=0
+STAMP_ROOTS_JSON=
+STAMP_REGISTRY_INPUTS=
+
+# Inert unless a test sets it, exactly like the wake drain's commit-window hook.
+# It widens the window the pre-read stamp exists to survive, which cannot be
+# driven deterministically from outside this command.
+snapshot_test_delay_after_stamp() {
+  case "${FM_SNAPSHOT_TEST_DELAY_AFTER_STAMP:-0}" in
+    0) ;;
+    ''|*[!0-9]*) ;;
+    *) sleep "$FM_SNAPSHOT_TEST_DELAY_AFTER_STAMP" ;;
+  esac
+}
+
+collector_stamp_inputs() {
+  [ "$STAMP_INPUTS_READY" -eq 0 ] || return 0
+  local registry registry_status id home remote
+  STAMP_ROOTS_JSON=$(jq -cn --arg state "$STATE" --arg data "$DATA" \
     --arg config "$CONFIG" --arg projects "$PROJECTS" \
     '[{root:$state,label:"state"},{root:$data,label:"data"},
-      {root:$config,label:"config"},{root:$projects,label:"projects"}]')
-  registry=$(registry_secondmates_json)
+      {root:$config,label:"config"},{root:$projects,label:"projects"}]') || return 1
+  registry=$(registry_secondmates_json) || return 1
   registry_status=$(printf '%s' "$registry" | jq -c \
-    '{available,complete,reason,records:(.records | map({id,home,remote}))}')
-  live_inputs=$(printf 'registry:%s\n' "$registry_status")
+    '{available,complete,reason,records:(.records | map({id,home,remote}))}') || return 1
+  STAMP_REGISTRY_INPUTS=$(printf 'registry:%s\n' "$registry_status")
   while IFS=$'\t' read -r id home remote; do
     [ -n "$id" ] || continue
     if [ "$remote" = false ] && [ -n "$home" ] && \
        validate_secondmate_home "$id" "$home" 2>/dev/null; then
-      roots_json=$(printf '%s' "$roots_json" | jq -c --arg root "$home" \
+      STAMP_ROOTS_JSON=$(printf '%s' "$STAMP_ROOTS_JSON" | jq -c --arg root "$home" \
         --arg label "secondmate:$id" '. + [{root:$root,label:$label}]')
     else
-      live_inputs=$(printf '%s\nregistry-home:%s:unavailable' "$live_inputs" "$id")
+      STAMP_REGISTRY_INPUTS=$(printf '%s\nregistry-home:%s:unavailable' \
+        "$STAMP_REGISTRY_INPUTS" "$id")
     fi
   done < <(printf '%s' "$registry" | jq -r '.records[]? | [.id, (.home // ""), (.remote // false)] | @tsv')
+  STAMP_INPUTS_READY=1
+}
+
+# The bounded filesystem fingerprint half, on its own so `--json` can take it
+# before its reads and compare it again afterwards to say whether the evidence
+# it published moved underneath it.
+collector_local_stamp() {
+  collector_stamp_inputs || return 1
+  PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - \
+    "$STAMP_ROOTS_JSON" "$FM_DASHBOARD_STAMP_DEPTH" "$FM_DASHBOARD_STAMP_MAX_ENTRIES" <<'PY'
+import json
+import sys
+from fm_dashboard_io import bounded_stamp
+
+roots = [(item["root"], item["label"]) for item in json.loads(sys.argv[1])]
+print(bounded_stamp(roots, int(sys.argv[2]), int(sys.argv[3])))
+PY
+}
+
+collector_stamp() {
+  # shellcheck disable=SC2034 # Bound by the read loop and consumed per home below.
+  local local_stamp live_inputs='' meta meta_text
+  local meta_reason id backend target kind state_result agent_result rc
+  collector_stamp_inputs || return 1
+  live_inputs=$STAMP_REGISTRY_INPUTS
 
   if [ -n "${FM_DASHBOARD_STAMP_LIVE_INPUTS:-}" ]; then
     live_inputs=$(printf '%s\n%s' "$live_inputs" "$FM_DASHBOARD_STAMP_LIVE_INPUTS")
@@ -2037,16 +2138,13 @@ collector_stamp() {
     done < <(printf '%s\n' "$STATE"/*.meta)
   fi
 
-  local_stamp=$(PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - \
-    "$roots_json" "$FM_DASHBOARD_STAMP_DEPTH" "$FM_DASHBOARD_STAMP_MAX_ENTRIES" <<'PY'
-import json
-import sys
-from fm_dashboard_io import bounded_stamp
-
-roots = [(item["root"], item["label"]) for item in json.loads(sys.argv[1])]
-print(bounded_stamp(roots, int(sys.argv[2]), int(sys.argv[3])))
-PY
-  ) || return 1
+  # A pre-read fingerprint taken by this same run is pinned here, so one
+  # authority still produces the stamp from both halves.
+  if [ -n "${FM_DASHBOARD_STAMP_LOCAL:-}" ]; then
+    local_stamp=$FM_DASHBOARD_STAMP_LOCAL
+  else
+    local_stamp=$(collector_local_stamp) || return 1
+  fi
   printf '%s\n%s\n' "$local_stamp" "$live_inputs" | python3 -c \
     'import hashlib, sys; print(hashlib.sha256("\\0".join(sorted(sys.stdin.read().splitlines())).encode()).hexdigest())'
 }
@@ -2056,8 +2154,24 @@ if [ "$OUTPUT_MODE" = stamp ]; then
   exit 0
 fi
 
+# Resolved once, then fingerprinted BEFORE the first record read below.
+collector_stamp_inputs \
+  || { echo "fm-fleet-snapshot: freshness inputs failed" >&2; exit 1; }
+FRESHNESS_LOCAL_BEFORE=$(collector_local_stamp) \
+  || { echo "fm-fleet-snapshot: freshness fingerprint failed" >&2; exit 1; }
+FRESHNESS_STAMP=$(FM_DASHBOARD_STAMP_LOCAL="$FRESHNESS_LOCAL_BEFORE" collector_stamp) \
+  || { echo "fm-fleet-snapshot: freshness stamp failed" >&2; exit 1; }
+snapshot_test_delay_after_stamp
+
 BACKLOG_JSON=$(backlog_json) || { echo "fm-fleet-snapshot: backlog read failed" >&2; exit 1; }
 TASKS_JSON=$(task_json_lines) || { echo "fm-fleet-snapshot: task snapshot failed" >&2; exit 1; }
+
+FRESHNESS_LOCAL_AFTER=$(collector_local_stamp) \
+  || { echo "fm-fleet-snapshot: freshness fingerprint failed" >&2; exit 1; }
+FRESHNESS_TORN=false
+if [ "$FRESHNESS_LOCAL_BEFORE" != "$FRESHNESS_LOCAL_AFTER" ]; then
+  FRESHNESS_TORN=true
+fi
 
 if [ "$OUTPUT_MODE" = secondmate-home-summary ]; then
   secondmate_home_summary_json "$BACKLOG_JSON" "$TASKS_JSON" \
@@ -2082,6 +2196,8 @@ SECONDMATE_LANDED_JSON=$(secondmate_landed_from_current_json "$SECONDMATE_CURREN
 
 jq -n \
   --arg generated "$SNAPSHOT_NOW" \
+  --arg freshness_stamp "$FRESHNESS_STAMP" \
+  --argjson freshness_torn "$FRESHNESS_TORN" \
   --arg fm_home "$FM_HOME" \
   --arg fm_root "$FM_ROOT" \
   --arg state "$STATE" \
@@ -2100,6 +2216,7 @@ jq -n \
    {
      schema:"fm-fleet-snapshot.v1",
      generated:$generated,
+     freshness:{stamp:$freshness_stamp, taken:"before-reads", torn:$freshness_torn},
      fm_home:$fm_home,
      roots:{fm_root:$fm_root,state:$state,data:$data,config:$config,projects:$projects},
      backlog:$backlog,

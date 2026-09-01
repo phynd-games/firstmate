@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # fm-dashboard.sh - the read-only control-plane evidence collector and server.
 #
-# Two jobs, one command:
+# Three jobs, one command:
 #   `json`  collects this home's durable text records into one bounded,
 #           path-safe, symlink-safe evidence document. This is the ONLY thing
 #           that opens a record path, which is what lets every consumer share a
 #           single audited read boundary.
+#   `stamp` answers whether that evidence has changed, from the one owner of
+#           that answer (bin/fm-fleet-snapshot.sh).
 #   `serve` runs the dashboard: the React client from assets/dashboard plus the
 #           versioned read-only API it calls (bin/fm_dashboard_server.py).
 #
@@ -27,21 +29,23 @@
 #
 # Usage:
 #   fm-dashboard.sh json                 print the fm-dashboard.v1 payload
+#   fm-dashboard.sh stamp                print this home's current evidence
+#                                        freshness stamp
 #   fm-dashboard.sh serve [--port <n>] [--owner-digest <hex>]
-#                                        serve the page on 127.0.0.1 only
+#                                        serve the client and its API on
+#                                        127.0.0.1 only
 #
-# `render` replays a payload captured earlier by `json`, which is how a page is
-# rebuilt from evidence that has since changed, and how the shipped renderer is
-# tested against payloads no live home would produce. It refuses any file that
-# is not a readable fm-dashboard.v1 document.
+# `stamp` is the cheap freshness question: has anything this payload depends on
+# changed? It is answered by bin/fm-fleet-snapshot.sh, the one owner of that
+# stamp, which is also what stamped the payload `json` returns. Nothing here
+# derives a second version of it.
 #
-# `build` with no --out writes the stable path and prints `dashboard: <path>`;
-# open that file directly, no server required. `serve` is the explicit opt-in
-# refresh mechanism: it binds 127.0.0.1 and nothing else, rebuilds the payload
-# on each request so a reload shows current evidence, answers only `/` and
-# `/healthz`, serves no other file, and fails closed with a plain-text 500 when
-# a rebuild fails. It needs python3 and refuses with that requirement named
-# when python3 is absent.
+# `serve` is the explicit opt-in refresh mechanism: it binds 127.0.0.1 and
+# nothing else, re-collects evidence when the stamp above says it moved,
+# answers only the client, its assets, the versioned API, and `/healthz`,
+# refuses every mutating HTTP method before routing, and fails closed when a
+# rebuild fails. It needs python3 and the built client, and refuses with that
+# requirement named when either is absent.
 #
 # `/healthz` answers one fm-dashboard-health.v1 JSON object naming this home and
 # the owner digest passed in with --owner-digest, which is how a caller proves
@@ -251,6 +255,8 @@ payload_is_valid() {  # <payload-file>
     def event:
       type == "object" and has_type(.; "task_id"; "string") and has_type(.; "path"; "string")
       and has_type(.; "readable"; "boolean") and has_nullable(.; "reason"; "string")
+      and has_nullable(.; "resolved_path"; "string")
+      and (if .readable then (.resolved_path | type == "string") else true end)
       and bounded_counts and has_type(.; "total_exact"; "boolean") and has_type(.; "lines"; "array")
       and (.shown == (.lines | length))
       and all(.lines[]; type == "object" and has_type(.; "verb"; "string")
@@ -258,6 +264,8 @@ payload_is_valid() {  # <payload-file>
     def report:
       type == "object" and has_type(.; "id"; "string") and has_type(.; "path"; "string")
       and has_type(.; "readable"; "boolean") and has_nullable(.; "reason"; "string")
+      and has_nullable(.; "resolved_path"; "string")
+      and (if .readable then (.resolved_path | type == "string") else true end)
       and has_type(.; "bytes"; "number") and (.bytes | nonneg_int)
       and has_type(.; "truncated"; "boolean")
       and has_nullable(.; "modified"; "string") and has_type(.; "body"; "string");
@@ -390,6 +398,10 @@ snapshot_is_valid() {  # <snapshot-file>
       end;
     (.schema == "fm-fleet-snapshot.v1")
     and (.generated | valid_timestamp)
+    and ((.freshness | type) == "object")
+    and ((.freshness.stamp | type) == "string") and ((.freshness.stamp | length) > 0)
+    and (.freshness.taken == "before-reads")
+    and ((.freshness.torn | type) == "boolean")
     and ((.fm_home | type) == "string")
     and ((.roots | type) == "object")
     and ((.roots.state | type) == "string")
@@ -432,6 +444,7 @@ make_tmp() {
 
 DASH_REASON=
 DASH_REAL=
+DASH_RESOLVED=
 DASH_MTIME=
 DASH_BYTES=0
 DASH_LINES=0
@@ -453,6 +466,11 @@ inside_roots() {  # <resolved-path>
   esac
 }
 
+# Read-only: this collector wants ONLY fm-wake-lib.sh's process-identity and
+# supervision-model helpers, never its queue or locks, so it opts out of that
+# library's state-directory creation. Collecting evidence from a home that has no
+# state directory yet must not create one.
+FM_WAKE_LIB_NO_STATE_MKDIR=1
 # shellcheck source=bin/fm-wake-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-wake-lib.sh"  # supervision model and process identity helpers
@@ -461,6 +479,7 @@ secure_record() {  # <path> <mode> <limit> <output> <metadata>
   local p=$1 mode=$2 limit=$3 output=$4 metadata=$5 error
   DASH_REASON=
   DASH_REAL=
+  DASH_RESOLVED=
   DASH_MTIME=
   DASH_BYTES=0
   DASH_LINES=0
@@ -476,6 +495,10 @@ secure_record() {  # <path> <mode> <limit> <output> <metadata>
     return 1
   fi
   DASH_REAL=$(jq -r '.path' "$metadata")
+  # The recorded path and the file the descriptor actually read are two separate
+  # facts whenever an ancestor is a symlink. Both are published, so provenance
+  # names the exact source instead of a path that merely resolves to it.
+  DASH_RESOLVED=$(jq -r '.resolved_path // .path' "$metadata")
   DASH_MTIME=$(jq -r '.mtime_seconds' "$metadata")
   DASH_BYTES=$(jq -r '.bytes // 0' "$metadata")
   DASH_LINES=$(jq -r '.total_lines // 0' "$metadata")
@@ -665,7 +688,7 @@ collect_events() {  # <snapshot-file> -> JSON array on stdout
         note_degraded "status log for $id" "$path" "$DASH_REASON"
       fi
       jq -cn --arg id "$id" --arg path "$path" --arg reason "$DASH_REASON" \
-        '{task_id:$id, path:$path, readable:false, reason:$reason,
+        '{task_id:$id, path:$path, resolved_path:null, readable:false, reason:$reason,
           total:0, shown:0, truncated:0, total_exact:true, lines:[]}' >> "$out"
       continue
     fi
@@ -677,12 +700,13 @@ collect_events() {  # <snapshot-file> -> JSON array on stdout
       note=$(status_line_note "$line")
       printf '%s\n%s\n%s\n' "$verb" "$note" "$line" >> "$triples"
     done < "$tail_file"
-    jq -cRn --arg id "$id" --arg path "$DASH_REAL" \
+    jq -cRn --arg id "$id" --arg path "$DASH_REAL" --arg resolved "$DASH_RESOLVED" \
       --argjson total "$total" --argjson total_exact "$total_exact" --argjson cap "$FM_DASHBOARD_EVENT_LINES" '
       [inputs] as $l
       | [range(0; ($l | length) / 3 | floor)
          | {verb:$l[. * 3], note:$l[. * 3 + 1], raw:$l[. * 3 + 2]}] as $lines
-      | {task_id:$id, path:$path, readable:true, reason:null, total_exact:$total_exact,
+      | {task_id:$id, path:$path, resolved_path:$resolved,
+         readable:true, reason:null, total_exact:$total_exact,
          total:$total, shown:($lines|length),
          truncated:(if $total > $cap then $total - $cap else 0 end),
          lines:$lines}
@@ -696,6 +720,7 @@ EOF
 collect_reports() {  # <snapshot-file> -> JSON object on stdout
   local id path total kept=0 body="$TMP/report.md" out="$TMP/reports.jsonl" list="$TMP/reports.list"
   local modified truncated bytes overflow=0 discovered=0 discovery_errors=0
+  local discovery_error_rows=0 discovery_errors_omitted=0 reason
   : > "$out"
   overflow=$(jq '[.scout_reports[] | select(.overflow == true) | (.count // 1)] | add // 0' "$1")
   if [ "$overflow" -gt 0 ]; then
@@ -705,28 +730,50 @@ collect_reports() {  # <snapshot-file> -> JSON object on stdout
   if [ "$discovery_errors" -gt 0 ]; then
     note_degraded 'scout reports' "$DATA" 'report discovery encountered unreadable or unsafe entries'
   fi
+  # A discovery refusal already carries its own reason. It travels with the row
+  # rather than being rebuilt by a second read attempt, because re-opening a
+  # path that discovery refused would replace "refused: report is a symlink"
+  # with a misleading "not present".
   jq -r '
     ([.tasks[]
-      | {id:.id, path:(.paths.report.path // ""), present:(.paths.report.present // false), linked:true}
+      | {id:.id, path:(.paths.report.path // ""), present:(.paths.report.present // false),
+         linked:true, reason:""}
       | select(.path != "" and .present)]
      + [.scout_reports[] | select((.overflow // false) != true and (.discovery_errors // false) != true)
-        | {id:.id, path:.path, linked:false}])
+        | {id:.id, path:.path, linked:false,
+           reason:(if (.error // false) == true
+                   then (.reason // "report discovery failed") else "" end)}])
     | reduce .[] as $item ([]; if any(.[]; .path == $item.path) then . else . + [$item] end)
-    | .[] | [.id, .path, (.linked // false)] | @tsv
+    | .[] | [.id, .path, (.linked // false), .reason] | @tsv
   ' "$1" > "$list"
   discovered=$(wc -l < "$list" | tr -d '[:space:]')
-  total=$((discovered + overflow))
+  discovery_error_rows=$(awk -F'\t' '$4 != "" { rows++ } END { print rows + 0 }' "$list")
+  # Discovery counted every refusal; only a bounded number of them became rows.
+  # The remainder is still owed to the total, or the report view would advertise
+  # a complete index over evidence it never listed.
+  discovery_errors_omitted=0
+  if [ "$discovery_errors" -gt "$discovery_error_rows" ]; then
+    discovery_errors_omitted=$((discovery_errors - discovery_error_rows))
+  fi
+  total=$((discovered + overflow + discovery_errors_omitted))
   # shellcheck disable=SC2034 # Bound by the read loop and consumed by the record builder.
-  while IFS=$'\t' read -r id path linked; do
+  while IFS=$'\t' read -r id path linked reason; do
     [ -n "$id" ] || continue
     if [ "$kept" -ge "$FM_DASHBOARD_REPORTS" ]; then
       continue
     fi
     kept=$((kept + 1))
+    if [ -n "$reason" ]; then
+      note_degraded "report for $id" "$path" "$reason"
+      jq -cn --arg id "$id" --arg path "$path" --arg reason "$reason" \
+        '{id:$id, path:$path, resolved_path:null, readable:false, reason:$reason,
+          bytes:0, truncated:false, modified:null, body:""}' >> "$out"
+      continue
+    fi
     if ! secure_record "$path" bytes "$FM_DASHBOARD_REPORT_BYTES" "$body" "$TMP/report.meta"; then
       note_degraded "report for $id" "$path" "$DASH_REASON"
       jq -cn --arg id "$id" --arg path "$path" --arg reason "$DASH_REASON" \
-        '{id:$id, path:$path, readable:false, reason:$reason,
+        '{id:$id, path:$path, resolved_path:null, readable:false, reason:$reason,
           bytes:0, truncated:false, modified:null, body:""}' >> "$out"
       continue
     fi
@@ -735,10 +782,11 @@ collect_reports() {  # <snapshot-file> -> JSON object on stdout
     modified=$(date -u -r "${DASH_MTIME%.*}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
       || date -u -d "@${DASH_MTIME%.*}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
       || printf '')
-    jq -cn --arg id "$id" --arg path "$DASH_REAL" --arg modified "$modified" \
+    jq -cn --arg id "$id" --arg path "$DASH_REAL" --arg resolved "$DASH_RESOLVED" \
+      --arg modified "$modified" \
       --argjson bytes "$bytes" --argjson truncated "$truncated" \
       --rawfile body "$body" \
-      '{id:$id, path:$path, readable:true, reason:null,
+      '{id:$id, path:$path, resolved_path:$resolved, readable:true, reason:null,
         bytes:$bytes, truncated:$truncated,
         modified:(if $modified == "" then null else $modified end),
         body:$body}' >> "$out"
@@ -793,7 +841,7 @@ command_stamp() {
 }
 
 compose() {  # -> the fm-dashboard.v1 payload on stdout
-  local snapshot="$TMP/snapshot.json" generated freshness_stamp snapshot_live_inputs
+  local snapshot="$TMP/snapshot.json" generated freshness_stamp freshness_torn
   command -v jq >/dev/null 2>&1 || fail "jq is required"
   [ -x "$SCRIPT_DIR/fm-fleet-snapshot.sh" ] || fail "bin/fm-fleet-snapshot.sh is missing"
   DEGRADED="$TMP/degraded.jsonl"
@@ -804,28 +852,20 @@ compose() {  # -> the fm-dashboard.v1 payload on stdout
   snapshot_is_valid "$snapshot" \
     || fail "the fleet snapshot did not return a $SNAPSHOT_SCHEMA document"
   generated=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  snapshot_live_inputs=$(jq -r '
-    .tasks[]
-    | select(.backend == "herdr" and .remote == null)
-    | ("task:" + .id + ":endpoint:" +
-       (if .endpoint.freshness == "degraded" then
-          "failed:" + (.endpoint.reason // "endpoint probe failed")
-        else
-          "ok:" + (if .endpoint.exists == false then "dead"
-                    elif .endpoint.status == "present" then "present"
-                    else "unknown" end)
-        end)),
-      (if .kind == "secondmate" then
-         "task:" + .id + ":agent:" +
-         (if .endpoint.freshness == "degraded" and .endpoint.agent_alive == "unknown" then
-            "failed:" + (.endpoint.reason // "agent probe failed")
-          else "ok:" + (.endpoint.agent_alive // "unknown") end)
-       else empty end)
-  ' "$snapshot") \
-    || fail "the collector live-input document could not be prepared"
-  export FM_DASHBOARD_STAMP_LIVE_INPUTS="$snapshot_live_inputs"
-  freshness_stamp=$(command_stamp) || fail "the evidence freshness stamp failed"
-  unset FM_DASHBOARD_STAMP_LIVE_INPUTS
+  # Freshness is NOT recomputed here. The snapshot took its stamp before it read
+  # anything and published it, so this payload carries the stamp of the home the
+  # evidence actually came from - and `stamp` asks that same command for the
+  # current one. Deriving a second version here is what let a payload carry a
+  # stamp its own evidence never matched.
+  freshness_stamp=$(jq -r '.freshness.stamp // ""' "$snapshot") \
+    || fail "the evidence freshness stamp could not be read"
+  [ -n "$freshness_stamp" ] \
+    || fail "the fleet snapshot published no evidence freshness stamp"
+  freshness_torn=$(jq -r '.freshness.torn // false' "$snapshot")
+  if [ "$freshness_torn" = true ]; then
+    note_degraded 'evidence freshness' "$FM_HOME" \
+      'a record changed while this evidence was being collected, so it is published under its pre-collection freshness stamp and the next refresh rebuilds it'
+  fi
   jq -n \
     --arg schema "$DASH_SCHEMA" \
     --arg generated "$generated" \

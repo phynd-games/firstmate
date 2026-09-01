@@ -72,7 +72,17 @@ def _open_relative(root_fd: int, relative: str) -> int:
         raise RecordError("refused: the record could not be opened") from exc
 
 
-def open_contained(path: str, roots: list[str]) -> tuple[int, str]:
+def open_contained(path: str, roots: list[str]) -> tuple[int, str, str]:
+    """Open one record and return (fd, recorded path, resolved source path).
+
+    The descriptor is opened relative to a root descriptor, so the file it reads
+    is the canonical one inside that root - never whatever a recorded alias
+    points at by the time the bytes are read. Both paths are returned because
+    they answer different questions: the recorded path is where this home says
+    the record lives, and the resolved path is the exact file these bytes came
+    from. A consumer must publish both when they differ rather than letting
+    either stand in for the other.
+    """
     if path in {"", "-"}:
         raise RecordError("no recorded path")
     normalized = os.path.abspath(os.path.normpath(path))
@@ -96,14 +106,14 @@ def open_contained(path: str, roots: list[str]) -> tuple[int, str]:
         if not stat.S_ISREG(record.st_mode):
             os.close(fd)
             raise RecordError("refused: not a regular file")
-        return fd, path
+        return fd, path, os.path.join(root_real, relative)
     raise RecordError("refused: resolves outside this home")
 
 
-def stat_contained(path: str, roots: list[str]) -> tuple[os.stat_result, str]:
-    fd, record_path = open_contained(path, roots)
+def stat_contained(path: str, roots: list[str]) -> tuple[os.stat_result, str, str]:
+    fd, record_path, resolved_path = open_contained(path, roots)
     try:
-        return os.fstat(fd), record_path
+        return os.fstat(fd), record_path, resolved_path
     finally:
         os.close(fd)
 

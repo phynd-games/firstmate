@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Behavior tests for the read-only control-plane dashboard composer
-# (bin/fm-dashboard.sh), exercised end to end against synthetic homes. Every
-# assertion is on the command's own output contract - the fm-dashboard.v1
-# payload and the built page - never on the script's source text.
+# (bin/fm-dashboard.sh) and the bounded descriptor-anchored read boundary it
+# collects through (bin/fm-dashboard-read.py over bin/fm_dashboard_io.py),
+# exercised end to end against synthetic homes. Every assertion is on the
+# command's own output contract - the fm-dashboard.v1 payload and the built page
+# - never on the script's source text.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -177,16 +179,39 @@ MD
 }
 
 test_record_reads_preserve_the_authoritative_source_path() {
-  local home metadata
+  local home metadata data_real payload
   home=$(make_home exact-source-path)
   ln -s scout-one "$home/data/alias"
   metadata="$home/read.meta"
+  data_real=$(cd "$home/data" && pwd -P)
   python3 "$ROOT/bin/fm-dashboard-read.py" "$home/data/alias/report.md" "$home/data" \
     text 4096 - "$metadata" >/dev/null \
     || fail "a safe read through an allowed ancestor symlink failed"
+  # Provenance must name the file these bytes actually came from. The descriptor
+  # read data/scout-one/report.md, so reporting the alias would claim a source
+  # that was never opened; the recorded path is disclosed beside it, not instead
+  # of it, so an alias is visible rather than substituted.
+  jq -e --arg resolved "$data_real/scout-one/report.md" '.resolved_path == $resolved' \
+    "$metadata" >/dev/null \
+    || fail "the record reader did not name the file it read: $(jq -r .resolved_path "$metadata")"
   jq -e --arg path "$home/data/alias/report.md" '.path == $path' "$metadata" >/dev/null \
-    || fail "the record reader replaced the authoritative source path with its canonical target"
-  pass "record reads preserve the exact authoritative source path"
+    || fail "the record reader replaced the path as recorded"
+  # A record with no alias reports one and the same path both ways.
+  python3 "$ROOT/bin/fm-dashboard-read.py" "$home/data/scout-one/report.md" "$home/data" \
+    text 4096 - "$metadata" >/dev/null \
+    || fail "reading an unaliased report failed"
+  jq -e '.resolved_path != null and (.resolved_path | endswith("/data/scout-one/report.md"))' \
+    "$metadata" >/dev/null \
+    || fail "an unaliased record did not report the file it read"
+  # And the payload itself carries both facts for every readable record.
+  printf 'working: reading\n' > "$home/state/worker-one.status"
+  payload=$(run_dash "$home" json) || fail "the dashboard payload could not be composed"
+  printf '%s' "$payload" | jq -e '
+    ([.events[] | select(.readable) | .resolved_path] | length > 0 and all(type == "string"))
+    and ([.reports.records[] | select(.readable) | .resolved_path]
+      | length > 0 and all(type == "string"))' >/dev/null \
+    || fail "the payload published no resolved source path for readable records"
+  pass "record reads report the recorded path and the exact file they read"
 }
 
 test_report_discovery_applies_its_bound_during_enumeration() {
@@ -522,6 +547,46 @@ SH
   pass "scout report discovery failures remain explicit collector failures"
 }
 
+test_a_refused_report_directory_keeps_its_discovery_reason() {
+  local home payload
+  home=$(make_home discovery-reason-kept)
+  # The report directory is the symlink, so the report path underneath it still
+  # resolves to a readable file inside this home. Discovery refused that entry;
+  # re-reading the path would quietly overrule the refusal and present the
+  # aliased body as this worker's own report.
+  ln -s scout-one "$home/data/aliased-scout"
+  payload=$(run_dash "$home" json) || fail "a refused report directory broke collection"
+  printf '%s' "$payload" | jq -e '
+    [.reports.records[] | select(.id == "aliased-scout")] as $rows
+    | ($rows | length) == 1
+    and $rows[0].readable == false
+    and ($rows[0].reason | test("symlink"))
+    and $rows[0].body == ""' >/dev/null \
+    || fail "a refused report directory was re-read instead of keeping its refusal: $(printf '%s' "$payload" | jq -c '[.reports.records[]|{id,readable,reason}]')"
+  printf '%s' "$payload" | jq -e '
+    [.degraded[] | select(.reason | test("symlink")) | .source] | any(test("report"))' >/dev/null \
+    || fail "the refused report was not disclosed as degraded evidence"
+  pass "a refused report directory keeps its discovery reason"
+}
+
+test_omitted_report_discovery_errors_are_counted_in_the_total() {
+  local home payload
+  home=$(make_home discovery-error-total)
+  ln -s scout-one "$home/data/aliased-one"
+  ln -s scout-one "$home/data/aliased-two"
+  # One report row fits the bound, so only one refusal can be listed. The
+  # refusals that did not fit are still owed to the total.
+  payload=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" \
+    FM_SNAPSHOT_NOW=2026-08-01T00:00:00Z FM_DASHBOARD_REPORTS=1 "$DASH" json) \
+    || fail "a bounded report index with refusals broke collection"
+  printf '%s' "$payload" | jq -e '
+    .reports.total > .reports.shown
+    and .reports.truncated == (.reports.total - .reports.shown)
+    and .reports.total >= 3' >/dev/null \
+    || fail "omitted report discovery errors were dropped from the report total: $(printf '%s' "$payload" | jq -c '.reports | {total,shown,truncated}')"
+  pass "omitted report discovery errors stay counted in the report total"
+}
+
 test_a_report_holding_binary_bytes_still_produces_valid_output() {
   local home payload
   home=$(make_home binary-report)
@@ -731,6 +796,104 @@ test_a_failed_herdr_probe_is_degraded_with_a_reason() {
   pass "failed Herdr probes remain degraded with their failure reason"
 }
 
+test_a_herdr_server_error_is_a_failed_probe_not_an_unknown_state() {
+  local home payload
+  home=$(make_home herdr-server-error)
+  fm_write_meta "$home/state/herdr-one.meta" \
+    "window=default:w1:p1" \
+    "endpoint_task_id=herdr-one" \
+    "worktree=$home/wt" \
+    "harness=claude" \
+    "kind=ship" \
+    "backend=herdr"
+  # Herdr answered, and its answer is an error: the server could not be reached.
+  # That is a FAILED probe, not a successful probe that returned unknown.
+  cat > "$home/fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{"error":{"code":"server_unavailable","message":"no server"}}'
+SH
+  chmod +x "$home/fakebin/herdr"
+  payload=$(run_dash "$home" json) || fail "a Herdr server error broke collection"
+  printf '%s' "$payload" | jq -e '
+    .snapshot.tasks
+    | map(select(.id == "herdr-one"))
+    | length == 1
+    and .[0].endpoint.exists == null
+    and .[0].endpoint.freshness == "degraded"
+    and (.[0].endpoint.reason | test("server_unavailable"))' >/dev/null \
+    || fail "a Herdr error code was flattened into an unknown state without its reason"
+  pass "a Herdr server error stays a degraded probe carrying its error code"
+}
+
+test_a_herdr_server_lost_between_probes_is_degraded_with_its_reason() {
+  local home payload
+  home=$(make_home herdr-lost-between-probes)
+  fm_write_meta "$home/state/herdr-two.meta" \
+    "window=default:w1:p1" \
+    "endpoint_task_id=herdr-two" \
+    "worktree=$home/wt" \
+    "harness=claude" \
+    "kind=secondmate" \
+    "backend=herdr"
+  # The endpoint probe succeeds and the server is gone by the agent probe, which
+  # opens with its own pane read. That second failure must stay a failure.
+  cat > "$home/fakebin/herdr" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  *"pane get"*)
+    if [ -e "$home/pane-probed" ]; then
+      printf '%s\\n' '{"error":{"code":"server_gone"}}'
+    else
+      : > "$home/pane-probed"
+      printf '%s\\n' '{"result":{"pane":{"pane_id":"w1:p1"}}}'
+    fi
+    ;;
+  *) printf '%s\\n' '{"result":{"agent":{"agent_status":"working"}}}' ;;
+esac
+SH
+  chmod +x "$home/fakebin/herdr"
+  payload=$(run_dash "$home" json) || fail "a lost Herdr server broke collection"
+  printf '%s' "$payload" | jq -e '
+    .snapshot.tasks
+    | map(select(.id == "herdr-two"))
+    | length == 1
+    and .[0].endpoint.agent_alive == "unknown"
+    and .[0].endpoint.freshness == "degraded"
+    and (.[0].endpoint.reason | test("server_gone"))' >/dev/null \
+    || fail "a Herdr server lost between probes was reported as an unknown agent"
+  pass "a Herdr server lost between probes stays degraded with its reason"
+}
+
+test_a_herdr_agent_error_is_a_failed_probe_not_an_unknown_state() {
+  local home payload
+  home=$(make_home herdr-agent-error)
+  fm_write_meta "$home/state/herdr-three.meta" \
+    "window=default:w1:p1" \
+    "endpoint_task_id=herdr-three" \
+    "worktree=$home/wt" \
+    "harness=claude" \
+    "kind=secondmate" \
+    "backend=herdr"
+  cat > "$home/fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *"agent get"*) printf '%s\n' '{"error":{"code":"agent_unreachable"}}' ;;
+  *) printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p1"}}}' ;;
+esac
+SH
+  chmod +x "$home/fakebin/herdr"
+  payload=$(run_dash "$home" json) || fail "a Herdr agent error broke collection"
+  printf '%s' "$payload" | jq -e '
+    .snapshot.tasks
+    | map(select(.id == "herdr-three"))
+    | length == 1
+    and .[0].endpoint.agent_alive == "unknown"
+    and .[0].endpoint.freshness == "degraded"
+    and (.[0].endpoint.reason | test("agent_unreachable"))' >/dev/null \
+    || fail "a Herdr agent error code was flattened into an unknown agent state"
+  pass "a Herdr agent error stays a degraded probe carrying its error code"
+}
+
 test_a_malformed_herdr_endpoint_is_unknown_not_absent() {
   local home payload
   home=$(make_home malformed-herdr-endpoint)
@@ -816,6 +979,53 @@ test_malformed_zellij_and_cmux_endpoints_are_unknown_not_absent() {
 
 
 
+test_collecting_evidence_never_creates_the_state_directory() {
+  local home payload
+  home=$(make_home read-only-collection)
+  rm -rf "$home/state"
+  payload=$(run_dash "$home" json) || fail "collection failed on a home with no state directory"
+  [ ! -e "$home/state" ] \
+    || fail "the read-only collector created the state directory it was observing"
+  printf '%s' "$payload" | jq -e '.schema == "fm-dashboard.v1"' >/dev/null \
+    || fail "collection over a stateless home did not return a payload"
+  pass "collecting evidence never creates the state directory"
+}
+
+test_a_quiet_build_publishes_the_stamp_a_later_check_will_match() {
+  local home payload stamp live
+  home=$(make_home stable-freshness)
+  live=$(run_dash "$home" stamp) || fail "the freshness stamp could not be read"
+  payload=$(run_dash "$home" json) || fail "the dashboard payload could not be composed"
+  stamp=$(printf '%s' "$payload" | jq -r '.freshness_stamp')
+  [ "$stamp" = "$live" ] \
+    || fail "an unchanged home published a stamp no later check would match"
+  printf '%s' "$payload" | jq -e '[.degraded[] | select(.source == "evidence freshness")] | length == 0' \
+    >/dev/null || fail "an unchanged home was reported as collected mid-change"
+  pass "a quiet build publishes the stamp a later freshness check will match"
+}
+
+test_evidence_changed_mid_collection_is_disclosed_and_not_reused() {
+  local home payload stamp live
+  home=$(make_home torn-freshness)
+  # Change a record while collection is in flight. The payload that comes back
+  # holds pre-change evidence, so it must NOT carry a stamp that a later check
+  # would accept as current - that is exactly how stale evidence gets served.
+  ( sleep 3; printf 'working: changed mid-collection\n' >> "$home/state/worker-one.status" ) &
+  payload=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" \
+    FM_SNAPSHOT_NOW=2026-08-01T00:00:00Z \
+    FM_SNAPSHOT_TEST_DELAY_AFTER_STAMP=9 "$DASH" json) \
+    || fail "a mid-collection change broke collection"
+  wait
+  printf '%s' "$payload" | jq -e '
+    [.degraded[] | select(.source == "evidence freshness")] | length == 1' >/dev/null \
+    || fail "a mid-collection change was not disclosed"
+  stamp=$(printf '%s' "$payload" | jq -r '.freshness_stamp')
+  live=$(run_dash "$home" stamp) || fail "the freshness stamp could not be read"
+  [ "$stamp" != "$live" ] \
+    || fail "evidence collected mid-change published a stamp that would be reused as current"
+  pass "evidence changed mid-collection is disclosed and cannot be reused as current"
+}
+
 test_direct_json_build_is_bounded() {
   local home out real_jq
   home=$(make_home bounded-direct-build)
@@ -851,6 +1061,8 @@ test_a_large_report_is_truncated_and_says_so
 test_a_task_linked_report_uses_the_global_report_cap
 test_an_unreadable_task_report_preserves_its_refusal_reason
 test_scout_report_discovery_failure_is_not_an_empty_success
+test_a_refused_report_directory_keeps_its_discovery_reason
+test_omitted_report_discovery_errors_are_counted_in_the_total
 test_a_report_holding_binary_bytes_still_produces_valid_output
 test_a_malformed_queued_notification_is_flagged_not_mis_parsed
 test_queued_notifications_are_bounded
@@ -864,6 +1076,12 @@ test_a_symlinked_watcher_heartbeat_is_not_reported_as_healthy
 test_a_herdr_backed_snapshot_times_out_its_local_probe
 test_a_failed_herdr_probe_is_degraded_with_a_reason
 test_a_malformed_herdr_endpoint_is_unknown_not_absent
+test_a_herdr_server_error_is_a_failed_probe_not_an_unknown_state
+test_a_herdr_server_lost_between_probes_is_degraded_with_its_reason
+test_a_herdr_agent_error_is_a_failed_probe_not_an_unknown_state
 test_a_malformed_tmux_endpoint_is_unknown_not_absent
 test_malformed_zellij_and_cmux_endpoints_are_unknown_not_absent
+test_a_quiet_build_publishes_the_stamp_a_later_check_will_match
+test_evidence_changed_mid_collection_is_disclosed_and_not_reused
 test_direct_json_build_is_bounded
+test_collecting_evidence_never_creates_the_state_directory

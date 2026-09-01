@@ -1082,8 +1082,24 @@ families_for_changed_path() {
           || printf '%s\n' "__unmapped__:$path"
       fi
       ;;
+    tests/assets/*)
+      # A shared test asset belongs to whichever suite names it, found by the
+      # same reference scan used for helpers and fixtures. Without this a branch
+      # that adds an asset cannot select its own changed tests at all.
+      if [ -e "$path" ]; then
+        families_for_test_reference "$(basename "$path")" \
+          || printf '%s\n' "__unmapped__:$path"
+      fi
+      ;;
     tests/*)
       printf '%s\n' "__unmapped__:$path"
+      ;;
+    ui/*)
+      # The dashboard client source builds into the committed bundle under
+      # assets/, which the dashboard suites serve and assert against. Selecting
+      # by the built directory keeps one mapping for source and bundle alike.
+      families_for_test_reference "assets/dashboard" \
+        || printf '%s\n' "__unmapped__:$path"
       ;;
     README.md|LICENSE|assets/*|docs/*|.gitignore)
       ;;

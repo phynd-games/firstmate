@@ -16,15 +16,20 @@ def fail(message: str) -> int:
     return 1
 
 
-def open_record(path: str, roots: list[str]) -> tuple[int, str] | None:
+def open_record(path: str, roots: list[str]) -> tuple[int, str, str] | None:
     return open_contained(path, roots)
 
 
-def write_meta(path: str, record_path: str, record_stat: os.stat_result,
+def write_meta(path: str, record_path: str, resolved_path: str,
+               record_stat: os.stat_result,
                total_lines: int | None = None, truncated: bool = False,
                total_lines_exact: bool | None = None) -> None:
+    # `path` is the record as this home records it. `resolved_path` is the EXACT
+    # file these bytes came from, which is a different fact whenever an ancestor
+    # is a symlink - so both are published and neither stands in for the other.
     result = {
         "path": record_path,
+        "resolved_path": resolved_path,
         "bytes": record_stat.st_size,
         "mtime_ns": record_stat.st_mtime_ns,
         "mtime_seconds": record_stat.st_mtime,
@@ -135,19 +140,20 @@ def main() -> int:
         opened = open_record(path, roots)
     except RecordError as exc:
         return fail(str(exc))
-    fd, record_path = opened
+    fd, record_path, resolved_path = opened
     try:
         record_stat = os.fstat(fd)
         if mode == "stat":
             if output == "-":
                 sys.stdout.write(str(record_stat.st_size) + "\n")
             else:
-                write_meta(meta, record_path, record_stat)
+                write_meta(meta, record_path, resolved_path, record_stat)
             return 0
         if mode == "info":
             if output != "-":
                 raise RecordError("info output must use stdout")
-            json.dump({"path": record_path, "bytes": record_stat.st_size,
+            json.dump({"path": record_path, "resolved_path": resolved_path,
+                       "bytes": record_stat.st_size,
                        "mode": record_stat.st_mode,
                        "mtime_seconds": record_stat.st_mtime}, sys.stdout)
             sys.stdout.write("\n")
@@ -185,12 +191,13 @@ def main() -> int:
                             break
                         handle.write(chunk.replace(b"\x00", b""))
                         remaining -= len(chunk)
-                write_meta(meta, record_path, record_stat,
+                write_meta(meta, record_path, resolved_path, record_stat,
                            truncated=record_stat.st_size > limit)
                 return 0
             lines, total_lines, exact = read_lines(fd, record_stat.st_size, limit)
             handle.writelines(lines)
-            write_meta(meta, record_path, record_stat, total_lines=total_lines,
+            write_meta(meta, record_path, resolved_path, record_stat,
+                       total_lines=total_lines,
                        truncated=total_lines > limit, total_lines_exact=exact)
             return 0
     except RecordError as exc:

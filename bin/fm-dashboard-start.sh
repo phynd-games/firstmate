@@ -80,12 +80,14 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 RECORD_SCHEMA=fm-dashboard-owner.v1
 HEALTH_SCHEMA=fm-dashboard-health.v1
 RECORD="$STATE/.dashboard-owner"
-LOG="$STATE/.dashboard-start.log"
+LOG_NAME=.dashboard-start.log
+LOG="$STATE/$LOG_NAME"
 LOCK="$STATE/.dashboard-start.lock"
 LOCK_IDENTITY="$LOCK/identity"
 QUARANTINE="$STATE/.dashboard-quarantine"
 JOURNAL="$STATE/.dashboard-startup"
 LOG_MAX_LINES=200
+LOG_MAX_BYTES=131072
 OWNER_RECORD_MAX_BYTES=65536
 OWNER_RECORD_LOADED=0
 OWNER_RECORD_TEXT=
@@ -226,6 +228,12 @@ dashboard_lock_try_acquire() {
     [ -d "$LOCK" ] && [ ! -L "$LOCK" ] || return 1
     [ ! -L "$LOCK/pid" ] || return 1
     [ ! -L "$LOCK_IDENTITY" ] || return 1
+    # These two are read by name, unlike the diagnostics record and every
+    # evidence record. They are this script's own 0700 lock, and every value read
+    # from them is only ever compared against the running pid and its identity: a
+    # value swapped underneath these checks cannot match, and a non-match makes
+    # the lock look foreign, which is the direction that waits rather than the
+    # direction that steals it. Nothing read here is published or written back.
     pid=$(cat "$LOCK/pid" 2>/dev/null || true)
     case "$pid" in
       '')
@@ -353,17 +361,22 @@ usage() {
 now_epoch() { date +%s; }
 
 log_line() {  # <outcome> <detail>
-  local tmp
   startup_state_boundary_safe || return 0
   mkdir -p "$STATE" 2>/dev/null || return 0
-  printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >> "$LOG" 2>/dev/null || return 0
+  # Written through bin/fm-dashboard-log.py, never a shell redirect: that helper
+  # anchors one descriptor on the state directory, refuses a symlink or special
+  # file at the record, and appends AND trims through that same descriptor. A
+  # redirect would reopen the path by name, so a swap between the boundary check
+  # above and the write could send diagnostics - and the trim read after them -
+  # somewhere else, and a fifo left at that path could wedge startup.
+  # That makes python3 the price of a safe write. Without it this record stays
+  # unwritten rather than written unsafely; startup already refuses to serve
+  # without python3, and it reports that on stdout either way.
   # Bounded: the diagnostics survive restarts without growing without limit.
-  tmp="$LOG.trim.$$"
-  if tail -c 131072 "$LOG" | tail -n "$LOG_MAX_LINES" > "$tmp" 2>/dev/null; then
-    mv -f -- "$tmp" "$LOG" 2>/dev/null || rm -f -- "$tmp"
-  else
-    rm -f -- "$tmp"
-  fi
+  python3 "$SCRIPT_DIR/fm-dashboard-log.py" "$STATE" "$LOG_NAME" \
+    "$LOG_MAX_LINES" "$LOG_MAX_BYTES" \
+    "$(printf '%s\t%s\t%s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2")" \
+    >/dev/null 2>&1 || return 0
 }
 
 blocked() {  # <reason>

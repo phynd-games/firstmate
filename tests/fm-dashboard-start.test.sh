@@ -88,6 +88,64 @@ s.close()
 PY
 }
 
+test_a_swapped_diagnostics_record_is_refused_without_outside_writes() {
+  local home outside out status=0 lines i
+  home=$(make_home swapped-log)
+  outside="$TMP_ROOT/swapped-log-outside"
+  : > "$outside"
+  # The startup script validates its state boundary and then has to write. This
+  # drives the writer that boundary hands off to, because the swap this refuses
+  # is one that lands AFTER any by-name check could have run.
+  rm -f "$home/state/.dashboard-start.log"
+  ln -s "$outside" "$home/state/.dashboard-start.log"
+  out=$(python3 "$ROOT/bin/fm-dashboard-log.py" "$home/state" .dashboard-start.log \
+    200 131072 "swapped	blocked	written through a symlink" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "a symlinked diagnostics record was written: $out"
+  assert_contains "$out" "symlink" "the swapped-record refusal did not name the cause"
+  [ ! -s "$outside" ] \
+    || fail "startup diagnostics were written through a symlinked record: $(cat "$outside")"
+  # A hardlinked record is refused for the same reason: the bytes are shared.
+  rm -f "$home/state/.dashboard-start.log"
+  ln "$outside" "$home/state/.dashboard-start.log"
+  status=0
+  out=$(python3 "$ROOT/bin/fm-dashboard-log.py" "$home/state" .dashboard-start.log \
+    200 131072 "swapped	blocked	written through a hardlink" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "a hardlinked diagnostics record was written: $out"
+  [ ! -s "$outside" ] \
+    || fail "startup diagnostics were written through a hardlinked record: $(cat "$outside")"
+  # And the ordinary record still appends, and still trims, on the descriptor it
+  # already proved rather than on a path it looks up again.
+  rm -f "$home/state/.dashboard-start.log"
+  for i in $(seq 1 6); do
+    python3 "$ROOT/bin/fm-dashboard-log.py" "$home/state" .dashboard-start.log \
+      3 131072 "kept	started	line $i" \
+      || fail "the diagnostics writer refused an ordinary record"
+  done
+  lines=$(wc -l < "$home/state/.dashboard-start.log" | tr -d '[:space:]')
+  [ "$lines" -eq 3 ] || fail "the diagnostics writer did not trim in place: $lines lines"
+  assert_grep 'line 6' "$home/state/.dashboard-start.log" "the newest diagnostics line was lost"
+  assert_no_grep 'line 1' "$home/state/.dashboard-start.log" "the oldest diagnostics line survived the bound"
+  pass "a swapped diagnostics record is refused without writing outside this home"
+}
+
+test_a_blocking_diagnostics_record_does_not_wedge_startup() {
+  local home port out
+  home=$(make_home fifo-log)
+  rm -f "$home/state/.dashboard-start.log"
+  mkfifo "$home/state/.dashboard-start.log" 2>/dev/null || {
+    pass "skip: this filesystem cannot host a fifo diagnostics record"
+    return 0
+  }
+  port=$(free_port)
+  SECONDS=0
+  out=$(start "$home" "$port" ensure) \
+    || fail "ensure failed when the diagnostics record was a fifo: $out"
+  [ "$SECONDS" -lt 60 ] || fail "a fifo diagnostics record wedged startup: ${SECONDS}s"
+  assert_contains "$out" "FIRSTMATE_DASHBOARD_URL=" \
+    "a fifo diagnostics record blocked a startup that was otherwise fine"
+  pass "a blocking diagnostics record never wedges startup"
+}
+
 test_diagnostics_log_trimming_reads_only_a_bounded_tail() {
   local home port i out lines
   home=$(make_home bounded-log)
@@ -922,6 +980,8 @@ test_a_torn_lock_with_a_reused_pid_is_recovered
 test_failed_cleanup_is_quarantined_before_retry
 test_no_free_port_blocks_without_a_url
 test_diagnostics_log_trimming_reads_only_a_bounded_tail
+test_a_swapped_diagnostics_record_is_refused_without_outside_writes
+test_a_blocking_diagnostics_record_does_not_wedge_startup
 test_status_reports_without_changing_anything
 test_a_tampered_owner_token_is_not_adopted
 test_read_only_status_probe_does_not_write_a_lifecycle_lock

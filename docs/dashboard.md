@@ -52,14 +52,14 @@ The browser never reads a filesystem path.
 It calls the API, and the API is the only thing that opens a record.
 Every path decision, bound, and symlink check happens server-side, once, instead of being re-implemented in a client that cannot be trusted with a path.
 
-The client lives in `ui/` and is bundled by esbuild into `assets/dashboard/`, which is **committed**.
+The client lives in `ui/` and is built by Vite into `assets/dashboard/`, which is **committed**.
 That is what lets a fresh machine, and CI, serve the dashboard with no network and no install step: the toolchain is a development convenience, never a runtime or CI dependency.
 
 ```
 bin/fm-dashboard-build.sh build     rebuild from ui/src when a toolchain exists
 bin/fm-dashboard-build.sh verify    check the committed bundle is complete
 bin/fm-dashboard-build.sh watch     rebuild on change (development)
-npm ci --prefix ui                  install the toolchain (development only)
+bun install --cwd ui                install the toolchain (development only)
 ```
 
 For live development, `bin/fm-dashboard.sh serve --dev` treats the built client as evidence too, so a rebuild reaches the browser the same way a changed record does.
@@ -86,6 +86,22 @@ Every resource answers one `fm-dashboard-api.v1` envelope carrying `collected_at
 The stream pushes only a generation number; the client refetches what it is showing.
 That keeps the stream tiny and means a missed event costs one stale render, never a wrong one.
 
+## Freshness: one stamp, taken before the reads
+
+`bin/fm-fleet-snapshot.sh` is the only thing that decides whether this home's evidence has changed.
+It fingerprints the bounded record tree - this home plus every validated registered secondmate home - and probes the live endpoints ONCE per run, hashes both halves into `freshness.stamp`, and publishes it in the snapshot document.
+The dashboard payload carries that stamp forward; the server's cheap re-check asks the same command for the current one (`bin/fm-dashboard.sh stamp`).
+Nothing derives a second version of it, which is what previously let a payload carry a stamp its own evidence never matched.
+
+That stamp is taken **before** the snapshot reads a single record.
+A stamp taken afterwards would describe a home the payload never saw: a record that changed mid-collection would sit as pre-change evidence under a post-change stamp, every later check would match it, and the stale payload would be served indefinitely.
+Taken before, that change no longer matches, so the next refresh rebuilds instead.
+The snapshot fingerprints again after its reads only to say so: `freshness.torn` becomes true, the collector discloses it in `degraded[]`, and the page reports it as evidence collected mid-change rather than as evidence withheld.
+
+Provenance is exact for the same reason.
+A record reached through a path whose ancestor is a symlink reports both facts: `path` is the record as this home records it, and `resolved_path` is the file the descriptor actually read.
+Neither stands in for the other.
+
 ## Metrics: what is real, and what is not
 
 Firstmate keeps no metrics store, and the captain has ruled that none may be added.
@@ -110,6 +126,8 @@ Derived from already-retained history: completions, failures, blocks, blocks cle
 - **Path-safe and symlink-safe reads.** A status log or report is read only when it is a regular file, is not itself a symlink, and resolves inside this home's state or data root. Anything refused is disclosed in `degraded[]` and surfaced on the page.
 - **Bounded.** Event tails, notification records, report count and bytes, the collector timeout, the evidence cache, stream client count, and stream lifetime all have limits, and every limit discloses what it dropped.
 - **Never executable.** Report bodies are served as JSON data and rendered into React elements, never as markup. Raw HTML in a report stays visible as literal text, and only an `http(s)` target becomes a link.
+- **Observing a home never changes it.** `bin/fm-dashboard.sh json` creates nothing, including in a home that has no `state/` directory yet. Startup owns the only writes - its owner record, lock, journal, and diagnostics - and its diagnostics go through `bin/fm-dashboard-log.py`, which anchors one descriptor on the state directory and refuses a symlink, a hardlink, or a special file at the record rather than following it.
+- **A refusal keeps its own reason.** A report discovery refused as unsafe is never re-read to invent a fresher-sounding explanation, and refusals that did not fit the bound are still counted in the report total.
 
 The dashboard renders whatever your local records contain and applies no redaction, because hiding evidence from a supervision surface is worse than showing it.
 Treat what it serves as exactly as sensitive as the `data/` and `state/` files behind it.

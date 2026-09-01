@@ -13,7 +13,16 @@ FM_LOCK_STALE_AFTER="${FM_LOCK_STALE_AFTER:-2}"
 # confirm and 0.5s attach polls, and forking uname per call is a measurable cost on
 # the platform (Git Bash/MSYS) that already pays the highest fork price.
 _FM_UNAME=$(uname 2>/dev/null || echo unknown)
-mkdir -p "$STATE"
+# The wake queue and every lock helper below need $STATE to exist, so sourcing
+# this library normally creates it. A READ-ONLY consumer that wants only the
+# process-identity, harness, or supervision-model helpers sets
+# FM_WAKE_LIB_NO_STATE_MKDIR=1 first and gets no directory creation: observing a
+# home must never change it. Anything that touches the queue or a lock leaves
+# the variable unset.
+case "${FM_WAKE_LIB_NO_STATE_MKDIR:-0}" in
+  1) ;;
+  *) mkdir -p "$STATE" ;;
+esac
 
 fm_current_pid() {
   printf '%s\n' "${BASHPID:-$$}"

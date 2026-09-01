@@ -21,6 +21,10 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-dashboard.sh`        | Collect this home's read-only evidence, and serve the control-plane dashboard ([dashboard.md](dashboard.md)) |
 | `fm-dashboard-build.sh`  | Build or verify the committed React dashboard client in `assets/dashboard` |
 | `fm-dashboard-start.sh`  | Bring the dashboard up idempotently in a tracked Herdr pane and print its proven localhost URL |
+| `fm-dashboard-read.py`   | Read one record through a bounded, contained, descriptor-backed handle, reporting both its recorded and resolved paths |
+| `fm_dashboard_io.py`     | The descriptor-anchored read boundary every dashboard reader shares, plus the bounded freshness fingerprint |
+| `fm_dashboard_server.py` | The read-only versioned API and static client server `fm-dashboard.sh serve` runs |
+| `fm-dashboard-log.py`    | Append and trim the startup diagnostics record through one anchored descriptor, refusing a swapped or special file |
 | `fm-secondmate-reconcile.sh` | Ask each secondmate to reconcile an inventory mismatch through its durable inbox, limited by a per-home cooldown |
 | `fm-update.sh`           | Fast-forward-only self-update of firstmate and local or remote secondmate homes       |
 | `fm-on.sh`               | Execute one tracked Firstmate command in a configured remote secondmate home, using its job worker except for the doctor bootstrap |

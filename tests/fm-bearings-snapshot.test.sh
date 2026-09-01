@@ -255,13 +255,19 @@ test_domain_alpha_stale_parent_event_does_not_become_current_work() {
   pass "Domain Alpha structured state overrides a stale parent Phase 7 event"
 }
 
-test_gnu_stat_uses_file_formats_without_bsd_fallback_pollution() {
+test_file_reads_need_no_platform_stat_binary() {
   local home mate fakebin canonical stat_log
   home=$(make_home gnu-stat-parent)
   mate="$TMP_ROOT/gnu-stat-home"
   write_domain_alpha_fixture "$home" "$mate"
   fakebin=$(make_fakebin "$home")
   stat_log="$home/stat.log"
+  : > "$stat_log"
+  # Reads go through the descriptor-anchored record reader, so no platform stat
+  # format is consulted at all. This proves that outcome rather than which flags
+  # were passed: a stat binary that reports Linux and then fails every call must
+  # not change the snapshot, and the BSD filesystem report that once polluted
+  # these reads must never be reached.
   cat > "$fakebin/uname" <<'SH'
 #!/usr/bin/env bash
 printf 'Linux\n'
@@ -269,33 +275,23 @@ SH
   cat > "$fakebin/stat" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STAT_LOG"
-case "$1 $2" in
-  '-c %a') printf '600\n' ;;
-  '-c %Y') printf '1783792800\n' ;;
-  '-c %s') LC_ALL=C wc -c < "$3" | tr -d ' ' ;;
-  -f\ *)
-    printf '  File: "%s"\nBlocks: Total: 1\n' "$2"
-    exit 1
-    ;;
-  *) exit 2 ;;
-esac
+exit 2
 SH
   chmod +x "$fakebin/uname" "$fakebin/stat"
   canonical=$(PATH="$fakebin:$PATH" STAT_LOG="$stat_log" FM_HOME="$home" \
     FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z FM_SNAPSHOT_NOW_EPOCH=1783792800 \
-    "$ROOT/bin/fm-fleet-snapshot.sh" --json)
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json) \
+    || fail "the snapshot failed when the platform stat binary did"
   printf '%s' "$canonical" | jq -e '
     .secondmate_current.records[] | select(.id == "domain-alpha")
     | .provenance.selected == "structured-home"
       and .parent_event.activity_scan.available == true
-  ' >/dev/null || fail "GNU stat fixture corrupted the authoritative secondmate summary: $canonical"
-  assert_contains "$(cat "$stat_log")" '-c %a' "GNU registry mode must use stat -c"
-  assert_contains "$(cat "$stat_log")" '-c %Y' "GNU parent-event mtime must use stat -c"
-  assert_contains "$(cat "$stat_log")" '-c %s' "GNU parent-event size must use stat -c"
-  if grep -q '^-f ' "$stat_log"; then
-    fail "GNU snapshot invoked BSD stat -f before its GNU file reads: $(cat "$stat_log")"
-  fi
-  pass "GNU stat file reads select -c without BSD filesystem-report pollution"
+      and .parent_event.age_seconds != null
+      and .contradiction == true
+  ' >/dev/null || fail "a failing platform stat binary changed the authoritative secondmate summary: $canonical"
+  [ ! -s "$stat_log" ] \
+    || fail "record reads still depend on the platform stat binary: $(cat "$stat_log")"
+  pass "record reads need no platform stat binary and cannot be polluted by one"
 }
 
 test_parent_activity_evidence_is_bounded_and_disclosed() {
@@ -1062,7 +1058,10 @@ test_perl_fallback_bounds_github_call() {
   fakebin=$(make_fakebin "$home")
   toolbin="$home/toolbin"
   mkdir -p "$toolbin"
-  for cmd in bash dirname basename jq date sed git grep tail cut tr head sort wc perl sleep cat find; do
+  # Deliberately no timeout/gtimeout, so the perl fallback owns the bound. Every
+  # other tool the snapshot legitimately needs is here, python3 and mktemp
+  # included: record reads go through the descriptor-anchored reader.
+  for cmd in bash dirname basename jq date sed git grep tail cut tr head sort wc perl sleep cat find python3 mktemp awk; do
     ln -s "$(command -v "$cmd")" "$toolbin/$cmd"
   done
   started=$(date +%s)
@@ -1947,7 +1946,7 @@ EOF
 }
 
 test_domain_alpha_stale_parent_event_does_not_become_current_work
-test_gnu_stat_uses_file_formats_without_bsd_fallback_pollution
+test_file_reads_need_no_platform_stat_binary
 test_parent_activity_evidence_is_bounded_and_disclosed
 test_active_child_overrides_old_parent_event
 test_structured_child_decision_reaches_captains_call

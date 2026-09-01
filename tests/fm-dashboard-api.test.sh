@@ -392,6 +392,94 @@ test_task_linked_report_overflow_is_unavailable_and_not_addressable() {
   pass "task-linked report overflow is unavailable and not addressable"
 }
 
+test_unreadable_delivery_evidence_is_unavailable_not_absent() {
+  local home port doc real_python
+  home=$(make_home unreadable-delivery)
+  real_python=$(command -v python3)
+  # The status log is where this home records a worker's pull request. When that
+  # record cannot be read, the delivery view must say so: a dropped row would
+  # read exactly like a worker that has delivered nothing.
+  cat > "$home/fakebin/python3" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = "$ROOT/bin/fm-dashboard-read.py" ] && [[ "\${2:-}" == *worker-one.status ]]; then
+  printf '%s\\n' 'status log read failed' >&2
+  exit 1
+fi
+exec "$real_python" "\$@"
+SH
+  chmod +x "$home/fakebin/python3"
+  port=$(start_server "$home") || fail "the server did not start"
+  doc=$(get "$port" /api/v1/delivery) || fail "the delivery resource did not answer"
+  printf '%s' "$doc" | jq -e '
+    [.data.records[] | select(.task_id == "worker-one")] as $rows
+    | ($rows | length) == 1
+    and $rows[0].available == false
+    and $rows[0].url == null
+    and ($rows[0].reason | test("status log read failed"))' >/dev/null \
+    || fail "unreadable delivery evidence was hidden instead of reported unavailable: $(printf '%s' "$doc" | jq -c '.data.records')"
+  doc=$(get "$port" /api/v1/tasks/worker-one) || fail "the task resource did not answer"
+  printf '%s' "$doc" | jq -e '
+    .data.task.pr.available == false and (.data.task.pr.reason | length) > 0' >/dev/null \
+    || fail "the task view lost the unavailable delivery reason"
+  pass "unreadable delivery evidence stays unavailable rather than absent"
+}
+
+test_report_provenance_names_the_file_that_was_read() {
+  local home port doc data_real
+  home=$(make_home report-provenance)
+  # A report directory that is a symlink is refused by discovery, so it keeps
+  # that refusal and names no source. An ordinary report names the exact file
+  # its bytes came from. Both facts have to reach the API, because a row with
+  # neither would leave a consumer guessing which file it is looking at.
+  ln -s scout-one "$home/data/aliased"
+  data_real=$(cd "$home/data" && pwd -P)
+  port=$(start_server "$home") || fail "the server did not start"
+  doc=$(get "$port" /api/v1/reports) || fail "the report index did not answer"
+  printf '%s' "$doc" | jq -e --arg resolved "$data_real/scout-one/report.md" '
+    [.data.reports[] | select(.id == "scout-one")] as $read
+    | ($read | length) == 1
+    and $read[0].readable == true
+    and $read[0].resolved_path == $resolved
+    and ([.data.reports[] | select(.id == "aliased")] | length) == 1
+    and ([.data.reports[] | select(.id == "aliased")][0] | .readable == false
+         and .resolved_path == null and (.reason | test("symlink")))' >/dev/null \
+    || fail "the report index did not name the file it read: $(printf '%s' "$doc" | jq -c '[.data.reports[]|{id,readable,path,resolved_path,reason}]')"
+  doc=$(get "$port" /api/v1/sources) || fail "the sources resource did not answer"
+  printf '%s' "$doc" | jq -e --arg resolved "$data_real/scout-one/report.md" '
+    [.data.sources[] | select(.surface == "report scout-one")] as $rows
+    | ($rows | length) == 1 and $rows[0].resolved_path == $resolved' >/dev/null \
+    || fail "the source list did not name the file it read: $(printf '%s' "$doc" | jq -c '[.data.sources[]|select(.surface|startswith("report"))]')"
+  pass "report provenance names the file that was read, and a refusal names none"
+}
+
+test_evidence_collected_mid_change_is_reported_as_what_it_is() {
+  local home port wrapper doc
+  home=$(make_home torn-alert)
+  wrapper="$home/self-torn.sh"
+  # The collector discloses a mid-collection change in degraded[]. The alert the
+  # page shows for it must say that, not "evidence not shown": the evidence WAS
+  # shown, and what the reader needs to know is that it may not be of one moment.
+  cat > "$wrapper" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = stamp ]; then exec "$DASH" stamp; fi
+"$DASH" json | jq -c --arg home "$home" '
+  .degraded += [{source:"evidence freshness", path:\$home,
+                 reason:"a record changed while this evidence was being collected"}]'
+SH
+  chmod +x "$wrapper"
+  port=$(SELF_OVERRIDE="$wrapper" start_server "$home") \
+    || fail "the torn-evidence server did not start"
+  doc=$(get "$port" /api/v1/overview) || fail "the overview did not answer"
+  printf '%s' "$doc" | jq -e '
+    [.data.alerts[] | select(.key == "freshness")] as $rows
+    | ($rows | length) == 1
+    and ($rows[0].severity == "warning")
+    and ($rows[0].title | test("collected"))
+    and ($rows[0].title | test("not shown") | not)' >/dev/null \
+    || fail "a mid-collection change was not reported as what it is: $(printf '%s' "$doc" | jq -c '[.data.alerts[]|{key,title}]')"
+  pass "evidence collected mid-change is reported as that, not as evidence withheld"
+}
+
 test_serve_refuses_when_the_client_is_not_built() {
   local home out status=0
   home=$(make_home unbuilt)
@@ -606,6 +694,9 @@ test_malformed_and_missing_records_surface_through_the_api
 test_the_stream_is_immediate_and_bounded
 test_a_report_is_served_as_data_not_as_markup
 test_task_linked_report_overflow_is_unavailable_and_not_addressable
+test_unreadable_delivery_evidence_is_unavailable_not_absent
+test_report_provenance_names_the_file_that_was_read
+test_evidence_collected_mid_change_is_reported_as_what_it_is
 test_serve_refuses_when_the_client_is_not_built
 test_the_server_can_be_restarted_on_the_same_port
 test_nested_evidence_and_usage_inputs_advance_the_cached_generation
