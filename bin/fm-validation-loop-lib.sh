@@ -313,6 +313,9 @@ _fm_vloop_scalar_fields_valid() {  # <evidence-content>
 
 _fm_vloop_journal_valid() {  # <journal-content>
   local stored=$1 key value version phase active scope_base scope_head scope_paths scope_count max_files themes seen_themes sig count
+  if ! printf '%s\n' "$stored" | awk '/^[^=]+=/{ key = $0; sub(/=.*/, "", key); if (++seen[key] > 1) invalid = 1 } END { exit invalid }'; then
+    return 1
+  fi
   for key in version run head status phase findings_sig progress_sig fix_rounds themes heads last_observed last_progress active stop_reason scope_base scope_head scope_paths; do
     printf '%s\n' "$stored" | grep -q "^$key=" || return 1
   done
@@ -586,6 +589,10 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   s_scope_base=$(_fm_vloop_journal_get "$stored" scope_base)
   s_scope_head=$(_fm_vloop_journal_get "$stored" scope_head)
   s_scope_paths=$(_fm_vloop_journal_get "$stored" scope_paths)
+  prior_terminal=0
+  case "$s_status:$s_active" in
+    completed:0|failed:0|cancelled:0) prior_terminal=1 ;;
+  esac
   case "$s_fix_rounds" in ''|*[!0-9]*) s_fix_rounds=0 ;; esac
   case "$s_last_progress" in ''|*[!0-9]*) s_last_progress=$now ;; esac
 
@@ -601,7 +608,15 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
       [ "$status" = "$s_status" ] || last_progress=$now
       case "$status" in
         completed|failed|cancelled) active=0; phase=terminal ;;
-        *) active=1; phase=coarse ;;
+        *)
+          if [ "$s_phase" = terminal ] || [ "$prior_terminal" = 1 ]; then
+            stop_reason="incoherent terminal-to-nonterminal transition for coarse status $status"
+            _fm_vloop_record_stop "$state" "$id" "$stop_reason" || return 1
+            return 2
+          fi
+          active=1
+          phase=coarse
+          ;;
       esac
       coarse_run=$s_run
       coarse_head=$s_head
@@ -646,10 +661,6 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   outcome=$(fm_nm_strip_quotes "$(fm_nm_field "$content" outcome)")
   head=$(fm_nm_strip_quotes "$(fm_nm_field "$content" head)")
   phase=$(_fm_vloop_phase "$content" "$status" "$outcome")
-  prior_terminal=0
-  case "$s_status:$s_active" in
-    completed:0|failed:0|cancelled:0) prior_terminal=1 ;;
-  esac
   if [ "$run_id" = "$s_run" ] && [ "$phase" != terminal ] && {
     [ "$s_phase" = terminal ] || [ "$prior_terminal" = 1 ]
   }; then

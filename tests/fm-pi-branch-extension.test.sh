@@ -754,6 +754,15 @@ if (sentToMain.length !== captainBefore + 1) throw new Error("captain outcome wa
 if (sentToMain[captainBefore].message.content.includes("FM_BRANCH_DELIVERY_ID:")) throw new Error("captain outcome exposed obsolete delivery identity state");
 const captainAgain = await report.execute("call-captain-replay", { task: "task-captain", verdict: "captain", summary: "captain delivery was reworded" }, undefined, undefined, {});
 if (captainAgain.isError || sentToMain.length !== captainBefore + 2) throw new Error("captain escalation was suppressed by routine coalescing state");
+const captainRoutine = await report.execute("call-captain-routine", { task: "task-captain", verdict: "routine", summary: "captain outcome has no new change" }, undefined, undefined, {});
+if (captainRoutine.isError || sentToMain[sentToMain.length - 1].message.display !== false) {
+  throw new Error("captain delivery did not refresh the routine coalescing marker");
+}
+globalThis.__fmSendMessageError = "synthetic captain send failure";
+const failedCaptainDelivery = await report.execute("call-captain-delivery-fail", { task: "task-captain-fail", verdict: "captain", summary: "captain delivery should remain durable" }, undefined, undefined, {});
+if (!failedCaptainDelivery.isError) throw new Error("failed captain delivery must be reported as an error");
+if (!outcomeScript(["unread"]).includes("captain delivery should remain durable")) throw new Error("the failed captain delivery lost its durable outcome row");
+globalThis.__fmSendMessageError = undefined;
 if (!renderers.has("fm-branch-merge")) throw new Error("merge-note renderer missing");
 const assertRenderedNote = (note, glyph) => {
   const fgCalls = [];

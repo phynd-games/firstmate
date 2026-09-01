@@ -559,6 +559,18 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  function sendToMain(
+    message: Parameters<ExtensionAPI["sendMessage"]>[0],
+    options: Parameters<ExtensionAPI["sendMessage"]>[1],
+  ): boolean {
+    try {
+      pi.sendMessage(message, options);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function mergeIntoMain(
     expectedGeneration: number,
     seq: string,
@@ -574,7 +586,8 @@ export default function (pi: ExtensionAPI) {
         content: captainOutcomeInput(task, summary),
         display: false,
       };
-      pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
+      if (!sendToMain(message, { triggerTurn: true, deliverAs: "followUp" })) return false;
+      runOutcomeScript(["note-render", "--task", task]);
     } else {
       // The note gate owns routine duplicate coalescing and fails toward
       // rendering when it cannot answer.
@@ -588,8 +601,7 @@ export default function (pi: ExtensionAPI) {
         content: `${MERGE_NOTE_BOAT} ${task}: ${summary}`,
         display,
       };
-      if (mainStreaming) pi.sendMessage(message, { deliverAs: "nextTurn" });
-      else pi.sendMessage(message, {});
+      if (!sendToMain(message, mainStreaming ? { deliverAs: "nextTurn" } : {})) return false;
     }
     if (/^[0-9]+$/.test(seq)) {
       if (!actingAsOwner(expectedGeneration)) return false;

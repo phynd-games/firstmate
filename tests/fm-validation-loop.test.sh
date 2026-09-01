@@ -297,6 +297,29 @@ EOF
   [ "$(FM_VLOOP_NOW=2000 fm_vloop_verdict "$state" bogus 2>/dev/null || true)" = \
     'stop validation-loop journal unreadable or incomplete; recover in the same copy' ] \
     || fail "an unrecognized journal status continued"
+  cat > "$state/duplicate-key.validation-loop" <<'EOF'
+version=1
+run=01RUN
+head=abc1234
+status=running
+phase=running
+findings_sig=
+progress_sig=00000000000000000000000000000000
+fix_rounds=0
+themes=
+heads=abc1234
+last_observed=1000
+last_progress=1000
+active=1
+active=0
+stop_reason=
+scope_base=
+scope_head=
+scope_paths=
+EOF
+  [ "$(FM_VLOOP_NOW=2000 fm_vloop_verdict "$state" duplicate-key 2>/dev/null || true)" = \
+    'stop validation-loop journal unreadable or incomplete; recover in the same copy' ] \
+    || fail "a duplicate journal key continued"
   sed 's/^progress_sig=.*/progress_sig=not-a-signature/' "$state/bogus.validation-loop" > "$state/malformed-signature.validation-loop"
   [ "$(FM_VLOOP_NOW=2000 fm_vloop_verdict "$state" malformed-signature 2>/dev/null || true)" = \
     'stop validation-loop journal unreadable or incomplete; recover in the same copy' ] \
@@ -370,6 +393,11 @@ EOF
   [ "$rc" -eq 2 ] || fail "a coarse terminal run reactivated instead of rejecting the transition"
   grep -q '^active=0$' "$coarse_state/coarse-terminal.validation-loop" \
     || fail "coarse terminal-to-running rejection reactivated the journal"
+  printf 'coarse: running\n' > "$coarse_ev"
+  if fm_vloop_observe "$coarse_state" coarse-terminal "$coarse_ev"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 2 ] || fail "a coarse terminal journal accepted coarse running evidence"
+  grep -q '^phase=terminal$' "$coarse_state/coarse-terminal.validation-loop" \
+    || fail "coarse terminal-to-coarse-running rejection changed the phase"
   pass "terminal transition: a completed run cannot reactivate under the same run id"
 }
 

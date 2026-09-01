@@ -79,7 +79,7 @@ usage() {
 # captain-relevant status lines, its recorded PR identity, and its recorded
 # validation-loop stop. Plain multi-line text, compared verbatim.
 note_novelty_signature() { # <task> [require-status]
-  local statusf metaf journal line status meta loop_stop require_status=${2:-0}
+  local statusf metaf journal line status meta loop_stop require_status=${2:-0} status_seen=0
   statusf="$STATE/$1.status"
   metaf="$STATE/$1.meta"
   journal="$STATE/$1.validation-loop"
@@ -91,11 +91,13 @@ note_novelty_signature() { # <task> [require-status]
     status=$(cat "$statusf") || return 1
     while IFS= read -r line || [ -n "$line" ]; do
       [ -n "$line" ] || continue
+      status_seen=1
       if status_is_captain_relevant "$line"; then printf '%s\n' "$line"; fi
     done <<< "$status"
   elif [ "$require_status" = 1 ]; then
     return 1
   fi
+  [ "$require_status" != 1 ] || [ "$status_seen" = 1 ] || return 1
   printf '\n'
   printf 'pr='
   if [ -e "$metaf" ] || [ -L "$metaf" ]; then
