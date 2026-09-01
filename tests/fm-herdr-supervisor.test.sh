@@ -214,12 +214,23 @@ run_supervisor() {  # <home> <fakebin> <args...>
   local home=$1 fakebin=$2
   local supervisor_root supervisor
   shift 2
+  # Install ONCE per home. The loop this establishes runs
+  # `exec bash <supervisor_root>/bin/fm-herdr-supervisor.sh run`, so re-copying
+  # on every call truncates and rewrites the exact file a live loop is still
+  # reading. Bash re-reads a script at each command boundary, so the loop then
+  # reads garbage or hits EOF and dies without a word - which is why a later
+  # call in the same home would return no output at all and an assertion would
+  # fail with an empty result, non-deterministically and only under load.
+  # Each home stubs its arm before its first call, so one install is enough.
   supervisor_root="$home/supervisor-root"
-  mkdir -p "$supervisor_root/bin"
-  cp "$ROOT"/bin/*.sh "$supervisor_root/bin/"
-  cp -R "$ROOT/bin/backends" "$supervisor_root/bin/"
-  cp "$home/arm.sh" "$supervisor_root/bin/fm-watch-arm.sh"
-  chmod +x "$supervisor_root/bin"/*.sh
+  if [ ! -e "$supervisor_root/.installed" ]; then
+    mkdir -p "$supervisor_root/bin"
+    cp "$ROOT"/bin/*.sh "$supervisor_root/bin/"
+    cp -R "$ROOT/bin/backends" "$supervisor_root/bin/"
+    cp "$home/arm.sh" "$supervisor_root/bin/fm-watch-arm.sh"
+    chmod +x "$supervisor_root/bin"/*.sh
+    : > "$supervisor_root/.installed"
+  fi
   supervisor="$supervisor_root/bin/fm-herdr-supervisor.sh"
   PATH="$fakebin:$PATH" \
   FM_HOME="$home" \
