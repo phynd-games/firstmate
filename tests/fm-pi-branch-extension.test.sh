@@ -539,12 +539,25 @@ JS
 DRIVER_PRELUDE=$(cat "$DRIVER_PRELUDE_FILE")
 
 test_branch_dispatch_two_stage_filter_and_prefix_contract() {
-  local repo home out status
+  local repo home out status fakebin
   repo="$TMP_ROOT/dispatch-root"
   home="$TMP_ROOT/dispatch-home"
-  mkdir -p "$home/state" "$home/config"
+  fakebin="$home/fakebin"
+  mkdir -p "$home/state" "$home/config" "$fakebin"
+  cat > "$fakebin/mktemp" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  */.branch-note-sig.XXXXXX)
+    if [ -f "$FM_HOME/state/.branch-note-sig-task-captain" ] && grep -q '^pending$' "$FM_HOME/state/.branch-note-sig-task-captain"; then
+      exit 1
+    fi
+    ;;
+esac
+exec /usr/bin/mktemp "$@"
+SH
+  chmod +x "$fakebin/mktemp"
   install_pi_branch_extension_fixture "$repo"
-  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+  PATH="$fakebin:$PATH" PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
 const prelude = process.env.DRIVER_PRELUDE;
 await eval(`(async () => { ${prelude}; globalThis.__t = { pi, fire, dispatch, settle, outcomeScript, sentToMain, mainUserMessages, mainTools, renderers, home, realRoot }; })()`);
@@ -748,6 +761,17 @@ if (retriedDelivery.isError) throw new Error(`routine delivery retry failed: ${J
 if (sentToMain.length !== 6 || sentToMain[5].message.display !== true) {
   throw new Error("a routine note must render after delivery retry");
 }
+writeFileSync(`${home}/state/task-captain.status`, "failed: captain outcome\n");
+const captainBefore = sentToMain.length;
+const failedCaptain = await report.execute("call-captain-send-before-commit", { task: "task-captain", verdict: "captain", summary: "captain delivery retries safely" }, undefined, undefined, {});
+if (!failedCaptain.isError) throw new Error("captain commit failure must be reported as an error");
+if (sentToMain.length !== captainBefore + 1) throw new Error("captain outcome was not sent before the injected commit failure");
+if (!/⁣FM_BRANCH_DELIVERY_ID:[0-9a-f]+⁣/.test(sentToMain[captainBefore].message.content)) {
+  throw new Error("captain outcome lacked its deterministic delivery identity");
+}
+const captainRetry = await report.execute("call-captain-retry", { task: "task-captain", verdict: "captain", summary: "captain delivery retries safely" }, undefined, undefined, {});
+if (captainRetry.isError) throw new Error(`captain retry after commit failure failed: ${JSON.stringify(captainRetry)}`);
+if (sentToMain.length !== captainBefore + 1) throw new Error("captain retry duplicated a delivery whose append already succeeded");
 if (!renderers.has("fm-branch-merge")) throw new Error("merge-note renderer missing");
 const assertRenderedNote = (note, glyph) => {
   const fgCalls = [];

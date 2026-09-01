@@ -147,7 +147,7 @@ test_outcome_startup_replay_preserves_silence() {
 # a new failure, decision, terminal result, PR/CI change, or validation-loop
 # stop renders again. The durable store append path is untouched by the gate.
 test_routine_note_coalescing() {
-  local home out ev reservation token marker_before token2 token3 fakebin rc
+  local home out ev reservation token marker_before token2 token3 fakebin rc owner_a owner_b crash_token id1 id2
   home="$TMP_ROOT/note-coalesce-home"
   mkdir -p "$home/state"
   gate() { FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-render --task "$1"; }
@@ -228,6 +228,22 @@ SH
     coalesce\ *) ;;
     *) fail "a recovered routine note rendered its unchanged novelty twice" ;;
   esac
+  owner_a=111:7
+  owner_b=222:8
+  printf 'failed: crash before delivery\n' > "$home/state/task-crash.status"
+  reservation=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-crash --generation 7 --owner "$owner_a")
+  crash_token=${reservation#render }
+  case "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-crash --generation 8 --owner "$owner_b")" in
+    render\ *) ;;
+    *) fail "a replacement owner did not reclaim an abandoned pending reservation" ;;
+  esac
+  [ "$(grep '^owner=' "$home/state/.branch-note-sig-task-crash")" = "owner=$owner_b" ] \
+    || fail "the replacement reservation was not bound to its authenticated owner"
+  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-commit --task task-crash --generation 7 --owner "$owner_a" --token "$crash_token" 2>/dev/null; echo $?)" -ne 0 ] \
+    || fail "the abandoned owner committed a reclaimed reservation"
+  id1=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-identity --task task-crash --kind captain)
+  id2=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-identity --task task-crash --kind captain)
+  [ "$id1" = "$id2" ] || fail "delivery identity changed across retries"
   printf 'failed: strict marker\n' > "$home/state/task-strict.status"
   if out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-render --task task-strict --strict); then
     rc=0

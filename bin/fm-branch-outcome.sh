@@ -63,13 +63,15 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-validation-loop-lib.sh
+. "$SCRIPT_DIR/fm-validation-loop-lib.sh"
 
 STORE="$STATE/branch-outcomes.jsonl"
 CURSOR="$STATE/.branch-outcomes-cursor"
 LOCK="$STATE/.branch-outcomes.lock"
 
 usage() {
-  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | list [--recent <n>] | startup-replay | note-render --task <id> [--strict] | note-reserve --task <id> --generation <n> | note-commit|note-rollback --task <id> --generation <n> --token <token>" >&2
+  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | list [--recent <n>] | startup-replay | note-render --task <id> [--strict] | note-identity --task <id> [--kind routine|captain] [--summary <text>] | note-reserve --task <id> --generation <n> [--owner <id>] [--kind routine|captain] [--summary <text>] | note-commit|note-rollback --task <id> --generation <n> --token <token> [--owner <id>]" >&2
   exit 2
 }
 
@@ -196,6 +198,10 @@ note_marker_pending() {
 
 note_pending_field() { # <marker-content> <field>
   printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1
+}
+
+note_delivery_id() { # <task> <kind> <signature> [summary]
+  printf '%s\n%s\n%s\n%s\n' "$1" "$2" "$3" "${4:-}" | _fm_vloop_hash
 }
 
 note_pending_block() { # <marker-content> <begin> <end>
@@ -359,13 +365,25 @@ case "$CMD" in
     printf 'render\n'
     ;;
   note-reserve)
-    [ "${1:-}" = --task ] || usage
-    TASK=${2:-}
-    [ "${3:-}" = --generation ] || usage
-    GENERATION=${4:-}
-    [ "$#" -eq 4 ] || usage
+    TASK=''
+    GENERATION=''
+    OWNER=''
+    KIND=routine
+    SUMMARY=''
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --task) TASK=${2:-}; shift 2 || usage ;;
+        --generation) GENERATION=${2:-}; shift 2 || usage ;;
+        --owner) OWNER=${2:-}; shift 2 || usage ;;
+        --kind) KIND=${2:-}; shift 2 || usage ;;
+        --summary) SUMMARY=${2:-}; shift 2 || usage ;;
+        *) usage ;;
+      esac
+    done
     [ -n "$TASK" ] || usage
     case "$GENERATION" in ''|*[!0-9]*) usage ;; esac
+    case "$KIND" in routine|captain) ;; *) usage ;; esac
+    case "$OWNER" in *[!A-Za-z0-9:._-]*) usage ;; esac
     case "$TASK" in
       fleet|*[!A-Za-z0-9._-]*)
         printf 'render-unreserved\n'
@@ -393,22 +411,26 @@ case "$CMD" in
         exit 0
       }
       if note_marker_pending "$LAST"; then
-        if ! PENDING_SIGNATURE=$(note_pending_block "$LAST" signature-begin signature-end 2>/dev/null); then
+        PENDING_OWNER=$(note_pending_field "$LAST" owner)
+        if [ -n "$OWNER" ] && [ "$PENDING_OWNER" != "$OWNER" ]; then
+          LAST=$(note_pending_block "$LAST" previous-begin previous-end 2>/dev/null || true)
+        elif ! PENDING_SIGNATURE=$(note_pending_block "$LAST" signature-begin signature-end 2>/dev/null); then
           fm_lock_release "$LOCK"
           printf 'render-unreserved\n'
           exit 0
+        else
+          if [ -z "$PENDING_SIGNATURE" ] || [ "$SIG" = "$PENDING_SIGNATURE" ]; then
+            fm_lock_release "$LOCK"
+            printf 'coalesce pending routine outcome for %s: another delivery owns this novelty reservation\n' "$TASK"
+            exit 0
+          fi
+          LAST=$(note_pending_block "$LAST" previous-begin previous-end 2>/dev/null || true)
         fi
-        if [ -z "$PENDING_SIGNATURE" ] || [ "$SIG" = "$PENDING_SIGNATURE" ]; then
-          fm_lock_release "$LOCK"
-          printf 'coalesce pending routine outcome for %s: another delivery owns this novelty reservation\n' "$TASK"
-          exit 0
-        fi
-        LAST=$(note_pending_block "$LAST" previous-begin previous-end 2>/dev/null || true)
       fi
     else
       LAST=''
     fi
-    if [ -n "$LAST" ] && [ "$SIG" = "$LAST" ]; then
+    if [ "$KIND" = routine ] && [ -n "$LAST" ] && [ "$SIG" = "$LAST" ]; then
       fm_lock_release "$LOCK"
       printf 'coalesce duplicate routine outcome for %s: no new failure, decision, terminal result, PR/CI change, or validation-loop stop since the last rendered note\n' "$TASK"
       exit 0
@@ -419,10 +441,19 @@ case "$CMD" in
       exit 0
     fi
     TOKEN=${TMP##*/}
+    if ! DELIVERY_ID=$(note_delivery_id "$TASK" "$KIND" "$SIG" "$SUMMARY"); then
+      rm -f -- "$TMP"
+      fm_lock_release "$LOCK"
+      printf 'render-unreserved\n'
+      exit 0
+    fi
     if ! {
       printf 'pending\n'
       printf 'generation=%s\n' "$GENERATION"
+      [ -z "$OWNER" ] || printf 'owner=%s\n' "$OWNER"
+      printf 'kind=%s\n' "$KIND"
       printf 'token=%s\n' "$TOKEN"
+      printf 'delivery_id=%s\n' "$DELIVERY_ID"
       printf 'previous-begin\n'
       [ -z "$LAST" ] || printf '%s\n' "$LAST"
       printf 'previous-end\n'
@@ -442,17 +473,44 @@ case "$CMD" in
     fm_lock_release "$LOCK"
     printf 'render %s\n' "$TOKEN"
     ;;
+  note-identity)
+    TASK=''
+    KIND=routine
+    SUMMARY=''
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --task) TASK=${2:-}; shift 2 || usage ;;
+        --kind) KIND=${2:-}; shift 2 || usage ;;
+        --summary) SUMMARY=${2:-}; shift 2 || usage ;;
+        *) usage ;;
+      esac
+    done
+    [ -n "$TASK" ] || usage
+    case "$KIND" in routine|captain) ;; *) usage ;; esac
+    case "$TASK" in
+      fleet|*[!A-Za-z0-9._-]*) exit 1 ;;
+    esac
+    SIG=$(note_novelty_signature "$TASK" 0) || exit 1
+    note_delivery_id "$TASK" "$KIND" "$SIG" "$SUMMARY"
+    ;;
   note-commit)
-    [ "${1:-}" = --task ] || usage
-    TASK=${2:-}
-    [ "${3:-}" = --generation ] || usage
-    GENERATION=${4:-}
-    [ "${5:-}" = --token ] || usage
-    TOKEN=${6:-}
-    [ "$#" -eq 6 ] || usage
+    TASK=''
+    GENERATION=''
+    TOKEN=''
+    OWNER=''
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --task) TASK=${2:-}; shift 2 || usage ;;
+        --generation) GENERATION=${2:-}; shift 2 || usage ;;
+        --token) TOKEN=${2:-}; shift 2 || usage ;;
+        --owner) OWNER=${2:-}; shift 2 || usage ;;
+        *) usage ;;
+      esac
+    done
     [ -n "$TASK" ] || usage
     case "$GENERATION" in ''|*[!0-9]*) usage ;; esac
     [ -n "$TOKEN" ] || usage
+    case "$OWNER" in *[!A-Za-z0-9:._-]*) usage ;; esac
     case "$TASK" in
       fleet|*[!A-Za-z0-9._-]*)
         printf 'committed\n'
@@ -481,6 +539,13 @@ case "$CMD" in
       fm_lock_release "$LOCK"
       exit 1
     }
+    CURRENT_OWNER=$(note_pending_field "$CURRENT" owner)
+    if [ -n "$CURRENT_OWNER" ] || [ -n "$OWNER" ]; then
+      [ "$CURRENT_OWNER" = "$OWNER" ] || {
+        fm_lock_release "$LOCK"
+        exit 1
+      }
+    fi
     if ! SIGNATURE=$(note_pending_block "$CURRENT" signature-begin signature-end); then
       fm_lock_release "$LOCK"
       exit 1
@@ -503,16 +568,23 @@ case "$CMD" in
     printf 'committed\n'
     ;;
   note-rollback)
-    [ "${1:-}" = --task ] || usage
-    TASK=${2:-}
-    [ "${3:-}" = --generation ] || usage
-    GENERATION=${4:-}
-    [ "${5:-}" = --token ] || usage
-    TOKEN=${6:-}
-    [ "$#" -eq 6 ] || usage
+    TASK=''
+    GENERATION=''
+    TOKEN=''
+    OWNER=''
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --task) TASK=${2:-}; shift 2 || usage ;;
+        --generation) GENERATION=${2:-}; shift 2 || usage ;;
+        --token) TOKEN=${2:-}; shift 2 || usage ;;
+        --owner) OWNER=${2:-}; shift 2 || usage ;;
+        *) usage ;;
+      esac
+    done
     [ -n "$TASK" ] || usage
     case "$GENERATION" in ''|*[!0-9]*) usage ;; esac
     [ -n "$TOKEN" ] || usage
+    case "$OWNER" in *[!A-Za-z0-9:._-]*) usage ;; esac
     case "$TASK" in
       fleet|*[!A-Za-z0-9._-]*)
         printf 'rolled-back\n'
@@ -541,6 +613,13 @@ case "$CMD" in
       fm_lock_release "$LOCK"
       exit 1
     }
+    CURRENT_OWNER=$(note_pending_field "$CURRENT" owner)
+    if [ -n "$CURRENT_OWNER" ] || [ -n "$OWNER" ]; then
+      [ "$CURRENT_OWNER" = "$OWNER" ] || {
+        fm_lock_release "$LOCK"
+        exit 1
+      }
+    fi
     if ! PREVIOUS=$(note_pending_block "$CURRENT" previous-begin previous-end); then
       fm_lock_release "$LOCK"
       exit 1
