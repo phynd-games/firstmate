@@ -5,7 +5,7 @@
 #   fm-lavish-intake.sh template <task-id> --output <artifact.html>
 #   fm-lavish-intake.sh start <task-id> --artifact <artifact.html> [--reason <text>]
 #   fm-lavish-intake.sh record <task-id> --artifact <artifact.html> --result <result>
-#   fm-lavish-intake.sh exempt <task-id> --reason '<class>: target=<path-like subject>; action=<specific concrete change>'
+#   fm-lavish-intake.sh exempt <task-id> --reason '<class>: task=<task-id>; target=<path-like subject>; action=<specific concrete change>'
 #   fm-lavish-intake.sh verify <task-id> [--evidence <receipt>]
 #   fm-lavish-intake.sh check-brief <task-id> <brief.md>
 #
@@ -333,8 +333,16 @@ const [path, task, fieldText, validationNonce] = process.argv.slice(2);
 const fields = fieldText.split(/\s+/);
 const html = fs.readFileSync(path, 'utf8').replace(/<!--[\s\S]*?-->/g, '');
 const scripts = [];
-const tags = /<template\b[^>]*>|<\/template\s*>|<noscript\b[^>]*>|<\/noscript\s*>|<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
+const parsedForms = [];
+const tags = /<template\b[^>]*>|<\/template\s*>|<noscript\b[^>]*>|<\/noscript\s*>|<script\b([^>]*)>([\s\S]*?)<\/script\s*>|<form\b([^>]*)>|<\/form\s*>|<(textarea|button|input)\b([^>]*)>/gi;
 let inertDepth = 0;
+let activeForm = null;
+const attribute = (attrs, name) => {
+  const quote = String.fromCharCode(39);
+  const match = attrs.match(new RegExp("(?:^|\\s)" + name + "\\s*=\\s*(?:\"([^\"]*)\"|" + quote + "([^" + quote + "]*)" + quote + "|([^\\s>]+))", "i"));
+  return match ? (match[1] ?? match[2] ?? match[3]).trim() : null;
+};
+const hasAttribute = (attrs, name) => new RegExp("(?:^|\\s)" + name + "(?:\\s|=|$)", "i").test(attrs);
 for (const match of html.matchAll(tags)) {
   const token = match[0].toLowerCase();
   if (token.startsWith('<template') || token.startsWith('<noscript')) {
@@ -345,13 +353,25 @@ for (const match of html.matchAll(tags)) {
     inertDepth = Math.max(0, inertDepth - 1);
     continue;
   }
+  if (token.startsWith('<script')) {
+    if (inertDepth > 0) continue;
+    const attrs = match[1] || '';
+    const type = (attribute(attrs, 'type') || '').toLowerCase();
+    if (!type || /^(?:text|application)\/(?:java|ecma)script$|^module$/.test(type)) scripts.push(match[2]);
+    continue;
+  }
   if (inertDepth > 0) continue;
-  const attrs = match[1] || '';
-  const quote = String.fromCharCode(39);
-  const typeMatch = attrs.match(new RegExp("\\btype\\s*=\\s*(?:\"([^\"]*)\"|" + quote + "([^" + quote + "]*)" + quote + "|([^\\s>]+))", "i"));
-  const type = typeMatch ? (typeMatch[1] ?? typeMatch[2] ?? typeMatch[3]).trim().toLowerCase() : '';
-  if (type && !/^(?:text|application)\/(?:java|ecma)script$|^module$/.test(type)) continue;
-  scripts.push(match[2]);
+  if (token.startsWith('<form')) {
+    activeForm = { attrs: match[3] || '', controls: [], closed: false };
+    parsedForms.push(activeForm);
+    continue;
+  }
+  if (token.startsWith('</form')) {
+    if (activeForm) activeForm.closed = true;
+    activeForm = null;
+    continue;
+  }
+  if (activeForm && match[4]) activeForm.controls.push({ tag: match[4].toLowerCase(), attrs: match[5] || '' });
 }
 const fail = (message) => {
   process.stderr.write(`${message}\n`);
@@ -360,12 +380,23 @@ const fail = (message) => {
 
 try {
   if (scripts.length === 0) fail('artifact has no executable intake script');
+  const matchingForms = parsedForms.filter((form) => form.closed && attribute(form.attrs, 'id') === 'feature-intake' && attribute(form.attrs, 'data-lavish-question') === task);
+  if (matchingForms.length !== 1) fail('artifact has no keyed intake question');
+  const parsedForm = matchingForms[0];
+  const elements = {};
+  for (const field of fields) {
+    const controls = parsedForm.controls.filter((control) => control.tag === 'textarea' && attribute(control.attrs, 'name') === field && attribute(control.attrs, 'data-lavish-intake-field') === field && hasAttribute(control.attrs, 'required'));
+    if (controls.length !== 1) fail(`artifact is missing required field: ${field}`);
+    elements[field] = { value: '' };
+  }
+  const submitControls = parsedForm.controls.filter((control) => (control.tag === 'button' || control.tag === 'input') && attribute(control.attrs, 'data-lavish-intake-submit') === 'true' && (attribute(control.attrs, 'type') || '').toLowerCase() === 'submit');
+  if (submitControls.length !== 1) fail('artifact has no explicit intake submit control');
   const sentinels = Object.fromEntries(fields.map((field) => [field, `${validationNonce}-${field}`]));
-  const elements = Object.fromEntries(fields.map((field) => [field, { value: sentinels[field] }]));
+  for (const field of fields) elements[field].value = sentinels[field];
   const submit = { disabled: false };
   const status = { textContent: '' };
   const listeners = {};
-  const form = {
+  const domForm = {
     elements,
     addEventListener(type, listener) {
       if (type === 'submit') listeners.submit = listener;
@@ -376,7 +407,7 @@ try {
   };
   const document = {
     querySelector(selector) {
-      if (selector === '#feature-intake') return form;
+      if (selector === '#feature-intake') return domForm;
       if (selector === '#intake-status') return status;
       return null;
     },
@@ -424,7 +455,7 @@ NODE
 }
 
 validate_exemption_reason() {
-  local reason=$1 detail normalized target action action_detail first_word target_words action_words meaningful_count action_meaningful_count
+  local reason=$1 expected_task=${2-} detail normalized reason_task target action action_detail first_word target_words action_words meaningful_count action_meaningful_count
   validate_one_line "exemption reason" "$reason"
   case "$reason" in
     bug-fix:*|dependency:*|configuration:*|documentation:*|"behavior-preserving refactor":*) ;;
@@ -432,12 +463,17 @@ validate_exemption_reason() {
   esac
   detail=${reason#*:}
   detail=$(printf '%s' "$detail" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
-  if [[ "$detail" =~ ^target=([^;]+)\;[[:space:]]+action=([^;]+)$ ]]; then
-    target=${BASH_REMATCH[1]}
-    action_detail=${BASH_REMATCH[2]}
+  if [[ "$detail" =~ ^task=([^;]+)\;[[:space:]]+target=([^;]+)\;[[:space:]]+action=([^;]+)$ ]]; then
+    reason_task=${BASH_REMATCH[1]}
+    target=${BASH_REMATCH[2]}
+    action_detail=${BASH_REMATCH[3]}
   else
-    fail "exemption reason must use target=<path-like subject>; action=<specific multiword change>"
+    fail "exemption reason must use task=<task-id>; target=<path-like subject>; action=<specific multiword change>"
   fi
+  reason_task=$(printf '%s' "$reason_task" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
+  validate_task_id "$reason_task"
+  [ -n "$expected_task" ] && [ "$reason_task" = "$expected_task" ] \
+    || fail "exemption reason task must match the requested task"
   target=$(printf '%s' "$target" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
   action_detail=$(printf '%s' "$action_detail" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
   [ -n "$target" ] && [ -n "$action_detail" ] \
@@ -450,7 +486,7 @@ validate_exemption_reason() {
     || fail "exemption reason must name a concrete target and action"
   action_meaningful_count=$(printf '%s\n' "$action_detail" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '\n' | awk '
     BEGIN {
-      split("a an and are as at by for from in into is it no not of on or promptly safely skip the this to update with without behavior code docs documentation fix project stuff", words)
+      split("a an and are as at by for from in into is it no not of on or promptly safely skip the this to update with without behavior code details docs documentation fix implementation project source stuff", words)
       for (i in words) ignored[words[i]]=1
     }
     !ignored[$0] { count++ }
@@ -1258,7 +1294,7 @@ cmd_exempt() {
       *) fail "unknown exempt argument: $1" ;;
     esac
   done
-  validate_exemption_reason "$reason"
+  validate_exemption_reason "$reason" "$task"
   artifact="$STATE/$task.lavish-intake-classification"
   receipt=$(receipt_path "$task")
   mkdir -p "$STATE"
@@ -1307,7 +1343,7 @@ verify_receipt() {
       || fail "not-applicable classification marker has no unique reason"
     [ "$(meta_value "$artifact" reason)" = "$reason" ] \
       || fail "not-applicable reason does not match classification marker"
-    validate_exemption_reason "$reason"
+    validate_exemption_reason "$reason" "$task"
     [ "$(require_unique_meta "$receipt" feedback)" = not-applicable ] \
       || fail "not-applicable evidence has wrong feedback marker"
     printf 'status=not-applicable\nreason=%s\n' "$reason"

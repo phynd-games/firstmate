@@ -109,12 +109,12 @@ make_scratch_project() {  # <dir>
 }
 
 write_exempt_brief() {
-  local home=$1 id=$2
+  local home=$1 id=$2 reason="configuration: task=$id; target=tests/fm-backend-herdr-workspace-per-home-e2e.test.sh Herdr workspace fixture; action=exercise isolated spawn placement"
   FM_GATE_REFUSE_BYPASS=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes \
     --not-applicable \
-    'configuration: target=tests/fm-backend-herdr-workspace-per-home-e2e.test.sh Herdr workspace fixture; action=exercise isolated spawn placement' \
+    "$reason" \
     >/dev/null
 }
 

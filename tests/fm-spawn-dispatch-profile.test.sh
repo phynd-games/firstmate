@@ -14,7 +14,7 @@ SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-dispatch-profile)
 
 write_exempt_brief() {
-  local home=$1 id=$2 reason="configuration: target=tests/fm-spawn-dispatch-profile.test.sh dispatch profile fixture; action=exercise wiring without product change"
+  local home=$1 id=$2 reason="configuration: task=$id; target=tests/fm-spawn-dispatch-profile.test.sh dispatch profile fixture; action=exercise wiring without product change"
   printf 'brief for %s\nLavish intake contract: not-applicable\nLavish intake reason: %s\n' "$id" "$reason" > "$home/data/$id/brief.md"
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-lavish-intake.sh" exempt "$id" --reason "$reason" >/dev/null
 }

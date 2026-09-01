@@ -383,19 +383,28 @@ make_project() {  # <dir>
 }
 
 write_exempt_brief() {
-  local home=$1 id=$2
+  local home=$1 id=$2 reason="configuration: task=$id; target=tests/fm-backend-herdr-presentation-e2e.test.sh Herdr presentation fixture; action=exercise isolated projection lifecycle"
   FM_GATE_REFUSE_BYPASS=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes \
     --not-applicable \
-    'configuration: target=tests/fm-backend-herdr-presentation-e2e.test.sh Herdr presentation fixture; action=exercise isolated projection lifecycle' \
+    "$reason" \
     >/dev/null
 }
 
 spawn_task() {  # <id> <home> <project>
-  local id=$1 home=$2 project=$3
+  local id=$1 home=$2 project=$3 brief reason
+  brief=$home/data/$id/brief.md
+  reason="configuration: task=$id; target=tests/fm-backend-herdr-presentation-e2e.test.sh Herdr presentation fixture; action=exercise isolated projection lifecycle"
   if [ ! -e "$home/state/$id.lavish-intake" ] && [ ! -L "$home/state/$id.lavish-intake" ]; then
-    write_exempt_brief "$home" "$id"
+    if [ -e "$brief" ] || [ -L "$brief" ]; then
+      [ -f "$brief" ] && [ ! -L "$brief" ] || fail "presentation brief is unsafe: $brief"
+      FM_GATE_REFUSE_BYPASS=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+        "$ROOT/bin/fm-lavish-intake.sh" exempt "$id" --reason "$reason" >/dev/null \
+        || fail "could not converge existing presentation brief"
+    else
+      write_exempt_brief "$home" "$id"
+    fi
   fi
   FM_GATE_REFUSE_BYPASS=1 FM_SPAWN_NO_GUARD=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'sleep 120'" --mode no-mistakes --yolo off --backend herdr

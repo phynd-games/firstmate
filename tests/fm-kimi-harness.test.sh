@@ -17,7 +17,7 @@ KIMI_HOOK="$ROOT/bin/fm-kimi-turnend-hook.sh"
 TMP_ROOT=$(fm_test_tmproot fm-kimi-harness)
 
 write_exempt_brief() {
-  local home=$1 id=$2 reason="configuration: target=tests/fm-kimi-harness.test.sh Kimi harness fixture; action=exercise wiring without product change"
+  local home=$1 id=$2 reason="configuration: task=$id; target=tests/fm-kimi-harness.test.sh Kimi harness fixture; action=exercise wiring without product change"
   printf 'brief for kimi\nLavish intake contract: not-applicable\nLavish intake reason: %s\n' "$reason" > "$home/data/$id/brief.md"
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-lavish-intake.sh" exempt "$id" --reason "$reason" >/dev/null
 }

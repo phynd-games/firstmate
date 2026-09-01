@@ -204,6 +204,27 @@ PY
   [ "$rc" -ne 0 ] || fail "dead intake markers were accepted"
   assert_contains "$out" "executable intake" \
     "dead intake markers did not fail semantic validation"
+  candidate=$home/script-string-form.html
+  python3 - "$artifact" "$candidate" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+source, output = sys.argv[1:]
+html = Path(source).read_text()
+start = html.index('<form id="feature-intake"')
+end = html.index('</form>', start) + len('</form>')
+form = html[start:end]
+fake = '<script>const unused = ' + json.dumps(form) + ';</script>'
+Path(output).write_text(html[:start] + fake + html[end:])
+PY
+  set +e
+  out=$(run_intake "$home" start feature-a1 --artifact "$candidate" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "form markup inside a script string was accepted"
+  assert_contains "$out" "no keyed intake question" \
+    "script-string form markup was treated as an active DOM form"
   for inert in template noscript; do
     candidate=$home/inert-$inert-form.html
     python3 - "$artifact" "$candidate" "$inert" <<'PY'
@@ -389,13 +410,15 @@ test_explicit_exemptions_require_reason() {
   [ "$rc" -ne 0 ] || fail "generic exemption bypass was accepted"
   assert_contains "$out" "must use" "generic exemption refusal was unclear"
   invalid_reasons=(
-    'exemption-invalid-bug-fix|bug-fix: fix'
-    'exemption-invalid-vague-bug-fix|bug-fix: fix the broken code in this project'
-    'exemption-invalid-configuration|configuration: no'
-    'exemption-invalid-documentation|documentation: update thing here now'
-    'exemption-invalid-placeholders|configuration: target=foo bar; action=update now safely'
-    'exemption-invalid-generic-target|configuration: target=backend behavior; action=update source'
-    'exemption-invalid-generic-action|documentation: target=docs/api README section; action=update the docs'
+    'exemption-invalid-bug-fix|bug-fix: task=exemption-invalid-bug-fix; target=tests/fm-lavish-feature-intake.test.sh; action=fix'
+    'exemption-invalid-vague-bug-fix|bug-fix: task=exemption-invalid-vague-bug-fix; target=tests/fm-lavish-feature-intake.test.sh; action=fix the broken code in this project'
+    'exemption-invalid-configuration|configuration: task=exemption-invalid-configuration; target=tests/fm-lavish-feature-intake.test.sh; action=no'
+    'exemption-invalid-documentation|documentation: task=exemption-invalid-documentation; target=tests/fm-lavish-feature-intake.test.sh; action=update thing here now'
+    'exemption-invalid-placeholders|configuration: task=exemption-invalid-placeholders; target=foo bar; action=update now safely'
+    'exemption-invalid-generic-target|configuration: task=exemption-invalid-generic-target; target=backend behavior; action=update source'
+    'exemption-invalid-generic-action|documentation: task=exemption-invalid-generic-action; target=docs/api README section; action=update the docs'
+    'exemption-invalid-vague-action|configuration: task=exemption-invalid-vague-action; target=src/parser/handler.ts behavior; action=adjust implementation details'
+    'exemption-invalid-task|configuration: task=other-task; target=tests/fm-lavish-feature-intake.test.sh scope; action=exercise task binding behavior'
   )
   for entry in "${invalid_reasons[@]}"; do
     id=${entry%%|*}
@@ -406,16 +429,16 @@ test_explicit_exemptions_require_reason() {
     set -e
     [ "$rc" -ne 0 ] || fail "generic exemption scope was accepted: $reason"
   done
-  run_intake "$home" exempt exemption-a1 --reason 'documentation: target=tests/fm-lavish-feature-intake.test.sh exemption coverage; action=update coverage instructions' >/dev/null
+  run_intake "$home" exempt exemption-a1 --reason 'documentation: task=exemption-a1; target=tests/fm-lavish-feature-intake.test.sh exemption coverage; action=update coverage instructions' >/dev/null
   assert_contains "$(run_intake "$home" verify exemption-a1)" "not-applicable" \
     "valid exemption did not verify"
   run_brief "$home" exemption-a1 firstmate --mode no-mistakes \
-    --not-applicable 'documentation: target=tests/fm-lavish-feature-intake.test.sh exemption coverage; action=update coverage instructions' >/dev/null
+    --not-applicable 'documentation: task=exemption-a1; target=tests/fm-lavish-feature-intake.test.sh exemption coverage; action=update coverage instructions' >/dev/null
   assert_present "$home/data/exemption-a1/brief.md" \
     "same-reason exemption retry did not converge on a brief"
 
   run_brief "$home" exemption-b2 firstmate --mode no-mistakes \
-    --not-applicable 'dependency: target=.tasks.toml test dependency; action=pin dependency version without behavior change' >/dev/null
+    --not-applicable 'dependency: task=exemption-b2; target=.tasks.toml test dependency; action=pin dependency version without behavior change' >/dev/null
   brief=$home/data/exemption-b2/brief.md
   [ "$(run_intake "$home" check-brief exemption-b2 "$brief" | sed -n 's/^status=//p')" = not-applicable ] \
     || fail "valid exemption brief did not preserve its classification"
@@ -426,7 +449,7 @@ import sys
 path = Path(sys.argv[1])
 text = path.read_text()
 text = text.replace(
-    "Lavish intake reason: dependency: target=.tasks.toml test dependency; action=pin dependency version without behavior change",
+    "Lavish intake reason: dependency: task=exemption-b2; target=.tasks.toml test dependency; action=pin dependency version without behavior change",
     "Lavish intake reason: altered exemption reason",
 )
 path.write_text(text)
@@ -443,7 +466,7 @@ PY
 test_brief_exemption_stages_before_receipt() {
   local home out rc reason
   home=$(make_home staged-exemption)
-  reason='configuration: target=tests/fm-lavish-feature-intake.test.sh brief staging fixture; action=exercise retry behavior without product change'
+  reason='configuration: task=staged-a1; target=tests/fm-lavish-feature-intake.test.sh brief staging fixture; action=exercise retry behavior without product change'
   printf 'not a directory\n' > "$home/data/staged-a1"
   set +e
   out=$(run_brief "$home" staged-a1 firstmate --mode no-mistakes \
@@ -472,7 +495,7 @@ test_exemption_rejects_active_intake() {
   run_intake "$home" start active-a1 --artifact "$artifact" >/dev/null
   set +e
   out=$(run_intake "$home" exempt active-a1 \
-    --reason 'documentation: target=bin/fm-lavish-intake.sh active intake setup; action=update setup instructions' 2>&1)
+    --reason 'documentation: task=active-a1; target=bin/fm-lavish-intake.sh active intake setup; action=update setup instructions' 2>&1)
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "active intake accepted a not-applicable exemption"
@@ -491,7 +514,7 @@ test_exemption_ignores_foreign_valid_marker() {
   printf 'version=1\ntask_id=foreign-a1\nsource_id=lavish-foreignmarker\nowner_token=ownerforeign\n' \
     > "$home/state/procevent/lavish-foreignmarker.intake"
   run_intake "$home" exempt local-a1 \
-    --reason 'configuration: target=tests/fm-lavish-feature-intake.test.sh foreign marker; action=exercise exemption ownership behavior' \
+    --reason 'configuration: task=local-a1; target=tests/fm-lavish-feature-intake.test.sh foreign marker; action=exercise exemption ownership behavior' \
     >/dev/null
   assert_present "$home/state/local-a1.lavish-intake" \
     "a valid foreign intake marker blocked an unrelated exemption"
@@ -499,7 +522,7 @@ test_exemption_ignores_foreign_valid_marker() {
     > "$home/state/procevent/lavish-malformed.intake"
   set +e
   out=$(run_intake "$home" exempt malformed-a1 \
-    --reason 'configuration: target=tests/fm-lavish-feature-intake.test.sh malformed marker; action=exercise marker validation behavior' 2>&1)
+    --reason 'configuration: task=malformed-a1; target=tests/fm-lavish-feature-intake.test.sh malformed marker; action=exercise marker validation behavior' 2>&1)
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "a malformed foreign intake marker was ignored"
@@ -607,7 +630,7 @@ test_intake_flag_rejects_exemption() {
   local home receipt out rc
   home=$(make_home intake-classification)
   add_task "$home" classification-a1
-  run_intake "$home" exempt classification-a1 --reason 'documentation: target=tests/fm-lavish-feature-intake.test.sh classification test; action=update test coverage' >/dev/null
+  run_intake "$home" exempt classification-a1 --reason 'documentation: task=classification-a1; target=tests/fm-lavish-feature-intake.test.sh classification test; action=update test coverage' >/dev/null
   receipt=$home/state/classification-a1.lavish-intake
   set +e
   out=$(run_brief "$home" classification-a1 firstmate --mode no-mistakes --intake "$receipt" 2>&1)
@@ -624,7 +647,7 @@ test_verified_exemption_revalidates_reason() {
   home=$(make_home verified-exemption)
   add_task "$home" verified-exemption-a1
   run_intake "$home" exempt verified-exemption-a1 \
-    --reason 'documentation: target=tests/fm-lavish-feature-intake.test.sh verification case; action=update exemption evidence coverage' \
+    --reason 'documentation: task=verified-exemption-a1; target=tests/fm-lavish-feature-intake.test.sh verification case; action=update exemption evidence coverage' \
     >/dev/null
   receipt=$home/state/verified-exemption-a1.lavish-intake
   marker=$home/state/verified-exemption-a1.lavish-intake-classification
