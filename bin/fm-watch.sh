@@ -785,6 +785,12 @@ surface_nonterminal_stale() {  # <window> <hash> [reason]
   wake "$reason"
 }
 
+validation_limit_after_output() {
+  local output_status=$1
+  [ "$output_status" -eq 0 ] || return 1
+  printf '%s' "$FM_VALIDATION_LIMIT_HASH" > "$FM_VALIDATION_LIMIT_MARKER"
+}
+
 surface_validation_limit() {  # <window> <hash> <task>
   local win=$1 h=$2 task=$3 reason verdict key
   reason=$(fm_vloop_reason "$STATE" "$task")
@@ -796,9 +802,11 @@ surface_validation_limit() {  # <window> <hash> <task>
   fi
   [ -n "$reason" ] || reason="automatic continuation limit reached"
   key=$(window_key "$win")
-  printf '%s' "$h" > "$STATE/.stale-limit-$key"
+  FM_VALIDATION_LIMIT_HASH=$h
+  FM_VALIDATION_LIMIT_MARKER="$STATE/.stale-limit-$key"
+  FM_WAKE_POST_OUTPUT_ACTION=validation_limit_after_output
   surface_nonterminal_stale "$win" "$h" \
-    "stale: $win (validation loop limit: $reason - automatic continuation stopped deterministically; branch and run custody preserved; inspect and recover in the same copy via stuck-crewmate-recovery, never a duplicate worker or a skipped check)"
+    "stale: $win (validation loop limit: $reason - automatic continuation stopped deterministically; branch and run custody preserved; inspect and recover in the same copy via stuck-crewmate-recovery, never a duplicate worker or a skipped check)" || return 1
 }
 
 validation_loop_stopped() {
@@ -1477,7 +1485,7 @@ EOF
           fi
         elif validation_loop_stopped "$task"; then
           if [ "$(cat "$lsf" 2>/dev/null || true)" != "$h" ]; then
-            surface_validation_limit "$w" "$h" "$task"
+            surface_validation_limit "$w" "$h" "$task" || exit 1
           fi
         elif stale_is_terminal "$w" "$STATE"; then
           # The log's last line is captain-relevant - but that alone is not
@@ -1545,7 +1553,7 @@ EOF
               paused)
                 handle_paused_stale "$w" "$task" "$h"
                 ;;
-              limit) surface_validation_limit "$w" "$h" "$task" ;;
+              limit) surface_validation_limit "$w" "$h" "$task" || exit 1 ;;
               *)
                 surface_nonterminal_stale "$w" "$h"
                 ;;

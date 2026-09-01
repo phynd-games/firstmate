@@ -548,8 +548,12 @@ run:
 outcome: passed
 EOF
   fold "$state" stale "$ev" 9100
-  [ "$(verdict_at "$state" stale 99999)" = continue ] \
-    || fail "a terminal run still enforced the evidence-freshness bound"
+  grep -q '^phase=terminal$' "$state/stale.validation-loop" \
+    || fail "terminal evidence did not release the active phase"
+  grep -q '^active=0$' "$state/stale.validation-loop" \
+    || fail "terminal evidence did not release the active bound"
+  grep -q '^stop_reason=pipeline evidence stale:' "$state/stale.validation-loop" \
+    || fail "terminal evidence erased the prior stale stop reason"
   unset FM_FAKE_CREW_STATE
   pass "stale pipeline evidence: an active run unreadable past the bound stops; fresh or terminal evidence does not"
 }
@@ -627,6 +631,18 @@ test_stall_stop_and_progress_resume() {
   esac
   grep -q '^stop_reason=no evidence advance' "$state/st.validation-loop" \
     || fail "the time-based stall breach was not persisted in the journal"
+  cat > "$ev" <<'EOF'
+run:
+  id: "01RUN"
+  branch: fm/loop
+  status: completed
+  head: "abc1234"
+  findings: none
+outcome: passed
+EOF
+  fold "$state" st "$ev" 4750
+  grep -q '^stop_reason=no evidence advance' "$state/st.validation-loop" \
+    || fail "a terminal observation erased the prior stop reason"
   # A replacement run on the same copy is the supported recovery handoff.
   ev_running "$ev" 02RUN completed running; fold "$state" st "$ev" 4800
   [ "$(verdict_at "$state" st 4900)" = continue ] || fail "a recovery run did not resume continuation"
@@ -745,6 +761,16 @@ test_initial_scope_manifest_is_authenticated() {
     stop*"validation change-set manifest is invalid or untrusted"*) ;;
     *) fail "a contradictory manifest remained continuable: '$v'" ;;
   esac
+  state2="$dir/state-malformed-base"; ev2="$dir/ev-malformed-base"; mkdir -p "$state2"
+  ev_running "$ev2" 06RUN running pending
+  sed -i.bak "s/^  head: \"abc1234\"/  head: \"$allowed_head\"/" "$ev2" && rm -f "$ev2.bak"
+  printf 'base garbage\n' >> "$ev2"
+  fold "$state2" malformed-base "$ev2" 1250 "$repo"
+  v=$(verdict_at "$state2" malformed-base 1260)
+  case "$v" in
+    stop*"validation change-set manifest is invalid or untrusted"*) ;;
+    *) fail "malformed base evidence remained scope-inapplicable: '$v'" ;;
+  esac
   state2="$dir/state-malformed-line"; ev2="$dir/ev-malformed-line"; mkdir -p "$state2"
   ev_running "$ev2" 04RUN running pending
   sed -i.bak "s/^  head: \"abc1234\"/  head: \"$allowed_head\"/" "$ev2" && rm -f "$ev2.bak"
@@ -769,7 +795,7 @@ test_initial_scope_manifest_is_authenticated() {
 }
 
 test_head_change_set_allows_authenticated_addition() {
-  local state ev dir repo old_head new_head latest_head v
+  local state ev dir repo old_head new_head latest_head glob_head v
   dir=$(make_case vloop-change-addition); state="$dir/state"; ev="$dir/ev"; repo="$dir/repo"
   git init -q "$repo"
   git -C "$repo" config user.email test@example.com
@@ -791,6 +817,17 @@ test_head_change_set_allows_authenticated_addition() {
   fold "$state" addition "$ev" 1010 "$repo"
   v=$(verdict_at "$state" addition 1020)
   [ "$v" = continue ] || fail "an authenticated new-file change stopped: '$v'"
+  printf 'glob-matched\n' > "$repo/literala.txt"
+  git -C "$repo" add literala.txt && git -C "$repo" commit -qm glob-matched
+  glob_head=$(git -C "$repo" rev-parse HEAD)
+  sed -i.bak "s/^  head: \"$latest_head\"/  head: \"$glob_head\"/" "$ev" && rm -f "$ev.bak"
+  sed -i.bak 's/new.txt/literal[ab].txt/' "$ev" && rm -f "$ev.bak"
+  fold "$state" addition "$ev" 1020 "$repo"
+  v=$(verdict_at "$state" addition 1030)
+  case "$v" in
+    stop*"incoherent head transition"*|stop*"validation change-set manifest is invalid or untrusted"*) ;;
+    *) fail "a glob metacharacter authorized an unintended changed path: '$v'" ;;
+  esac
   pass "head change set: an authenticated new file remains eligible"
 }
 
@@ -869,9 +906,9 @@ ack_wake_cycle() {
 }
 
 test_watcher_surfaces_validation_loop_limit() {
-  local dir state fakebin out drain_out capture_file window key pane_hash ev pid
+  local dir state fakebin out failed_out drain_out capture_file window key pane_hash ev pid
   dir=$(make_case vloop-watcher); state="$dir/state"; fakebin="$dir/fakebin"
-  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  out="$dir/watch.out"; failed_out="$dir/watch-failed.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
   window="test:fm-loopy"
   printf 'static validation pane' > "$capture_file"
   printf 'window=%s\nkind=ship\n' "$window" > "$state/loopy.meta"
@@ -892,8 +929,20 @@ test_watcher_surfaces_validation_loop_limit() {
   # absorb path used to recycle forever.
   export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing)'
 
+  mkdir "$dir/queue-failure"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_WAKE_QUEUE="$dir/queue-failure" \
+    FM_WATCH_HANDLING_SUCCESSOR=1 \
+    FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$failed_out" &
+  pid=$!
+  if wait_for_exit "$pid" 100; then
+    fail "watcher reported success when the limit wake queue was unavailable: $(cat "$failed_out" 2>/dev/null || true)"
+  fi
+  [ ! -e "$state/.stale-limit-$key" ] || fail "a failed limit wake committed its suppression marker"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_WATCH_HANDLING_SUCCESSOR=1 \
     FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!

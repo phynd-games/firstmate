@@ -758,6 +758,11 @@ const captainRoutine = await report.execute("call-captain-routine", { task: "tas
 if (captainRoutine.isError || sentToMain[sentToMain.length - 1].message.display !== false) {
   throw new Error("captain delivery did not refresh the routine coalescing marker");
 }
+mkdirSync(`${home}/state/task-captain-marker-fail.status`);
+const markerRefreshFailure = await report.execute("call-captain-marker-refresh-fail", { task: "task-captain-marker-fail", verdict: "captain", summary: "marker refresh should be retryable" }, undefined, undefined, {});
+if (!markerRefreshFailure.isError || !markerRefreshFailure.content[0].text.includes("routine note marker refresh failed")) {
+  throw new Error("a captain marker refresh failure was not returned as a typed retryable error");
+}
 globalThis.__fmSendMessageError = "synthetic captain send failure";
 const failedCaptainDelivery = await report.execute("call-captain-delivery-fail", { task: "task-captain-fail", verdict: "captain", summary: "captain delivery should remain durable" }, undefined, undefined, {});
 if (!failedCaptainDelivery.isError) throw new Error("failed captain delivery must be reported as an error");

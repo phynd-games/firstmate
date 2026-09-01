@@ -242,9 +242,14 @@ _fm_vloop_scope_paths() {  # <evidence>
 
 _fm_vloop_scope_evidence_present() {  # <evidence>
   printf '%s\n' "$1" | awk '
-    /^[[:space:]]*base:/ || /^[[:space:]]*(changes|change_set|changed_files)(\[|:|[[:space:]])/ { found = 1 }
+    /^[[:space:]]*base([^[:alnum:]_]|$)/ || /^[[:space:]]*(changes|change_set|changed_files)(\[|:|[[:space:]])/ { found = 1 }
     END { exit !found }
   '
+}
+
+_fm_vloop_scope_lines() {  # <space-delimited-paths>
+  local paths=${1# }
+  printf '%s\n' "$paths" | tr ' ' '\n'
 }
 
 _fm_vloop_scope_valid() {  # <worktree> <base> <head> <paths>
@@ -255,7 +260,7 @@ _fm_vloop_scope_valid() {  # <worktree> <base> <head> <paths>
   head_full=$(git -C "$worktree" rev-parse --verify "${head}^{commit}" 2>/dev/null) || return 1
   git -C "$worktree" merge-base --is-ancestor "$base_full" "$head_full" 2>/dev/null || return 1
   max_files=$(_fm_vloop_bound "${FM_VLOOP_MAX_CHANGE_FILES:-}" "$FM_VLOOP_MAX_CHANGE_FILES_DEFAULT")
-  for path in $paths; do
+  while IFS= read -r path; do
     [ -n "$path" ] || return 1
     count=$((count + 1))
     [ "$count" -le "$max_files" ] || return 1
@@ -264,7 +269,9 @@ _fm_vloop_scope_valid() {  # <worktree> <base> <head> <paths>
     case "$path" in
       /*|../*|*/../*|*[[:space:]]*|*\|*) return 1 ;;
     esac
-  done
+  done <<EOF
+$(_fm_vloop_scope_lines "$paths")
+EOF
   max_commits=$(_fm_vloop_bound "${FM_VLOOP_MAX_CHANGE_COMMITS:-}" "$FM_VLOOP_MAX_CHANGE_COMMITS_DEFAULT")
   max_change=$(git -C "$worktree" rev-list --count "$base_full..$head_full" 2>/dev/null) || return 1
   [ "$max_change" -le "$max_commits" ] || return 1
@@ -285,9 +292,11 @@ EOF
 
 _fm_vloop_scope_contains() {  # <paths> <path>
   local path
-  for path in $1; do
+  while IFS= read -r path; do
     [ "$path" = "$2" ] && return 0
-  done
+  done <<EOF
+$(_fm_vloop_scope_lines "$1")
+EOF
   return 1
 }
 
@@ -391,14 +400,16 @@ _fm_vloop_journal_valid() {  # <journal-content>
   if [ -n "$scope_base" ] || [ -n "$scope_head" ] || [ -n "$scope_paths" ]; then
     [ -n "$scope_base" ] && [ -n "$scope_head" ] && [ -n "$scope_paths" ] || return 1
     case "$scope_base:$scope_head" in *[[:space:]]*) return 1 ;; esac
-    scope_count=$(printf '%s\n' "$scope_paths" | awk 'NF { count += 1 } END { print count + 0 }')
+    scope_count=$(_fm_vloop_scope_lines "$scope_paths" | awk 'NF { count += 1 } END { print count + 0 }')
     max_files=$(_fm_vloop_bound "${FM_VLOOP_MAX_CHANGE_FILES:-}" "$FM_VLOOP_MAX_CHANGE_FILES_DEFAULT")
     [ "$scope_count" -le "$max_files" ] || return 1
-    for value in $scope_paths; do
+    while IFS= read -r value; do
       case "$value" in
         ''|*[[:space:]]*|/*|../*|*/../*|*\|*) return 1 ;;
       esac
-    done
+    done <<EOF
+$(_fm_vloop_scope_lines "$scope_paths")
+EOF
   fi
   return 0
 }
@@ -753,15 +764,20 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   if [ "$phase" != terminal ] && [ -z "$stop_reason" ]; then
     stop_reason=$s_stop_reason
   fi
+  if [ "$phase" = terminal ] && [ -z "$stop_reason" ]; then
+    stop_reason=$s_stop_reason
+  fi
 
   max_fix=$(_fm_vloop_bound "${FM_VLOOP_MAX_FIX_ROUNDS:-}" "$FM_VLOOP_MAX_FIX_ROUNDS_DEFAULT")
   max_theme=$(_fm_vloop_bound "${FM_VLOOP_MAX_SAME_THEME:-}" "$FM_VLOOP_MAX_SAME_THEME_DEFAULT")
   theme_max=$(_fm_vloop_themes_max "$themes")
   theme_max=${theme_max%% *}
-  if [ "$fix_rounds" -gt "$max_fix" ]; then
-    stop_reason="fix rounds $fix_rounds exceeded bound $max_fix for run $run_id"
-  elif [ "${theme_max:-0}" -gt "$max_theme" ]; then
-    stop_reason="identical findings theme presented $theme_max times, exceeding bound $max_theme, for run $run_id"
+  if [ -z "$stop_reason" ]; then
+    if [ "$fix_rounds" -gt "$max_fix" ]; then
+      stop_reason="fix rounds $fix_rounds exceeded bound $max_fix for run $run_id"
+    elif [ "${theme_max:-0}" -gt "$max_theme" ]; then
+      stop_reason="identical findings theme presented $theme_max times, exceeding bound $max_theme, for run $run_id"
+    fi
   fi
 
   tmp="$journal.tmp.$$"

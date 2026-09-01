@@ -137,6 +137,7 @@ const CAPTAIN_OUTCOME_INSTRUCTION =
 type MirrorItem = { tag: "captain" | "main"; text: string };
 type MirrorCursor = { file: string; index: number };
 type Verdict = "routine" | "captain";
+type MergeResult = { ok: true } | { ok: false; reason: string };
 type LockOwnership = "owned" | "other" | "missing";
 type MainSessionContext = { model?: { provider: string; id: string } };
 
@@ -578,16 +579,23 @@ export default function (pi: ExtensionAPI) {
     verdict: Verdict,
     summary: string,
     silent: boolean,
-  ): boolean {
-    if (!actingAsOwner(expectedGeneration)) return false;
+  ): MergeResult {
+    if (!actingAsOwner(expectedGeneration)) {
+      return { ok: false, reason: "merge refused after supervision replacement or lock loss" };
+    }
     if (verdict === "captain") {
       const message = {
         customType: "fm-branch-merge",
         content: captainOutcomeInput(task, summary),
         display: false,
       };
-      if (!sendToMain(message, { triggerTurn: true, deliverAs: "followUp" })) return false;
-      runOutcomeScript(["note-render", "--task", task]);
+      if (!sendToMain(message, { triggerTurn: true, deliverAs: "followUp" })) {
+        return { ok: false, reason: "delivery failed after durable append; outcome remains unread" };
+      }
+      const refreshed = runOutcomeScript(["note-render", "--task", task, "--strict"]);
+      if (!refreshed.ok) {
+        return { ok: false, reason: `captain delivery succeeded, but routine note marker refresh failed: ${refreshed.detail}` };
+      }
     } else {
       // The note gate owns routine duplicate coalescing and fails toward
       // rendering when it cannot answer.
@@ -601,13 +609,19 @@ export default function (pi: ExtensionAPI) {
         content: `${MERGE_NOTE_BOAT} ${task}: ${summary}`,
         display,
       };
-      if (!sendToMain(message, mainStreaming ? { deliverAs: "nextTurn" } : {})) return false;
+      if (!sendToMain(message, mainStreaming ? { deliverAs: "nextTurn" } : {})) {
+        return { ok: false, reason: "delivery failed after durable append; outcome remains unread" };
+      }
     }
     if (/^[0-9]+$/.test(seq)) {
-      if (!actingAsOwner(expectedGeneration)) return false;
-      return runOutcomeScript(["mark-read", "--through", seq]).ok;
+      if (!actingAsOwner(expectedGeneration)) {
+        return { ok: false, reason: "merge refused after supervision replacement or lock loss" };
+      }
+      if (!runOutcomeScript(["mark-read", "--through", seq]).ok) {
+        return { ok: false, reason: "delivery succeeded, but the durable outcome cursor could not advance" };
+      }
     }
-    return true;
+    return { ok: true };
   }
 
   function createReportTool(toolGeneration: number): ToolDefinition {
@@ -661,9 +675,10 @@ export default function (pi: ExtensionAPI) {
             isError: true,
           };
         }
-        if (!mergeIntoMain(toolGeneration, appended.stdout, task, verdict, summary, silent)) {
+        const merged = mergeIntoMain(toolGeneration, appended.stdout, task, verdict, summary, silent);
+        if (!merged.ok) {
           return {
-            content: [{ type: "text", text: `recorded seq ${appended.stdout}, but merge refused after supervision replacement or lock loss` }],
+            content: [{ type: "text", text: `recorded seq ${appended.stdout}, but ${merged.reason}` }],
             details: undefined,
             isError: true,
           };
