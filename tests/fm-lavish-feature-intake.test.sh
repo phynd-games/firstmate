@@ -152,7 +152,7 @@ PY
 # Every required category appears in a real interactive intake template, and a
 # static page lacking the Lavish capture call is refused before a session opens.
 test_required_categories_and_static_refusal() {
-  local home artifact static candidate out rc field
+  local home artifact static candidate inert out rc field
   home=$(make_home categories)
   add_task "$home" feature-a1
   artifact=$home/intake.html
@@ -204,6 +204,30 @@ PY
   [ "$rc" -ne 0 ] || fail "dead intake markers were accepted"
   assert_contains "$out" "executable intake" \
     "dead intake markers did not fail semantic validation"
+  for inert in text-plain template; do
+    candidate=$home/inert-$inert.html
+    python3 - "$artifact" "$candidate" "$inert" <<'PY'
+from pathlib import Path
+import sys
+
+source, output, mode = sys.argv[1:]
+html = Path(source).read_text()
+if mode == "text-plain":
+    html = html.replace("<script>", '<script type="text/plain">', 1)
+else:
+    start = html.index("<script>")
+    end = html.index("</script>", start) + len("</script>")
+    html = html[:start] + "<template>" + html[start:end] + "</template>" + html[end:]
+Path(output).write_text(html)
+PY
+    set +e
+    out=$(run_intake "$home" start feature-a1 --artifact "$candidate" 2>&1)
+    rc=$?
+    set -e
+    [ "$rc" -ne 0 ] || fail "inert $inert intake script was executed"
+    assert_contains "$out" "no executable intake script" \
+      "inert $inert script refusal was unclear"
+  done
   pass "Lavish intake: required categories and static artifacts are enforced"
 }
 
@@ -712,6 +736,19 @@ test_ordinary_rearm_refuses_stale_intake_ownership() {
     "stale intake re-arm refusal was unclear"
   assert_absent "$home/state/procevent/$sid.source" \
     "stale intake re-arm registered an ordinary source"
+  set +e
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_PROCEVENT_CLAIM_ROOT="$home/claims" \
+    "$ROOT/bin/fm-procevent.sh" register lavish "$sid" -- \
+    "$ROOT/bin/fm-procevent-lavish.sh" poll "$artifact" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "canonical ordinary registration ignored stale intake ownership"
+  assert_contains "$out" "ordinary-register" \
+    "canonical registration refusal was unclear"
+  assert_absent "$home/state/procevent/$sid.source" \
+    "canonical registration bypassed stale intake ownership"
   pass "Lavish intake: stale typed ownership blocks ordinary re-arm"
 }
 

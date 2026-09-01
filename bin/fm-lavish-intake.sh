@@ -315,7 +315,27 @@ const vm = require('vm');
 const [path, task, fieldText, validationNonce] = process.argv.slice(2);
 const fields = fieldText.split(/\s+/);
 const html = fs.readFileSync(path, 'utf8').replace(/<!--[\s\S]*?-->/g, '');
-const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)].map((match) => match[1]);
+const scripts = [];
+const tags = /<template\b[^>]*>|<\/template\s*>|<noscript\b[^>]*>|<\/noscript\s*>|<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
+let inertDepth = 0;
+for (const match of html.matchAll(tags)) {
+  const token = match[0].toLowerCase();
+  if (token.startsWith('<template') || token.startsWith('<noscript')) {
+    inertDepth += 1;
+    continue;
+  }
+  if (token.startsWith('</template') || token.startsWith('</noscript')) {
+    inertDepth = Math.max(0, inertDepth - 1);
+    continue;
+  }
+  if (inertDepth > 0) continue;
+  const attrs = match[1] || '';
+  const quote = String.fromCharCode(39);
+  const typeMatch = attrs.match(new RegExp("\\btype\\s*=\\s*(?:\"([^\"]*)\"|" + quote + "([^" + quote + "]*)" + quote + "|([^\\s>]+))", "i"));
+  const type = typeMatch ? (typeMatch[1] ?? typeMatch[2] ?? typeMatch[3]).trim().toLowerCase() : '';
+  if (type && !/^(?:text|application)\/(?:java|ecma)script$|^module$/.test(type)) continue;
+  scripts.push(match[2]);
+}
 const fail = (message) => {
   process.stderr.write(`${message}\n`);
   process.exit(1);
