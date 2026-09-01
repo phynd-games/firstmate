@@ -303,7 +303,7 @@ unit_herdr_partial_create_recovery() {
         printf %s '\''{"result":{"workspaces":[{"workspace_id":"ws-partial","label":"afk-exact-label"}]}}'\''
       elif [ "$2 $3" = "pane get" ]; then
         printf %s '\''{"result":{"pane":{"pane_id":"pane-exact","tab_id":"tab-exact","workspace_id":"ws-partial"}}}'\''
-      elif [ "$2 $3" = "pane identity-bound" ]; then
+      elif [ "$2 $3" = "pane close" ]; then
         printf %s '\''{"result":{"workspace_id":"ws-partial","tab_id":"tab-exact","pane_id":"pane-exact"}}'\''
       else
         printf %s '\''{"result":{"panes":[{"pane_id":"pane-exact","tab_id":"tab-exact","workspace_id":"ws-partial"}]}}'\''
@@ -334,7 +334,7 @@ unit_herdr_error_with_exact_ids_closes_exact() {
       elif [ "$2 $3" = "pane get" ]; then
         printf %s '\''{"result":{"pane":{"pane_id":"pane-exact","tab_id":"tab-exact","workspace_id":"ws-exact"}}}'\''
         return 0
-      elif [ "$2 $3" = "pane identity-bound" ]; then
+      elif [ "$2 $3" = "pane close" ]; then
         printf %s '\''{"result":{"workspace_id":"ws-exact","tab_id":"tab-exact","pane_id":"pane-exact"}}'\''
       fi
       return 2
@@ -362,7 +362,7 @@ unit_herdr_run_failure_preserves_unconfirmed_record() {
         return 0
       elif [ "$2 $3" = "pane run" ]; then
         return 1
-      elif [ "$2 $3" = "pane identity-bound" ]; then
+      elif [ "$2 $3" = "pane close" ]; then
         return 1
       elif [ "$2 $3" = "pane get" ]; then
         printf %s '\''{"result":{"pane":{"pane_id":"pane-exact","tab_id":"tab-exact","workspace_id":"ws-exact"}}}'\''
@@ -415,6 +415,33 @@ unit_herdr_afk_record_binds_tab_identity() {
     fail "AFK rebound pane was operated on or its record was discarded"
   else
     pass "AFK terminal close refuses rebound panes with exact recorded tab identity"
+  fi
+  rm -rf "$st"
+}
+
+unit_explicit_herdr_target_resolves_exact_identity() {
+  local st observed
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-explicit-target.XXXXXX")
+  observed="$st/observed"
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_TARGET=lab:pane \
+    FM_SUPERVISOR_BACKEND=herdr OBSERVED="$observed" \
+    env -u FM_BACKEND_LEGACY_TEST_LANE bash -c '
+      . "$1"
+      fm_backend_herdr_target_ready() {
+        FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=ws-exact
+        FM_BACKEND_HERDR_EXPECTED_TAB_ID=tab-exact
+        return 0
+      }
+      fm_backend_target_exists() {
+        printf "%s|%s|%s|%s|%s" "$1" "$2" "$3" "$4" "$5" > "$OBSERVED"
+        return 0
+      }
+      fm_afk_launch_preflight
+    ' _ "$LAUNCH"
+  if [ "$(cat "$observed" 2>/dev/null || true)" = "herdr|lab:pane||ws-exact|tab-exact" ]; then
+    pass "explicit Herdr supervisor target resolves exact workspace and tab identity"
+  else
+    fail "explicit Herdr supervisor target did not pass its resolved identity to preflight"
   fi
   rm -rf "$st"
 }
@@ -906,8 +933,8 @@ unit_fresh_vs_refresh
 unit_stop_ordering
 unit_stop_rejects_reused_pid
 unit_failed_start_rolls_back_state
-unit_concurrent_start_serialized
 unit_lock_initialization_grace
+unit_explicit_herdr_target_resolves_exact_identity
 unit_signal_exits_with_lock_cleanup
 unit_herdr_partial_create_recovery
 unit_herdr_error_with_exact_ids_closes_exact

@@ -402,7 +402,7 @@ test_shared_pane_identity_boundary_is_typed_and_fail_closed() {
         cli_rc=0
         ;;
     esac
-    run_capture "identity-boundary-$case_name" lib_probe "BOUNDARY_BODY=$body" "BOUNDARY_CLI_RC=$cli_rc" -- '
+    run_capture "identity-preflight-$case_name" lib_probe "BOUNDARY_BODY=$body" "BOUNDARY_CLI_RC=$cli_rc" -- '
       . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
       fm_backend_herdr_cli() {
         printf "%s" "$BOUNDARY_BODY"
@@ -413,7 +413,7 @@ test_shared_pane_identity_boundary_is_typed_and_fail_closed() {
     [ "$RC" -eq "$expected_rc" ] || fail "shared identity boundary $case_name returned rc=$RC, expected $expected_rc (out=$OUT err=$ERR)"
     [ "$OUT" = "$expected_output" ] || fail "shared identity boundary $case_name returned unexpected stdout: $OUT"
   done
-  run_capture identity-boundary-gone-required lib_probe -- '
+  run_capture identity-preflight-gone-required lib_probe -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
     fm_backend_herdr_cli() { printf '''{"error":{"code":"pane_not_found"}}'''; }
     fm_backend_herdr_pane_get_checked fmtest ws1 tab1 pane1 0
@@ -422,50 +422,42 @@ test_shared_pane_identity_boundary_is_typed_and_fail_closed() {
   pass "shared Herdr pane identity boundary preserves typed failures and explicit absence"
 }
 
-test_identity_bound_operation_refuses_rebound_before_mutation() {
-  local marker="$TMP_ROOT/identity-bound-operation"
+test_stable_operation_refuses_when_identity_precheck_fails() {
+  local marker="$TMP_ROOT/stable-operation"
   rm -f "$marker"
-  run_capture identity-bound-operation-rebound lib_probe "OP_MARKER=$marker" -- '
+  run_capture stable-operation-rebound lib_probe "OP_MARKER=$marker" -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
-    fm_backend_herdr_presentation_session_lock_path() { printf /tmp/fm-herdr-operation-lock; }
-    fm_lock_try_acquire() { return 0; }
-    fm_lock_release() { return 0; }
-    fm_backend_herdr_cli() {
-      if [ "$2 $3" = "pane identity-bound" ]; then
-        printf "%s" '\''{"result":{"pane":{"pane_id":"pane1","workspace_id":"other","tab_id":"tab1"}}}'\''
-        return 2
-      fi
-    }
-    fm_backend_herdr_identity_bound_operation fmtest ws1 tab1 pane1 send-text payload
+    fm_backend_herdr_pane_get_checked() { return 2; }
+    fm_backend_herdr_stable_operation fmtest ws1 tab1 pane1 send-text payload
   '
-  [ "$RC" -eq 2 ] || fail "identity-bound operation must refuse a rebound pane: rc=$RC out=$OUT"
-  [ ! -e "$marker" ] || fail "identity-bound operation mutated a rebound pane"
-  pass "identity-bound Herdr operations refuse a rebound pane before mutation"
+  [ "$RC" -eq 2 ] || fail "stable operation must refuse a failed identity precheck: rc=$RC out=$OUT"
+  [ ! -e "$marker" ] || fail "stable operation mutated after an identity precheck failure"
+  pass "stable Herdr operations refuse a failed identity precheck"
 }
 
-test_identity_bound_operation_requires_native_binding() {
-  run_capture identity-bound-operation-native-required lib_probe -- '
+test_stable_operation_uses_supported_command() {
+  run_capture stable-operation-supported-command lib_probe -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
-    fm_backend_herdr_identity_bound_operation fmtest ws1 tab1 pane1 send-text payload
+    fm_backend_herdr_pane_get_checked() { printf "%s" '\''{"result":{"pane":{"pane_id":"pane1","workspace_id":"ws1","tab_id":"tab1"}}}'\''; }
+    fm_backend_herdr_cli() { printf "%s %s %s\n" "$2" "$3" "$4"; }
+    fm_backend_herdr_stable_operation fmtest ws1 tab1 pane1 send-text payload
   '
-  assert_refusal "unbound Herdr pane operation" "cannot atomically bind workspace, tab, and pane identity"
-  pass "identity-bound Herdr operations refuse when native binding is unavailable"
+  [ "$RC" -eq 0 ] || fail "supported Herdr pane operation should succeed: rc=$RC out=$OUT err=$ERR"
+  [ "$OUT" = "pane send-text pane1" ] || fail "stable operation invoked an unsupported or malformed command: $OUT"
+  pass "stable Herdr operations use the documented pane command"
 }
 
-test_identity_bound_operation_accepts_a_native_identity_bound_path() {
-  run_capture identity-bound-operation-native-accepted lib_probe -- '
+test_projection_recovery_inventory_failure_refuses() {
+  run_capture projection-inventory-failure lib_probe -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
-    fm_backend_herdr_cli() {
-      [ "$2 $3" = "pane identity-bound" ] || return 2
-      [ "$5" = ws1 ] && [ "$7" = tab1 ] && [ "$9" = pane1 ] || return 2
-      printf "%s" '\''{"result":{"applied":true,"workspace_id":"ws1","tab_id":"tab1","pane_id":"pane1"}}'\''
-    }
-    fm_backend_herdr_identity_bound_operation fmtest ws1 tab1 pane1 send-text payload
+    fm_backend_herdr_projection_journal_token() { printf token; }
+    fm_backend_herdr_server_ensure() { return 0; }
+    fm_backend_herdr_cli() { return 1; }
+    fm_backend_herdr_projection_recovery_allows_flat fmtest journal task
   '
-  [ "$RC" -eq 0 ] || fail "native identity-bound operation should succeed without a test flag: rc=$RC out=$OUT err=$ERR"
-  [ "$OUT" = '{"result":{"applied":true,"workspace_id":"ws1","tab_id":"tab1","pane_id":"pane1"}}' ] || fail "native identity-bound operation returned unexpected output: $OUT"
-  [ -z "$ERR" ] || fail "accepted native identity-bound operation emitted a refusal: $ERR"
-  pass "identity-bound Herdr operations use the native identity-bound path without a test flag"
+  [ "$RC" -eq 2 ] || fail "projection recovery must stop on native inventory failure: rc=$RC out=$OUT err=$ERR"
+  assert_contains "$ERR" "REFUSED: " "projection recovery must preserve the Herdr blocker"
+  pass "projection recovery refuses native inventory failure before flat fallback"
 }
 
 test_send_preserves_empty_native_failure_status() {
@@ -476,7 +468,7 @@ test_send_preserves_empty_native_failure_status() {
       FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=ws1
       FM_BACKEND_HERDR_EXPECTED_TAB_ID=tab1
     }
-    fm_backend_herdr_identity_bound_operation() { return 2; }
+    fm_backend_herdr_stable_operation() { return 2; }
     fm_backend_herdr_send_literal fmtest:pane1 payload
   '
   [ "$RC" -eq 2 ] && [ -z "$OUT" ] || fail "empty native failure status was collapsed: rc=$RC out=$OUT"
@@ -758,7 +750,7 @@ test_recovery_agent_failures_refuse_before_replacement() {
     fm_backend_herdr_projection_recovery_allows_flat fmtest journal task
   '
   assert_refusal "quarantine workspace list failure" "quarantined Herdr presentation inspection" "workspace list failed"
-  [ "$RC" -eq 1 ] || fail "quarantine workspace list failure must retain rc1: rc=$RC"
+  [ "$RC" -eq 2 ] || fail "quarantine workspace list failure must retain typed native-failure rc2: rc=$RC"
 
   run_capture quarantine-workspace-parse-failure lib_probe -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
@@ -768,7 +760,7 @@ test_recovery_agent_failures_refuse_before_replacement() {
     fm_backend_herdr_projection_recovery_allows_flat fmtest journal task
   '
   assert_refusal "quarantine workspace parse failure" "quarantined Herdr presentation inspection" "workspace list response was malformed"
-  [ "$RC" -eq 1 ] || fail "quarantine workspace parse failure must retain rc1: rc=$RC"
+  [ "$RC" -eq 2 ] || fail "quarantine workspace parse failure must retain typed native-failure rc2: rc=$RC"
   pass "Herdr recovery refuses agent-read failures before replacement or fallback"
 }
 
@@ -1180,9 +1172,9 @@ test_kill_refuses_planner_and_focus_failures_before_close
 test_endpoint_presence_failure_remains_typed
 test_pane_presence_requires_complete_identity
 test_shared_pane_identity_boundary_is_typed_and_fail_closed
-test_identity_bound_operation_refuses_rebound_before_mutation
-test_identity_bound_operation_requires_native_binding
-test_identity_bound_operation_accepts_a_native_identity_bound_path
+test_stable_operation_refuses_when_identity_precheck_fails
+test_stable_operation_uses_supported_command
+test_projection_recovery_inventory_failure_refuses
 test_send_preserves_empty_native_failure_status
 test_pane_presence_not_found_is_idempotently_dead
 test_agent_state_rejects_rebound_identity_and_failed_body

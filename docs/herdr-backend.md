@@ -28,6 +28,7 @@ A remote second-mate agent has the same answer: it runs on Herdr, and [`remote-s
 The declared name is a label; the runtime is proven on use by the adapter's own native checks - `herdr status --json` for the client protocol floor, the named-session server, launcher pane identity, and every per-operation pane read.
 Spawn stops before creating a Herdr container or acquiring a task worktree when `herdr`, `jq`, or the protocol floor is unavailable, and that stop is a blocker to surface, never a fallback to another backend.
 No separate first-run provisioning is required.
+Recorded workspace, tab, and pane ids are opaque Herdr handles for the endpoint lifetime and are not reused after close; Firstmate revalidates all three ids before each supported pane operation.
 
 The required CI lane uses the pinned installers in `bin/fm-install-herdr.sh` and `bin/fm-install-treehouse.sh`.
 Those script headers own release assets, checksums, download bounds, and post-install gates.

@@ -19,7 +19,7 @@
 #                                   stay on disk but are unreachable for the
 #                                   active runtime (removal plan:
 #                                   docs/architecture.md "Runtime session backends")
-#   fm_backend_policy_legacy_lane   the test-only retained-adapter lane predicate
+#   fm_backend_policy_legacy_lane   always-disabled retained-adapter predicate
 #   fm_backend_policy_permits       whether <name> may be dispatched here
 #   fm_backend_policy_is_retained   whether <name> is a retained legacy adapter
 #   fm_backend_policy_refuse        the one refusal diagnostic
@@ -38,10 +38,7 @@ FM_BACKEND_ACTIVE="herdr"
 FM_BACKEND_RETAINED_LEGACY="tmux zellij orca cmux"
 
 fm_backend_policy_legacy_lane() {
-  # This is a test-harness convention gate, not an in-process security boundary.
-  # Its containment claim is that no fleet code path sets these variables.
-  [ "${FM_BACKEND_LEGACY_TEST_LANE:-}" = 1 ] || return 1
-  [ -n "${FM_STATE_OVERRIDE:-}${FM_CONFIG_OVERRIDE:-}${FM_ROOT_OVERRIDE:-}" ]
+  return 1
 }
 
 fm_backend_policy_legacy_adapter_allowed() {

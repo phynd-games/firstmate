@@ -93,12 +93,20 @@ fm_afk_launch_log() { printf 'fm-afk-launch: %s\n' "$*" >&2; }
 
 fm_afk_launch_preflight() {
   fm_backend_policy_legacy_lane && return 0
-  local backend target
+  local backend target workspace tab
   backend=$(discover_supervisor_backend) || return 1
   fm_backend_validate "$backend" || return 1
   target=$(discover_supervisor_target) || return 1
+  if [ "$backend" = herdr ] && [ "${FM_SUPERVISOR_TARGET:-}" = "$target" ]; then
+    fm_backend_herdr_target_ready "$target" || return $?
+    workspace=$FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID
+    tab=$FM_BACKEND_HERDR_EXPECTED_TAB_ID
+  else
+    workspace=${HERDR_WORKSPACE_ID:-}
+    tab=${HERDR_TAB_ID:-}
+  fi
   fm_backend_target_exists "$backend" "$target" "" \
-    "${HERDR_WORKSPACE_ID:-}" "${HERDR_TAB_ID:-}" || return $?
+    "$workspace" "$tab" || return $?
 }
 
 fm_afk_launch_lock_owned() {
@@ -256,7 +264,7 @@ fm_afk_launch_close_terminal() {  # <backend> <target>
       fm_backend_source herdr "AFK terminal close" "$session" || return 1
       [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] \
         && [ -n "${FM_AFK_REC_WORKSPACE:-}" ] && [ -n "${FM_AFK_REC_TAB:-}" ] || return 2
-      fm_backend_herdr_identity_bound_operation \
+      fm_backend_herdr_stable_operation \
         "$session" "$FM_AFK_REC_WORKSPACE" "$FM_AFK_REC_TAB" "$pane" close >/dev/null
       ;;
     tmux)
@@ -584,7 +592,7 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
   FM_AFK_REC_TARGET="$session:$pane"
   FM_AFK_REC_WORKSPACE=$wsid
   FM_AFK_REC_TAB=$tab
-  if ! fm_backend_herdr_identity_bound_operation "$session" "$wsid" "$tab" "$pane" run "$cmd" >/dev/null; then
+  if ! fm_backend_herdr_stable_operation "$session" "$wsid" "$tab" "$pane" run "$cmd" >/dev/null; then
     fm_afk_launch_log "failed to run daemon in herdr pane $session:$pane; closing it"
     FM_AFK_REC_BACKEND=herdr
     FM_AFK_REC_TARGET="$session:$pane"

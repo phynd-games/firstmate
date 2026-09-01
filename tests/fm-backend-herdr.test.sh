@@ -57,7 +57,18 @@ if [ "${1:-} ${2:-}" = "session list" ] \
   exit 0
 fi
 if [ "${1:-} ${2:-}" = "pane get" ] && [ ! -f "$RESP/$next.exit" ]; then
-  if [ "${FM_HERDR_FAKE_CONSUME_PANE_GET:-0}" = 1 ] && [ -f "$RESP/$next.out" ] \
+  if [ -n "${FM_HERDR_PS_BIN:-}" ] && [ ! -e "$RESP/.pane-proofed" ] \
+    && [ -f "$RESP/$next.out" ] \
+    && ! jq -e '(.result.pane | type) == "object"' "$RESP/$next.out" >/dev/null 2>&1; then
+    pane=${3:-}
+    workspace=${pane%%:*}
+    tab_number=${pane##*:}
+    printf '{"result":{"pane":{"pane_id":"%s","workspace_id":"%s","tab_id":"%s:t%s"}}}\n' \
+      "$pane" "$workspace" "$workspace" "${tab_number#p}"
+    exit 0
+  fi
+  if { [ "${FM_HERDR_FAKE_CONSUME_PANE_GET:-0}" = 1 ] || [ -f "$RESP/$next.consume-pane-get" ]; } \
+    && [ -f "$RESP/$next.out" ] \
     && jq -e '(.result.pane | type) == "object"' "$RESP/$next.out" >/dev/null 2>&1; then
     echo "$next" > "$COUNT_FILE"
     cat "$RESP/$next.out"
@@ -72,57 +83,18 @@ if [ "${1:-} ${2:-}" = "pane get" ] && [ ! -f "$RESP/$next.exit" ]; then
     exit 0
   fi
 fi
-if [ "${1:-} ${2:-}" = "pane identity-bound" ]; then
-  workspace=""; tab=""; pane=""; operation=""; operation_args=()
-  i=3
-  while [ "$i" -le "$#" ]; do
-    case "${!i:-}" in
-      --workspace-id) i=$((i + 1)); workspace=${!i:-} ;;
-      --tab-id) i=$((i + 1)); tab=${!i:-} ;;
-      --pane-id) i=$((i + 1)); pane=${!i:-} ;;
-      --operation) i=$((i + 1)); operation=${!i:-} ;;
-      --session) i=$((i + 1)) ;;
-      *) operation_args+=("${!i:-}") ;;
-    esac
-    i=$((i + 1))
-  done
-  {
-    printf 'HERDR_SESSION=%s\x1f%s\x1f%s\x1f%s' "${HERDR_SESSION:-}" pane "$operation" "$pane"
-    if [ "${#operation_args[@]}" -gt 0 ]; then
-      for a in "${operation_args[@]}"; do printf '\x1f%s' "$a"; done
-    fi
-    printf '\n'
-  } >> "$LOG"
-  n=$next
-  echo "$n" > "$COUNT_FILE"
-  if [ -f "$RESP/$n.exit" ]; then
-    exit "$(cat "$RESP/$n.exit")"
-  fi
-  if [ -f "$RESP/$n.out" ]; then
-    if jq -e '(.error | type) == "object"' "$RESP/$n.out" >/dev/null 2>&1; then
-      cat "$RESP/$n.out"
-    elif jq -e '(.result | type) == "object"' "$RESP/$n.out" >/dev/null 2>&1; then
-      jq --arg workspace "$workspace" --arg tab "$tab" --arg pane "$pane" \
-        '.result += {workspace_id:$workspace, tab_id:$tab, pane_id:$pane}' "$RESP/$n.out"
-    else
-      jq -Rs --arg workspace "$workspace" --arg tab "$tab" --arg pane "$pane" \
-        '{result:{workspace_id:$workspace, tab_id:$tab, pane_id:$pane, text:.}}' "$RESP/$n.out"
-    fi
-  else
-    printf '{"result":{"workspace_id":"%s","tab_id":"%s","pane_id":"%s"}}\n' \
-      "$workspace" "$tab" "$pane"
-  fi
-  exit 0
+if [ -n "${FM_HERDR_PS_BIN:-}" ] && [ "${1:-} ${2:-}" = "pane process-info" ]; then
+  : > "$RESP/.pane-proofed"
 fi
 n=$next
 echo "$n" > "$COUNT_FILE"
 if [ -f "$RESP/$n.exit" ]; then
   exit "$(cat "$RESP/$n.exit")"
 fi
-if [ -f "$RESP/$n.out" ]; then
-  if [ -f "$RESP/$n.normalize-pane" ] \
-    && [ "${1:-} ${2:-}" = "pane list" ] \
-    && jq -e '(.result.panes | type) == "array"' "$RESP/$n.out" >/dev/null 2>&1; then
+  if [ -f "$RESP/$n.out" ]; then
+    if [ -f "$RESP/$n.normalize-pane" ] \
+      && [ "${1:-} ${2:-}" = "pane list" ] \
+      && jq -e '(.result.panes | type) == "array"' "$RESP/$n.out" >/dev/null 2>&1; then
     workspace=${4:-}
     jq --arg workspace "$workspace" \
       '.result.panes |= map(. + {workspace_id:(.workspace_id // $workspace)})' "$RESP/$n.out"
@@ -135,6 +107,13 @@ if [ -f "$RESP/$n.out" ]; then
     jq --arg pane "$pane" --arg workspace "$workspace" --arg tab "$workspace:t${tab_number#p}" \
       '.result.agent |= (. + {pane_id:(.pane_id // $pane), workspace_id:(.workspace_id // $workspace), tab_id:(.tab_id // $tab)})' \
       "$RESP/$n.out"
+  elif [ "${1:-} ${2:-}" = "pane read" ] \
+    && ! jq -e '(.result | type) == "object"' "$RESP/$n.out" >/dev/null 2>&1; then
+    pane=${3:-}
+    workspace=${pane%%:*}
+    tab_number=${pane##*:}
+    jq -Rs --arg pane "$pane" --arg workspace "$workspace" --arg tab "$workspace:t${tab_number#p}" \
+      '{result:{pane_id:$pane, workspace_id:$workspace, tab_id:$tab, text:.}}' "$RESP/$n.out"
   else
     cat "$RESP/$n.out"
   fi
@@ -229,42 +208,6 @@ case "$cmd $sub" in
     ;;
   "pane list")
     jq_state --arg w "$ws" '{result:{panes:[.tabs[]|select(.workspace_id==$w)|{pane_id:.pane_id, tab_id:.tab_id, workspace_id:.workspace_id}]}}'
-    ;;
-  "pane identity-bound")
-    pane=""; tab=""; operation=""
-    for ((i=2; i<${#args[@]}; i++)); do
-      case "${args[$i]}" in
-        --tab-id) i=$((i + 1)); tab=${args[$i]:-} ;;
-        --pane-id) i=$((i + 1)); pane=${args[$i]:-} ;;
-        --operation) i=$((i + 1)); operation=${args[$i]:-} ;;
-      esac
-    done
-    printf 'HERDR_SESSION=%s\x1f%s\x1f%s\x1f%s\n' "${HERDR_SESSION:-}" pane "$operation" "$pane" >> "$LOG"
-    [ "$(jq_state -r --arg p "$pane" --arg w "$ws" --arg t "$tab" \
-      '[.tabs[] | select(.pane_id == $p and .workspace_id == $w and .tab_id == $t)] | length')" = 1 ] || {
-      printf '%s\n' '{"error":{"code":"identity_mismatch"}}'
-      exit 2
-    }
-    case "$operation" in
-      close)
-        jq_state --arg p "$pane" '
-          ([.tabs[] | select(.pane_id == $p)][0]) as $removed
-          | (.tabs |= [.[] | select(.pane_id != $p)])
-          | if ($removed.focused // false) then
-              ([.tabs[] | select(.workspace_id == $removed.workspace_id)][0]) as $next
-              | (.tabs |= map(if .workspace_id == $removed.workspace_id then .focused = (.tab_id == ($next.tab_id // "")) else . end))
-              | (.workspaces |= map(if .workspace_id == $removed.workspace_id then .active_tab_id = ($next.tab_id // "") else . end))
-            else . end
-        ' | save
-        printf '{"result":{"workspace_id":"%s","tab_id":"%s","pane_id":"%s"}}\n' "$ws" "$tab" "$pane"
-        ;;
-      read)
-        printf '{"result":{"pane":{"pane_id":"%s","workspace_id":"%s","tab_id":"%s"},"text":""}}\n' "$pane" "$ws" "$tab"
-        ;;
-      *)
-        printf '{"result":{"workspace_id":"%s","tab_id":"%s","pane_id":"%s"}}\n' "$ws" "$tab" "$pane"
-        ;;
-    esac
     ;;
   "pane get")
     pane=${3:-}
@@ -781,6 +724,7 @@ test_create_task_closes_and_replaces_dead_pane_husk() {
   printf '{"error":{"code":"pane_not_found","message":"pane w1:p2 not found"}}\n' > "$resp/3.out"
   # 4: tab create -> the replacement tab (created BEFORE the husk is closed)
   printf '{"result":{"tab":{"tab_id":"w1:t3"},"root_pane":{"pane_id":"w1:p3","tab_id":"w1:t3","workspace_id":"w1"}}}\n' > "$resp/4.out"
+  printf '{"error":{"code":"pane_not_found","message":"pane w1:p2 not found"}}\n' > "$resp/5.out"
   printf '{"result":{"tabs":[{"tab_id":"w1:t3","label":"fm-husk1","workspace_id":"w1"}]}}\n' > "$resp/6.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -795,8 +739,8 @@ EOF
   fi
   assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create'$'\x1f''--workspace'$'\x1f''w1'$'\x1f''--cwd'$'\x1f''/tmp/proj'$'\x1f''--label'$'\x1f''fm-husk1' \
     "create_task did not create the replacement tab"
-  assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close'$'\x1f''w1:t2' "create_task did not close the dead husk's tab"
-  pass "fm_backend_herdr_create_task: closes and replaces a same-labeled tab whose pane is dead (pane_not_found)"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p2' "create_task attempted to close an already-gone husk pane"
+  pass "fm_backend_herdr_create_task: replaces a same-labeled tab whose pane is already gone without a raw close"
 }
 
 test_create_task_closes_and_replaces_no_agent_husk() {
@@ -811,7 +755,10 @@ test_create_task_closes_and_replaces_no_agent_husk() {
   printf '{"error":{"code":"agent_not_found","message":"agent target w1:p2 not found"}}\n' > "$resp/4.out"
   # 5: tab create -> the replacement tab (created BEFORE the husk is closed)
   printf '{"result":{"tab":{"tab_id":"w1:t3"},"root_pane":{"pane_id":"w1:p3","tab_id":"w1:t3","workspace_id":"w1"}}}\n' > "$resp/5.out"
-  printf '{"result":{"tabs":[{"tab_id":"w1:t3","label":"fm-husk2","workspace_id":"w1"}]}}\n' > "$resp/7.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t2","workspace_id":"w1"}}}\n' > "$resp/6.out"
+  printf '{}\n' > "$resp/7.out"
+  printf '{"error":{"code":"pane_not_found","message":"pane w1:p2 not found"}}\n' > "$resp/8.out"
+  printf '{"result":{"tabs":[{"tab_id":"w1:t3","label":"fm-husk2","workspace_id":"w1"}]}}\n' > "$resp/9.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -825,7 +772,7 @@ EOF
   fi
   assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create'$'\x1f''--workspace'$'\x1f''w1'$'\x1f''--cwd'$'\x1f''/tmp/proj'$'\x1f''--label'$'\x1f''fm-husk2' \
     "create_task did not create the replacement tab"
-  assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close'$'\x1f''w1:t2' "create_task did not close the no-agent husk's tab"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p2' "create_task did not close the no-agent husk's pane"
   pass "fm_backend_herdr_create_task: closes and replaces a same-labeled tab whose pane is alive but hosts no registered agent (a restored plain shell)"
 }
 
@@ -842,7 +789,13 @@ test_create_task_closes_all_duplicate_husks_after_replacement() {
   printf '{"result":{"pane":{"pane_id":"w1:p3","tab_id":"w1:t3","workspace_id":"w1"}}}\n' > "$resp/6.out"
   printf '{"error":{"code":"agent_not_found","message":"agent target w1:p3 not found"}}\n' > "$resp/7.out"
   printf '{"result":{"tab":{"tab_id":"w1:t4"},"root_pane":{"pane_id":"w1:p4","tab_id":"w1:t4","workspace_id":"w1"}}}\n' > "$resp/8.out"
-  printf '{"result":{"tabs":[{"tab_id":"w1:t4","label":"fm-husk-many","workspace_id":"w1"}]}}\n' > "$resp/11.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t2","workspace_id":"w1"}}}\n' > "$resp/9.out"
+  printf '{}\n' > "$resp/10.out"
+  printf '{"error":{"code":"pane_not_found","message":"pane w1:p2 not found"}}\n' > "$resp/11.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p3","tab_id":"w1:t3","workspace_id":"w1"}}}\n' > "$resp/12.out"
+  printf '{}\n' > "$resp/13.out"
+  printf '{"error":{"code":"pane_not_found","message":"pane w1:p3 not found"}}\n' > "$resp/14.out"
+  printf '{"result":{"tabs":[{"tab_id":"w1:t4","label":"fm-husk-many","workspace_id":"w1"}]}}\n' > "$resp/15.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -854,11 +807,11 @@ EOF
   if [ "$tab" != "w1:t4" ] || [ "$pane" != "w1:p4" ]; then
     fail "create_task should echo the NEW tab/pane ids, got '$out'"
   fi
-  assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close'$'\x1f''w1:t2' "create_task did not close the first duplicate husk"
-  assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close'$'\x1f''w1:t3' "create_task did not close the second duplicate husk"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p2' "create_task did not close the first duplicate husk"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p3' "create_task did not close the second duplicate husk"
   create_line=$(grep -n $'\x1f''tab'$'\x1f''create' "$log" | head -1 | cut -d: -f1)
-  close_p2_line=$(grep -n $'\x1f''tab'$'\x1f''close'$'\x1f''w1:t2' "$log" | head -1 | cut -d: -f1)
-  close_p3_line=$(grep -n $'\x1f''tab'$'\x1f''close'$'\x1f''w1:t3' "$log" | head -1 | cut -d: -f1)
+  close_p2_line=$(grep -n $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p2' "$log" | head -1 | cut -d: -f1)
+  close_p3_line=$(grep -n $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p3' "$log" | head -1 | cut -d: -f1)
   [ -n "$create_line" ] || fail "expected a 'tab create' call in the log"
   if [ "$create_line" -ge "$close_p2_line" ] || [ "$create_line" -ge "$close_p3_line" ]; then
     fail "REGRESSION: duplicate husks were closed before the replacement tab was created"
@@ -875,7 +828,8 @@ test_create_task_refuses_when_preexisting_husk_tab_remains() {
   printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t2","workspace_id":"w1"}}}\n' > "$resp/3.out"
   printf '{"error":{"code":"agent_not_found","message":"agent target w1:p2 not found"}}\n' > "$resp/4.out"
   printf '{"result":{"tab":{"tab_id":"w1:t3"},"root_pane":{"pane_id":"w1:p3","tab_id":"w1:t3","workspace_id":"w1"}}}\n' > "$resp/5.out"
-  printf '1\n' > "$resp/6.exit"
+  printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t2","workspace_id":"w1"}}}\n' > "$resp/6.out"
+  printf '1\n' > "$resp/7.exit"
   printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-stale-husk","workspace_id":"w1"},{"tab_id":"w1:t3","label":"fm-stale-husk","workspace_id":"w1"}]}}\n' > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -883,9 +837,7 @@ test_create_task_refuses_when_preexisting_husk_tab_remains() {
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-stale-husk /tmp/proj' "$ROOT" 2>&1 )
   status=$?
   [ "$status" -ne 0 ] || fail "create_task must fail when a preexisting same-labeled husk remains after close-and-replace"
-  assert_contains "$out" "failed to remove preexisting herdr tab" "create_task did not report the stale preexisting husk tab"
-  assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close'$'\x1f''w1:t2' "create_task did not close the stale husk by tab id"
-  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p2' "create_task should not rely on pane close for a preexisting husk"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p2' "create_task did not attempt exact stale-husk pane cleanup"
   pass "fm_backend_herdr_create_task: refuses success when a preexisting husk tab remains after replacement"
 }
 
@@ -928,18 +880,19 @@ test_create_task_husk_replacement_creates_before_closing() {
   : > "$resp/2.normalize-pane"
   printf '{"error":{"code":"pane_not_found","message":"pane w1:p2 not found"}}\n' > "$resp/3.out"
   printf '{"result":{"tab":{"tab_id":"w1:t3"},"root_pane":{"pane_id":"w1:p3","tab_id":"w1:t3","workspace_id":"w1"}}}\n' > "$resp/4.out"
-  printf '{"result":{"tabs":[{"tab_id":"w1:t3","label":"fm-order1","workspace_id":"w1"}]}}\n' > "$resp/6.out"
+  printf '{"error":{"code":"pane_not_found","message":"pane w1:p2 not found"}}\n' > "$resp/6.out"
+  printf '{"result":{"tabs":[{"tab_id":"w1:t3","label":"fm-order1","workspace_id":"w1"}]}}\n' > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-order1 /tmp/proj' "$ROOT" ) \
     || fail "create_task should close-and-replace the dead-pane husk"
   create_line=$(grep -n $'\x1f''tab'$'\x1f''create' "$log" | head -1 | cut -d: -f1)
-  close_line=$(grep -n $'\x1f''tab'$'\x1f''close' "$log" | head -1 | cut -d: -f1)
+  close_line=$(grep -n $'\x1f''pane'$'\x1f''close' "$log" | head -1 | cut -d: -f1)
   [ -n "$create_line" ] || fail "expected a 'tab create' call in the log"
-  [ -n "$close_line" ] || fail "expected a 'tab close' call in the log"
-  [ "$create_line" -lt "$close_line" ] || fail "REGRESSION: the husk tab was closed (line $close_line) before (or at the same time as) the replacement tab was created (line $create_line) - risks deleting the whole workspace if the husk was its only tab"
-  pass "fm_backend_herdr_create_task: creates the replacement tab BEFORE closing the husk tab, never the reverse"
+  [ -n "$close_line" ] || fail "expected a 'pane close' call in the log"
+  [ "$create_line" -lt "$close_line" ] || fail "REGRESSION: the husk pane was closed (line $close_line) before (or at the same time as) the replacement tab was created (line $create_line) - risks deleting the whole workspace if the husk was its only tab"
+  pass "fm_backend_herdr_create_task: creates the replacement tab BEFORE closing the exact husk pane, never the reverse"
 }
 
 test_create_task_creates_and_parses_ids() {
@@ -1434,11 +1387,12 @@ test_projection_create_uses_exact_response_ids_and_leaves_one_task_pane() {
   # The emptying-close plan's tab list proves the seeded prune is NOT
   # workspace-emptying (the task tab remains), so the close stays plain.
   printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1","workspace_id":"w9"},{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/7.out"
-  printf '{"result":{"workspace_id":"w9","tab_id":"w9:t1","pane_id":"w9:p1"}}\n' > "$resp/8.out"
-  printf '{"error":{"code":"pane_not_found"}}\n' > "$resp/9.out"
-  printf '{"result":{"tabs":[{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/10.out"
-  printf '{"result":{"panes":[{"pane_id":"w9:p2","tab_id":"w9:t2"}]}}\n' > "$resp/11.out"
-  : > "$resp/11.normalize-pane"
+  printf '{"result":{"pane":{"pane_id":"w9:p1","tab_id":"w9:t1","workspace_id":"w9"}}}\n' > "$resp/8.out"
+  printf '{}\n' > "$resp/9.out"
+  printf '{"error":{"code":"pane_not_found"}}\n' > "$resp/10.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/11.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p2","tab_id":"w9:t2"}]}}\n' > "$resp/12.out"
+  : > "$resp/12.normalize-pane"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -1483,11 +1437,12 @@ test_projection_create_never_closes_a_concurrent_same_label_tab() {
   printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/5.out"
   printf '{"result":{"pane":{"pane_id":"w9:p1","tab_id":"w9:t1","workspace_id":"w9"}}}\n' > "$resp/6.out"
   printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1","workspace_id":"w9"},{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"},{"tab_id":"w9:t3","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/7.out"
-  printf '{"result":{"workspace_id":"w9","tab_id":"w9:t1","pane_id":"w9:p1"}}\n' > "$resp/8.out"
-  printf '{"error":{"code":"pane_not_found"}}\n' > "$resp/9.out"
-  printf '{"result":{"tabs":[{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"},{"tab_id":"w9:t3","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/10.out"
-  printf '{"result":{"panes":[{"pane_id":"w9:p2","tab_id":"w9:t2"},{"pane_id":"w9:p3","tab_id":"w9:t3"}]}}\n' > "$resp/11.out"
-  : > "$resp/11.normalize-pane"
+  printf '{"result":{"pane":{"pane_id":"w9:p1","tab_id":"w9:t1","workspace_id":"w9"}}}\n' > "$resp/8.out"
+  printf '{}\n' > "$resp/9.out"
+  printf '{"error":{"code":"pane_not_found"}}\n' > "$resp/10.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"},{"tab_id":"w9:t3","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/11.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p2","tab_id":"w9:t2"},{"pane_id":"w9:p3","tab_id":"w9:t3"}]}}\n' > "$resp/12.out"
+  : > "$resp/12.normalize-pane"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -1527,14 +1482,15 @@ test_projection_close_restores_exact_prior_focus() {
   # The emptying-close plan sees a second tab in w9, so the close stays plain
   # and the exact-tab restore backstop is what reclaims the stolen focus.
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w9:t1","workspace_id":"w9"},{"tab_id":"w9:t2","workspace_id":"w9"}]}}' > "$resp/4.out"
-  printf '%s\n' '{"result":{"workspace_id":"w9","tab_id":"w9:t2","pane_id":"w9:p2"}}' > "$resp/5.out"
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/6.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t1","focused":false},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":true}]}}' > "$resp/7.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w3:t1","focused":true}]}}' > "$resp/8.out"
-  printf '%s\n' '{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/9.out"
-  printf '%s\n' '{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2","focused":true}}}' > "$resp/10.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t2","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false}]}}' > "$resp/11.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t1","focused":false},{"tab_id":"w2:t2","focused":true}]}}' > "$resp/12.out"
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w9:p2","tab_id":"w9:t2","workspace_id":"w9"}}}' > "$resp/5.out"
+  printf '%s\n' '{}' > "$resp/6.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/7.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t1","focused":false},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":true}]}}' > "$resp/8.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w3:t1","focused":true}]}}' > "$resp/9.out"
+  printf '%s\n' '{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/10.out"
+  printf '%s\n' '{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2","focused":true}}}' > "$resp/11.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t2","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false}]}}' > "$resp/12.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t1","focused":false},{"tab_id":"w2:t2","focused":true}]}}' > "$resp/13.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -1577,14 +1533,15 @@ test_projection_close_reports_focus_restore_failure() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/2.out"
   printf '%s\n' '{"result":{"pane":{"pane_id":"w9:p2","tab_id":"w9:t2","workspace_id":"w9"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w9:t1","workspace_id":"w9"},{"tab_id":"w9:t2","workspace_id":"w9"}]}}' > "$resp/4.out"
-  printf '%s\n' '{"result":{"workspace_id":"w9","tab_id":"w9:t2","pane_id":"w9:p2"}}' > "$resp/5.out"
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/6.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t1","focused":true}]}}' > "$resp/7.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t1","focused":true}]}}' > "$resp/8.out"
-  printf '%s\n' '{"result":{"tab":{"tab_id":"w1:t1","workspace_id":"w1"}}}' > "$resp/9.out"
-  : > "$resp/10.out"
-  cp "$resp/7.out" "$resp/11.out"
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w9:p2","tab_id":"w9:t2","workspace_id":"w9"}}}' > "$resp/5.out"
+  printf '%s\n' '{}' > "$resp/6.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/7.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t1","focused":true}]}}' > "$resp/8.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t1","focused":true}]}}' > "$resp/9.out"
+  printf '%s\n' '{"result":{"tab":{"tab_id":"w1:t1","workspace_id":"w1"}}}' > "$resp/10.out"
+  : > "$resp/11.out"
   cp "$resp/8.out" "$resp/12.out"
+  cp "$resp/9.out" "$resp/13.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -1645,6 +1602,7 @@ case "\$*" in
   "-axo pid=,ppid=") printf '1 0\n$pid 1\n' ;;
   "-p $pid -o stat=") printf 'Ss+\n' ;;
   "-p $pid -o comm=") printf -- '-zsh\n' ;;
+  "-p $pid -o lstart=") printf 'Mon Jan  1 00:00:00 2024\n' ;;
   *) exit 1 ;;
 esac
 SH
@@ -1684,9 +1642,11 @@ test_projection_close_emptying_after_focus_uses_pane_death_without_move() {
   cp "$resp/1.out" "$resp/6.out"
   sleep 300 & bgpid=$!
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/8.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false}]}}' > "$resp/9.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/10.out"
+  cp "$resp/3.out" "$resp/8.out"
+  death_process_info_fixture w2:p2 "$bgpid" > "$resp/9.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/10.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false}]}}' > "$resp/11.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/12.out"
   make_death_lab "$dir" "$bgpid"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -1723,10 +1683,12 @@ test_projection_close_emptying_before_focus_repositions_then_uses_pane_death() {
   printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fmtest.sock"}]}' > "$resp/9.out"
   sleep 300 & bgpid=$!
   death_process_info_fixture w1:p1 "$bgpid" > "$resp/10.out"
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/11.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t1","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false}]}}' > "$resp/12.out"
-  cp "$resp/12.out" "$resp/13.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t1","focused":true}]}}' > "$resp/14.out"
+  cp "$resp/3.out" "$resp/11.out"
+  death_process_info_fixture w1:p1 "$bgpid" > "$resp/12.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/13.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t1","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false}]}}' > "$resp/14.out"
+  cp "$resp/14.out" "$resp/15.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t1","focused":true}]}}' > "$resp/16.out"
   make_death_lab "$dir" "$bgpid"
   printf '%s\n' '{"id":"fm-workspace-move","result":{"type":"workspace_list","workspaces":[{"workspace_id":"w2","focused":true},{"workspace_id":"w3","focused":false},{"workspace_id":"w1","focused":false}]}}' > "$dir/mover-response"
   fb=$(make_herdr_fakebin "$dir")
@@ -1762,9 +1724,11 @@ test_projection_close_emptying_before_last_focus_needs_no_move() {
   cp "$resp/1.out" "$resp/6.out"
   sleep 300 & bgpid=$!
   death_process_info_fixture w1:p1 "$bgpid" > "$resp/7.out"
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/8.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t1","focused":false},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":true}]}}' > "$resp/9.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w3:t1","focused":true}]}}' > "$resp/10.out"
+  cp "$resp/3.out" "$resp/8.out"
+  death_process_info_fixture w1:p1 "$bgpid" > "$resp/9.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/10.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t1","focused":false},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":true}]}}' > "$resp/11.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w3:t1","focused":true}]}}' > "$resp/12.out"
   make_death_lab "$dir" "$bgpid"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -1796,9 +1760,11 @@ test_projection_close_emptying_last_workspace_needs_no_move() {
   cp "$resp/1.out" "$resp/6.out"
   sleep 300 & bgpid=$!
   death_process_info_fixture w3:p1 "$bgpid" > "$resp/7.out"
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/8.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t1","focused":false}]}}' > "$resp/9.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/10.out"
+  cp "$resp/3.out" "$resp/8.out"
+  death_process_info_fixture w3:p1 "$bgpid" > "$resp/9.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/10.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t1","focused":false}]}}' > "$resp/11.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/12.out"
   make_death_lab "$dir" "$bgpid"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -1823,7 +1789,7 @@ test_projection_close_non_emptying_stays_plain_without_proof_or_move() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/2.out"
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t1","workspace_id":"w2"},{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
-  printf '%s\n' '{"result":{"workspace_id":"w2","tab_id":"w2:t2","pane_id":"w2:p2"}}' > "$resp/5.out"
+  printf '%s\n' '{"result":{"pane":{"workspace_id":"w2","tab_id":"w2:t2","pane_id":"w2:p2"}}}' > "$resp/5.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/6.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t1","focused":false}]}}' > "$resp/7.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/8.out"
@@ -1861,10 +1827,7 @@ test_projection_close_plain_without_move_requires_structured_removal() {
     fm_backend_herdr_cli() {
       printf "%s\n" "$*" >> "$LOG"
       case "$2 $3" in
-        "pane identity-bound")
-          printf "pane close w2:p2\n" >> "$LOG"
-          printf "{\"result\":{\"workspace_id\":\"w2\",\"tab_id\":\"w2:t2\",\"pane_id\":\"w2:p2\"}}\n"
-          ;;
+        "pane close") printf "pane close w2:p2\n" >> "$LOG" ;;
         "pane get") printf "{\"result\":{\"pane\":{\"pane_id\":\"w2:p2\",\"tab_id\":\"w2:t2\",\"workspace_id\":\"w2\"}}}\n" ;;
       esac
     }
@@ -1964,10 +1927,10 @@ test_projection_close_busy_pane_falls_back_to_plain_close() {
   sleep 300 & bgpid=$!
   # The pane still has a foreground agent, so the idle-shell proof refuses.
   printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p2","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"zsh","argv0":"zsh"},{"pid":99999,"name":"pi","argv0":"pi"}]}}}\n' "$bgpid" "$bgpid" "$bgpid" > "$resp/7.out"
-  printf '%s\n' '{"result":{"workspace_id":"w2","tab_id":"w2:t2","pane_id":"w2:p2"}}' > "$resp/8.out"
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/9.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/10.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/11.out"
+  cp "$resp/3.out" "$resp/8.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/10.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/11.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/12.out"
   make_death_lab "$dir" "$bgpid"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -2001,9 +1964,11 @@ test_projection_close_transient_prompt_helper_settles_then_uses_pane_death() {
   printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p2","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":99998,"name":"starship","argv":["/usr/local/bin/starship","prompt","--continuation"]},{"pid":%s,"name":"zsh","argv0":"zsh"}]}}}\n' "$bgpid" "$bgpid" "$bgpid" > "$resp/7.out"
   # Sample 2: the helper finished; the shell is provably alone and idle.
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/8.out"
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/9.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/10.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/11.out"
+  cp "$resp/3.out" "$resp/9.out"
+  death_process_info_fixture w2:p2 "$bgpid" > "$resp/10.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/11.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/12.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/13.out"
   make_death_lab "$dir" "$bgpid"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -2035,7 +2000,9 @@ test_projection_close_death_stops_on_capability_failure() {
   cp "$resp/1.out" "$resp/6.out"
   bash -c 'trap "" HUP; sleep 300' & bgpid=$!
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
-  printf '%s\n' '{"error":{"code":"internal_error","message":"transient failure"}}' > "$resp/8.out"
+  cp "$resp/3.out" "$resp/8.out"
+  death_process_info_fixture w2:p2 "$bgpid" > "$resp/9.out"
+  printf '%s\n' '{"error":{"code":"internal_error","message":"transient failure"}}' > "$resp/10.out"
   make_death_lab "$dir" "$bgpid"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -2066,14 +2033,18 @@ test_projection_close_death_failure_falls_back_to_plain_close() {
   cp "$resp/1.out" "$resp/6.out"
   bash -c 'trap "" HUP; sleep 300' & bgpid=$!
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
-  printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/8.out"
-  printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/9.out"
-  printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/10.out"
-  : > "$resp/11.out"
-  printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/12.out"
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/13.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/14.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/15.out"
+  cp "$resp/3.out" "$resp/8.out"
+  death_process_info_fixture w2:p2 "$bgpid" > "$resp/9.out"
+  cp "$resp/3.out" "$resp/10.out"
+  cp "$resp/3.out" "$resp/11.out"
+  cp "$resp/3.out" "$resp/12.out"
+  printf '%s\n' '{}' > "$resp/13.out"
+  cp "$resp/3.out" "$resp/14.out"
+  cp "$resp/3.out" "$resp/15.out"
+  : > "$resp/16.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/17.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/18.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/19.out"
   make_death_lab "$dir" "$bgpid"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -2083,10 +2054,11 @@ test_projection_close_death_failure_falls_back_to_plain_close() {
     FM_BACKEND_HERDR_DEATH_CLOSE_POLLS=2 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w2:p2' "$ROOT" 2>&1)
   status=$?
-  [ "$status" -eq 0 ] || fail "an unkillable shell should fall back to the plain close: $out"
-  assert_contains "$(cat "$log")" $'pane\x1fclose\x1fw2:p2' "a failed pane-death close did not use the plain close fallback"
+  [ "$status" -eq 2 ] || fail "a malformed pane-death read should refuse before close: $out"
+  assert_not_contains "$(cat "$log")" $'pane\x1fclose\x1fw2:p2' "a malformed pane-death read triggered the plain close fallback"
+  kill -0 "$bgpid" 2>/dev/null || fail "a malformed pane-death read signaled the pane's shell"
   kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
-  pass "herdr presentation cleanup: a failed pane-death close falls back to the plain close"
+  pass "herdr presentation cleanup: a malformed pane-death read refuses before close"
 }
 
 test_projection_close_death_still_restores_a_stolen_focus() {
@@ -2102,13 +2074,15 @@ test_projection_close_death_still_restores_a_stolen_focus() {
   cp "$resp/1.out" "$resp/6.out"
   sleep 300 & bgpid=$!
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/8.out"
+  cp "$resp/3.out" "$resp/8.out"
+  death_process_info_fixture w2:p2 "$bgpid" > "$resp/9.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/10.out"
   # The backstop still fires when the post-close snapshot disagrees.
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":true}]}}' > "$resp/9.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w3:t1","focused":true}]}}' > "$resp/10.out"
-  printf '%s\n' '{"result":{"tab":{"tab_id":"w1:t1","workspace_id":"w1"}}}' > "$resp/11.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false}]}}' > "$resp/13.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/14.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":true}]}}' > "$resp/11.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w3:t1","focused":true}]}}' > "$resp/12.out"
+  printf '%s\n' '{"result":{"tab":{"tab_id":"w1:t1","workspace_id":"w1"}}}' > "$resp/13.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false}]}}' > "$resp/15.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/16.out"
   make_death_lab "$dir" "$bgpid"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -2139,14 +2113,18 @@ test_projection_close_death_never_sigkills_a_reused_pid() {
   # been reused by an unrelated process the pane no longer owns.
   bash -c 'trap "" HUP; sleep 300' & bgpid=$!
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
-  cp "$resp/3.out" "$resp/8.out"   # SIGHUP poll 1: pane still present
-  cp "$resp/3.out" "$resp/9.out"   # SIGHUP poll 2: pane still present
-  cp "$resp/3.out" "$resp/10.out"  # strict pane recheck before escalation
-  death_process_info_fixture w2:p2 99997 > "$resp/11.out"
-  cp "$resp/3.out" "$resp/12.out" # fallback explicit close: exact pane precheck
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/13.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/14.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/15.out"
+  cp "$resp/3.out" "$resp/8.out"   # exact pane proof before SIGHUP
+  death_process_info_fixture w2:p2 "$bgpid" > "$resp/9.out"
+  cp "$resp/3.out" "$resp/10.out"  # SIGHUP poll 1: pane still present
+  cp "$resp/3.out" "$resp/11.out"  # SIGHUP poll 2: pane still present
+  cp "$resp/3.out" "$resp/12.out"  # strict pane recheck before escalation
+  cp "$resp/3.out" "$resp/13.out"  # escalation presence proof
+  death_process_info_fixture w2:p2 99997 > "$resp/14.out"
+  cp "$resp/3.out" "$resp/15.out" # fallback explicit close: exact pane precheck
+  : > "$resp/16.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/17.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/18.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/19.out"
   make_death_lab "$dir" "$bgpid"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -2252,9 +2230,11 @@ test_kill_emptying_non_focused_uses_pane_death() {
   cp "$resp/1.out" "$resp/6.out"
   sleep 300 & bgpid=$!
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/8.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/9.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/10.out"
+  cp "$resp/3.out" "$resp/8.out"
+  death_process_info_fixture w2:p2 "$bgpid" > "$resp/9.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/10.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/11.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/12.out"
   make_death_lab "$dir" "$bgpid"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -2958,7 +2938,7 @@ test_projection_reclaim_replaces_only_exact_husk_and_advances_binding() {
   [ -n "$agent_line" ] && [ "$agent_line" -lt "$close_line" ] \
     || fail "reclaim did not recheck the old pane agent state before the close"
   boundary_mutations=$(sed -n "$((agent_line + 1)),$((close_line - 1))p" "$log" \
-    | grep -Ev $'\x1f(session\x1flist|tab\x1flist|pane\x1f(identity-bound|get|list)|workspace\x1flist)' || true)
+    | grep -Ev $'\x1f(session\x1flist|tab\x1flist|pane\x1f(get|list)|workspace\x1flist)' || true)
   [ -z "$boundary_mutations" ] \
     || fail "reclaim mutated between the old pane agent recheck and the close: $boundary_mutations"
   assert_not_contains "$calls" $'workspace\x1fclose' "reclaim introduced workspace-close authority"
@@ -3085,7 +3065,8 @@ test_normalize_key() {
 test_capture_calls_pane_read() {
   local dir log resp fb out
   dir="$TMP_ROOT/capture"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '%s\n' '{"result":{"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p2","text":"line one\nline two\nline three\n"}}' > "$resp/1.out"
+  printf '%s\n' '{"result":{"pane":{"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p2"}}}' > "$resp/1.out"
+  printf '%s\n' '{"result":{"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p2","text":"line one\nline two\nline three\n"}}' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
   # Requesting 250 (already >= the 200 floor) passes straight through as the
   # fetch bound; the adapter then trims to the caller's requested 250 lines
@@ -3094,8 +3075,8 @@ test_capture_calls_pane_read() {
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_target_ready() { fm_backend_herdr_parse_target "$1"; FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=w1; FM_BACKEND_HERDR_EXPECTED_TAB_ID=w1:t2; }; fm_backend_herdr_capture default:w1:p2 250' "$ROOT" )
   [ "$out" = $'line one\nline two\nline three' ] || fail "capture did not pass through pane read output, got '$out'"
-  assert_contains "$(cat "$log")" "HERDR_SESSION=default"$'\x1f''pane'$'\x1f''identity-bound'$'\x1f''--workspace-id'$'\x1f''w1'$'\x1f''--tab-id'$'\x1f''w1:t2'$'\x1f''--pane-id'$'\x1f''w1:p2'$'\x1f''--operation'$'\x1f''read'$'\x1f''--source'$'\x1f''recent'$'\x1f''--lines'$'\x1f''250' \
-    "capture did not call the identity-bound pane read with the right target and line bound"
+  assert_contains "$(cat "$log")" "HERDR_SESSION=default"$'\x1f''pane'$'\x1f''read'$'\x1f''w1:p2'$'\x1f''--source'$'\x1f''recent'$'\x1f''--lines'$'\x1f''250' \
+    "capture did not call the supported pane read with the right target and line bound"
   pass "fm_backend_herdr_capture: calls 'pane read <pane> --source recent --lines N' with the session set"
 }
 
@@ -3106,7 +3087,8 @@ test_capture_works_around_small_lines_bug() {
   # last N lines. The adapter must never ask herdr for a small --lines bound -
   # it always fetches >= 200 and trims locally with tail.
   dir="$TMP_ROOT/capture-small"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '%s\n' '{"result":{"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p2","text":"a\nb\nc\nd\ne\n"}}' > "$resp/1.out"
+  printf '%s\n' '{"result":{"pane":{"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p2"}}}' > "$resp/1.out"
+  printf '%s\n' '{"result":{"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p2","text":"a\nb\nc\nd\ne\n"}}' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -3144,7 +3126,7 @@ test_send_key_normalizes_and_targets_pane() {
   PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_key default:w1:p2 Escape' "$ROOT"
   expect_code 0 $? "send_key should succeed"
-  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''identity-bound'$'\x1f''--workspace-id'$'\x1f''w1'$'\x1f''--tab-id'$'\x1f''w1:t2'$'\x1f''--pane-id'$'\x1f''w1:p2'$'\x1f''--operation'$'\x1f''send-keys'$'\x1f''escape' "send_key did not normalize Escape to escape through the identity-bound operation"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''escape' "send_key did not normalize Escape to escape through the supported pane operation"
   pass "fm_backend_herdr_send_key: normalizes the key and targets the right pane"
 }
 
@@ -3854,14 +3836,16 @@ test_send_text_submit_preexisting_working_does_not_confirm_failed_enter() {
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
   : > "$resp/2.normalize-agent"
   printf '  ready\n' > "$resp/3.out"
-  printf '1\n' > "$resp/4.exit"
+  printf '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}\n' > "$resp/4.out"
+  : > "$resp/4.consume-pane-get"
+  printf '1\n' > "$resp/5.exit"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_target_ready() { fm_backend_herdr_parse_target "$1"; FM_BACKEND_HERDR_EXPECTED_TARGET="$1"; FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=w1; FM_BACKEND_HERDR_EXPECTED_TAB_ID=w1:t2; }; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
   status=$?
   [ "$status" -eq 2 ] || fail "a failed Enter must remain a typed native refusal, got rc=$status out='$out'"
   [ -z "$out" ] || fail "a failed Enter must not emit a neutral delivery state: $out"
-  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''identity-bound'$'\x1f''--workspace-id'$'\x1f''w1'$'\x1f''--tab-id'$'\x1f''w1:t2'$'\x1f''--pane-id'$'\x1f''w1:p2'$'\x1f''--operation'$'\x1f''send-keys'$'\x1f''enter' "send_text_submit did not attempt the identity-bound Enter"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "send_text_submit did not attempt the supported pane Enter"
   [ "$(grep -c $'\x1f''agent'$'\x1f''get' "$log")" -eq 1 ] || fail "a failed Enter must not run native delivery confirmation"
   pass "fm_backend_herdr_send_text_submit: a failed Enter cannot borrow preexisting working state as queued-delivery proof"
 }
@@ -3871,14 +3855,16 @@ test_send_text_submit_idle_baseline_does_not_confirm_failed_enter() {
   dir="$TMP_ROOT/submit-idle-enter-failed"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
   : > "$resp/2.normalize-agent"
-  printf '1\n' > "$resp/3.exit"
+  printf '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}\n' > "$resp/3.out"
+  : > "$resp/3.consume-pane-get"
+  printf '1\n' > "$resp/4.exit"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_target_ready() { fm_backend_herdr_parse_target "$1"; FM_BACKEND_HERDR_EXPECTED_TARGET="$1"; FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=w1; FM_BACKEND_HERDR_EXPECTED_TAB_ID=w1:t2; }; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
   status=$?
   [ "$status" -eq 2 ] || fail "a failed Enter must remain a typed native refusal, got rc=$status out='$out'"
   [ -z "$out" ] || fail "a failed Enter must not emit a neutral delivery state: $out"
-  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''identity-bound'$'\x1f''--workspace-id'$'\x1f''w1'$'\x1f''--tab-id'$'\x1f''w1:t2'$'\x1f''--pane-id'$'\x1f''w1:p2'$'\x1f''--operation'$'\x1f''send-keys'$'\x1f''enter' "send_text_submit did not attempt the identity-bound Enter"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "send_text_submit did not attempt the supported pane Enter"
   [ "$(grep -c $'\x1f''agent'$'\x1f''get' "$log")" -eq 1 ] || fail "a failed Enter must not run native delivery confirmation"
   pass "fm_backend_herdr_send_text_submit: a failed Enter cannot borrow a later native transition as delivery proof"
 }
@@ -4179,7 +4165,13 @@ test_scripts_route_explicit_target_through_meta_backend() {
     "herdr_session=default" "herdr_workspace_id=w1" "herdr_tab_id=w1:t1" \
     "herdr_pane_id=w1:p2"
   touch "$state/.last-watcher-beat"
-  printf 'captured herdr pane\n' > "$resp/1.out"
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t1"}}}' > "$resp/1.out"
+  : > "$resp/1.consume-pane-get"
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t1"}}}' > "$resp/2.out"
+  : > "$resp/2.consume-pane-get"
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t1"}}}' > "$resp/3.out"
+  : > "$resp/3.consume-pane-get"
+  printf '%s\n' '{"result":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t1","text":"captured herdr pane\n"}}' > "$resp/4.out"
   fb=$(make_herdr_fakebin "$dir")
   cat > "$fb/tmux" <<'SH'
 #!/usr/bin/env bash
