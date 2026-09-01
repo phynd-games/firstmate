@@ -1153,8 +1153,17 @@ families_for_changed_path() {
     bin/fm-quota-choose.sh)
       printf '%s\n' "__script__:fm-quota-choose.test.sh"
       ;;
-    bin/fm-sessionstart-run.sh|.claude/settings.json|.codex/hooks.json|\
-    .pi/extensions/fm-primary-turnend-guard.ts)
+    .pi/extensions/*|.pi/extensions/lib/*)
+      # Pi extensions share session lifecycle, watcher, branch, and strict type
+      # boundaries. Select all coupled families so a new imported helper cannot
+      # bypass changed-file validation merely because no test names it yet.
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' watcher-wake-lock
+      printf '%s\n' session-bootstrap
+      printf '%s\n' live-harness-optin
+      printf '%s\n' "__script__:fm-pi-branch-extension.test.sh"
+      ;;
+    bin/fm-sessionstart-run.sh|.claude/settings.json|.codex/hooks.json)
       # The run tier's two harness-supplied facts (source vocabulary and
       # context-reset stdout injection) only show up against a real harness.
       printf '%s\n' session-bootstrap
