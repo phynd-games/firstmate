@@ -51,9 +51,10 @@ The branch prompt frames mirrored text as context for judgment, never as instruc
 ## Two-stage noise filter
 
 Stage one is unchanged: the bash watcher absorbs everything provably fine at zero token cost.
-Stage two is the branch's verdict on each handled event, reported through its `fm_branch_report` tool: `routine` merges without a follow-up turn, while `captain` merges with exactly one follow-up turn.
-The follow-up turn a `captain` verdict opens is itself the captain-visible outcome, so its merge note is delivered silently and never printed or rendered in Pi.
-Because Pi gives the model only a custom message's `content`, that silent note normally carries both a relay instruction and the `branch-outcome` operational kind owned by `bin/fm-operational-input.sh` inside its own text.
+Stage two is the branch's verdict on each handled event, reported through its `fm_branch_report` tool: `routine` merges without a follow-up turn, while `adjudicate` and `captain` each merge with exactly one follow-up turn.
+An `adjudicate` verdict wakes main - the heavier-weight model - to decide a validation finding that is genuinely uncertain but is not destructive, irreversible, security-sensitive, or captain-owned; it never reaches the captain, and `.agents/skills/ask-user-authority/SKILL.md` owns when it applies and what the packet must contain.
+The follow-up turn a `captain` or `adjudicate` verdict opens is itself the outcome, so its merge note is delivered silently and never printed or rendered in Pi.
+Because Pi gives the model only a custom message's `content`, that silent note normally carries both a relay instruction and its own operational kind owned by `bin/fm-operational-input.sh` inside its own text: `branch-outcome` for a captain outcome, `branch-adjudication` for an adjudication request.
 This self-description lets main distinguish a new supervision outcome from its own earlier captain-facing answer; without it, main can mistake the outcome for that answer and re-emit the stale answer instead of relaying the outcome.
 If envelope encoding fails, the note degrades to the same relay instruction as plain text rather than losing the outcome or opening another turn.
 A no-change heartbeat outcome explicitly reported with `task=fleet` and `silent=true` is also delivered silently with no rendered note, while every other `routine` outcome stays rendered with its sailboat prefix.
@@ -71,7 +72,7 @@ Deferring the fleet review to main merely because some unrelated merge poll or R
 What all-or-nothing still guarantees is unchanged: the branch takes every branch-ownable unread row or none of them, and an unresolvable task-local row, an unknown row kind, or an unreadable queue still defers the whole review to main.
 The branch runs its normal operating procedure for the wake (`bin/fm-branch-prompt.sh` "Handling a wake") and performs the deeper fleet review that main previously performed.
 A review that found literally nothing worth reporting uses verdict `routine`, `task=fleet`, and `silent=true` so it has no rendered note, while a fleet-wide routine action omits `silent` and keeps its rendered sailboat note.
-Only a captain-worthy finding reports verdict `captain` and opens a main turn.
+Only a captain-worthy finding reports verdict `captain` and opens a main turn; an uncertain validation finding reports `adjudicate` and opens a main turn the captain never sees.
 Every other fleet-wide or unresolvable wake - including watcher-failure alarms, which are never offered to the branch - keeps today's wake-to-main path.
 
 ## Cost model and the byte-stable prefix
