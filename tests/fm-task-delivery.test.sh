@@ -42,7 +42,7 @@ make_home() {  # <name> [<registry-line>...]
 }
 
 write_brief() {  # <home> <id> [<recorded-mode>]
-  local home=$1 id=$2 mode=${3:-}
+  local home=$1 id=$2 mode=${3:-} reason="configuration: task=$id; target=tests/fm-task-delivery.test.sh delivery contract fixture; action=exercise behavior without product change"
   mkdir -p "$home/data/$id"
   {
     printf 'You are a crewmate.\n\n# Definition of done\n'
@@ -50,11 +50,11 @@ write_brief() {  # <home> <id> [<recorded-mode>]
   } > "$home/data/$id/brief.md"
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
     "$ROOT/bin/fm-lavish-intake.sh" exempt "$id" \
-      --reason 'configuration: target=tests/fm-task-delivery.test.sh delivery contract fixture; action=exercise behavior without product change' >/dev/null
+      --reason "$reason" >/dev/null
   cat >> "$home/data/$id/brief.md" <<EOF
 Lavish intake contract: not-applicable
 Lavish intake evidence: $home/state/$id.lavish-intake
-Lavish intake reason: configuration: target=tests/fm-task-delivery.test.sh delivery contract fixture; action=exercise behavior without product change
+Lavish intake reason: $reason
 EOF
 }
 

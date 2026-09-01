@@ -232,7 +232,7 @@ intake_owner_record_matches() {  # <task-id> <owner-token> [<hold-reason>]
   [ "$(sed -n 's/^version=//p' "$path" | head -1)" = 1 ] \
     && [ "$(sed -n 's/^task_id=//p' "$path" | head -1)" = "$id" ] \
     && [ "$(sed -n 's/^owner_token=//p' "$path" | head -1)" = "$owner" ] \
-    && [ "$(sed -n 's/^hold_generation=//p' "$path" | head -1)" = "$owner" ] \
+    && [ -n "$(sed -n 's/^hold_generation=//p' "$path" | head -1)" ] \
     && { [ "$#" -lt 3 ] || [ "$(sed -n 's/^hold_reason=//p' "$path" | head -1)" = "$reason" ]; }
 }
 
@@ -243,8 +243,8 @@ write_intake_owner_record() {  # <task-id> <owner-token> <hold-reason>
   tmp=$(umask 077; mktemp "$STATE/.lavish-intake-owner.XXXXXX") \
     || fail "cannot stage intake ownership"
   if ! {
-    printf 'version=1\ntask_id=%s\nowner_token=%s\nhold_generation=%s\nhold_reason=%s\nphase=held\n' \
-      "$id" "$owner" "$owner" "$reason" > "$tmp"
+    printf 'version=1\ntask_id=%s\nowner_token=%s\nhold_generation=pending\nhold_reason=%s\nphase=held\n' \
+      "$id" "$owner" "$reason" > "$tmp"
     chmod 0600 "$tmp"
     mv -f -- "$tmp" "$path"
   }; then
@@ -279,19 +279,28 @@ intake_owner_record_digest() {  # <task-id>
   sed -n 's/^decision_digest=//p' "$path" | head -1
 }
 
-update_intake_owner_record() {  # <task-id> <owner-token> <hold-reason> <phase> [<decision-digest>]
-  local id=$1 owner=$2 reason=$3 phase=$4 digest=${5-} path tmp
+update_intake_owner_record() {  # <task-id> <owner-token> <hold-reason> <phase> [<decision-digest>] [<hold-generation>]
+  local id=$1 owner=$2 reason=$3 phase=$4 digest=${5-} path tmp hold_generation release_generation
   path=$(intake_owner_path "$id")
   intake_owner_record_matches "$id" "$owner" "$reason" \
     || fail "intake ownership record does not match task $id"
   case "$phase" in held|releasing|released) ;; *) fail "invalid intake ownership phase: $phase" ;; esac
+  hold_generation=${6-}
+  [ -n "$hold_generation" ] || hold_generation=$(sed -n 's/^hold_generation=//p' "$path" | head -1)
+  release_generation=$(sed -n 's/^release_generation=//p' "$path" | head -1)
+  if [ "$phase" = released ] && [ -n "$digest" ]; then
+    release_generation=$(sha256_text "captain-intake-release\n$id\n$owner\n$hold_generation\n$digest")
+  fi
   tmp=$(umask 077; mktemp "$STATE/.lavish-intake-owner.XXXXXX") \
     || fail "cannot stage intake ownership update"
   if ! {
     printf 'version=1\ntask_id=%s\nowner_token=%s\nhold_generation=%s\nhold_reason=%s\nphase=%s\n' \
-      "$id" "$owner" "$owner" "$reason" "$phase" > "$tmp"
+      "$id" "$owner" "$hold_generation" "$reason" "$phase" > "$tmp"
     if [ -n "$digest" ]; then
       printf 'decision_digest=%s\n' "$digest" >> "$tmp"
+    fi
+    if [ -n "$release_generation" ]; then
+      printf 'release_generation=%s\n' "$release_generation" >> "$tmp"
     fi
     chmod 0600 "$tmp"
     mv -f -- "$tmp" "$path"
@@ -299,6 +308,22 @@ update_intake_owner_record() {  # <task-id> <owner-token> <hold-reason> <phase> 
     rm -f -- "$tmp"
     fail "cannot update intake ownership"
   fi
+}
+
+hold_generation_from_show() {  # <task-id> <show-output>
+  local id=$1 show=$2
+  sha256_text "task_id=$id
+state=$(show_field "$show" state)
+hold_kind=$(show_field_value "$show" hold_kind)
+hold_reason=$(show_field_value "$show" hold_reason)
+hold_until=$(show_field_value "$show" hold_until)"
+}
+
+intake_owner_record_release_generation() {
+  local path
+  path=$(intake_owner_path "$1")
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  sed -n 's/^release_generation=//p' "$path" | head -1
 }
 
 validate_one_line() {  # <label> <value>
@@ -608,6 +633,8 @@ command_hold() {
   hold_kind=$(show_field_value "$show" hold_kind)
   [ "$hold_kind" = captain ] || fail "task $id did not retain its captain hold"
   if [ -n "$intake_owner" ]; then
+    update_intake_owner_record "$id" "$owner_token" "$owner_reason" held '' \
+      "$(hold_generation_from_show "$id" "$show")"
     intake_owner_record_matches "$id" "$owner_token" "$owner_reason" \
       || fail "task $id did not retain its intake ownership record"
     CAPTAIN_INTAKE_OWNER_RECORD_CREATED=0
@@ -918,7 +945,7 @@ command_intake_owner() {
 
 command_intake_resolution() {
   local id=${1:-} owner=${2:-} source=${3:-} answer=${4:-} label=${5:-}
-  local show state hold_kind body digest phase recorded_digest owner_reason owner_generation
+  local show state hold_kind body digest phase recorded_digest owner_generation current_generation release_generation expected_release_generation
   [ "$#" -eq 5 ] || { usage >&2; exit 2; }
   validate_slug task-id "$id"
   validate_slug intake-owner "$owner"
@@ -934,13 +961,13 @@ command_intake_resolution() {
   state=$(show_field "$show" state)
   hold_kind=$(show_field_value "$show" hold_kind)
   owner_generation=$(sed -n 's/^hold_generation=//p' "$(intake_owner_path "$id")" | head -1)
-  [ "$owner_generation" = "$owner" ] || return 1
-  owner_reason=$(sed -n 's/^hold_reason=//p' "$(intake_owner_path "$id")" | head -1)
+  case "$owner_generation" in
+    ''|pending|*[!0-9a-f]*) return 1 ;;
+  esac
   case "$hold_kind" in
     '') ;;
     captain)
-      [ "$state" = done ] || return 1
-      [ "$(show_field_value "$show" hold_reason)" = "$owner_reason" ] || return 1
+      return 1
       ;;
     *) return 1 ;;
   esac
@@ -949,12 +976,15 @@ command_intake_resolution() {
   [ "$(recorded_resolution_mode "$body" || true)" = released ] || return 1
   recorded_digest=$(recorded_decision_digest "$body" || true)
   [ "$recorded_digest" = "$digest" ] || return 1
+  expected_release_generation=$(sha256_text "captain-intake-release\n$id\n$owner\n$owner_generation\n$digest")
   if [ "$phase" = releasing ]; then
     update_intake_owner_record "$id" "$owner" \
       "$(sed -n 's/^hold_reason=//p' "$(intake_owner_path "$id")" | head -1)" \
       released "$digest" || return 1
   else
     [ "$(intake_owner_record_digest "$id" || true)" = "$digest" ] || return 1
+    release_generation=$(intake_owner_record_release_generation "$id" || true)
+    [ "$release_generation" = "$expected_release_generation" ] || return 1
   fi
   printf 'released: %s\n' "$id"
 }

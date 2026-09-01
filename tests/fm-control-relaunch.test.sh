@@ -1317,7 +1317,7 @@ test_promotion_uses_overridden_data_root() {
   dir=$(new_case promote-data-override rl30)
   alternate="$dir/alternate-data"
   mkdir -p "$alternate/rl30"
-  reason='documentation: target=tests/fm-control-relaunch.test.sh promotion data-root lookup; action=validate alternate brief resolution'
+  reason='documentation: task=rl30; target=tests/fm-control-relaunch.test.sh promotion data-root lookup; action=validate alternate brief resolution'
   fm_write_meta "$dir/home/state/rl30.meta" "window=fmses:fm-rl30" "kind=scout"
   printf 'scout brief for rl30\nLavish intake contract: not-applicable\nLavish intake reason: %s\n' \
     "$reason" > "$alternate/rl30/brief.md"

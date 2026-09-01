@@ -5,7 +5,7 @@
 #   fm-lavish-intake.sh template <task-id> --output <artifact.html>
 #   fm-lavish-intake.sh start <task-id> --artifact <artifact.html> [--reason <text>]
 #   fm-lavish-intake.sh record <task-id> --artifact <artifact.html> --result <result>
-#   fm-lavish-intake.sh exempt <task-id> --reason '<class>: target=<path-like subject>; action=<specific multiword change>'
+#   fm-lavish-intake.sh exempt <task-id> --reason '<class>: task=<task-id>; target=<path-like subject>; action=<specific concrete change>'
 #   fm-lavish-intake.sh verify <task-id> [--evidence <receipt>]
 #   fm-lavish-intake.sh check-brief <task-id> <brief.md>
 #
@@ -195,112 +195,275 @@ require_unique_meta() {
   meta_value "$file" "$key"
 }
 
+reject_existing_intake_ownership() {
+  local task=$1 sid=$2 artifact=$3 path owner_task owner_source owner_artifact marker_task marker_source bound
+  for path in "$STATE"/*.lavish-intake-session; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    [ -f "$path" ] && [ ! -L "$path" ] \
+      || fail "Lavish intake session state is unsafe: $path"
+    owner_source=$(meta_value "$path" source_id)
+    [ "$owner_source" = "$sid" ] || continue
+    owner_task=$(meta_value "$path" task_id)
+    fm_task_id_path_safe "$owner_task" \
+      || fail "Lavish intake session state has an unsafe task owner: $path"
+    [ "$owner_task" = "$task" ] \
+      || fail "Lavish intake source $sid is already owned by task $owner_task"
+    owner_artifact=$(meta_value "$path" artifact)
+    [ "$owner_artifact" = "$artifact" ] \
+      || fail "Lavish intake source $sid has stale ownership for task $task"
+    fail "Lavish intake source $sid already has active ownership for task $task"
+  done
+  path=$(intake_source_path "$sid")
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    [ -f "$path" ] && [ ! -L "$path" ] \
+      || fail "Lavish intake source marker is unsafe: $path"
+    [ "$(grep -c '^task_id=' "$path" 2>/dev/null || true)" -eq 1 ] \
+      && [ "$(grep -c '^source_id=' "$path" 2>/dev/null || true)" -eq 1 ] \
+      || fail "Lavish intake source marker is malformed: $path"
+    marker_task=$(meta_value "$path" task_id)
+    marker_source=$(meta_value "$path" source_id)
+    fm_task_id_path_safe "$marker_task" \
+      || fail "Lavish intake source marker has an unsafe task owner"
+    [ "$marker_source" = "$sid" ] \
+      || fail "Lavish intake source marker has the wrong source identity"
+    [ "$marker_task" = "$task" ] \
+      || fail "Lavish intake source $sid is already owned by task $marker_task"
+    fail "Lavish intake source $sid retains typed ownership for task $task"
+  fi
+  path="$STATE/decision-bindings/$sid.origin"
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    [ -f "$path" ] && [ ! -L "$path" ] \
+      || fail "Lavish intake source binding is unsafe: $path"
+    bound=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$sid" 2>/dev/null || true)
+    [ -z "$bound" ] || fail "Lavish intake source $sid is already bound to task $bound"
+  fi
+}
+
 artifact_fields_present() {
-  local artifact=$1 task=$2 contract_error validation_nonce
-  if ! contract_error=$(perl - "$artifact" "$task" "$FIELDS" 2>&1 <<'PERL'
-use strict;
-use warnings;
+  local artifact=$1 task=$2 contract_error contract_json validation_nonce
+  if ! contract_json=$(python3 - "$artifact" "$task" "$FIELDS" 2>&1 <<'PY'
+from html.parser import HTMLParser
+import json
+import sys
 
-my ($path, $task, $field_text) = @ARGV;
-open my $handle, '<', $path or do {
-  print STDERR "cannot read intake artifact\n";
-  exit 1;
-};
-local $/;
-my $html = <$handle>;
+path, task, field_text = sys.argv[1:]
+fields = field_text.split()
 
-sub reject {
-  print STDERR "$_[0]\n";
-  exit 1;
-}
 
-sub attr_equals {
-  my ($attrs, $name, $value) = @_;
-  return $attrs =~ /(?:^|\s)\Q$name\E\s*=\s*[\"']\Q$value\E[\"']/i;
-}
+class IntakeParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True, scripting=True)
+        self.forms = []
+        self.form = None
+        self.inert = []
+        self.script = None
+        self.events = []
+        self.root_count = 0
+        self.root_valid = False
+        self.error = None
 
-sub attr_present {
-  my ($attrs, $name) = @_;
-  return $attrs =~ /(?:^|\s)\Q$name\E(?:\s|=|$)/i;
-}
+    @staticmethod
+    def attributes(raw):
+        result = {}
+        for name, value in raw:
+            if name in result:
+                raise ValueError("artifact contains duplicate attributes")
+            result[name] = value
+        return result
 
-$html =~ s/<!--.*?-->//gs;
-$html =~ /<html\b[^>]*\bdata-lavish-intake\s*=\s*[\"']v1[\"']/i
-  or reject 'artifact is not a Lavish intake v1 surface';
+    def handle_starttag(self, tag, raw):
+        tag = tag.lower()
+        try:
+            attrs = self.attributes(raw)
+        except ValueError as error:
+            self.error = str(error)
+            return
+        if tag == "html":
+            self.root_count += 1
+            self.root_valid = attrs.get("data-lavish-intake") == "v1"
+        if tag in ("template", "noscript"):
+            self.inert.append(tag)
+            return
+        if self.inert:
+            return
+        if tag == "script":
+            self.script = {"attrs": attrs, "parts": []}
+            return
+        if tag == "form":
+            if self.form is not None:
+                self.error = "artifact contains nested intake forms"
+                return
+            form_index = len(self.forms)
+            self.form = {"attrs": attrs, "controls": [], "closed": False}
+            self.forms.append(self.form)
+            self.events.append({"kind": "form-start", "index": form_index, "attrs": attrs})
+            return
+        if self.form is not None and tag in ("textarea", "button", "input"):
+            control = {"tag": tag, "attrs": attrs}
+            self.form["controls"].append(control)
+            self.events.append({
+                "kind": "control",
+                "form_index": len(self.forms) - 1,
+                "tag": tag,
+                "attrs": attrs,
+            })
+        elif "id" in attrs:
+            self.events.append({"kind": "element", "tag": tag, "attrs": attrs})
 
-my @forms;
-while ($html =~ m{<form\b([^>]*)>(.*?)</form\s*>}gis) {
-  my ($attrs, $body) = ($1, $2);
-  next unless attr_equals($attrs, 'id', 'feature-intake');
-  next unless attr_equals($attrs, 'data-lavish-question', $task);
-  push @forms, $body;
-}
-@forms == 1 or reject 'artifact has no keyed intake question';
-my $form = $forms[0];
+    def handle_startendtag(self, tag, raw):
+        self.handle_starttag(tag, raw)
 
-my @submit_controls;
-while ($form =~ m{<(?:button|input)\b([^>]*)>}gis) {
-  my $attrs = $1;
-  next unless attr_equals($attrs, 'data-lavish-intake-submit', 'true');
-  next unless attr_equals($attrs, 'type', 'submit');
-  push @submit_controls, $attrs;
-}
-@submit_controls == 1 or reject 'artifact has no explicit intake submit control';
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag == "script" and self.script is not None:
+            attrs = self.script["attrs"]
+            script_type = (attrs.get("type") or "").strip().lower()
+            if not script_type or script_type in {
+                "module",
+                "text/javascript",
+                "application/javascript",
+                "text/ecmascript",
+                "application/ecmascript",
+            }:
+                self.events.append({
+                    "kind": "script",
+                    "attrs": attrs,
+                    "code": "".join(self.script["parts"]),
+                })
+            self.script = None
+            return
+        if tag in ("template", "noscript"):
+            if not self.inert or self.inert[-1] != tag:
+                self.error = "artifact has mismatched inert elements"
+            else:
+                self.inert.pop()
+            return
+        if self.inert:
+            return
+        if tag == "form":
+            if self.form is None:
+                self.error = "artifact contains an unmatched form close"
+            else:
+                self.form["closed"] = True
+                self.events.append({"kind": "form-end", "index": len(self.forms) - 1})
+                self.form = None
 
-my @textareas = ($form =~ m{<textarea\b([^>]*)>}gis);
-for my $field (split /\s+/, $field_text) {
-  my @matches = grep {
-    attr_equals($_, 'name', $field)
-      && attr_equals($_, 'data-lavish-intake-field', $field)
-      && attr_present($_, 'required')
-  } @textareas;
-  @matches == 1 or reject "artifact is missing required field: $field";
-}
-PERL
+    def handle_data(self, data):
+        if self.script is not None:
+            self.script["parts"].append(data)
+
+
+parser = IntakeParser()
+try:
+    with open(path, encoding="utf-8") as handle:
+        parser.feed(handle.read())
+    parser.close()
+except (OSError, ValueError) as error:
+    print(str(error), file=sys.stderr)
+    raise SystemExit(1)
+
+if parser.error:
+    print(parser.error, file=sys.stderr)
+    raise SystemExit(1)
+if parser.root_count != 1 or not parser.root_valid:
+    print("artifact is not a Lavish intake v1 surface", file=sys.stderr)
+    raise SystemExit(1)
+if parser.inert or parser.script is not None or parser.form is not None:
+    print("artifact has an incomplete active DOM", file=sys.stderr)
+    raise SystemExit(1)
+identified = [form for form in parser.forms if form["attrs"].get("id") == "feature-intake"]
+if len(identified) != 1 or identified[0]["attrs"].get("data-lavish-question") != task:
+    print("artifact has no keyed intake question", file=sys.stderr)
+    raise SystemExit(1)
+form = identified[0]
+for field in fields:
+    matches = [
+        control for control in form["controls"]
+        if control["tag"] == "textarea"
+        and control["attrs"].get("name") == field
+        and control["attrs"].get("data-lavish-intake-field") == field
+        and "required" in control["attrs"]
+    ]
+    if len(matches) != 1:
+        print(f"artifact is missing required field: {field}", file=sys.stderr)
+        raise SystemExit(1)
+submits = [
+    control for control in form["controls"]
+    if control["tag"] in ("button", "input")
+    and control["attrs"].get("data-lavish-intake-submit") == "true"
+    and (control["attrs"].get("type") or "").lower() == "submit"
+]
+if len(submits) != 1:
+    print("artifact has no explicit intake submit control", file=sys.stderr)
+    raise SystemExit(1)
+print(json.dumps({"forms": parser.forms, "events": parser.events}, separators=(",", ":")))
+PY
   ); then
-    fail "$contract_error"
+    fail "$contract_json"
   fi
   validation_nonce=$(LC_ALL=C od -An -N16 -tx1 /dev/urandom | tr -d '[:space:]') \
     || fail "could not create an intake validation nonce"
   [ -n "$validation_nonce" ] || fail "could not create an intake validation nonce"
-  if ! contract_error=$(node - "$artifact" "$task" "$FIELDS" "$validation_nonce" 2>&1 <<'NODE'
+  if ! contract_error=$(node - "$task" "$FIELDS" "$validation_nonce" "$contract_json" 2>&1 <<'NODE'
 'use strict';
-const fs = require('fs');
 const vm = require('vm');
 
-const [path, task, fieldText, validationNonce] = process.argv.slice(2);
+const [task, fieldText, validationNonce, domJson] = process.argv.slice(2);
 const fields = fieldText.split(/\s+/);
-const html = fs.readFileSync(path, 'utf8').replace(/<!--[\s\S]*?-->/g, '');
-const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)].map((match) => match[1]);
+const dom = JSON.parse(domJson);
+const attribute = (attrs, name) => Object.prototype.hasOwnProperty.call(attrs, name) ? attrs[name] : null;
+const hasAttribute = (attrs, name) => Object.prototype.hasOwnProperty.call(attrs, name);
 const fail = (message) => {
   process.stderr.write(`${message}\n`);
   process.exit(1);
 };
 
 try {
-  if (scripts.length === 0) fail('artifact has no executable intake script');
+  const executableScripts = dom.events.filter((event) => event.kind === 'script');
+  if (executableScripts.length === 0) fail('artifact has no executable intake script');
   const sentinels = Object.fromEntries(fields.map((field) => [field, `${validationNonce}-${field}`]));
-  const elements = Object.fromEntries(fields.map((field) => [field, { value: sentinels[field] }]));
-  const submit = { disabled: false };
-  const status = { textContent: '' };
-  const listeners = {};
-  const form = {
-    elements,
+  const forms = [];
+  const documentElements = new Map();
+  const queued = [];
+  const document = {
+    querySelector(selector) {
+      if (selector === '#feature-intake') {
+        return forms.find((form) => attribute(form.attrs, 'id') === 'feature-intake') || null;
+      }
+      if (selector === '#intake-status') return documentElements.get('intake-status') || null;
+      return null;
+    },
+  };
+  const formFor = (index) => forms[index];
+  const addControl = (event) => {
+    const form = formFor(event.form_index);
+    if (!form) fail('artifact control appeared without an active form');
+    const attrs = event.attrs;
+    const name = attribute(attrs, 'name');
+    if (event.tag === 'textarea' && name && fields.includes(name)) {
+      form.elements[name] = { value: sentinels[name] };
+    }
+    if ((event.tag === 'button' || event.tag === 'input') &&
+        attribute(attrs, 'data-lavish-intake-submit') === 'true' &&
+        (attribute(attrs, 'type') || '').toLowerCase() === 'submit') {
+      form.submit = { disabled: false };
+    }
+  };
+  const addForm = (event) => {
+    const listeners = {};
+    forms[event.index] = {
+      attrs: event.attrs,
+      elements: {},
+      submit: null,
+      listeners,
     addEventListener(type, listener) {
       if (type === 'submit') listeners.submit = listener;
     },
     querySelector(selector) {
-      return selector === '[data-lavish-intake-submit="true"]' ? submit : null;
+      return selector === '[data-lavish-intake-submit="true"]' ? this.submit : null;
     },
   };
-  const document = {
-    querySelector(selector) {
-      if (selector === '#feature-intake') return form;
-      if (selector === '#intake-status') return status;
-      return null;
-    },
   };
-  const queued = [];
   const window = {
     lavish: {
       queuePrompt(title, choice) {
@@ -311,9 +474,26 @@ try {
   const context = vm.createContext({ document, window }, {
     codeGeneration: { strings: false, wasm: false },
   });
-  for (const script of scripts) {
-    vm.runInContext(script, context, { timeout: 1000 });
+  for (const event of dom.events) {
+    if (event.kind === 'form-start') {
+      addForm(event);
+    } else if (event.kind === 'control') {
+      addControl(event);
+    } else if (event.kind === 'element') {
+      const id = attribute(event.attrs, 'id');
+      if (id && !documentElements.has(id)) documentElements.set(id, { textContent: '' });
+    } else if (event.kind === 'script') {
+      vm.runInContext(event.code, context, { timeout: 1000 });
+    }
   }
+  const matchingForms = forms.filter((form) => form && attribute(form.attrs, 'id') === 'feature-intake');
+  if (matchingForms.length !== 1 || attribute(matchingForms[0].attrs, 'data-lavish-question') !== task) fail('artifact has no keyed intake question');
+  const domForm = matchingForms[0];
+  for (const field of fields) {
+    if (!domForm.elements[field]) fail(`artifact is missing required field: ${field}`);
+  }
+  if (!domForm.submit) fail('artifact has no explicit intake submit control');
+  const listeners = domForm.listeners;
   if (typeof listeners.submit !== 'function') fail('artifact has no executable intake submit listener');
   let prevented = false;
   const event = { preventDefault() { prevented = true; } };
@@ -330,7 +510,7 @@ try {
   if (fields.some((field) => data.intake[field] !== sentinels[field])) {
     fail('artifact queued feedback does not reflect submitted field values');
   }
-  if (submit.disabled !== true) fail('artifact submit control remains enabled after queueing');
+  if (domForm.submit.disabled !== true) fail('artifact submit control remains enabled after queueing');
   listeners.submit(event);
   if (queued.length !== 1) fail('artifact submit listener queued duplicate feedback');
 } catch (error) {
@@ -343,7 +523,7 @@ NODE
 }
 
 validate_exemption_reason() {
-  local reason=$1 detail normalized target action action_detail first_word target_words action_words meaningful_count
+  local reason=$1 expected_task=${2-} detail normalized reason_task target action action_detail first_word target_words action_words meaningful_count action_meaningful_count
   validate_one_line "exemption reason" "$reason"
   case "$reason" in
     bug-fix:*|dependency:*|configuration:*|documentation:*|"behavior-preserving refactor":*) ;;
@@ -351,12 +531,17 @@ validate_exemption_reason() {
   esac
   detail=${reason#*:}
   detail=$(printf '%s' "$detail" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
-  if [[ "$detail" =~ ^target=([^;]+)\;[[:space:]]+action=([^;]+)$ ]]; then
-    target=${BASH_REMATCH[1]}
-    action_detail=${BASH_REMATCH[2]}
+  if [[ "$detail" =~ ^task=([^;]+)\;[[:space:]]+target=([^;]+)\;[[:space:]]+action=([^;]+)$ ]]; then
+    reason_task=${BASH_REMATCH[1]}
+    target=${BASH_REMATCH[2]}
+    action_detail=${BASH_REMATCH[3]}
   else
-    fail "exemption reason must use target=<path-like subject>; action=<specific multiword change>"
+    fail "exemption reason must use task=<task-id>; target=<path-like subject>; action=<specific multiword change>"
   fi
+  reason_task=$(printf '%s' "$reason_task" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
+  validate_task_id "$reason_task"
+  [ -n "$expected_task" ] && [ "$reason_task" = "$expected_task" ] \
+    || fail "exemption reason task must match the requested task"
   target=$(printf '%s' "$target" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
   action_detail=$(printf '%s' "$action_detail" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
   [ -n "$target" ] && [ -n "$action_detail" ] \
@@ -367,6 +552,16 @@ validate_exemption_reason() {
   action_words=$(printf '%s\n' "$action_detail" | awk '{print NF}')
   [ "$target_words" -ge 2 ] && [ "$action_words" -ge 3 ] \
     || fail "exemption reason must name a concrete target and action"
+  action_meaningful_count=$(printf '%s\n' "$action_detail" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '\n' | awk '
+    BEGIN {
+      split("a an and are as at by for from in into is it no not of on or promptly safely skip the this to update with without behavior code details docs documentation fix implementation project source stuff", words)
+      for (i in words) ignored[words[i]]=1
+    }
+    !ignored[$0] { count++ }
+    END { print count + 0 }
+  ')
+  [ "$action_meaningful_count" -ge 2 ] \
+    || fail "exemption reason must name a specific action with multiple meaningful terms"
   first_word=$(printf '%s\n' "$action_detail" | awk '{print $1}')
   action=$(printf '%s' "$first_word" | tr '[:upper:]' '[:lower:]')
   case "$action" in
@@ -732,7 +927,18 @@ start_cleanup() {
   fi
   [ -z "$START_SESSION_TMP" ] || rm -f -- "$START_SESSION_TMP"
   if [ "$START_LAVISH_SESSION_CREATED" -eq 1 ]; then
-    lavish-axi end "$START_ARTIFACT" >/dev/null 2>&1 || true
+    if ! lavish-axi end "$START_ARTIFACT" >/dev/null 2>&1; then
+      printf 'fm-lavish-intake: could not end the Lavish intake session; preserving intake ownership state for retry\n' >&2
+      if [ "$START_LOCK_HELD" -eq 1 ]; then
+        fm_lock_release "$START_LOCK_PATH" || true
+        START_LOCK_HELD=0
+      fi
+      if [ "$START_SOURCE_LOCK_HELD" -eq 1 ]; then
+        fm_lock_release "$START_SOURCE_LOCK_PATH" || true
+        START_SOURCE_LOCK_HELD=0
+      fi
+      return "$status"
+    fi
   fi
   if [ "$START_SESSION_CREATED" -eq 1 ]; then
     rm -f -- "$(session_path "$START_TASK")"
@@ -911,6 +1117,13 @@ cmd_start() {
   START_ARTIFACT=$artifact
   artifact_fields_present "$artifact" "$task"
   artifact_hash=$(sha256_file "$artifact")
+  sid=$("$SCRIPT_DIR/fm-procevent-lavish.sh" source-id "$artifact") \
+    || fail "could not derive the Lavish source id"
+  START_SID=$sid
+  START_SOURCE_LOCK_PATH=$(intake_source_lock_path "$sid")
+  fm_lock_acquire_wait "$START_SOURCE_LOCK_PATH" || fail "could not lock Lavish source setup: $sid"
+  START_SOURCE_LOCK_HELD=1
+  reject_existing_intake_ownership "$task" "$sid" "$artifact"
   command -v lavish-axi >/dev/null 2>&1 || fail "lavish-axi is not installed"
   task_show=$(cd "$FM_HOME" && tasks-axi show "$task" --full 2>/dev/null || true)
   [ -n "$task_show" ] || fail "task $task is not present in the active backlog"
@@ -945,12 +1158,6 @@ cmd_start() {
     intake_hold_matches "$task" \
       || fail "could not prove intake captain-hold ownership"
   fi
-  sid=$("$SCRIPT_DIR/fm-procevent-lavish.sh" source-id "$artifact") \
-    || fail "could not derive the Lavish source id"
-  START_SID=$sid
-  START_SOURCE_LOCK_PATH=$(intake_source_lock_path "$sid")
-  fm_lock_acquire_wait "$START_SOURCE_LOCK_PATH" || fail "could not lock Lavish source setup: $sid"
-  START_SOURCE_LOCK_HELD=1
   source_path="$STATE/procevent/$sid.source"
   if [ -e "$source_path" ] || [ -L "$source_path" ]; then
     START_SOURCE_PREEXISTING=1
@@ -1155,7 +1362,7 @@ cmd_exempt() {
       *) fail "unknown exempt argument: $1" ;;
     esac
   done
-  validate_exemption_reason "$reason"
+  validate_exemption_reason "$reason" "$task"
   artifact="$STATE/$task.lavish-intake-classification"
   receipt=$(receipt_path "$task")
   mkdir -p "$STATE"
@@ -1204,7 +1411,7 @@ verify_receipt() {
       || fail "not-applicable classification marker has no unique reason"
     [ "$(meta_value "$artifact" reason)" = "$reason" ] \
       || fail "not-applicable reason does not match classification marker"
-    validate_exemption_reason "$reason"
+    validate_exemption_reason "$reason" "$task"
     [ "$(require_unique_meta "$receipt" feedback)" = not-applicable ] \
       || fail "not-applicable evidence has wrong feedback marker"
     printf 'status=not-applicable\nreason=%s\n' "$reason"

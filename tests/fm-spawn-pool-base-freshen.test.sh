@@ -13,6 +13,12 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot fm-spawn-pool-base-freshen)
 
+write_exempt_brief() {
+  local home=$1 id=$2 body=${3:-"brief for $id"} reason="configuration: task=$id; target=tests/fm-spawn-pool-base-freshen.test.sh pooled spawn fixture; action=exercise spawn behavior without product change"
+  printf '%s\nLavish intake contract: not-applicable\nLavish intake reason: %s\n' "$body" "$reason" > "$home/data/$id/brief.md"
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-lavish-intake.sh" exempt "$id" --reason "$reason" >/dev/null
+}
+
 make_case() {
   local name=$1 id=$2 default=${3:-main} case_dir home project origin pool publisher fakebin initial
   case_dir="$TMP_ROOT/$name"

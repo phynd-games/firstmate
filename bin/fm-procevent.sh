@@ -356,6 +356,36 @@ lavish_intake_registration() {
   grep -qx 'intake=1' "$registration"
 }
 
+lavish_intake_ownership_present() {
+  [ "$1" = lavish ] || return 1
+  local id=$2 path source bound
+  path="$STATE/procevent/$id.intake"
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    return 0
+  fi
+  path="$REG/$id.source"
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    [ -f "$path" ] && [ ! -L "$path" ] || return 0
+    grep -qx 'intake=1' "$path" && return 0
+  fi
+  for path in "$STATE"/*.lavish-intake-session; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    [ -f "$path" ] && [ ! -L "$path" ] || return 0
+    source=$(sed -n 's/^source_id=//p' "$path" | head -1)
+    [ "$source" = "$id" ] && return 0
+  done
+  for path in "$STATE/decision-bindings"/*.origin; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    source=${path##*/}
+    source=${source%.origin}
+    bound=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$source" 2>/dev/null || true)
+    if [ "$bound" = "$id" ] && "$SCRIPT_DIR/fm-captain-hold.sh" binding-intake "$source" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 read_adapter() {  # <source-id>
   local f; f=$(source_file "$1")
   [ -f "$f" ] && [ ! -L "$f" ] || return 1
@@ -417,6 +447,10 @@ cmd_register() {
   if ! extension_registration_replacement_safe_locked "$id"; then
     fm_procevent_source_lock_release "$id"
     die "cannot replace extension registration while its prior runner remains active: $id"
+  fi
+  if [ "$intake" -eq 0 ] && lavish_intake_ownership_present "$adapter" "$id"; then
+    fm_procevent_source_lock_release "$id"
+    die "cannot ordinary-register Lavish source while intake ownership remains: $id"
   fi
   if ! fm_procevent_registration_publish_locked "$STATE" "$adapter" "$id" "$intake" "$@"; then
     fm_procevent_source_lock_release "$id"

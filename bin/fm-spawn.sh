@@ -1082,7 +1082,9 @@ if [ "$RELAUNCH" -eq 0 ]; then
     BACKEND=$(fm_backend_name) || exit 1
   fi
   fm_backend_validate_spawn "$BACKEND" || exit 1
+  if [ "$KIND" = secondmate ]; then
     fm_backend_source "$BACKEND" "spawn backend selection" "" spawn || exit 1
+  fi
 fi
 if [ "$RELAUNCH" -eq 0 ]; then
   SPAWN_TASK_SET_LOCK=$(fm_task_set_lock_path "$STATE") || {
@@ -1875,6 +1877,9 @@ if [ "$KIND" != secondmate ]; then
   else
     echo "error: $ID cannot be dispatched: $INTAKE_CHECK_OUT" >&2
     exit 1
+  fi
+  if [ "$RELAUNCH" -eq 0 ]; then
+    fm_backend_source "$BACKEND" "spawn backend selection" "" spawn || exit 1
   fi
 fi
 

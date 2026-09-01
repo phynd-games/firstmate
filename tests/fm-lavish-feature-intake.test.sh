@@ -31,6 +31,7 @@ cat > "$fakebin/lavish-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = end ]; then
   printf '%s\n' "$*" >> "${FM_LAVISH_CALLS:?FM_LAVISH_CALLS unset}"
+  [ "${FM_LAVISH_FAIL_END:-0}" = 1 ] && exit 1
   exit 0
 fi
 if [ "${1:-}" = poll ]; then
@@ -153,7 +154,7 @@ PY
 # Every required category appears in a real interactive intake template, and a
 # static page lacking the Lavish capture call is refused before a session opens.
 test_required_categories_and_static_refusal() {
-  local home artifact static candidate out rc field
+  local home artifact static candidate inert out rc field
   home=$(make_home categories)
   add_task "$home" feature-a1
   artifact=$home/intake.html
@@ -205,6 +206,133 @@ PY
   [ "$rc" -ne 0 ] || fail "dead intake markers were accepted"
   assert_contains "$out" "executable intake" \
     "dead intake markers did not fail semantic validation"
+  candidate=$home/script-string-form.html
+  python3 - "$artifact" "$candidate" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+source, output = sys.argv[1:]
+html = Path(source).read_text()
+start = html.index('<form id="feature-intake"')
+end = html.index('</form>', start) + len('</form>')
+form = html[start:end]
+fake = '<script>const unused = ' + json.dumps(form) + ';</script>'
+Path(output).write_text(html[:start] + fake + html[end:])
+PY
+  set +e
+  out=$(run_intake "$home" start feature-a1 --artifact "$candidate" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "form markup inside a script string was accepted"
+  assert_contains "$out" "no keyed intake question" \
+    "script-string form markup was treated as an active DOM form"
+  candidate=$home/style-form.html
+  python3 - "$artifact" "$candidate" <<'PY'
+from pathlib import Path
+import sys
+
+source, output = sys.argv[1:]
+html = Path(source).read_text()
+start = html.index('<form id="feature-intake"')
+end = html.index('</form>', start) + len('</form>')
+form = html[start:end]
+fake = '<style>\n' + form + '\n</style>'
+Path(output).write_text(html[:start] + fake + html[end:])
+PY
+  set +e
+  out=$(run_intake "$home" start feature-a1 --artifact "$candidate" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "form markup inside a style raw-text element was accepted"
+  assert_contains "$out" "no keyed intake question" \
+    "style raw-text form markup was treated as an active DOM form"
+  candidate=$home/rcdata-form.html
+  python3 - "$artifact" "$candidate" <<'PY'
+from pathlib import Path
+import sys
+
+source, output = sys.argv[1:]
+html = Path(source).read_text()
+start = html.index('<form id="feature-intake"')
+end = html.index('</form>', start) + len('</form>')
+form = html[start:end]
+fake = form.replace('<', '&lt;').replace('>', '&gt;')
+Path(output).write_text(html[:start] + '<textarea>' + fake + '</textarea>' + html[end:])
+PY
+  set +e
+  out=$(run_intake "$home" start feature-a1 --artifact "$candidate" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "form markup inside an RCDATA textarea was accepted"
+  assert_contains "$out" "no keyed intake question" \
+    "textarea RCDATA form markup was treated as an active DOM form"
+  candidate=$home/script-before-form.html
+  python3 - "$artifact" "$candidate" <<'PY'
+from pathlib import Path
+import sys
+
+source, output = sys.argv[1:]
+html = Path(source).read_text()
+script_start = html.index('<script>')
+script_end = html.index('</script>', script_start) + len('</script>')
+script = html[script_start:script_end]
+html = html[:script_start] + html[script_end:]
+form_start = html.index('<form id="feature-intake"')
+Path(output).write_text(html[:form_start] + script + html[form_start:])
+PY
+  set +e
+  out=$(run_intake "$home" start feature-a1 --artifact "$candidate" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a submit script before its form was accepted"
+  assert_absent "$home/state/feature-a1.lavish-intake" \
+    "script-before-form validation created intake state"
+  for inert in template noscript; do
+    candidate=$home/inert-$inert-form.html
+    python3 - "$artifact" "$candidate" "$inert" <<'PY'
+from pathlib import Path
+import sys
+
+source, output, mode = sys.argv[1:]
+html = Path(source).read_text()
+start = html.index('<form id="feature-intake"')
+end = html.index('</form>', start) + len('</form>')
+html = html[:start] + f'<{mode}>' + html[start:end] + f'</{mode}>' + html[end:]
+Path(output).write_text(html)
+PY
+    set +e
+    out=$(run_intake "$home" start feature-a1 --artifact "$candidate" 2>&1)
+    rc=$?
+    set -e
+    [ "$rc" -ne 0 ] || fail "inert $inert intake form was accepted"
+    assert_contains "$out" "no keyed intake question" \
+      "inert $inert form refusal was unclear"
+  done
+  for inert in text-plain template; do
+    candidate=$home/inert-$inert.html
+    python3 - "$artifact" "$candidate" "$inert" <<'PY'
+from pathlib import Path
+import sys
+
+source, output, mode = sys.argv[1:]
+html = Path(source).read_text()
+if mode == "text-plain":
+    html = html.replace("<script>", '<script type="text/plain">', 1)
+else:
+    start = html.index("<script>")
+    end = html.index("</script>", start) + len("</script>")
+    html = html[:start] + "<template>" + html[start:end] + "</template>" + html[end:]
+Path(output).write_text(html)
+PY
+    set +e
+    out=$(run_intake "$home" start feature-a1 --artifact "$candidate" 2>&1)
+    rc=$?
+    set -e
+    [ "$rc" -ne 0 ] || fail "inert $inert intake script was executed"
+    assert_contains "$out" "no executable intake script" \
+      "inert $inert script refusal was unclear"
+  done
   pass "Lavish intake: required categories and static artifacts are enforced"
 }
 
@@ -316,7 +444,7 @@ test_ambiguous_classification_refuses_dispatch() {
   set +e
   out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
-    FM_CONFIG_OVERRIDE="$home/config" FM_SPAWN_NO_GUARD=1 FM_BACKEND=tmux \
+    FM_CONFIG_OVERRIDE="$home/config" FM_SPAWN_NO_GUARD=1 FM_BACKEND=herdr \
     "$SPAWN" ambiguous-a1 "$home/projects/proj" claude --mode no-mistakes --yolo off 2>&1)
   rc=$?
   set -e
@@ -345,12 +473,15 @@ test_explicit_exemptions_require_reason() {
   [ "$rc" -ne 0 ] || fail "generic exemption bypass was accepted"
   assert_contains "$out" "must use" "generic exemption refusal was unclear"
   invalid_reasons=(
-    'exemption-invalid-bug-fix|bug-fix: fix'
-    'exemption-invalid-vague-bug-fix|bug-fix: fix the broken code in this project'
-    'exemption-invalid-configuration|configuration: no'
-    'exemption-invalid-documentation|documentation: update thing here now'
-    'exemption-invalid-placeholders|configuration: target=foo bar; action=update now safely'
-    'exemption-invalid-generic-target|configuration: target=backend behavior; action=update source'
+    'exemption-invalid-bug-fix|bug-fix: task=exemption-invalid-bug-fix; target=tests/fm-lavish-feature-intake.test.sh; action=fix'
+    'exemption-invalid-vague-bug-fix|bug-fix: task=exemption-invalid-vague-bug-fix; target=tests/fm-lavish-feature-intake.test.sh; action=fix the broken code in this project'
+    'exemption-invalid-configuration|configuration: task=exemption-invalid-configuration; target=tests/fm-lavish-feature-intake.test.sh; action=no'
+    'exemption-invalid-documentation|documentation: task=exemption-invalid-documentation; target=tests/fm-lavish-feature-intake.test.sh; action=update thing here now'
+    'exemption-invalid-placeholders|configuration: task=exemption-invalid-placeholders; target=foo bar; action=update now safely'
+    'exemption-invalid-generic-target|configuration: task=exemption-invalid-generic-target; target=backend behavior; action=update source'
+    'exemption-invalid-generic-action|documentation: task=exemption-invalid-generic-action; target=docs/api README section; action=update the docs'
+    'exemption-invalid-vague-action|configuration: task=exemption-invalid-vague-action; target=src/parser/handler.ts behavior; action=adjust implementation details'
+    'exemption-invalid-task|configuration: task=other-task; target=tests/fm-lavish-feature-intake.test.sh scope; action=exercise task binding behavior'
   )
   for entry in "${invalid_reasons[@]}"; do
     id=${entry%%|*}
@@ -361,16 +492,16 @@ test_explicit_exemptions_require_reason() {
     set -e
     [ "$rc" -ne 0 ] || fail "generic exemption scope was accepted: $reason"
   done
-  run_intake "$home" exempt exemption-a1 --reason 'documentation: target=tests/fm-lavish-feature-intake.test.sh exemption coverage; action=update coverage instructions' >/dev/null
+  run_intake "$home" exempt exemption-a1 --reason 'documentation: task=exemption-a1; target=tests/fm-lavish-feature-intake.test.sh exemption coverage; action=update coverage instructions' >/dev/null
   assert_contains "$(run_intake "$home" verify exemption-a1)" "not-applicable" \
     "valid exemption did not verify"
   run_brief "$home" exemption-a1 firstmate --mode no-mistakes \
-    --not-applicable 'documentation: target=tests/fm-lavish-feature-intake.test.sh exemption coverage; action=update coverage instructions' >/dev/null
+    --not-applicable 'documentation: task=exemption-a1; target=tests/fm-lavish-feature-intake.test.sh exemption coverage; action=update coverage instructions' >/dev/null
   assert_present "$home/data/exemption-a1/brief.md" \
     "same-reason exemption retry did not converge on a brief"
 
   run_brief "$home" exemption-b2 firstmate --mode no-mistakes \
-    --not-applicable 'dependency: target=.tasks.toml test dependency; action=pin dependency version without behavior change' >/dev/null
+    --not-applicable 'dependency: task=exemption-b2; target=.tasks.toml test dependency; action=pin dependency version without behavior change' >/dev/null
   brief=$home/data/exemption-b2/brief.md
   [ "$(run_intake "$home" check-brief exemption-b2 "$brief" | sed -n 's/^status=//p')" = not-applicable ] \
     || fail "valid exemption brief did not preserve its classification"
@@ -381,7 +512,7 @@ import sys
 path = Path(sys.argv[1])
 text = path.read_text()
 text = text.replace(
-    "Lavish intake reason: dependency: target=.tasks.toml test dependency; action=pin dependency version without behavior change",
+    "Lavish intake reason: dependency: task=exemption-b2; target=.tasks.toml test dependency; action=pin dependency version without behavior change",
     "Lavish intake reason: altered exemption reason",
 )
 path.write_text(text)
@@ -398,7 +529,7 @@ PY
 test_brief_exemption_stages_before_receipt() {
   local home out rc reason
   home=$(make_home staged-exemption)
-  reason='configuration: target=tests/fm-lavish-feature-intake.test.sh brief staging fixture; action=exercise retry behavior without product change'
+  reason='configuration: task=staged-a1; target=tests/fm-lavish-feature-intake.test.sh brief staging fixture; action=exercise retry behavior without product change'
   printf 'not a directory\n' > "$home/data/staged-a1"
   set +e
   out=$(run_brief "$home" staged-a1 firstmate --mode no-mistakes \
@@ -427,7 +558,7 @@ test_exemption_rejects_active_intake() {
   run_intake "$home" start active-a1 --artifact "$artifact" >/dev/null
   set +e
   out=$(run_intake "$home" exempt active-a1 \
-    --reason 'documentation: target=bin/fm-lavish-intake.sh active intake setup; action=update setup instructions' 2>&1)
+    --reason 'documentation: task=active-a1; target=bin/fm-lavish-intake.sh active intake setup; action=update setup instructions' 2>&1)
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "active intake accepted a not-applicable exemption"
@@ -446,7 +577,7 @@ test_exemption_ignores_foreign_valid_marker() {
   printf 'version=1\ntask_id=foreign-a1\nsource_id=lavish-foreignmarker\nowner_token=ownerforeign\n' \
     > "$home/state/procevent/lavish-foreignmarker.intake"
   run_intake "$home" exempt local-a1 \
-    --reason 'configuration: target=tests/fm-lavish-feature-intake.test.sh foreign marker; action=exercise exemption ownership behavior' \
+    --reason 'configuration: task=local-a1; target=tests/fm-lavish-feature-intake.test.sh foreign marker; action=exercise exemption ownership behavior' \
     >/dev/null
   assert_present "$home/state/local-a1.lavish-intake" \
     "a valid foreign intake marker blocked an unrelated exemption"
@@ -454,7 +585,7 @@ test_exemption_ignores_foreign_valid_marker() {
     > "$home/state/procevent/lavish-malformed.intake"
   set +e
   out=$(run_intake "$home" exempt malformed-a1 \
-    --reason 'configuration: target=tests/fm-lavish-feature-intake.test.sh malformed marker; action=exercise marker validation behavior' 2>&1)
+    --reason 'configuration: task=malformed-a1; target=tests/fm-lavish-feature-intake.test.sh malformed marker; action=exercise marker validation behavior' 2>&1)
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "a malformed foreign intake marker was ignored"
@@ -562,7 +693,7 @@ test_intake_flag_rejects_exemption() {
   local home receipt out rc
   home=$(make_home intake-classification)
   add_task "$home" classification-a1
-  run_intake "$home" exempt classification-a1 --reason 'documentation: target=tests/fm-lavish-feature-intake.test.sh classification test; action=update test coverage' >/dev/null
+  run_intake "$home" exempt classification-a1 --reason 'documentation: task=classification-a1; target=tests/fm-lavish-feature-intake.test.sh classification test; action=update test coverage' >/dev/null
   receipt=$home/state/classification-a1.lavish-intake
   set +e
   out=$(run_brief "$home" classification-a1 firstmate --mode no-mistakes --intake "$receipt" 2>&1)
@@ -579,7 +710,7 @@ test_verified_exemption_revalidates_reason() {
   home=$(make_home verified-exemption)
   add_task "$home" verified-exemption-a1
   run_intake "$home" exempt verified-exemption-a1 \
-    --reason 'documentation: target=tests/fm-lavish-feature-intake.test.sh verification case; action=update exemption evidence coverage' \
+    --reason 'documentation: task=verified-exemption-a1; target=tests/fm-lavish-feature-intake.test.sh verification case; action=update exemption evidence coverage' \
     >/dev/null
   receipt=$home/state/verified-exemption-a1.lavish-intake
   marker=$home/state/verified-exemption-a1.lavish-intake-classification
@@ -636,6 +767,36 @@ test_start_failure_rolls_back_only_new_state() {
   pass "Lavish intake: failed setup rolls back only state created by the attempt"
 }
 
+test_start_end_failure_preserves_ownership_state() {
+  local home artifact artifact_real sid out rc
+  home=$(make_home end-rollback)
+  add_task "$home" end-rollback-a1
+  artifact=$home/intake.html
+  artifact_real=$(CDPATH='' cd -- "$(dirname "$artifact")" && pwd -P)/$(basename "$artifact")
+  run_intake "$home" template end-rollback-a1 --output "$artifact" >/dev/null
+  sid=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
+  set +e
+  out=$(FM_LAVISH_FAIL_OPEN=1 FM_LAVISH_FAIL_END=1 \
+    run_intake "$home" start end-rollback-a1 --artifact "$artifact" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "failed Lavish cleanup unexpectedly succeeded"
+  assert_contains "$out" "preserving intake ownership state" \
+    "failed Lavish cleanup did not report retryable ownership state"
+  (cd "$home" && tasks-axi show end-rollback-a1 --full) | grep -Fq 'hold_kind: captain' \
+    || fail "failed Lavish cleanup released the captain hold"
+  assert_present "$home/state/end-rollback-a1.lavish-intake-session" \
+    "failed Lavish cleanup discarded the session ownership marker"
+  assert_present "$home/state/end-rollback-a1.lavish-intake-hold" \
+    "failed Lavish cleanup discarded the hold ownership marker"
+  assert_present "$home/state/decision-bindings/$sid.origin" \
+    "failed Lavish cleanup discarded the source binding"
+  assert_contains "$(cat "$home/lavish.calls")" "end $artifact_real" \
+    "failed Lavish cleanup did not attempt to end the session"
+  pass "Lavish intake: failed session cleanup preserves retryable ownership"
+}
+
 test_arm_failure_rolls_back_only_new_state() {
   local home artifact artifact_real out rc sid
   home=$(make_home arm-rollback)
@@ -683,6 +844,19 @@ test_ordinary_rearm_refuses_stale_intake_ownership() {
     "stale intake re-arm refusal was unclear"
   assert_absent "$home/state/procevent/$sid.source" \
     "stale intake re-arm registered an ordinary source"
+  set +e
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_PROCEVENT_CLAIM_ROOT="$home/claims" \
+    "$ROOT/bin/fm-procevent.sh" register lavish "$sid" -- \
+    "$ROOT/bin/fm-procevent-lavish.sh" poll "$artifact" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "canonical ordinary registration ignored stale intake ownership"
+  assert_contains "$out" "ordinary-register" \
+    "canonical registration refusal was unclear"
+  assert_absent "$home/state/procevent/$sid.source" \
+    "canonical registration bypassed stale intake ownership"
   pass "Lavish intake: stale typed ownership blocks ordinary re-arm"
 }
 
@@ -710,6 +884,36 @@ test_artifact_replacement_refused() {
   (cd "$home" && tasks-axi show artifact-replacement-a1 --full) | grep -Fq 'hold_kind: captain' \
     || fail "replaced intake artifact released the task"
   pass "Lavish intake: recording rejects an artifact changed after start"
+}
+
+test_start_rejects_cross_task_stale_artifact_ownership() {
+  local home artifact sid result out rc
+  home=$(make_home stale-artifact-owner)
+  add_task "$home" stale-owner-a1
+  add_task "$home" stale-owner-b1
+  artifact=$home/intake.html
+  run_intake "$home" template stale-owner-a1 --output "$artifact" >/dev/null
+  run_intake "$home" start stale-owner-a1 --artifact "$artifact" >/dev/null
+  sid=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
+  fixture_for "$home" stale-owner-a1
+  run_process_event "$home" "$sid" >/dev/null
+  result=$home/state/procevent-inbox/$sid.1.result
+  run_intake "$home" record stale-owner-a1 --artifact "$artifact" --result "$result" >/dev/null
+  rm -f "$artifact"
+  run_intake "$home" template stale-owner-b1 --output "$artifact" >/dev/null
+  set +e
+  out=$(run_intake "$home" start stale-owner-b1 --artifact "$artifact" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "cross-task stale artifact ownership was reused"
+  assert_contains "$out" "already owned by task stale-owner-a1" \
+    "stale artifact ownership refusal was unclear"
+  assert_present "$home/state/stale-owner-a1.lavish-intake-session" \
+    "stale artifact refusal removed the original intake session"
+  (cd "$home" && tasks-axi show stale-owner-b1 --full) | grep -Fq 'hold_kind: captain' \
+    && fail "stale artifact refusal held the replacement task"
+  pass "Lavish intake: cross-task stale artifact ownership is preserved"
 }
 
 # The full capture path uses the existing Lavish adapter and captain-hold keyed
@@ -746,7 +950,7 @@ test_successful_captured_feedback_and_followup() {
 }
 
 test_record_resumes_after_release_failure() {
-  local home artifact sid result out rc pending
+  local home artifact sid result out rc pending hold_reason
   home=$(make_home record-retry)
   add_task "$home" retry-a1
   artifact=$home/intake.html
@@ -770,14 +974,30 @@ test_record_resumes_after_release_failure() {
     "release failure did not persist exact owner resolution"
   (cd "$home" && tasks-axi show retry-a1 --full) | grep -Fq 'state: queued' \
     || fail "release failure did not leave the task queued"
+  if (cd "$home" && tasks-axi show retry-a1 --full) | grep -Fq 'hold_kind: captain'; then
+    fail "release recovery unexpectedly retained a captain hold"
+  fi
+  hold_reason=$(sed -n 's/^hold_reason=//p' \
+    "$home/state/retry-a1.lavish-intake-owner" | head -1)
+  (cd "$home" && tasks-axi hold retry-a1 --kind captain --reason "$hold_reason" >/dev/null) \
+    || fail "could not create the ambiguous newer captain hold"
   (cd "$home" && tasks-axi done retry-a1 >/dev/null) \
     || fail "could not close task while testing release recovery"
   rm -f "$home/state/procevent-inbox/$sid.1.handled"
-  out=$(run_intake "$home" record retry-a1 --artifact "$artifact" --result "$result")
-  assert_contains "$out" "recorded:" "resumed intake completion did not produce evidence"
-  assert_absent "$home/state/retry-a1.lavish-intake-owner" \
-    "completed intake left authoritative owner state behind"
-  pass "Lavish intake: released completions resume without replaying answers"
+  set +e
+  out=$(run_intake "$home" record retry-a1 --artifact "$artifact" --result "$result" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "ambiguous done-state recovery unexpectedly succeeded"
+  assert_contains "$out" "matching captain release evidence" \
+    "ambiguous done-state refusal was unclear"
+  assert_contains "$(cat "$pending")" "phase=released" \
+    "ambiguous done-state recovery changed pending evidence"
+  assert_absent "$home/state/retry-a1.lavish-intake" \
+    "ambiguous done-state recovery produced intake evidence"
+  assert_present "$home/state/retry-a1.lavish-intake-owner" \
+    "ambiguous done-state recovery discarded pending ownership evidence"
+  pass "Lavish intake: ambiguous done-state recovery stays pending"
 }
 
 test_pending_release_requires_durable_resolution() {
@@ -814,7 +1034,7 @@ test_pending_release_requires_durable_resolution() {
   assert_absent "$home/state/pending-proof-a1.lavish-intake" \
     "unrelated unhold produced intake evidence"
   (cd "$home" && tasks-axi hold pending-proof-a1 --kind captain \
-    --reason 'newer captain decision' >/dev/null)
+    --reason "$(sed -n 's/^hold_reason=//p' "$home/state/pending-proof-a1.lavish-intake-owner" | head -1)" >/dev/null)
   (cd "$home" && tasks-axi done pending-proof-a1 >/dev/null)
   set +e
   out=$(run_intake "$home" record pending-proof-a1 --artifact "$artifact" --result "$result" 2>&1)
@@ -903,9 +1123,11 @@ test_intake_flag_rejects_exemption
 test_verified_exemption_revalidates_reason
 test_contractless_compatibility_requires_existing_endpoint
 test_start_failure_rolls_back_only_new_state
+test_start_end_failure_preserves_ownership_state
 test_arm_failure_rolls_back_only_new_state
 test_ordinary_rearm_refuses_stale_intake_ownership
 test_artifact_replacement_refused
+test_start_rejects_cross_task_stale_artifact_ownership
 test_start_rejects_unrelated_captain_hold
 test_extra_keyed_feedback_refused
 test_successful_captured_feedback_and_followup

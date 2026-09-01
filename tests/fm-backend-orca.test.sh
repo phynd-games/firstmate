@@ -562,7 +562,7 @@ test_spawn_refuses_orca_when_runtime_not_ready() {
   config="$TMP_ROOT/runtime-down-config"
   fm_git_init_commit "$proj"
   mkdir -p "$data/$id" "$state" "$config"
-  printf 'brief\n' > "$data/$id/brief.md"
+  fm_write_exempt_brief "$TMP_ROOT" "$id" "$state" "$data" "$config"
   touch "$state/.last-watcher-beat"
   orca_case runtime-down-spawn
   printf '{"ok":true,"result":{"runtime":{"reachable":false,"state":"starting"}}}\n' > "$RESP/1.out"

@@ -926,7 +926,7 @@ test_spawn_fallback_chain_and_crew_scout_unaffected() {
   fakebin=$(make_launch_capturing_herdr "$w/herdr-crew")
   fm_git_worktree "$proj" "$wt" "wt-crew"
   mkdir -p "$home/data/$id" "$home/projects" "$home/state"
-  printf 'brief\n' > "$home/data/$id/brief.md"
+  fm_write_exempt_brief "$home" "$id"
   : > "$launchlog"
   PATH="$fakebin:$BASE_PATH" HERDR_ENV="fake,1,0" CLAUDECODE=1 \
     FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
