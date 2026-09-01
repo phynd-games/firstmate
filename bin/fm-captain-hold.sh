@@ -22,6 +22,7 @@
 #   fm-captain-hold.sh hold <task-id> --reason <reason> \
 #     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD]
 #   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release]
+#   fm-captain-hold.sh release <task-id>
 #   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance>   (keyed answers on stdin)
 #   fm-captain-hold.sh bind <source-id> [<legacy-origin> | --any-origin]
 #   fm-captain-hold.sh unbind <source-id>
@@ -564,6 +565,20 @@ command_answer() {
   fail "task $id is not held for the captain; hold it first or name the right task"
 }
 
+command_release() {
+  local id=${1:-} show state hold_kind
+  [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+  validate_slug task-id "$id"
+  require_tasks_axi
+  show=$(task_show "$id") || fail "captain-held task $id is absent from $FM_HOME/data/backlog.md"
+  state=$(show_field "$show" state)
+  hold_kind=$(show_field_value "$show" hold_kind)
+  [ "$state" != done ] || fail "task $id is already closed"
+  [ "$hold_kind" = captain ] || fail "task $id is not held for the captain"
+  tasks_axi unhold "$id" >/dev/null || fail "could not release captain-held task $id"
+  printf 'released: %s\n' "$id"
+}
+
 # --- the one keyed-answer intake, and the source bindings that feed it --------
 
 BINDING_DIR="$STATE/decision-bindings"
@@ -989,6 +1004,7 @@ EOF
 case "${1:-}" in
   hold) shift; command_hold "$@" ;;
   answer) shift; command_answer "$@" ;;
+  release) shift; command_release "$@" ;;
   answers) shift; command_answers "$@" ;;
   bind) shift; command_bind "$@" ;;
   unbind) shift; command_unbind "$@" ;;

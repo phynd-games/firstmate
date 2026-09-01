@@ -7,6 +7,7 @@
 #   fm-procevent-lavish.sh terminal <result-file>
 #   fm-procevent-lavish.sh silent <result-file>
 #   fm-procevent-lavish.sh answers <result-file>
+#   fm-procevent-lavish.sh intake <result-file> <task-id>
 #   fm-procevent-lavish.sh source-id <artifact.html>
 #   fm-procevent-lavish.sh retire <artifact.html>
 #   fm-procevent-lavish.sh poll <artifact.html>
@@ -455,6 +456,57 @@ cmd_answers() {
   ' "$file"
 }
 
+cmd_intake() {
+  local file=${1-} task=${2-}
+  [ -n "$file" ] && [ -n "$task" ] || usage
+  [ "$#" -eq 2 ] || usage
+  [ -f "$file" ] && [ ! -L "$file" ] || die "result file does not exist: $file"
+  perl -MJSON::PP -e '
+    use strict; use warnings;
+    my ($path, $task) = @ARGV;
+    open my $fh, "<", $path or exit 1;
+    my (@fields, $want, @rows);
+    while (my $line = <$fh>) {
+      if (!@fields) {
+        next unless $line =~ /^prompts\[(\d+)\]\{([^}]*)\}:\s*$/;
+        ($want, @fields) = ($1, split /,/, $2);
+        next;
+      }
+      last unless $line =~ /^\s/;
+      last if @rows >= $want;
+      chomp $line;
+      push @rows, $line;
+    }
+    close $fh;
+    my $selected;
+    for my $row (@rows) {
+      $row =~ s/^\s+//;
+      my @vals;
+      while (length $row) {
+        if ($row =~ s/^"((?:[^"\\]|\\.)*)"//) {
+          my $v = $1;
+          $v =~ s/\\(.)/$1 eq "n" ? "\n" : $1 eq "t" ? "\t" : $1 eq "r" ? "\r" : $1/ge;
+          push @vals, $v;
+        } else {
+          $row =~ s/^([^,]*)//;
+          push @vals, $1;
+        }
+        last unless $row =~ s/^,//;
+      }
+      my %f;
+      $f{$fields[$_]} = $vals[$_] for 0 .. $#fields;
+      next unless defined $f{tag} && $f{tag} eq "choice";
+      next unless defined $f{prompt} && $f{prompt} =~ /Context data:\s*(\{.*\})/s;
+      my $data = eval { decode_json($1) };
+      next unless ref($data) eq "HASH";
+      next unless defined $data->{question} && !ref($data->{question}) && $data->{question} eq $task;
+      $selected = $data;
+    }
+    exit 1 unless $selected;
+    print encode_json($selected), "\n";
+  ' "$file" "$task"
+}
+
 case "${1-}" in
   arm)       shift; cmd_arm "$@" ;;
   retire)    shift; cmd_retire "$@" ;;
@@ -464,6 +516,7 @@ case "${1-}" in
   terminal)  shift; cmd_terminal "$@" ;;
   silent)    shift; cmd_silent "$@" ;;
   answers)   shift; cmd_answers "$@" ;;
+  intake)    shift; cmd_intake "$@" ;;
   ''|-h|--help|help) usage ;;
   *) die "unknown command: $1" ;;
 esac

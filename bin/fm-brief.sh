@@ -193,8 +193,10 @@ if [ "$INTAKE_MODE" = submitted ]; then
     echo "error: intake evidence does not exist: $INTAKE_EVIDENCE" >&2
     exit 1
   }
-  "$FM_ROOT/bin/fm-lavish-intake.sh" verify "$ID" --evidence "$INTAKE_EVIDENCE" >/dev/null \
+  INTAKE_VERIFY_OUT=$("$FM_ROOT/bin/fm-lavish-intake.sh" verify "$ID" --evidence "$INTAKE_EVIDENCE") \
     || { echo "error: intake evidence is not valid for task $ID" >&2; exit 1; }
+  printf '%s\n' "$INTAKE_VERIFY_OUT" | grep -Fx 'status=submitted' >/dev/null \
+    || { echo "error: --intake requires submitted Lavish evidence for task $ID" >&2; exit 1; }
   INTAKE_EVIDENCE=$(CDPATH='' cd -- "$(dirname "$INTAKE_EVIDENCE")" && pwd -P)/$(basename "$INTAKE_EVIDENCE")
 fi
 if [ "$INTAKE_MODE" = not-applicable ]; then

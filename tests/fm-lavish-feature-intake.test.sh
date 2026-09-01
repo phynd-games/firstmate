@@ -29,6 +29,11 @@ EOF
   fakebin=$home/fakebin
   cat > "$fakebin/lavish-axi" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = poll ]; then
+  [ -n "${FM_LAVISH_FIXTURE:-}" ] && cat "$FM_LAVISH_FIXTURE"
+  exit 0
+fi
+[ "${FM_LAVISH_FAIL_OPEN:-0}" = 1 ] && exit 1
 exit 0
 SH
   chmod +x "$fakebin/lavish-axi"
@@ -41,6 +46,7 @@ run_intake() {
   PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" FM_PROCEVENT_CLAIM_ROOT="$home/claims" \
+    FM_LAVISH_FIXTURE="$home/lavish-poll.txt" \
     "$INTAKE" "$@"
 }
 
@@ -49,7 +55,15 @@ run_brief() {
   shift
   PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
-    FM_CONFIG_OVERRIDE="$home/config" "$BRIEF" "$@"
+    FM_CONFIG_OVERRIDE="$home/config" FM_PROCEVENT_CLAIM_ROOT="$home/claims" "$BRIEF" "$@"
+}
+
+run_process_event() {
+  local home=$1 sid=$2
+  PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_PROCEVENT_CLAIM_ROOT="$home/claims" FM_LAVISH_FIXTURE="$home/lavish-poll.txt" \
+    "$ROOT/bin/fm-procevent.sh" start "$sid"
 }
 
 add_task() {
@@ -58,32 +72,56 @@ add_task() {
     --body 'feature task' >/dev/null)
 }
 
-result_for() {
-  local home=$1 sid=$2 status=${3:-feedback}
-  mkdir -p "$home/state/procevent-inbox"
-  cat > "$home/state/procevent-inbox/$sid.1.result" <<EOF
+fixture_for() {
+  local home=$1 task=$2 status=${3:-feedback} shape=${4:-valid}
+  if [ "$status" != feedback ]; then
+    cat > "$home/lavish-poll.txt" <<EOF
 session:
-  file: /intake.html
+  file: $home/intake.html
   status: $status
   session_ended: true
-prompts[1]{uid,prompt,selector,tag,text}:
-  "1","Feature intake submitted\n\nContext data:\n{\n  \"question\": \"feature-a1\",\n  \"answer\": \"submitted\",\n  \"close\": \"release\",\n  \"submitted\": true,\n  \"intake\": { \"product_goal\": \"goal\", \"intended_users\": \"users\", \"use_cases\": \"uses\", \"scope\": \"scope\", \"non_goals\": \"none\", \"constraints\": \"none\", \"visual_product_references\": \"reference\", \"key_choices\": \"choice\", \"acceptance_criteria\": \"criteria\", \"open_questions\": \"none\" }\n}","form",choice,"Feature intake submitted"
 EOF
-  printf 'lavish\n' > "$home/state/procevent-inbox/$sid.1.adapter"
+    return
+  fi
+  if [ "$shape" = malformed ]; then
+    cat > "$home/lavish-poll.txt" <<EOF
+session:
+  file: $home/intake.html
+  status: feedback
+  session_ended: true
+prompts[1]{uid,prompt,selector,tag,text}:
+  "1","Feature intake submitted\\n\\nContext data:\\n{\\n  \\"question\\": \\"$task\\",\\n  \\"answer\\": \\"submitted\\",\\n  \\"close\\": \\"release\\",\\n  \\"submitted\\": true,\\n  \\"intake\\": { \\"product_goal\\": \\"goal\\" }\\n}","form",choice,"Feature intake submitted"
+EOF
+    return
+  fi
+  cat > "$home/lavish-poll.txt" <<EOF
+session:
+  file: $home/intake.html
+  status: feedback
+  session_ended: true
+prompts[1]{uid,prompt,selector,tag,text}:
+  "1","Feature intake submitted\\n\\nContext data:\\n{\\n  \\"question\\": \\"$task\\",\\n  \\"answer\\": \\"submitted\\",\\n  \\"close\\": \\"release\\",\\n  \\"submitted\\": true,\\n  \\"intake\\": { \\"product_goal\\": \\"goal\\", \\"intended_users\\": \\"users\\", \\"use_cases\\": \\"uses\\", \\"scope\\": \\"scope\\", \\"non_goals\\": \\"none\\", \\"constraints\\": \\"none\\", \\"visual_product_references\\": \\"reference\\", \\"key_choices\\": \\"choice\\", \\"acceptance_criteria\\": \\"criteria\\", \\"open_questions\\": \\"none\\" }\\n}","form",choice,"Feature intake submitted"
+EOF
 }
 
 # Every required category appears in a real interactive intake template, and a
 # static page lacking the Lavish capture call is refused before a session opens.
 test_required_categories_and_static_refusal() {
-  local home artifact static out rc field
+  local home artifact static candidate out rc field
   home=$(make_home categories)
   add_task "$home" feature-a1
   artifact=$home/intake.html
   run_intake "$home" template feature-a1 --output "$artifact" >/dev/null
   for field in product_goal intended_users use_cases scope non_goals constraints \
     visual_product_references key_choices acceptance_criteria open_questions; do
-    grep -Fq "data-lavish-intake-field=\"$field\"" "$artifact" \
-      || fail "template omitted required field $field"
+    candidate=$home/missing-$field.html
+    grep -Fv "data-lavish-intake-field=\"$field\"" "$artifact" > "$candidate"
+    set +e
+    out=$(run_intake "$home" start feature-a1 --artifact "$candidate" 2>&1)
+    rc=$?
+    set -e
+    [ "$rc" -ne 0 ] || fail "artifact missing $field was accepted"
+    assert_contains "$out" "missing required field: $field" "missing $field refusal was unclear"
   done
   static=$home/static.html
   printf '<html><body>static</body></html>\n' > "$static"
@@ -103,8 +141,6 @@ test_ambiguous_classification_refuses_dispatch() {
   home=$(make_home ambiguous)
   run_brief "$home" ambiguous-a1 firstmate --mode no-mistakes >/dev/null
   brief=$home/data/ambiguous-a1/brief.md
-  assert_grep 'Lavish intake contract: required' "$brief" \
-    "ambiguous brief did not carry an explicit required contract"
   set +e
   out=$(run_intake "$home" check-brief ambiguous-a1 "$brief" 2>&1)
   rc=$?
@@ -147,8 +183,8 @@ test_explicit_exemptions_require_reason() {
   run_brief "$home" exemption-b2 firstmate --mode no-mistakes \
     --not-applicable 'dependency pin update with no behavior change' >/dev/null
   brief=$home/data/exemption-b2/brief.md
-  assert_grep 'Lavish intake contract: not-applicable' "$brief" \
-    "brief omitted explicit exemption contract"
+  [ "$(run_intake "$home" check-brief exemption-b2 "$brief" | sed -n 's/^status=//p')" = not-applicable ] \
+    || fail "valid exemption brief did not preserve its classification"
   pass "Lavish intake: exemptions require and retain concrete reasons"
 }
 
@@ -170,7 +206,8 @@ test_absent_and_closed_without_feedback_refused() {
   assert_contains "$out" "captured result is not a regular file" "missing feedback refusal was unclear"
   sid=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
     "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
-  result_for "$home" "$sid" ended
+  fixture_for "$home" feature-a1 ended
+  run_process_event "$home" "$sid" >/dev/null
   set +e
   out=$(run_intake "$home" record feature-a1 --artifact "$artifact" \
     --result "$home/state/procevent-inbox/$sid.1.result" 2>&1)
@@ -179,6 +216,106 @@ test_absent_and_closed_without_feedback_refused() {
   [ "$rc" -ne 0 ] || fail "closed session without feedback was accepted"
   assert_contains "$out" "is not feedback" "closed-session refusal was unclear"
   pass "Lavish intake: absent and feedback-free sessions do not satisfy gate"
+}
+
+test_malformed_captured_feedback_refused() {
+  local home artifact sid result out rc
+  home=$(make_home malformed)
+  add_task "$home" malformed-a1
+  artifact=$home/intake.html
+  run_intake "$home" template malformed-a1 --output "$artifact" >/dev/null
+  run_intake "$home" start malformed-a1 --artifact "$artifact" >/dev/null
+  sid=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
+  fixture_for "$home" malformed-a1 feedback malformed
+  run_process_event "$home" "$sid" >/dev/null
+  result=$home/state/procevent-inbox/$sid.1.result
+  set +e
+  out=$(run_intake "$home" record malformed-a1 --artifact "$artifact" --result "$result" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "text containing intake words was accepted without structured data"
+  assert_contains "$out" "complete submitted intake payload" "malformed intake refusal was unclear"
+  assert_absent "$home/state/malformed-a1.lavish-intake" "malformed feedback produced intake evidence"
+  pass "Lavish intake: malformed Context data cannot satisfy the evidence boundary"
+}
+
+test_intake_flag_rejects_exemption() {
+  local home receipt out rc
+  home=$(make_home intake-classification)
+  add_task "$home" classification-a1
+  run_intake "$home" exempt classification-a1 --reason 'documentation-only update' >/dev/null
+  receipt=$home/state/classification-a1.lavish-intake
+  set +e
+  out=$(run_brief "$home" classification-a1 firstmate --mode no-mistakes --intake "$receipt" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "--intake accepted a not-applicable receipt"
+  assert_contains "$out" "requires submitted Lavish evidence" "classification mismatch refusal was unclear"
+  assert_absent "$home/data/classification-a1/brief.md" "invalid --intake classification wrote a brief"
+  pass "Lavish intake: --intake accepts only submitted evidence"
+}
+
+test_contractless_compatibility_requires_existing_endpoint() {
+  local home brief out rc
+  home=$(make_home legacy)
+  mkdir -p "$home/data/legacy-a1" "$home/projects/proj"
+  printf 'legacy worker brief\n' > "$home/data/legacy-a1/brief.md"
+  brief=$home/data/legacy-a1/brief.md
+  set +e
+  out=$(run_intake "$home" check-brief legacy-a1 "$brief" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "contractless new task passed the intake gate"
+  assert_contains "$out" "no existing in-flight endpoint record" "legacy refusal was unclear"
+  cat > "$home/state/legacy-a1.meta" <<EOF
+endpoint_task_id=legacy-a1
+kind=ship
+worktree=$home/projects/proj
+project=$home/projects/proj
+harness=claude
+EOF
+  [ "$(run_intake "$home" check-brief legacy-a1 "$brief" | sed -n 's/^status=//p')" = legacy ] \
+    || fail "existing in-flight endpoint did not preserve legacy compatibility"
+  pass "Lavish intake: contractless compatibility is limited to existing endpoints"
+}
+
+test_start_failure_rolls_back_only_new_state() {
+  local home artifact out rc
+  home=$(make_home start-rollback)
+  add_task "$home" rollback-a1
+  artifact=$home/intake.html
+  run_intake "$home" template rollback-a1 --output "$artifact" >/dev/null
+  set +e
+  out=$(FM_LAVISH_FAIL_OPEN=1 run_intake "$home" start rollback-a1 --artifact "$artifact" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "failed Lavish launch unexpectedly succeeded"
+  [ "$(cd "$home" && tasks-axi show rollback-a1 --full | sed -n 's/^  state: //p')" = queued ] \
+    || fail "failed Lavish launch left the task held"
+  assert_absent "$home/state/rollback-a1.lavish-intake-session" "failed Lavish launch left a session marker"
+  pass "Lavish intake: failed setup rolls back only state created by the attempt"
+}
+
+test_arm_failure_rolls_back_only_new_state() {
+  local home artifact out rc sid
+  home=$(make_home arm-rollback)
+  add_task "$home" arm-rollback-a1
+  artifact=$home/intake.html
+  run_intake "$home" template arm-rollback-a1 --output "$artifact" >/dev/null
+  printf 'not-a-directory\n' > "$home/state/procevent"
+  set +e
+  out=$(run_intake "$home" start arm-rollback-a1 --artifact "$artifact" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "failed process-event arm unexpectedly succeeded"
+  sid=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
+  [ "$(cd "$home" && tasks-axi show arm-rollback-a1 --full | sed -n 's/^  state: //p')" = queued ] \
+    || fail "failed process-event arm left the task held"
+  assert_absent "$home/state/arm-rollback-a1.lavish-intake-session" "failed arm left a session marker"
+  assert_absent "$home/state/decision-bindings/$sid.origin" "failed arm left a source binding"
+  pass "Lavish intake: failed process-event arm rolls back partial setup"
 }
 
 # The full capture path uses the existing Lavish adapter and captain-hold keyed
@@ -192,12 +329,14 @@ test_successful_captured_feedback_and_followup() {
   run_intake "$home" start feature-a1 --artifact "$artifact" >/dev/null
   sid=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
     "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
-  result_for "$home" "$sid"
+  fixture_for "$home" feature-a1
+  run_process_event "$home" "$sid" >/dev/null
   result=$home/state/procevent-inbox/$sid.1.result
   out=$(run_intake "$home" record feature-a1 --artifact "$artifact" --result "$result")
   assert_contains "$out" "recorded:" "captured feedback did not produce evidence"
   receipt=$home/state/feature-a1.lavish-intake
-  run_intake "$home" verify feature-a1 --evidence "$receipt" >/dev/null
+  [ "$(run_intake "$home" verify feature-a1 --evidence "$receipt" | sed -n 's/^status=//p')" = submitted ] \
+    || fail "captured intake did not verify as submitted"
   assert_present "$home/state/procevent-inbox/$sid.1.handled" \
     "captured feedback was not acknowledged"
   (cd "$home" && tasks-axi show feature-a1 --full) | grep -Fq 'state: queued' \
@@ -205,24 +344,25 @@ test_successful_captured_feedback_and_followup() {
 
   run_brief "$home" feature-a1 firstmate --mode no-mistakes --intake "$receipt" >/dev/null
   brief=$home/data/feature-a1/brief.md
-  assert_grep 'Lavish intake contract: submitted' "$brief" \
-    "exact follow-up brief omitted submitted contract"
-  assert_grep 'Lavish intake evidence: ' "$brief" \
-    "exact follow-up brief omitted evidence path"
+  [ "$(run_intake "$home" check-brief feature-a1 "$brief" | sed -n 's/^status=//p')" = submitted ] \
+    || fail "exact follow-up brief did not resolve as submitted"
+  run_intake "$home" record feature-a1 --artifact "$artifact" --result "$result" >/dev/null \
+    || fail "retrying recorded captured feedback was not idempotent"
   pass "Lavish intake: captured feedback releases work and supports exact follow-up"
 }
 
 # Firstmate itself receives the same mandatory gate, without changing any
 # dashboard product surface.
 test_firstmate_self_work_gets_same_gate() {
-  local home brief
+  local home brief rc
   home=$(make_home firstmate-self)
   run_brief "$home" firstmate-feature-a1 firstmate --mode no-mistakes >/dev/null
   brief=$home/data/firstmate-feature-a1/brief.md
-  assert_grep 'Lavish intake contract: required' "$brief" \
-    "Firstmate work omitted mandatory intake gate"
-  assert_grep 'lavish-feature-intake' "$brief" \
-    "Firstmate instructions omitted policy owner"
+  set +e
+  run_intake "$home" check-brief firstmate-feature-a1 "$brief" >/dev/null 2>&1
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "Firstmate work without captured intake passed the gate"
   pass "Lavish intake: Firstmate work uses same gate without dashboard changes"
 }
 
@@ -230,6 +370,11 @@ test_required_categories_and_static_refusal
 test_ambiguous_classification_refuses_dispatch
 test_explicit_exemptions_require_reason
 test_absent_and_closed_without_feedback_refused
+test_malformed_captured_feedback_refused
+test_intake_flag_rejects_exemption
+test_contractless_compatibility_requires_existing_endpoint
+test_start_failure_rolls_back_only_new_state
+test_arm_failure_rolls_back_only_new_state
 test_successful_captured_feedback_and_followup
 test_firstmate_self_work_gets_same_gate
 printf '# all fm-lavish-feature-intake tests passed\n'
