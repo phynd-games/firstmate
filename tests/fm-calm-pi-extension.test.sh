@@ -672,11 +672,7 @@ test_rendering_and_session_lifecycle() {
   fixture="$TMP_ROOT/renderer"
   mkdir -p "$fixture/home" "$fixture/lib" "$fixture/node_modules/@earendil-works"
   cp "$EXT" "$fixture/fm-calm.ts"
-  # This fixture loads BOTH extensions, so it needs whatever either of them
-  # imports from lib/. Copy the directory rather than a hand-kept list: an
-  # enumerated list silently rots the moment an extension gains an import, and
-  # when it did the whole renderer contract stopped running on a module-not-found.
-  cp "$ROOT"/.pi/extensions/lib/*.ts "$fixture/lib/"
+  fm_test_install_pi_extension_lib "$fixture/lib"
   cp "$WATCH_EXT" "$fixture/fm-primary-pi-watch.ts"
   ln -s "$PI_PACKAGE_DIR" "$fixture/node_modules/@earendil-works/pi-coding-agent"
   ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/node_modules/@earendil-works/pi-tui"
@@ -3128,10 +3124,7 @@ test_interactive_terminal_e2e() {
   fm_git_init_commit "$project"
   : > "$project/AGENTS.md"
   cp "$EXT" "$project/.pi/extensions/fm-calm.ts"
-  # Copy the whole lib/ for the same reason the renderer fixture above does:
-  # this project loads both extensions, and a hand-kept list silently rots into
-  # a load-time module-not-found the moment either one gains an import.
-  cp "$ROOT"/.pi/extensions/lib/*.ts "$project/.pi/extensions/lib/"
+  fm_test_install_pi_extension_lib "$project/.pi/extensions/lib"
   cp "$WATCH_EXT" "$project/.pi/extensions/fm-primary-pi-watch.ts"
   cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$project/.pi/extensions/fm-primary-turnend-guard.ts"
   # fm-sessionstart-run.sh sources these two libraries; without them it writes

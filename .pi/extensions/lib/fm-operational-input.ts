@@ -14,6 +14,7 @@ export const FIRSTMATE_CURRENT_OPERATIONAL_KINDS = [
   "from-firstmate",
   "launch-brief",
   "branch-outcome",
+  "branch-adjudication",
 ] as const;
 
 export type FirstmateCurrentOperationalKind =

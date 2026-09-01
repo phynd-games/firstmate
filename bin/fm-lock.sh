@@ -45,9 +45,22 @@ rm -f "$probe" 2>/dev/null || {
 }
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# PUBLISHED_IDENTITY is what this run actually recorded: the identity string, or
+# empty when this host cannot produce one at all. It is deliberately not an
+# error. A host whose ps cannot answer -o lstart= -o command= and exposes no
+# readable /proc can never identify any process, so requiring an identity there
+# would leave the home permanently read-only - unable to take the helm at all -
+# rather than merely unable to detect pid reuse. Identity is a REFINEMENT of the
+# pid check: when the host can produce one it is recorded and enforced below;
+# when it cannot, the pid contract that predates it still holds.
+PUBLISHED_IDENTITY=
 publish_lock_identity() {
   local identity tmp
-  identity=$(fm_pid_identity "$me" 2>/dev/null) || return 1
+  identity=$(fm_pid_identity "$me" 2>/dev/null || true)
+  if [ -z "$identity" ]; then
+    PUBLISHED_IDENTITY=
+    return 0
+  fi
   tmp="$LOCK_IDENTITY.tmp.${BASHPID:-$$}"
   if ! printf '%s\n' "$identity" > "$tmp" 2>/dev/null; then
     rm -f "$tmp" 2>/dev/null || true
@@ -57,7 +70,8 @@ publish_lock_identity() {
     rm -f "$tmp" 2>/dev/null || true
     return 1
   fi
-  [ "$(cat "$LOCK_IDENTITY" 2>/dev/null)" = "$identity" ]
+  [ "$(cat "$LOCK_IDENTITY" 2>/dev/null)" = "$identity" ] || return 1
+  PUBLISHED_IDENTITY=$identity
 }
 CLAIM_LOCK="$STATE/.lock.acquire"
 CLAIM_LOCK_HELD=0
@@ -75,12 +89,15 @@ if [ -f "$LOCK" ] && [ ! -L "$LOCK" ]; then
   if [ "$old" = "$me" ]; then
     recorded=$(cat "$LOCK_IDENTITY" 2>/dev/null || true)
     current=$(fm_pid_identity "$me" 2>/dev/null || true)
-    if [ -n "$recorded" ] && [ -n "$current" ] && [ "$recorded" = "$current" ]; then
-      echo "lock acquired: harness pid $me"
-      exit 0
+    # Refuse only on PROVEN reuse: two identities that both exist and differ.
+    # One that is missing means this host could not answer, not that the holder
+    # changed, and treating "cannot tell" as "changed" locks the home out.
+    if [ -n "$recorded" ] && [ -n "$current" ] && [ "$recorded" != "$current" ]; then
+      echo "error: session-lock process identity changed; operate read-only until resolved" >&2
+      exit 1
     fi
-    echo "error: session-lock process identity is missing or changed; operate read-only until resolved" >&2
-    exit 1
+    echo "lock acquired: harness pid $me"
+    exit 0
   fi
   if fm_harness_pid_alive "$old"; then
     echo "error: another live firstmate session holds the lock (pid $old); operate read-only until resolved" >&2
@@ -125,7 +142,8 @@ written=$(cat "$LOCK" 2>/dev/null) || {
   exit 1
 }
 if [ ! -f "$LOCK" ] || [ -L "$LOCK" ] || [ "$written" != "$me" ] \
-  || [ "$(cat "$LOCK_IDENTITY" 2>/dev/null)" != "$(fm_pid_identity "$me" 2>/dev/null || true)" ]; then
+  || { [ -n "$PUBLISHED_IDENTITY" ] \
+    && [ "$(cat "$LOCK_IDENTITY" 2>/dev/null)" != "$PUBLISHED_IDENTITY" ]; }; then
   echo "error: session lock ownership verification failed; operate read-only until resolved" >&2
   exit 1
 fi

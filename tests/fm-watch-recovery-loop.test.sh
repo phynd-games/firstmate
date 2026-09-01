@@ -19,9 +19,7 @@ install_pi_watch_extension_fixture() {
     "$repo/node_modules/typebox" \
     "$repo/bin"
   cp "$ROOT/.pi/extensions/fm-primary-pi-watch.ts" "$repo/.pi/extensions/fm-primary-pi-watch.ts"
-  cp "$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts" "$repo/.pi/extensions/lib/fm-branch-dispatch.ts"
-  cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$repo/.pi/extensions/lib/fm-calm-visibility.ts"
-  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$repo/.pi/extensions/lib/fm-operational-input.ts"
+  fm_test_install_pi_extension_lib "$repo/.pi/extensions/lib"
   cp "$ROOT/bin/fm-operational-input.sh" "$repo/bin/fm-operational-input.sh"
   chmod +x "$repo/bin/fm-operational-input.sh"
   cat > "$repo/node_modules/@earendil-works/pi-coding-agent/package.json" <<'JSON'
@@ -110,6 +108,18 @@ const pi = {
   },
 };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+// bin/fm-lock.sh publishes the process identity of the lock holder beside the
+// pid, and the extension refuses to claim continuity for a lock it cannot
+// identify. Without
+// it here the arm silently never happens and this test would pass vacuously on
+// a fixture that never armed at all.
+const { processInstanceIdentity } = await import(
+  new URL("lib/fm-process-identity.ts", pathToFileURL(process.env.PLUGIN)).href
+);
+writeFileSync(
+  `${process.env.FM_HOME}/state/.lock-pid-identity`,
+  `${processInstanceIdentity(String(process.pid))}\n`,
+);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 if (!tool) throw new Error("Pi watch tool was not registered");

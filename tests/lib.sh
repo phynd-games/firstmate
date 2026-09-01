@@ -95,6 +95,20 @@ fm_test_cleanup() {
   fi
 }
 
+# fm_test_install_pi_extension_lib <lib-dir>
+# Install the COMPLETE .pi/extensions/lib into <lib-dir> for a fixture that
+# loads a whole tracked Pi extension. Fixtures must never enumerate lib files:
+# an enumerated list rots the instant an extension gains an import, and the
+# failure is a load-time module-not-found that takes the entire fixture down
+# before a single assertion runs - silently turning a suite green-by-absence.
+# A fixture deliberately installing ONE lib file to test isolation copies it
+# directly and does not use this helper.
+fm_test_install_pi_extension_lib() {
+  local dir=$1
+  mkdir -p "$dir" || return 1
+  cp "$ROOT"/.pi/extensions/lib/*.ts "$dir/"
+}
+
 fm_test_tmproot() {
   local prefix=${1:-fm-test} root
   root=$(mktemp -d "${TMPDIR:-/tmp}/${prefix}.XXXXXX") || return 1

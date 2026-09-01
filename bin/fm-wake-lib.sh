@@ -393,14 +393,25 @@ fm_lock_owner_dir() {
   mktemp -d "${lock_abs}.owner.XXXXXX" 2>/dev/null
 }
 
+# The pid-identity file is BEST EFFORT, and deliberately so. A host whose ps
+# cannot answer -o lstart= -o command= and exposes no readable /proc - a
+# restricted PATH, a stripped container, a busybox ps - can never produce an
+# identity for any process. Refusing to prepare an owner there does not fail
+# closed; it makes fm_lock_try_create return 1 forever, and fm_lock_acquire_wait
+# retries forever, so EVERY lock in the home wedges silently until an external
+# timeout kills the caller. Recording no identity is the safe degradation
+# instead: fm_lock_recheck_stale_owner only ever uses the identity to PERMIT
+# stealing a lock whose pid was reused, so an absent one leaves a live owner's
+# lock un-stealable, which is the conservative direction. Writing an identity we
+# did produce must still round-trip, or the record would lie about the owner.
 fm_lock_prepare_owner() {
   local ownerdir=$1 mypid back identity recorded_identity
   mypid=${BASHPID:-$$}
   printf '%s\n' "$mypid" > "$ownerdir/pid" 2>/dev/null || return 1
   back=$(cat "$ownerdir/pid" 2>/dev/null || true)
   [ "$back" = "$mypid" ] || return 1
-  identity=$(fm_pid_identity "$mypid" 2>/dev/null) || return 1
-  [ -n "$identity" ] || return 1
+  identity=$(fm_pid_identity "$mypid" 2>/dev/null || true)
+  [ -n "$identity" ] || return 0
   printf '%s\n' "$identity" > "$ownerdir/pid-identity" 2>/dev/null || return 1
   recorded_identity=$(cat "$ownerdir/pid-identity" 2>/dev/null || true)
   [ "$recorded_identity" = "$identity" ]
