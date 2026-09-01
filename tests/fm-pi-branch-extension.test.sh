@@ -482,6 +482,12 @@ const pi = {
   sendMessage(message, options) {
     if (globalThis.__fmSendMessageError) throw new Error(globalThis.__fmSendMessageError);
     sentToMain.push({ message, options: options ?? {} });
+    if (globalThis.__fmMainEntries) {
+      globalThis.__fmMainEntries.push({
+        type: "custom",
+        message: { role: "custom", customType: message.customType, content: message.content },
+      });
+    }
   },
   sendUserMessage(content, options) {
     mainUserMessages.push({ content, options: options ?? {} });
@@ -548,7 +554,10 @@ test_branch_dispatch_two_stage_filter_and_prefix_contract() {
 #!/usr/bin/env bash
 case "${1:-}" in
   */.branch-note-sig.XXXXXX)
-    if [ -f "$FM_HOME/state/.branch-note-sig-task-captain" ] && grep -q '^pending$' "$FM_HOME/state/.branch-note-sig-task-captain"; then
+    if [ -f "$FM_HOME/state/.branch-note-sig-task-captain" ] &&
+       grep -q '^pending$' "$FM_HOME/state/.branch-note-sig-task-captain" &&
+       [ ! -e "$FM_HOME/state/.captain-commit-injected" ]; then
+      touch "$FM_HOME/state/.captain-commit-injected"
       exit 1
     fi
     ;;
@@ -565,6 +574,10 @@ const { pi, fire, dispatch, settle, outcomeScript, sentToMain, mainUserMessages,
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 writeFileSync(`${home}/state/.lock`, `${process.ppid}\n`);
+const mainEntries = [];
+globalThis.__fmMainEntries = mainEntries;
+const mainSessionContext = { sessionManager: { getSessionFile: () => `${home}/main.jsonl`, getEntries: () => mainEntries } };
+fire("session_start", {}, mainSessionContext);
 
 // 1. An accepted wake reaches the branch session, never main.
 const offer = dispatch("signal: task-9 done: PR https://example.com/pr/9 checks green");
@@ -772,6 +785,15 @@ if (!/⁣FM_BRANCH_DELIVERY_ID:[0-9a-f]+⁣/.test(sentToMain[captainBefore].mess
 const captainRetry = await report.execute("call-captain-retry", { task: "task-captain", verdict: "captain", summary: "captain delivery retries safely" }, undefined, undefined, {});
 if (captainRetry.isError) throw new Error(`captain retry after commit failure failed: ${JSON.stringify(captainRetry)}`);
 if (sentToMain.length !== captainBefore + 1) throw new Error("captain retry duplicated a delivery whose append already succeeded");
+fire("session_shutdown", {});
+fire("session_start", {}, mainSessionContext);
+const replacement = dispatch("signal: captain owner replacement");
+if (!replacement.accepted) throw new Error("replacement wake was not accepted");
+await settle(() => (globalThis.__fmSessions ?? []).length === 2, "replacement branch session");
+const replacementReport = globalThis.__fmSessions[1].options.customTools.find((tool) => tool.name === "fm_branch_report");
+const replacementResult = await replacementReport.execute("call-captain-replay", { task: "task-captain", verdict: "captain", summary: "captain delivery retries safely" }, undefined, undefined, {});
+if (replacementResult.isError) throw new Error(`captain replay after owner replacement failed: ${JSON.stringify(replacementResult)}`);
+if (sentToMain.length !== captainBefore + 1) throw new Error("custom merge replay duplicated an already appended captain outcome");
 if (!renderers.has("fm-branch-merge")) throw new Error("merge-note renderer missing");
 const assertRenderedNote = (note, glyph) => {
   const fgCalls = [];
@@ -805,6 +827,12 @@ const assertRenderedNote = (note, glyph) => {
   }
 };
 assertRenderedNote(sentToMain[0].message.content, "⛵");
+const fallbackRendered = renderers.get("fm-branch-merge")(
+  { content: "⛵ task-fallback: retry⁣FM_BRANCH_DELIVERY_ID:seq-42⁣" },
+  { expanded: false },
+  { fg(_color, text) { return text; } },
+);
+if (String(fallbackRendered.text).includes("FM_BRANCH_DELIVERY_ID")) throw new Error("fallback delivery identity leaked into the rendered note");
 process.exit(0);
 EOF
   status=$?

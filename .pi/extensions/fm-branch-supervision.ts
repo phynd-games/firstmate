@@ -598,8 +598,13 @@ export default function (pi: ExtensionAPI) {
     if (!mainSession) return false;
     try {
       return mainSession.getEntries().some((entry) => {
-        const message = (entry as { message?: { content?: unknown } }).message;
-        return entry.type === "message" && textOfContent(message?.content).includes(deliveryMarker(deliveryId));
+        const record = entry as {
+          type: string;
+          message?: { content?: unknown };
+          content?: unknown;
+        };
+        if (record.type !== "message" && record.type !== "custom" && record.type !== "custom_message") return false;
+        return textOfContent(record.message?.content ?? record.content).includes(deliveryMarker(deliveryId));
       });
     } catch {
       return false;
@@ -620,8 +625,7 @@ export default function (pi: ExtensionAPI) {
   ): boolean {
     if (!actingAsOwner(expectedGeneration)) return false;
     let noteReservationToken: string | null = null;
-    const identityResult = runOutcomeScript(["note-identity", "--task", task, "--kind", verdict, "--summary", summary]);
-    const deliveryId = identityResult.ok ? identityResult.stdout : `seq-${seq}`;
+    let deliveryId = `seq-${seq}`;
     if (verdict === "captain") {
       const gate = runOutcomeScript([
         "note-reserve",
@@ -639,9 +643,12 @@ export default function (pi: ExtensionAPI) {
       if (gate.ok && gate.stdout.startsWith("coalesce")) {
         noteReservationToken = null;
       } else if (gate.ok && gate.stdout.startsWith("render ")) {
-        noteReservationToken = gate.stdout.slice("render ".length).trim() || null;
+        const reservation = gate.stdout.slice("render ".length).trim().split(/\s+/);
+        noteReservationToken = reservation[0] || null;
+        deliveryId = reservation[1] || "";
       }
       if (!gate.ok) return false;
+      if (noteReservationToken && !/^[0-9a-f]+$/.test(deliveryId)) return false;
       if (!noteReservationToken && gate.stdout.startsWith("render-unreserved")) {
         const message = {
           customType: "fm-branch-merge",
@@ -716,7 +723,10 @@ export default function (pi: ExtensionAPI) {
         ]);
         if (gate.ok && gate.stdout.startsWith("coalesce")) display = false;
         else if (gate.ok && gate.stdout.startsWith("render ")) {
-          const token = gate.stdout.slice("render ".length).trim();
+          const reservation = gate.stdout.slice("render ".length).trim().split(/\s+/);
+          const token = reservation[0];
+          deliveryId = reservation[1] || "";
+          if (token && !/^[0-9a-f]+$/.test(deliveryId)) return false;
           if (token) noteReservationToken = token;
         }
       }
@@ -1552,7 +1562,7 @@ ${context.command}
   // mergeIntoMain sets for every routine note except an explicitly silent
   // fleet heartbeat; captain-facing notes are never printed or rendered here.
   pi.registerMessageRenderer?.("fm-branch-merge", (message, _options, theme) => {
-    const note = textOfContent(message.content).replace(/⁣FM_BRANCH_DELIVERY_ID:[0-9a-f]+⁣/g, "");
+    const note = textOfContent(message.content).replace(/⁣FM_BRANCH_DELIVERY_ID:[^⁣\s]+⁣/g, "");
     const hasGlyph = note.startsWith(MERGE_NOTE_BOAT);
     const rest = hasGlyph ? note.slice(MERGE_NOTE_BOAT.length) : note;
     const outputPad = 1;

@@ -147,7 +147,7 @@ test_outcome_startup_replay_preserves_silence() {
 # a new failure, decision, terminal result, PR/CI change, or validation-loop
 # stop renders again. The durable store append path is untouched by the gate.
 test_routine_note_coalescing() {
-  local home out ev reservation token marker_before token2 token3 fakebin rc owner_a owner_b crash_token id1 id2
+  local home out ev reservation token marker_before token2 token3 fakebin rc owner_a owner_b crash_token id1 id2 routine_token captain_token routine_id captain_id
   home="$TMP_ROOT/note-coalesce-home"
   mkdir -p "$home/state"
   gate() { FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-render --task "$1"; }
@@ -160,6 +160,7 @@ test_routine_note_coalescing() {
   reservation=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 7)
   case "$reservation" in render\ *) ;; *) fail "a new routine note was not reserved for delivery" ;; esac
   token=${reservation#render }
+  token=${token%% *}
   grep -q '^pending$' "$home/state/.branch-note-sig-task-pending" \
     || fail "a routine note reservation was not marked pending"
   case "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 8)" in
@@ -176,7 +177,8 @@ test_routine_note_coalescing() {
   printf 'failed: second delivery\n' > "$home/state/task-pending.status"
   reservation=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 9)
   case "$reservation" in render\ *) ;; *) fail "a changed routine note was not reserved for rollback" ;; esac
-  token2=$(printf '%s\n' "$reservation" | sed 's/^render //')
+  token2=${reservation#render }
+  token2=${token2%% *}
   FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-rollback --task task-pending --generation 9 --token "$token2" \
     || fail "an authenticated reservation did not roll back"
   [ "$(cat "$home/state/.branch-note-sig-task-pending")" = "$marker_before" ] \
@@ -208,6 +210,7 @@ SH
   reservation=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 12)
   case "$reservation" in render\ *) ;; *) fail "a changed routine note was not reserved before commit failure" ;; esac
   token3=${reservation#render }
+  token3=${token3%% *}
   if PATH="$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-commit --task task-pending --generation 12 --token "$token3"; then
     rc=0
   else
@@ -222,6 +225,7 @@ SH
   reservation=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 14)
   case "$reservation" in render\ *) ;; *) fail "a new outcome stayed suppressed behind a failed commit" ;; esac
   token3=${reservation#render }
+  token3=${token3%% *}
   [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-commit --task task-pending --generation 14 --token "$token3")" = committed ] \
     || fail "a recovered note reservation did not commit"
   case "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 15)" in
@@ -233,6 +237,7 @@ SH
   printf 'failed: crash before delivery\n' > "$home/state/task-crash.status"
   reservation=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-crash --generation 7 --owner "$owner_a")
   crash_token=${reservation#render }
+  crash_token=${crash_token%% *}
   case "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-crash --generation 8 --owner "$owner_b")" in
     render\ *) ;;
     *) fail "a replacement owner did not reclaim an abandoned pending reservation" ;;
@@ -244,6 +249,24 @@ SH
   id1=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-identity --task task-crash --kind captain)
   id2=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-identity --task task-crash --kind captain)
   [ "$id1" = "$id2" ] || fail "delivery identity changed across retries"
+  printf 'failed: competing outcome\n' > "$home/state/task-priority.status"
+  reservation=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-priority --generation 21 --owner "$owner_a" --kind routine --summary 'same outcome')
+  routine_token=${reservation#render }
+  routine_id=${routine_token#* }
+  routine_token=${routine_token%% *}
+  [ "$(sed -n 's/^delivery_id=//p' "$home/state/.branch-note-sig-task-priority")" = "$routine_id" ] \
+    || fail "reservation returned an identity different from its authenticated marker"
+  reservation=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-priority --generation 22 --owner "$owner_a" --kind captain --summary 'same outcome')
+  case "$reservation" in
+    render\ *) ;;
+    *) fail "a captain outcome was suppressed behind a routine reservation" ;;
+  esac
+  captain_token=$(cat "$home/state/.branch-note-sig-task-priority" | sed -n 's/^token=//p')
+  captain_id=$(sed -n 's/^delivery_id=//p' "$home/state/.branch-note-sig-task-priority")
+  [ "$captain_id" != "$routine_id" ] || fail "the captain reservation reused the routine identity"
+  [ "$captain_token" != "$routine_token" ] || fail "the captain reservation reused the routine token"
+  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-commit --task task-priority --generation 21 --owner "$owner_a" --token "$routine_token" 2>/dev/null; echo $?)" -ne 0 ] \
+    || fail "the displaced routine owner committed over a captain reservation"
   printf 'failed: strict marker\n' > "$home/state/task-strict.status"
   if out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-render --task task-strict --strict); then
     rc=0

@@ -399,6 +399,11 @@ case "$CMD" in
       printf 'render-unreserved\n'
       exit 0
     fi
+    if ! DELIVERY_ID=$(note_delivery_id "$TASK" "$KIND" "$SIG" "$SUMMARY"); then
+      fm_lock_release "$LOCK"
+      printf 'render-unreserved\n'
+      exit 0
+    fi
     if [ -e "$MARKER" ] || [ -L "$MARKER" ]; then
       [ -f "$MARKER" ] && [ ! -L "$MARKER" ] || {
         fm_lock_release "$LOCK"
@@ -413,6 +418,11 @@ case "$CMD" in
       if note_marker_pending "$LAST"; then
         PENDING_OWNER=$(note_pending_field "$LAST" owner)
         if [ -n "$OWNER" ] && [ "$PENDING_OWNER" != "$OWNER" ]; then
+          LAST=$(note_pending_block "$LAST" previous-begin previous-end 2>/dev/null || true)
+        elif [ "$KIND" = captain ] && {
+          [ "$(note_pending_field "$LAST" kind)" != captain ] ||
+          [ "$(note_pending_field "$LAST" delivery_id)" != "$DELIVERY_ID" ]
+        }; then
           LAST=$(note_pending_block "$LAST" previous-begin previous-end 2>/dev/null || true)
         elif ! PENDING_SIGNATURE=$(note_pending_block "$LAST" signature-begin signature-end 2>/dev/null); then
           fm_lock_release "$LOCK"
@@ -441,12 +451,6 @@ case "$CMD" in
       exit 0
     fi
     TOKEN=${TMP##*/}
-    if ! DELIVERY_ID=$(note_delivery_id "$TASK" "$KIND" "$SIG" "$SUMMARY"); then
-      rm -f -- "$TMP"
-      fm_lock_release "$LOCK"
-      printf 'render-unreserved\n'
-      exit 0
-    fi
     if ! {
       printf 'pending\n'
       printf 'generation=%s\n' "$GENERATION"
@@ -471,7 +475,7 @@ case "$CMD" in
       exit 0
     fi
     fm_lock_release "$LOCK"
-    printf 'render %s\n' "$TOKEN"
+    printf 'render %s %s\n' "$TOKEN" "$DELIVERY_ID"
     ;;
   note-identity)
     TASK=''
