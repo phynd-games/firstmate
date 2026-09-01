@@ -833,16 +833,19 @@ export default function (pi: ExtensionAPI) {
     },
     renderResult: (result, _options, theme, context) => {
       if (calmHides("tool-result")) return new Container();
+      // Colour each line separately, the way Pi stock does: a joined multi-line
+      // string gets one closing reset for the whole block instead of one per line,
+      // which makes Calm-off rendering diverge from stock byte-for-byte.
       const output = result.content
         .filter((item) => item.type === "text")
         .map((item) => item.text)
         .join("\n");
       if (calmPresentation.stockExportRendering) {
-        return new Text(theme.fg("toolOutput", output), 0, 0);
+        return new Text(output.split("\n").map((line) => theme.fg("toolOutput", line)).join("\n"), 0, 0);
       }
       const state = context.state as WatchToolShellState;
       state.result = output
-        ? new Text(theme.fg("toolOutput", output), 0, 0)
+        ? new Text(output.split("\n").map((line) => theme.fg("toolOutput", line)).join("\n"), 0, 0)
         : new Container();
       refreshWatchToolShell(state, theme, context);
       return new Container();

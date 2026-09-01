@@ -1390,7 +1390,13 @@ ${context.command}
         .map((item) => normalizeOutcomesToolOutput(item.text))
         .join("\n");
       const shellState = context.state as OutcomesToolShellState;
-      shellState.result = output ? new Text(theme.fg("toolOutput", output), 0, 0) : new Container();
+      // Colour each line separately, the way Pi stock does. Passing a joined
+      // multi-line string to theme.fg emits one closing reset for the whole block
+      // instead of one per line, which makes Calm-off rendering diverge from stock
+      // byte-for-byte on any multi-line output.
+      shellState.result = output
+        ? new Text(output.split("\n").map((line) => theme.fg("toolOutput", line)).join("\n"), 0, 0)
+        : new Container();
       refreshOutcomesToolShell(shellState, theme, context);
       return new Container();
     },
