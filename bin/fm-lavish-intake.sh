@@ -117,13 +117,15 @@ lavish_session_state_path() {
 }
 
 lavish_session_active() {
-  local artifact=$1 state_dir state_file session_key
+  local artifact=$1 canonical state_dir state_file session_key
   state_dir=${LAVISH_AXI_STATE_DIR:-$HOME/.lavish-axi}
   state_file=$(lavish_session_state_path)
   [ -d "$state_dir" ] || return 1
   [ ! -L "$state_dir" ] || return 2
   [ -f "$state_file" ] && [ ! -L "$state_file" ] || return 1
-  session_key=$(sha256_text "$artifact" | cut -c1-16)
+  canonical=$(perl -MCwd=realpath -e '$p = realpath($ARGV[0]); defined($p) or exit 1; print "$p\n"' "$artifact" 2>/dev/null) || return 2
+  [ -f "$canonical" ] && [ ! -L "$canonical" ] || return 2
+  session_key=$(sha256_text "$canonical" | cut -c1-16)
   perl -MJSON::PP -e '
     my ($key) = @ARGV;
     local $/;

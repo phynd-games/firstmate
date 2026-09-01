@@ -545,6 +545,31 @@ assert_absent "$FM_PROCEVENT_CLAIM_ROOT/retire-fail-src.claim" \
   || fail "retirement recovery reran the terminal source"
 pass "failed terminal retirement is fail-closed and idempotently recoverable"
 
+HCAPFAIL="$TMP_ROOT/hcapture-fail"; new_home "$HCAPFAIL"
+PE_TRACKED+=("$HCAPFAIL|capture-fail-src")
+CAPTURE_FAIL_BIN=$(fm_fakebin "$TMP_ROOT/capture-fail-bin")
+REAL_MV=$(command -v mv)
+export REAL_MV
+cat > "$CAPTURE_FAIL_BIN/mv" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in */procevent-inbox/*.result) exit 1 ;; esac
+done
+exec "$REAL_MV" "$@"
+SH
+chmod +x "$CAPTURE_FAIL_BIN/mv"
+pe_adapter "$HCAPFAIL" register endnow capture-fail-src --intake -- /bin/echo "capture failure payload" >/dev/null
+set +e
+out=$(PATH="$CAPTURE_FAIL_BIN:$PATH" pe_adapter "$HCAPFAIL" start capture-fail-src 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "failed result publication was reported as successful"
+assert_absent "$HCAPFAIL/state/procevent-inbox/capture-fail-src.1.result" \
+  "failed result publication left a partial result"
+assert_absent "$HCAPFAIL/state/procevent-inbox/capture-fail-src.1.intake" \
+  "failed result publication left an orphan intake marker"
+pass "failed intake result publication removes its moved provenance marker"
+
 # --- end-user-aligned regression: one Send & End, one captured result -------
 # The dogfood defect: a real armed Lavish source received one human `Send & End`
 # action, and the runner captured four results - the human's real feedback, then

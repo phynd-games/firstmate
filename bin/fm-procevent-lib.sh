@@ -356,7 +356,11 @@ fm_procevent_capture() {
     rm -f -- "$tmp" "$adapter_dest" "$intake_tmp"
     return 1
   fi
-  if ! mv -f -- "$tmp" "$dest"; then rm -f -- "$tmp" "$adapter_dest"; return 1; fi
+  if ! mv -f -- "$tmp" "$dest"; then
+    rm -f -- "$tmp" "$adapter_dest"
+    [ "$intake" -eq 1 ] && rm -f -- "$intake_dest"
+    return 1
+  fi
   printf '%s\n' "$dest"
 }
 
