@@ -425,7 +425,7 @@ test_shared_pane_identity_boundary_is_typed_and_fail_closed() {
 test_identity_bound_operation_refuses_rebound_before_mutation() {
   local marker="$TMP_ROOT/identity-bound-operation"
   rm -f "$marker"
-  run_capture identity-bound-operation-rebound lib_probe "OP_MARKER=$marker" -- '
+  run_capture identity-bound-operation-rebound lib_probe "OP_MARKER=$marker" FM_HERDR_FAKE_NATIVE_IDENTITY_BOUND=1 -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
     fm_backend_herdr_presentation_session_lock_path() { printf /tmp/fm-herdr-operation-lock; }
     fm_lock_try_acquire() { return 0; }
@@ -443,8 +443,40 @@ test_identity_bound_operation_refuses_rebound_before_mutation() {
   pass "identity-bound Herdr operations refuse a rebound pane before mutation"
 }
 
+test_identity_bound_operation_requires_native_binding() {
+  run_capture identity-bound-operation-native-required lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_identity_bound_operation fmtest ws1 tab1 pane1 send-text payload
+  '
+  assert_refusal "unbound Herdr pane operation" "cannot atomically bind workspace, tab, and pane identity"
+  pass "identity-bound Herdr operations refuse when native binding is unavailable"
+}
+
+test_send_preserves_empty_native_failure_status() {
+  run_capture send-empty-native-failure lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_target_ready() {
+      fm_backend_herdr_parse_target "$1"
+      FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=ws1
+      FM_BACKEND_HERDR_EXPECTED_TAB_ID=tab1
+    }
+    fm_backend_herdr_identity_bound_operation() { return 2; }
+    fm_backend_herdr_send_literal fmtest:pane1 payload
+  '
+  [ "$RC" -eq 2 ] && [ -z "$OUT" ] || fail "empty native failure status was collapsed: rc=$RC out=$OUT"
+  pass "Herdr send preserves an empty typed native failure"
+}
+
 test_pane_presence_not_found_is_idempotently_dead() {
   run_capture pane-presence-not-found lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() {
+      printf "%s" '\''{"error":{"code":"pane_not_found"}}'\''
+    }
+    fm_backend_herdr_pane_presence_state fmtest pane1 ws1 tab1
+  '
+  [ "$RC" -eq 0 ] && [ "$OUT" = dead ] || fail "explicit pane_not_found must classify as dead: rc=$RC out=$OUT err=$ERR"
+  run_capture pane-presence-not-found-failed lib_probe -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
     fm_backend_herdr_cli() {
       printf "%s" '\''{"error":{"code":"pane_not_found"}}'\''
@@ -452,7 +484,7 @@ test_pane_presence_not_found_is_idempotently_dead() {
     }
     fm_backend_herdr_pane_presence_state fmtest pane1 ws1 tab1
   '
-  [ "$RC" -eq 0 ] && [ "$OUT" = dead ] || fail "explicit pane_not_found must classify as dead: rc=$RC out=$OUT err=$ERR"
+  [ "$RC" -eq 2 ] && [ -z "$OUT" ] || fail "failed pane_not_found must remain a typed refusal: rc=$RC out=$OUT"
   pass "explicit Herdr pane absence remains idempotently dead"
 }
 
@@ -1133,6 +1165,8 @@ test_endpoint_presence_failure_remains_typed
 test_pane_presence_requires_complete_identity
 test_shared_pane_identity_boundary_is_typed_and_fail_closed
 test_identity_bound_operation_refuses_rebound_before_mutation
+test_identity_bound_operation_requires_native_binding
+test_send_preserves_empty_native_failure_status
 test_pane_presence_not_found_is_idempotently_dead
 test_agent_state_rejects_rebound_identity_and_failed_body
 test_seeded_tab_inventory_failure_refuses_before_prune

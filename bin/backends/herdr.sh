@@ -1618,6 +1618,7 @@ fm_backend_herdr_pane_get_checked() {  # <session> <workspace> <tab> <pane> [all
   else
     cli_rc=$?
   fi
+  [ "$cli_rc" -eq 0 ] || return 2
   if ! printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1; then
     return 2
   fi
@@ -1628,7 +1629,6 @@ fm_backend_herdr_pane_get_checked() {  # <session> <workspace> <tab> <pane> [all
     fi
     return 2
   fi
-  [ "$cli_rc" -eq 0 ] || return 2
   printf '%s' "$out" | jq -e \
     --arg workspace "$expected_workspace" --arg tab "$expected_tab" --arg pane "$expected_pane" '
     (.result.pane | type) == "object"
@@ -1654,6 +1654,7 @@ fm_backend_herdr_agent_get_checked() {  # <session> <workspace> <tab> <pane>
   else
     cli_rc=$?
   fi
+  [ "$cli_rc" -eq 0 ] || return 2
   if ! printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1; then
     return 2
   fi
@@ -1661,7 +1662,7 @@ fm_backend_herdr_agent_get_checked() {  # <session> <workspace> <tab> <pane>
   case "$code" in
     agent_not_found) return 1 ;;
     pane_not_found) return 3 ;;
-    '') [ "$cli_rc" -eq 0 ] || return 2 ;;
+    '') : ;;
     *) return 2 ;;
   esac
   printf '%s' "$out" | jq -e \
@@ -1700,6 +1701,13 @@ fm_backend_herdr_identity_bound_operation() {  # <session> <workspace> <tab> <pa
   shift 5
   [ -n "$session" ] && [ -n "$expected_workspace" ] && [ -n "$expected_tab" ] \
     && [ -n "$pane_id" ] && [ -n "$operation" ] || return 2
+  if [ "${FM_HERDR_FAKE_NATIVE_IDENTITY_BOUND:-0}" != 1 ]; then
+    if declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
+      fm_backend_policy_refuse "Herdr pane $operation" herdr \
+        "The installed Herdr CLI cannot atomically bind workspace, tab, and pane identity for pane operations. Update Herdr to a native identity-bound operation before retrying." || true
+    fi
+    return 2
+  fi
   if [ "${FM_BACKEND_HERDR_OPERATION_LOCK_HELD:-0}" != 1 ]; then
     if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
       # shellcheck source=bin/fm-wake-lib.sh
@@ -2199,10 +2207,8 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id> [expec
     close_rc=$?
   fi
   if [ "$close_rc" -ne 0 ]; then
-    native_rc=0
-    fm_backend_herdr_native_failure_rc "$close_out" || native_rc=$?
-    [ "$native_rc" -eq 2 ] && return 2
-    [ "$native_rc" -eq 1 ] && return 0
+    [ "$close_rc" -eq 1 ] && return 0
+    [ "$close_rc" -eq 2 ] && return 2
     return 1
   fi
   if [ -n "$(printf '%s' "$close_out" | jq -r '.error.code // empty' 2>/dev/null || true)" ]; then
@@ -3130,11 +3136,11 @@ fm_backend_herdr_send_text_line() {  # <target> <text>
     "$FM_BACKEND_HERDR_SESSION" "$expected_workspace" "$expected_tab" \
     "$FM_BACKEND_HERDR_PANE" run "$2"); then
     fm_backend_herdr_send_response_ok "$out" && return 0
+  else
+    native_rc=$?
+    [ "$native_rc" -eq 1 ] && return 1
+    return "$native_rc"
   fi
-  fm_backend_herdr_native_failure_rc "$out"
-  native_rc=$?
-  [ "$native_rc" -eq 1 ] && return 1
-  return 2
 }
 
 # fm_backend_herdr_send_literal: send TEXT as literal, UNSUBMITTED input - the
@@ -3151,11 +3157,11 @@ fm_backend_herdr_send_literal() {  # <target> <text>
     "$FM_BACKEND_HERDR_SESSION" "$expected_workspace" "$expected_tab" \
     "$FM_BACKEND_HERDR_PANE" send-text "$2"); then
     fm_backend_herdr_send_response_ok "$out" && return 0
+  else
+    native_rc=$?
+    [ "$native_rc" -eq 1 ] && return 1
+    return "$native_rc"
   fi
-  fm_backend_herdr_native_failure_rc "$out"
-  native_rc=$?
-  [ "$native_rc" -eq 1 ] && return 1
-  return 2
 }
 
 # fm_backend_herdr_normalize_key: map firstmate's key vocabulary (Enter,
@@ -3188,11 +3194,11 @@ fm_backend_herdr_send_key() {  # <target> <key>
     "$FM_BACKEND_HERDR_SESSION" "$expected_workspace" "$expected_tab" \
     "$FM_BACKEND_HERDR_PANE" send-keys "$key"); then
     fm_backend_herdr_send_response_ok "$out" && return 0
+  else
+    native_rc=$?
+    [ "$native_rc" -eq 1 ] && return 1
+    return "$native_rc"
   fi
-  fm_backend_herdr_native_failure_rc "$out"
-  native_rc=$?
-  [ "$native_rc" -eq 1 ] && return 1
-  return 2
 }
 
 # fm_backend_herdr_capture: bounded plain-text pane capture. Mirrors
@@ -3217,13 +3223,14 @@ fm_backend_herdr_capture() {  # <target> <lines>
   case "$lines" in ''|*[!0-9]*) lines=200 ;; esac
   fetch=$lines
   case "$fetch" in ''|*[!0-9]*) fetch=200 ;; *) [ "$fetch" -ge 200 ] || fetch=200 ;; esac
-  if ! out=$(fm_backend_herdr_identity_bound_operation \
+  if out=$(fm_backend_herdr_identity_bound_operation \
     "$FM_BACKEND_HERDR_SESSION" "$expected_workspace" "$expected_tab" \
     "$FM_BACKEND_HERDR_PANE" read --source recent --lines "$fetch"); then
-    fm_backend_herdr_native_failure_rc "$out"
+    :
+  else
     native_rc=$?
     [ "$native_rc" -eq 1 ] && return 1
-    return 2
+    return "$native_rc"
   fi
   if [ -n "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ]; then
     fm_backend_herdr_native_failure_rc "$out"
@@ -3243,13 +3250,14 @@ fm_backend_herdr_capture_ansi() {  # <target> <lines>
   case "$lines" in ''|*[!0-9]*) lines=200 ;; esac
   fetch=$lines
   case "$fetch" in ''|*[!0-9]*) fetch=200 ;; *) [ "$fetch" -ge 200 ] || fetch=200 ;; esac
-  if ! out=$(fm_backend_herdr_identity_bound_operation \
+  if out=$(fm_backend_herdr_identity_bound_operation \
     "$FM_BACKEND_HERDR_SESSION" "$expected_workspace" "$expected_tab" \
     "$FM_BACKEND_HERDR_PANE" read --source recent --lines "$fetch" --format ansi); then
-    fm_backend_herdr_native_failure_rc "$out"
+    :
+  else
     native_rc=$?
     [ "$native_rc" -eq 1 ] && return 1
-    return 2
+    return "$native_rc"
   fi
   if [ -n "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ]; then
     fm_backend_herdr_native_failure_rc "$out"

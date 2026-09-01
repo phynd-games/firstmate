@@ -26,6 +26,7 @@ TMP_ROOT=$(fm_test_tmproot fm-backend-herdr-tests)
 export FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0
 export FM_HERDR_FAKE_NORMALIZE_AGENT_IDENTITY=1
 export FM_HERDR_FAKE_NORMALIZE_PANE_IDENTITY=1
+export FM_HERDR_FAKE_NATIVE_IDENTITY_BOUND=1
 
 # make_herdr_fakebin: a `herdr` stub that logs every invocation (one line,
 # unit-separated args, to $FM_HERDR_LOG) and returns the canned response for

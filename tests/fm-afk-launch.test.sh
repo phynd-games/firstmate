@@ -291,6 +291,7 @@ unit_herdr_partial_create_recovery() {
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-herdr-partial.XXXXXX")
   recorded="$st/recorded"
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_LAUNCH_ENTRY=/bin/true \
+    FM_HERDR_FAKE_NATIVE_IDENTITY_BOUND=1 \
     FM_AFK_LAUNCH_LABEL=afk-exact-label RECORDED="$recorded" bash -c '
     . "$1"
     fm_backend_source() { return 0; }
@@ -301,8 +302,10 @@ unit_herdr_partial_create_recovery() {
         return 1
       elif [ "$2 $3" = "workspace list" ]; then
         printf %s '\''{"result":{"workspaces":[{"workspace_id":"ws-partial","label":"afk-exact-label"}]}}'\''
+      elif [ "$2 $3" = "pane get" ]; then
+        printf %s '\''{"result":{"pane":{"pane_id":"pane-exact","tab_id":"tab-exact","workspace_id":"ws-partial"}}}'\''
       else
-        printf %s '\''{"result":{"panes":[{"pane_id":"pane-exact"}]}}'\''
+        printf %s '\''{"result":{"panes":[{"pane_id":"pane-exact","tab_id":"tab-exact","workspace_id":"ws-partial"}]}}'\''
       fi
     }
     fm_afk_launch_record_write() { printf "%s:%s:%s" "$1" "$2" "$3" > "$RECORDED"; }
@@ -319,17 +322,17 @@ unit_herdr_partial_create_recovery() {
 unit_herdr_error_with_exact_ids_closes_exact() {
   local st
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-herdr-error-exact.XXXXXX")
-  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+  FM_HERDR_FAKE_NATIVE_IDENTITY_BOUND=1 FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
     . "$1"
     fm_backend_source() { return 0; }
     fm_backend_herdr_server_ensure() { return 0; }
     fm_backend_herdr_cli() {
       if [ "$2 $3" = "workspace create" ]; then
-        printf %s '\''{"result":{"workspace":{"workspace_id":"ws-exact"},"root_pane":{"pane_id":"pane-exact"}}}'\''
+        printf %s '\''{"result":{"workspace":{"workspace_id":"ws-exact"},"tab":{"tab_id":"tab-exact"},"root_pane":{"pane_id":"pane-exact"}}}'\''
         return 1
       elif [ "$2 $3" = "pane get" ]; then
-        printf %s '\''{"error":{"code":"transport_error"}}'\''
-        return 2
+        printf %s '\''{"result":{"pane":{"pane_id":"pane-exact","tab_id":"tab-exact","workspace_id":"ws-exact"}}}'\''
+        return 0
       fi
       return 2
     }
@@ -346,19 +349,19 @@ unit_herdr_error_with_exact_ids_closes_exact() {
 unit_herdr_run_failure_preserves_unconfirmed_record() {
   local st
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-herdr-run-fail.XXXXXX")
-  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+  FM_HERDR_FAKE_NATIVE_IDENTITY_BOUND=1 FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
     . "$1"
     fm_backend_source() { return 0; }
     fm_backend_herdr_server_ensure() { return 0; }
     fm_backend_herdr_cli() {
       if [ "$2 $3" = "workspace create" ]; then
-        printf %s '\''{"result":{"workspace":{"workspace_id":"ws-exact"},"root_pane":{"pane_id":"pane-exact"}}}'\''
+        printf %s '\''{"result":{"workspace":{"workspace_id":"ws-exact"},"tab":{"tab_id":"tab-exact"},"root_pane":{"pane_id":"pane-exact"}}}'\''
         return 0
       elif [ "$2 $3" = "pane run" ]; then
         return 1
       elif [ "$2 $3" = "pane get" ]; then
-        printf %s '\''{"error":{"code":"transport_error"}}'\''
-        return 2
+        printf %s '\''{"result":{"pane":{"pane_id":"pane-exact","tab_id":"tab-exact","workspace_id":"ws-exact"}}}'\''
+        return 0
       fi
       return 2
     }
@@ -368,6 +371,45 @@ unit_herdr_run_failure_preserves_unconfirmed_record() {
     pass "herdr run failure: unconfirmed exact id remains reconcilable"
   else
     fail "herdr run failure: unconfirmed exact id was discarded"
+  fi
+  rm -rf "$st"
+}
+
+unit_herdr_afk_record_binds_tab_identity() {
+  local st marker out
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-herdr-identity.XXXXXX")
+  mkdir -p "$st/state"
+  printf 'herdr\tlab:pane\tws-exact\t\n' > "$st/state/.afk-daemon-terminal"
+  out=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+    . "$1"
+    fm_backend_policy_refuse() { printf "refused\n" >&2; return 1; }
+    fm_afk_launch_record_read
+  ' _ "$LAUNCH" 2>&1)
+  if [ "$?" -eq 0 ] || [ ! -e "$st/state/.afk-daemon-terminal" ]; then
+    fail "AFK record without a tab identity was accepted or discarded: $out"
+  fi
+  marker="$st/closed"
+  printf 'herdr\tlab:pane\tws-exact\ttab-exact\n' > "$st/state/.afk-daemon-terminal"
+  FM_HERDR_FAKE_NATIVE_IDENTITY_BOUND=1 FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" MARKER="$marker" \
+    bash -c '
+      . "$1"
+      fm_backend_source() { return 0; }
+      fm_backend_herdr_presentation_session_lock_path() { printf /tmp/fm-afk-identity-lock; }
+      fm_lock_try_acquire() { return 0; }
+      fm_lock_release() { return 0; }
+      fm_backend_herdr_cli() {
+        case "$2 $3" in
+          "pane get") printf %s '\''{"result":{"pane":{"pane_id":"pane","workspace_id":"other","tab_id":"other-tab"}}}'\'' ;;
+          "pane close") : > "$MARKER" ;;
+        esac
+      }
+      fm_afk_launch_record_read
+      ! fm_afk_launch_close_recorded
+    ' _ "$LAUNCH"
+  if [ -e "$marker" ] || [ ! -e "$st/state/.afk-daemon-terminal" ]; then
+    fail "AFK rebound pane was operated on or its record was discarded"
+  else
+    pass "AFK terminal close refuses rebound panes with exact recorded tab identity"
   fi
   rm -rf "$st"
 }
@@ -865,6 +907,7 @@ unit_signal_exits_with_lock_cleanup
 unit_herdr_partial_create_recovery
 unit_herdr_error_with_exact_ids_closes_exact
 unit_herdr_run_failure_preserves_unconfirmed_record
+unit_herdr_afk_record_binds_tab_identity
 unit_record_failure_closes_terminal
 unit_readiness_failure_rolls_back_terminal
 unit_readiness_failure_preserves_unconfirmed_record
