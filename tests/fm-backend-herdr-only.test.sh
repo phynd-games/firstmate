@@ -425,16 +425,16 @@ test_shared_pane_identity_boundary_is_typed_and_fail_closed() {
 test_identity_bound_operation_refuses_rebound_before_mutation() {
   local marker="$TMP_ROOT/identity-bound-operation"
   rm -f "$marker"
-  run_capture identity-bound-operation-rebound lib_probe "OP_MARKER=$marker" FM_HERDR_FAKE_NATIVE_IDENTITY_BOUND=1 -- '
+  run_capture identity-bound-operation-rebound lib_probe "OP_MARKER=$marker" -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
     fm_backend_herdr_presentation_session_lock_path() { printf /tmp/fm-herdr-operation-lock; }
     fm_lock_try_acquire() { return 0; }
     fm_lock_release() { return 0; }
     fm_backend_herdr_cli() {
-      case "$2 $3" in
-        "pane get") printf "%s" '\''{"result":{"pane":{"pane_id":"pane1","workspace_id":"other","tab_id":"tab1"}}}'\'' ;;
-        "pane send-text") : > "$OP_MARKER" ;;
-      esac
+      if [ "$2 $3" = "pane identity-bound" ]; then
+        printf "%s" '\''{"result":{"pane":{"pane_id":"pane1","workspace_id":"other","tab_id":"tab1"}}}'\''
+        return 2
+      fi
     }
     fm_backend_herdr_identity_bound_operation fmtest ws1 tab1 pane1 send-text payload
   '
@@ -450,6 +450,22 @@ test_identity_bound_operation_requires_native_binding() {
   '
   assert_refusal "unbound Herdr pane operation" "cannot atomically bind workspace, tab, and pane identity"
   pass "identity-bound Herdr operations refuse when native binding is unavailable"
+}
+
+test_identity_bound_operation_accepts_a_native_identity_bound_path() {
+  run_capture identity-bound-operation-native-accepted lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() {
+      [ "$2 $3" = "pane identity-bound" ] || return 2
+      [ "$5" = ws1 ] && [ "$7" = tab1 ] && [ "$9" = pane1 ] || return 2
+      printf "%s" '\''{"result":{"applied":true,"workspace_id":"ws1","tab_id":"tab1","pane_id":"pane1"}}'\''
+    }
+    fm_backend_herdr_identity_bound_operation fmtest ws1 tab1 pane1 send-text payload
+  '
+  [ "$RC" -eq 0 ] || fail "native identity-bound operation should succeed without a test flag: rc=$RC out=$OUT err=$ERR"
+  [ "$OUT" = '{"result":{"applied":true,"workspace_id":"ws1","tab_id":"tab1","pane_id":"pane1"}}' ] || fail "native identity-bound operation returned unexpected output: $OUT"
+  [ -z "$ERR" ] || fail "accepted native identity-bound operation emitted a refusal: $ERR"
+  pass "identity-bound Herdr operations use the native identity-bound path without a test flag"
 }
 
 test_send_preserves_empty_native_failure_status() {
@@ -1166,6 +1182,7 @@ test_pane_presence_requires_complete_identity
 test_shared_pane_identity_boundary_is_typed_and_fail_closed
 test_identity_bound_operation_refuses_rebound_before_mutation
 test_identity_bound_operation_requires_native_binding
+test_identity_bound_operation_accepts_a_native_identity_bound_path
 test_send_preserves_empty_native_failure_status
 test_pane_presence_not_found_is_idempotently_dead
 test_agent_state_rejects_rebound_identity_and_failed_body

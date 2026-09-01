@@ -1697,50 +1697,47 @@ fm_backend_herdr_endpoint_identity() {  # <session> <workspace> <tab> <pane>
 
 fm_backend_herdr_identity_bound_operation() {  # <session> <workspace> <tab> <pane> <operation> [args...]
   local session=$1 expected_workspace=$2 expected_tab=$3 pane_id=$4 operation=$5
-  local lock_path='' lock_held=0 attempt=0 out op_rc=0 identity_rc=0
+  local out op_rc=0 code
   shift 5
   [ -n "$session" ] && [ -n "$expected_workspace" ] && [ -n "$expected_tab" ] \
     && [ -n "$pane_id" ] && [ -n "$operation" ] || return 2
-  if [ "${FM_HERDR_FAKE_NATIVE_IDENTITY_BOUND:-0}" != 1 ]; then
-    if declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
-      fm_backend_policy_refuse "Herdr pane $operation" herdr \
-        "The installed Herdr CLI cannot atomically bind workspace, tab, and pane identity for pane operations. Update Herdr to a native identity-bound operation before retrying." || true
-    fi
-    return 2
-  fi
-  if [ "${FM_BACKEND_HERDR_OPERATION_LOCK_HELD:-0}" != 1 ]; then
-    if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
-      # shellcheck source=bin/fm-wake-lib.sh
-      . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/fm-wake-lib.sh"
-    fi
-    lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") || return 2
-    while [ "$attempt" -lt 50 ]; do
-      if fm_lock_try_acquire "$lock_path"; then
-        lock_held=1
-        break
-      fi
-      sleep 0.1
-      attempt=$((attempt + 1))
-    done
-    [ "$lock_held" -eq 1 ] || return 2
-  fi
-  if fm_backend_herdr_pane_get_checked "$session" "$expected_workspace" "$expected_tab" "$pane_id" 1 >/dev/null; then
-    identity_rc=0
-  else
-    identity_rc=$?
-  fi
-  if [ "$identity_rc" -ne 0 ]; then
-    [ "$lock_held" -eq 1 ] && fm_lock_release "$lock_path" || true
-    return "$identity_rc"
-  fi
-  if out=$(fm_backend_herdr_cli "$session" pane "$operation" "$pane_id" "$@" 2>&1); then
+  if out=$(fm_backend_herdr_cli "$session" pane identity-bound \
+    --workspace-id "$expected_workspace" --tab-id "$expected_tab" \
+    --pane-id "$pane_id" --operation "$operation" "$@" 2>&1); then
     op_rc=0
   else
     op_rc=$?
   fi
+  if [ "$op_rc" -ne 0 ]; then
+    if declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
+      fm_backend_policy_refuse "Herdr pane $operation" herdr \
+        "The native Herdr operation cannot atomically bind workspace, tab, and pane identity. Update Herdr to a native identity-bound operation before retrying." || true
+    fi
+    return 2
+  fi
+  if code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null) && [ -n "$code" ]; then
+    [ "$operation" = close ] && [ "$code" = pane_not_found ] && return 1
+    if declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
+      fm_backend_policy_refuse "Herdr pane $operation" herdr \
+        "The native Herdr operation returned an error before proving the exact workspace, tab, and pane identity. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+    fi
+    return 2
+  fi
+  if ! printf '%s' "$out" | jq -e \
+    --arg workspace "$expected_workspace" --arg tab "$expected_tab" --arg pane "$pane_id" '
+    (.result | type) == "object"
+    and (.result.workspace_id // .result.pane.workspace_id) == $workspace
+    and (.result.tab_id // .result.pane.tab_id) == $tab
+    and (.result.pane_id // .result.pane.pane_id) == $pane
+  ' >/dev/null 2>&1; then
+    if declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
+      fm_backend_policy_refuse "Herdr pane $operation" herdr \
+        "The native Herdr operation returned no exact workspace, tab, and pane identity proof. Update Herdr to an identity-bound operation before retrying." || true
+    fi
+    return 2
+  fi
   [ -z "$out" ] || printf '%s' "$out"
-  [ "$lock_held" -eq 1 ] && fm_lock_release "$lock_path" || true
-  return "$op_rc"
+  return 0
 }
 
 # fm_backend_herdr_workspace_find: this HOME's own workspace id inside
@@ -2692,6 +2689,12 @@ fm_backend_herdr_projection_reclaim_rollback() {  # <session> <new-pane> [expect
   else
     state_rc=$?
   fi
+  if [ "$state_rc" -eq 2 ]; then
+    FM_BACKEND_HERDR_PROJECTION_RECLAIM_NATIVE_FAILURE=1
+    fm_backend_policy_refuse "Herdr presentation reclaim agent read for $id" herdr \
+      "The native Herdr agent get operation failed before presentation reclaim. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+    return 2
+  fi
   [ "$state_rc" -eq 0 ] || return "$state_rc"
   case "$state" in
     dead) return 0 ;;
@@ -3119,7 +3122,14 @@ fm_backend_herdr_current_path() {  # <target>
 }
 
 fm_backend_herdr_send_response_ok() {
-  [ -z "$1" ]
+  [ -z "$1" ] || printf '%s' "$1" | jq -e '
+    ((.result.workspace_id // .result.pane.workspace_id) | type) == "string"
+    and ((.result.workspace_id // .result.pane.workspace_id) | length) > 0
+    and ((.result.tab_id // .result.pane.tab_id) | type) == "string"
+    and ((.result.tab_id // .result.pane.tab_id) | length) > 0
+    and ((.result.pane_id // .result.pane.pane_id) | type) == "string"
+    and ((.result.pane_id // .result.pane.pane_id) | length) > 0
+  ' >/dev/null 2>&1
 }
 
 # fm_backend_herdr_send_text_line: send one line of TEXT then submit,
@@ -3238,7 +3248,8 @@ fm_backend_herdr_capture() {  # <target> <lines>
     [ "$native_rc" -eq 1 ] && return 1
     return 2
   fi
-  printf '%s' "$out" | tail -n "$lines"
+  printf '%s' "$out" | jq -er '.result.text | type == "string"' >/dev/null 2>&1 || return 2
+  printf '%s' "$out" | jq -j '.result.text' | tail -n "$lines"
 }
 
 fm_backend_herdr_capture_ansi() {  # <target> <lines>
@@ -3265,7 +3276,8 @@ fm_backend_herdr_capture_ansi() {  # <target> <lines>
     [ "$native_rc" -eq 1 ] && return 1
     return 2
   fi
-  printf '%s' "$out" | tail -n "$lines"
+  printf '%s' "$out" | jq -er '.result.text | type == "string"' >/dev/null 2>&1 || return 2
+  printf '%s' "$out" | jq -j '.result.text' | tail -n "$lines"
 }
 
 # --- herdr composer capture and capability primitives -----------------------

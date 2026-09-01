@@ -24,9 +24,6 @@ herdr_forget_inherited_pane
 
 TMP_ROOT=$(fm_test_tmproot fm-backend-herdr-tests)
 export FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0
-export FM_HERDR_FAKE_NORMALIZE_AGENT_IDENTITY=1
-export FM_HERDR_FAKE_NORMALIZE_PANE_IDENTITY=1
-export FM_HERDR_FAKE_NATIVE_IDENTITY_BOUND=1
 
 # make_herdr_fakebin: a `herdr` stub that logs every invocation (one line,
 # unit-separated args, to $FM_HERDR_LOG) and returns the canned response for
@@ -75,19 +72,61 @@ if [ "${1:-} ${2:-}" = "pane get" ] && [ ! -f "$RESP/$next.exit" ]; then
     exit 0
   fi
 fi
+if [ "${1:-} ${2:-}" = "pane identity-bound" ]; then
+  workspace=""; tab=""; pane=""; operation=""; operation_args=()
+  i=3
+  while [ "$i" -le "$#" ]; do
+    case "${!i:-}" in
+      --workspace-id) i=$((i + 1)); workspace=${!i:-} ;;
+      --tab-id) i=$((i + 1)); tab=${!i:-} ;;
+      --pane-id) i=$((i + 1)); pane=${!i:-} ;;
+      --operation) i=$((i + 1)); operation=${!i:-} ;;
+      --session) i=$((i + 1)) ;;
+      *) operation_args+=("${!i:-}") ;;
+    esac
+    i=$((i + 1))
+  done
+  {
+    printf 'HERDR_SESSION=%s\x1f%s\x1f%s\x1f%s' "${HERDR_SESSION:-}" pane "$operation" "$pane"
+    if [ "${#operation_args[@]}" -gt 0 ]; then
+      for a in "${operation_args[@]}"; do printf '\x1f%s' "$a"; done
+    fi
+    printf '\n'
+  } >> "$LOG"
+  n=$next
+  echo "$n" > "$COUNT_FILE"
+  if [ -f "$RESP/$n.exit" ]; then
+    exit "$(cat "$RESP/$n.exit")"
+  fi
+  if [ -f "$RESP/$n.out" ]; then
+    if jq -e '(.error | type) == "object"' "$RESP/$n.out" >/dev/null 2>&1; then
+      cat "$RESP/$n.out"
+    elif jq -e '(.result | type) == "object"' "$RESP/$n.out" >/dev/null 2>&1; then
+      jq --arg workspace "$workspace" --arg tab "$tab" --arg pane "$pane" \
+        '.result += {workspace_id:$workspace, tab_id:$tab, pane_id:$pane}' "$RESP/$n.out"
+    else
+      jq -Rs --arg workspace "$workspace" --arg tab "$tab" --arg pane "$pane" \
+        '{result:{workspace_id:$workspace, tab_id:$tab, pane_id:$pane, text:.}}' "$RESP/$n.out"
+    fi
+  else
+    printf '{"result":{"workspace_id":"%s","tab_id":"%s","pane_id":"%s"}}\n' \
+      "$workspace" "$tab" "$pane"
+  fi
+  exit 0
+fi
 n=$next
 echo "$n" > "$COUNT_FILE"
 if [ -f "$RESP/$n.exit" ]; then
   exit "$(cat "$RESP/$n.exit")"
 fi
 if [ -f "$RESP/$n.out" ]; then
-  if [ "${FM_HERDR_FAKE_NORMALIZE_PANE_IDENTITY:-0}" = 1 ] \
+  if [ -f "$RESP/$n.normalize-pane" ] \
     && [ "${1:-} ${2:-}" = "pane list" ] \
     && jq -e '(.result.panes | type) == "array"' "$RESP/$n.out" >/dev/null 2>&1; then
     workspace=${4:-}
     jq --arg workspace "$workspace" \
       '.result.panes |= map(. + {workspace_id:(.workspace_id // $workspace)})' "$RESP/$n.out"
-  elif [ "${FM_HERDR_FAKE_NORMALIZE_AGENT_IDENTITY:-0}" = 1 ] \
+  elif [ -f "$RESP/$n.normalize-agent" ] \
     && [ "${1:-} ${2:-}" = "agent get" ] \
     && jq -e '(.result.agent | type) == "object" and (.result.agent.agent_status | type) == "string"' "$RESP/$n.out" >/dev/null 2>&1; then
     pane=${3:-}
@@ -149,6 +188,7 @@ args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
   case "${args[$i]}" in
     --workspace) ws=${args[$((i+1))]:-} ;;
+    --workspace-id) ws=${args[$((i+1))]:-} ;;
     --label) label=${args[$((i+1))]:-} ;;
   esac
 done
@@ -189,6 +229,42 @@ case "$cmd $sub" in
     ;;
   "pane list")
     jq_state --arg w "$ws" '{result:{panes:[.tabs[]|select(.workspace_id==$w)|{pane_id:.pane_id, tab_id:.tab_id, workspace_id:.workspace_id}]}}'
+    ;;
+  "pane identity-bound")
+    pane=""; tab=""; operation=""
+    for ((i=2; i<${#args[@]}; i++)); do
+      case "${args[$i]}" in
+        --tab-id) i=$((i + 1)); tab=${args[$i]:-} ;;
+        --pane-id) i=$((i + 1)); pane=${args[$i]:-} ;;
+        --operation) i=$((i + 1)); operation=${args[$i]:-} ;;
+      esac
+    done
+    printf 'HERDR_SESSION=%s\x1f%s\x1f%s\x1f%s\n' "${HERDR_SESSION:-}" pane "$operation" "$pane" >> "$LOG"
+    [ "$(jq_state -r --arg p "$pane" --arg w "$ws" --arg t "$tab" \
+      '[.tabs[] | select(.pane_id == $p and .workspace_id == $w and .tab_id == $t)] | length')" = 1 ] || {
+      printf '%s\n' '{"error":{"code":"identity_mismatch"}}'
+      exit 2
+    }
+    case "$operation" in
+      close)
+        jq_state --arg p "$pane" '
+          ([.tabs[] | select(.pane_id == $p)][0]) as $removed
+          | (.tabs |= [.[] | select(.pane_id != $p)])
+          | if ($removed.focused // false) then
+              ([.tabs[] | select(.workspace_id == $removed.workspace_id)][0]) as $next
+              | (.tabs |= map(if .workspace_id == $removed.workspace_id then .focused = (.tab_id == ($next.tab_id // "")) else . end))
+              | (.workspaces |= map(if .workspace_id == $removed.workspace_id then .active_tab_id = ($next.tab_id // "") else . end))
+            else . end
+        ' | save
+        printf '{"result":{"workspace_id":"%s","tab_id":"%s","pane_id":"%s"}}\n' "$ws" "$tab" "$pane"
+        ;;
+      read)
+        printf '{"result":{"pane":{"pane_id":"%s","workspace_id":"%s","tab_id":"%s"},"text":""}}\n' "$pane" "$ws" "$tab"
+        ;;
+      *)
+        printf '{"result":{"workspace_id":"%s","tab_id":"%s","pane_id":"%s"}}\n' "$ws" "$tab" "$pane"
+        ;;
+    esac
     ;;
   "pane get")
     pane=${3:-}
@@ -652,10 +728,12 @@ test_create_task_refuses_duplicate_label_when_agent_live() {
   printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-dup1","workspace_id":"w1"}]}}\n' > "$resp/1.out"
   # 2: pane list (pane_for_tab) -> resolves the duplicate's pane id
   printf '{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t2"}]}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-pane"
   # 3: pane get -> the pane structurally exists
   printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t2","workspace_id":"w1"}}}\n' > "$resp/3.out"
   # 4: agent get -> a genuinely registered, live agent (idle, not just working)
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
+  : > "$resp/4.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -673,11 +751,14 @@ test_create_task_refuses_when_any_duplicate_label_is_live() {
   dir="$TMP_ROOT/dup-mixed-live"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-mixed1","workspace_id":"w1"},{"tab_id":"w1:t3","label":"fm-mixed1","workspace_id":"w1"}]}}\n' > "$resp/1.out"
   printf '{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t2"},{"pane_id":"w1:p3","tab_id":"w1:t3"}]}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-pane"
   printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t2","workspace_id":"w1"}}}\n' > "$resp/3.out"
   printf '{"error":{"code":"agent_not_found","message":"agent target w1:p2 not found"}}\n' > "$resp/4.out"
   printf '{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t2"},{"pane_id":"w1:p3","tab_id":"w1:t3"}]}}\n' > "$resp/5.out"
+  : > "$resp/5.normalize-pane"
   printf '{"result":{"pane":{"pane_id":"w1:p3","tab_id":"w1:t3","workspace_id":"w1"}}}\n' > "$resp/6.out"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/7.out"
+  : > "$resp/7.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -695,6 +776,7 @@ test_create_task_closes_and_replaces_dead_pane_husk() {
   dir="$TMP_ROOT/husk-dead"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-husk1","workspace_id":"w1"}]}}\n' > "$resp/1.out"
   printf '{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t2"}]}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-pane"
   # 3: pane get -> pane_not_found: the restored pane is dead
   printf '{"error":{"code":"pane_not_found","message":"pane w1:p2 not found"}}\n' > "$resp/3.out"
   # 4: tab create -> the replacement tab (created BEFORE the husk is closed)
@@ -722,6 +804,7 @@ test_create_task_closes_and_replaces_no_agent_husk() {
   dir="$TMP_ROOT/husk-no-agent"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-husk2","workspace_id":"w1"}]}}\n' > "$resp/1.out"
   printf '{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t2"}]}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-pane"
   # 3: pane get -> the pane is alive (a session-restore restarts the shell)
   printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t2","workspace_id":"w1"}}}\n' > "$resp/3.out"
   # 4: agent get -> agent_not_found: nothing registered - a restored plain shell
@@ -751,9 +834,11 @@ test_create_task_closes_all_duplicate_husks_after_replacement() {
   dir="$TMP_ROOT/husk-multiple"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-husk-many","workspace_id":"w1"},{"tab_id":"w1:t3","label":"fm-husk-many","workspace_id":"w1"}]}}\n' > "$resp/1.out"
   printf '{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t2"},{"pane_id":"w1:p3","tab_id":"w1:t3"}]}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-pane"
   printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t2","workspace_id":"w1"}}}\n' > "$resp/3.out"
   printf '{"error":{"code":"agent_not_found","message":"agent target w1:p2 not found"}}\n' > "$resp/4.out"
   printf '{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t2"},{"pane_id":"w1:p3","tab_id":"w1:t3"}]}}\n' > "$resp/5.out"
+  : > "$resp/5.normalize-pane"
   printf '{"result":{"pane":{"pane_id":"w1:p3","tab_id":"w1:t3","workspace_id":"w1"}}}\n' > "$resp/6.out"
   printf '{"error":{"code":"agent_not_found","message":"agent target w1:p3 not found"}}\n' > "$resp/7.out"
   printf '{"result":{"tab":{"tab_id":"w1:t4"},"root_pane":{"pane_id":"w1:p4","tab_id":"w1:t4","workspace_id":"w1"}}}\n' > "$resp/8.out"
@@ -786,6 +871,7 @@ test_create_task_refuses_when_preexisting_husk_tab_remains() {
   dir="$TMP_ROOT/husk-close-fails"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-stale-husk","workspace_id":"w1"}]}}\n' > "$resp/1.out"
   printf '{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t2"}]}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-pane"
   printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t2","workspace_id":"w1"}}}\n' > "$resp/3.out"
   printf '{"error":{"code":"agent_not_found","message":"agent target w1:p2 not found"}}\n' > "$resp/4.out"
   printf '{"result":{"tab":{"tab_id":"w1:t3"},"root_pane":{"pane_id":"w1:p3","tab_id":"w1:t3","workspace_id":"w1"}}}\n' > "$resp/5.out"
@@ -811,6 +897,7 @@ test_create_task_refuses_when_agent_state_ambiguous() {
   dir="$TMP_ROOT/husk-ambiguous"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-ambig1","workspace_id":"w1"}]}}\n' > "$resp/1.out"
   printf '{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t2"}]}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-pane"
   printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t2","workspace_id":"w1"}}}\n' > "$resp/3.out"
   # 4: agent get -> an unrecognized error code, not agent_not_found
   printf '{"error":{"code":"internal_error","message":"transient failure"}}\n' > "$resp/4.out"
@@ -838,6 +925,7 @@ test_create_task_husk_replacement_creates_before_closing() {
   dir="$TMP_ROOT/husk-order"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-order1","workspace_id":"w1"}]}}\n' > "$resp/1.out"
   printf '{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t2"}]}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-pane"
   printf '{"error":{"code":"pane_not_found","message":"pane w1:p2 not found"}}\n' > "$resp/3.out"
   printf '{"result":{"tab":{"tab_id":"w1:t3"},"root_pane":{"pane_id":"w1:p3","tab_id":"w1:t3","workspace_id":"w1"}}}\n' > "$resp/4.out"
   printf '{"result":{"tabs":[{"tab_id":"w1:t3","label":"fm-order1","workspace_id":"w1"}]}}\n' > "$resp/6.out"
@@ -1340,16 +1428,17 @@ test_projection_create_uses_exact_response_ids_and_leaves_one_task_pane() {
   printf '{"result":{"tab":{"tab_id":"w9:t2"},"root_pane":{"pane_id":"w9:p2","tab_id":"w9:t2","workspace_id":"w9"}}}\n' > "$resp/2.out"
   printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1","workspace_id":"w9"},{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/3.out"
   printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"},{"pane_id":"w9:p2","tab_id":"w9:t2"}]}}\n' > "$resp/4.out"
+  : > "$resp/4.normalize-pane"
   printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/5.out"
   printf '{"result":{"pane":{"pane_id":"w9:p1","tab_id":"w9:t1","workspace_id":"w9"}}}\n' > "$resp/6.out"
   # The emptying-close plan's tab list proves the seeded prune is NOT
   # workspace-emptying (the task tab remains), so the close stays plain.
   printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1","workspace_id":"w9"},{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/7.out"
-  printf '{"result":{"pane":{"pane_id":"w9:p1","tab_id":"w9:t1","workspace_id":"w9"}}}\n' > "$resp/8.out"
-  : > "$resp/9.out"
-  printf '{"error":{"code":"pane_not_found"}}\n' > "$resp/10.out"
-  printf '{"result":{"tabs":[{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/11.out"
-  printf '{"result":{"panes":[{"pane_id":"w9:p2","tab_id":"w9:t2"}]}}\n' > "$resp/12.out"
+  printf '{"result":{"workspace_id":"w9","tab_id":"w9:t1","pane_id":"w9:p1"}}\n' > "$resp/8.out"
+  printf '{"error":{"code":"pane_not_found"}}\n' > "$resp/9.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/10.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p2","tab_id":"w9:t2"}]}}\n' > "$resp/11.out"
+  : > "$resp/11.normalize-pane"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -1390,14 +1479,15 @@ test_projection_create_never_closes_a_concurrent_same_label_tab() {
   printf '{"result":{"tab":{"tab_id":"w9:t2"},"root_pane":{"pane_id":"w9:p2","tab_id":"w9:t2","workspace_id":"w9"}}}\n' > "$resp/2.out"
   printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1","workspace_id":"w9"},{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"},{"tab_id":"w9:t3","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/3.out"
   printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"},{"pane_id":"w9:p2","tab_id":"w9:t2"},{"pane_id":"w9:p3","tab_id":"w9:t3"}]}}\n' > "$resp/4.out"
+  : > "$resp/4.normalize-pane"
   printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/5.out"
   printf '{"result":{"pane":{"pane_id":"w9:p1","tab_id":"w9:t1","workspace_id":"w9"}}}\n' > "$resp/6.out"
   printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1","workspace_id":"w9"},{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"},{"tab_id":"w9:t3","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/7.out"
-  printf '{"result":{"pane":{"pane_id":"w9:p1","tab_id":"w9:t1","workspace_id":"w9"}}}\n' > "$resp/8.out"
-  : > "$resp/9.out"
-  printf '{"error":{"code":"pane_not_found"}}\n' > "$resp/10.out"
-  printf '{"result":{"tabs":[{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"},{"tab_id":"w9:t3","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/11.out"
-  printf '{"result":{"panes":[{"pane_id":"w9:p2","tab_id":"w9:t2"},{"pane_id":"w9:p3","tab_id":"w9:t3"}]}}\n' > "$resp/12.out"
+  printf '{"result":{"workspace_id":"w9","tab_id":"w9:t1","pane_id":"w9:p1"}}\n' > "$resp/8.out"
+  printf '{"error":{"code":"pane_not_found"}}\n' > "$resp/9.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"},{"tab_id":"w9:t3","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/10.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p2","tab_id":"w9:t2"},{"pane_id":"w9:p3","tab_id":"w9:t3"}]}}\n' > "$resp/11.out"
+  : > "$resp/11.normalize-pane"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -1437,15 +1527,14 @@ test_projection_close_restores_exact_prior_focus() {
   # The emptying-close plan sees a second tab in w9, so the close stays plain
   # and the exact-tab restore backstop is what reclaims the stolen focus.
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w9:t1","workspace_id":"w9"},{"tab_id":"w9:t2","workspace_id":"w9"}]}}' > "$resp/4.out"
-  printf '%s\n' '{"result":{"pane":{"pane_id":"w9:p2","tab_id":"w9:t2","workspace_id":"w9"}}}' > "$resp/5.out"
-  : > "$resp/6.out"
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/7.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t1","focused":false},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":true}]}}' > "$resp/8.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w3:t1","focused":true}]}}' > "$resp/9.out"
-  printf '%s\n' '{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/10.out"
-  printf '%s\n' '{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2","focused":true}}}' > "$resp/11.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t2","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false}]}}' > "$resp/12.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t1","focused":false},{"tab_id":"w2:t2","focused":true}]}}' > "$resp/13.out"
+  printf '%s\n' '{"result":{"workspace_id":"w9","tab_id":"w9:t2","pane_id":"w9:p2"}}' > "$resp/5.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/6.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t1","focused":false},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":true}]}}' > "$resp/7.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w3:t1","focused":true}]}}' > "$resp/8.out"
+  printf '%s\n' '{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/9.out"
+  printf '%s\n' '{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2","focused":true}}}' > "$resp/10.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t2","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false}]}}' > "$resp/11.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t1","focused":false},{"tab_id":"w2:t2","focused":true}]}}' > "$resp/12.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -1488,15 +1577,14 @@ test_projection_close_reports_focus_restore_failure() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/2.out"
   printf '%s\n' '{"result":{"pane":{"pane_id":"w9:p2","tab_id":"w9:t2","workspace_id":"w9"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w9:t1","workspace_id":"w9"},{"tab_id":"w9:t2","workspace_id":"w9"}]}}' > "$resp/4.out"
-  printf '%s\n' '{"result":{"pane":{"pane_id":"w9:p2","tab_id":"w9:t2","workspace_id":"w9"}}}' > "$resp/5.out"
-  : > "$resp/6.out"
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/7.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t1","focused":true}]}}' > "$resp/8.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t1","focused":true}]}}' > "$resp/9.out"
-  printf '%s\n' '{"result":{"tab":{"tab_id":"w1:t1","workspace_id":"w1"}}}' > "$resp/10.out"
-  : > "$resp/11.out"
+  printf '%s\n' '{"result":{"workspace_id":"w9","tab_id":"w9:t2","pane_id":"w9:p2"}}' > "$resp/5.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/6.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t1","focused":true}]}}' > "$resp/7.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t1","focused":true}]}}' > "$resp/8.out"
+  printf '%s\n' '{"result":{"tab":{"tab_id":"w1:t1","workspace_id":"w1"}}}' > "$resp/9.out"
+  : > "$resp/10.out"
+  cp "$resp/7.out" "$resp/11.out"
   cp "$resp/8.out" "$resp/12.out"
-  cp "$resp/9.out" "$resp/13.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -1592,6 +1680,7 @@ test_projection_close_emptying_after_focus_uses_pane_death_without_move() {
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
+  : > "$resp/5.normalize-pane"
   cp "$resp/1.out" "$resp/6.out"
   sleep 300 & bgpid=$!
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
@@ -1626,6 +1715,7 @@ test_projection_close_emptying_before_focus_repositions_then_uses_pane_death() {
   printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","workspace_id":"w1"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"}]}}' > "$resp/5.out"
+  : > "$resp/5.normalize-pane"
   cp "$resp/1.out" "$resp/6.out"
   printf '%s\n' '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}' > "$resp/7.out"
   # shellcheck disable=SC2016 # $defs is a literal JSON Schema key.
@@ -1668,6 +1758,7 @@ test_projection_close_emptying_before_last_focus_needs_no_move() {
   printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","workspace_id":"w1"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"}]}}' > "$resp/5.out"
+  : > "$resp/5.normalize-pane"
   cp "$resp/1.out" "$resp/6.out"
   sleep 300 & bgpid=$!
   death_process_info_fixture w1:p1 "$bgpid" > "$resp/7.out"
@@ -1701,6 +1792,7 @@ test_projection_close_emptying_last_workspace_needs_no_move() {
   printf '%s\n' '{"result":{"pane":{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w3:t1","workspace_id":"w3"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1"}]}}' > "$resp/5.out"
+  : > "$resp/5.normalize-pane"
   cp "$resp/1.out" "$resp/6.out"
   sleep 300 & bgpid=$!
   death_process_info_fixture w3:p1 "$bgpid" > "$resp/7.out"
@@ -1731,11 +1823,10 @@ test_projection_close_non_emptying_stays_plain_without_proof_or_move() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/2.out"
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t1","workspace_id":"w2"},{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
-  printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/5.out"
-  : > "$resp/6.out"
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/7.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t1","focused":false}]}}' > "$resp/8.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/9.out"
+  printf '%s\n' '{"result":{"workspace_id":"w2","tab_id":"w2:t2","pane_id":"w2:p2"}}' > "$resp/5.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/6.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t1","focused":false}]}}' > "$resp/7.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/8.out"
   sleep 300 & bgpid=$!
   make_death_lab "$dir" "$bgpid"
   fb=$(make_herdr_fakebin "$dir")
@@ -1770,6 +1861,10 @@ test_projection_close_plain_without_move_requires_structured_removal() {
     fm_backend_herdr_cli() {
       printf "%s\n" "$*" >> "$LOG"
       case "$2 $3" in
+        "pane identity-bound")
+          printf "pane close w2:p2\n" >> "$LOG"
+          printf "{\"result\":{\"workspace_id\":\"w2\",\"tab_id\":\"w2:t2\",\"pane_id\":\"w2:p2\"}}\n"
+          ;;
         "pane get") printf "{\"result\":{\"pane\":{\"pane_id\":\"w2:p2\",\"tab_id\":\"w2:t2\",\"workspace_id\":\"w2\"}}}\n" ;;
       esac
     }
@@ -1791,6 +1886,7 @@ test_projection_close_ambiguous_positions_refuses_before_close() {
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
+  : > "$resp/5.normalize-pane"
   # The position snapshot is ambiguous: the target workspace is absent.
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/6.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/8.out"
@@ -1824,6 +1920,7 @@ test_projection_close_move_failure_refuses_before_close() {
   printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","workspace_id":"w1"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"}]}}' > "$resp/5.out"
+  : > "$resp/5.normalize-pane"
   cp "$resp/1.out" "$resp/6.out"
   printf '%s\n' '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}' > "$resp/7.out"
   # shellcheck disable=SC2016 # $defs is a literal JSON Schema key.
@@ -1862,15 +1959,15 @@ test_projection_close_busy_pane_falls_back_to_plain_close() {
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
+  : > "$resp/5.normalize-pane"
   cp "$resp/1.out" "$resp/6.out"
   sleep 300 & bgpid=$!
   # The pane still has a foreground agent, so the idle-shell proof refuses.
   printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p2","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"zsh","argv0":"zsh"},{"pid":99999,"name":"pi","argv0":"pi"}]}}}\n' "$bgpid" "$bgpid" "$bgpid" > "$resp/7.out"
-  printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/8.out"
-  : > "$resp/9.out"
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/10.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/11.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/12.out"
+  printf '%s\n' '{"result":{"workspace_id":"w2","tab_id":"w2:t2","pane_id":"w2:p2"}}' > "$resp/8.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/9.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/10.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/11.out"
   make_death_lab "$dir" "$bgpid"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -1896,6 +1993,7 @@ test_projection_close_transient_prompt_helper_settles_then_uses_pane_death() {
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
+  : > "$resp/5.normalize-pane"
   cp "$resp/1.out" "$resp/6.out"
   sleep 300 & bgpid=$!
   # Sample 1: the shell is transiently redrawing its prompt (real 0.7.5 shape:
@@ -1933,6 +2031,7 @@ test_projection_close_death_stops_on_capability_failure() {
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
+  : > "$resp/5.normalize-pane"
   cp "$resp/1.out" "$resp/6.out"
   bash -c 'trap "" HUP; sleep 300' & bgpid=$!
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
@@ -1963,6 +2062,7 @@ test_projection_close_death_failure_falls_back_to_plain_close() {
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
+  : > "$resp/5.normalize-pane"
   cp "$resp/1.out" "$resp/6.out"
   bash -c 'trap "" HUP; sleep 300' & bgpid=$!
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
@@ -1998,6 +2098,7 @@ test_projection_close_death_still_restores_a_stolen_focus() {
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
+  : > "$resp/5.normalize-pane"
   cp "$resp/1.out" "$resp/6.out"
   sleep 300 & bgpid=$!
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
@@ -2031,6 +2132,7 @@ test_projection_close_death_never_sigkills_a_reused_pid() {
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
+  : > "$resp/5.normalize-pane"
   cp "$resp/1.out" "$resp/6.out"
   # The original shell survives SIGHUP; by SIGKILL time the pane's process
   # information shows a DIFFERENT shell pid, modeling the original pid having
@@ -2076,6 +2178,7 @@ assert_projection_close_failed_removal_rolls_back_the_reposition() {
   printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","workspace_id":"w1"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"}]}}' > "$resp/5.out"
+  : > "$resp/5.normalize-pane"
   cp "$resp/1.out" "$resp/6.out"
   printf '%s\n' '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}' > "$resp/7.out"
   # shellcheck disable=SC2016 # $defs is a literal JSON Schema key.
@@ -2145,6 +2248,7 @@ test_kill_emptying_non_focused_uses_pane_death() {
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
+  : > "$resp/5.normalize-pane"
   cp "$resp/1.out" "$resp/6.out"
   sleep 300 & bgpid=$!
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
@@ -2303,6 +2407,7 @@ test_projection_seeded_prune_refuses_active_tab() {
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1","workspace_id":"w9","focused":true},{"tab_id":"w9:t2","label":"fm-task","workspace_id":"w9","focused":false}]}}' > "$resp/1.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"},{"pane_id":"w9:p2","tab_id":"w9:t2"}]}}' > "$resp/2.out"
+  : > "$resp/2.normalize-pane"
   printf '%s\n' '{"error":{"code":"agent_not_found"}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w9","active_tab_id":"w9:t1","focused":true}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w9:t1","workspace_id":"w9","focused":true},{"tab_id":"w9:t2","workspace_id":"w9","focused":false}]}}' > "$resp/5.out"
@@ -2808,6 +2913,7 @@ test_projection_reclaim_replaces_only_exact_husk_and_advances_binding() {
   printf '%s\n' "{\"result\":{\"workspaces\":[{\"workspace_id\":\"w0\",\"label\":\"firstmate\",\"focused\":false,\"active_tab_id\":\"w0:t1\"},{\"workspace_id\":\"w1\",\"label\":\"firstmate\",\"focused\":true,\"active_tab_id\":\"w1:t1\"},{\"workspace_id\":\"w2\",\"label\":\"$label\",\"focused\":false,\"active_tab_id\":\"w2:t2\"}]}}" > "$resp/1.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","label":"fm-fm-hibit-r1"}]}}' > "$resp/2.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/3.out"
+  : > "$resp/3.normalize-pane"
   printf '%s\n' '{"error":{"code":"agent_not_found"}}' > "$resp/4.out"
   cp "$resp/1.out" "$resp/5.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/6.out"
@@ -2829,6 +2935,7 @@ test_projection_reclaim_replaces_only_exact_husk_and_advances_binding() {
   cp "$resp/1.out" "$resp/22.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t3","label":"fm-fm-hibit-r1"}]}}' > "$resp/23.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p3","tab_id":"w2:t3"}]}}' > "$resp/24.out"
+  : > "$resp/24.normalize-pane"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -2851,7 +2958,7 @@ test_projection_reclaim_replaces_only_exact_husk_and_advances_binding() {
   [ -n "$agent_line" ] && [ "$agent_line" -lt "$close_line" ] \
     || fail "reclaim did not recheck the old pane agent state before the close"
   boundary_mutations=$(sed -n "$((agent_line + 1)),$((close_line - 1))p" "$log" \
-    | grep -Ev $'\x1f(session\x1flist|tab\x1flist|pane\x1f(get|list)|workspace\x1flist)' || true)
+    | grep -Ev $'\x1f(session\x1flist|tab\x1flist|pane\x1f(identity-bound|get|list)|workspace\x1flist)' || true)
   [ -z "$boundary_mutations" ] \
     || fail "reclaim mutated between the old pane agent recheck and the close: $boundary_mutations"
   assert_not_contains "$calls" $'workspace\x1fclose' "reclaim introduced workspace-close authority"
@@ -2887,6 +2994,7 @@ test_projection_recovery_is_read_only_and_refuses_live_duplicate_risk() {
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate/task-p3 · p:%s"}]}}\n' "$token" > "$resp/1.out"
   printf '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1"}]}}\n' > "$resp/2.out"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/3.out"
+  : > "$resp/3.normalize-agent"
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_recovery_allows_flat fmtest "$1" task-p3' "$ROOT" "$journal" 2>&1)
   status=$?
@@ -2939,6 +3047,7 @@ test_list_live_scoped_to_this_homes_workspace_only() {
   printf '{"result":{"tabs":[{"tab_id":"w2:t1","label":"fm-secondmatetask"}]}}\n' > "$resp/2.out"
   # 3: pane_for_tab's `pane list --workspace w2`
   printf '{"result":{"panes":[{"pane_id":"w2:p1","tab_id":"w2:t1"}]}}\n' > "$resp/3.out"
+  : > "$resp/3.normalize-pane"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_list_live fmtest' "$ROOT" )
@@ -2976,8 +3085,7 @@ test_normalize_key() {
 test_capture_calls_pane_read() {
   local dir log resp fb out
   dir="$TMP_ROOT/capture"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}\n' > "$resp/1.out"
-  printf 'line one\nline two\nline three\n' > "$resp/2.out"
+  printf '%s\n' '{"result":{"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p2","text":"line one\nline two\nline three\n"}}' > "$resp/1.out"
   fb=$(make_herdr_fakebin "$dir")
   # Requesting 250 (already >= the 200 floor) passes straight through as the
   # fetch bound; the adapter then trims to the caller's requested 250 lines
@@ -2986,8 +3094,8 @@ test_capture_calls_pane_read() {
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_target_ready() { fm_backend_herdr_parse_target "$1"; FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=w1; FM_BACKEND_HERDR_EXPECTED_TAB_ID=w1:t2; }; fm_backend_herdr_capture default:w1:p2 250' "$ROOT" )
   [ "$out" = $'line one\nline two\nline three' ] || fail "capture did not pass through pane read output, got '$out'"
-  assert_contains "$(cat "$log")" "HERDR_SESSION=default"$'\x1f''pane'$'\x1f''read'$'\x1f''w1:p2'$'\x1f''--source'$'\x1f''recent'$'\x1f''--lines'$'\x1f''250' \
-    "capture did not call pane read with the right pane id and line bound"
+  assert_contains "$(cat "$log")" "HERDR_SESSION=default"$'\x1f''pane'$'\x1f''identity-bound'$'\x1f''--workspace-id'$'\x1f''w1'$'\x1f''--tab-id'$'\x1f''w1:t2'$'\x1f''--pane-id'$'\x1f''w1:p2'$'\x1f''--operation'$'\x1f''read'$'\x1f''--source'$'\x1f''recent'$'\x1f''--lines'$'\x1f''250' \
+    "capture did not call the identity-bound pane read with the right target and line bound"
   pass "fm_backend_herdr_capture: calls 'pane read <pane> --source recent --lines N' with the session set"
 }
 
@@ -2998,8 +3106,7 @@ test_capture_works_around_small_lines_bug() {
   # last N lines. The adapter must never ask herdr for a small --lines bound -
   # it always fetches >= 200 and trims locally with tail.
   dir="$TMP_ROOT/capture-small"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}\n' > "$resp/1.out"
-  printf 'a\nb\nc\nd\ne\n' > "$resp/2.out"
+  printf '%s\n' '{"result":{"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p2","text":"a\nb\nc\nd\ne\n"}}' > "$resp/1.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -3032,11 +3139,12 @@ test_capture_preserves_pane_read_failure() {
 test_send_key_normalizes_and_targets_pane() {
   local dir log resp fb
   dir="$TMP_ROOT/sendkey"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '%s\n' '{"result":{}}' > "$resp/1.out"
   fb=$(make_herdr_fakebin "$dir")
   PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_key default:w1:p2 Escape' "$ROOT"
   expect_code 0 $? "send_key should succeed"
-  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''escape' "send_key did not normalize Escape to escape"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''identity-bound'$'\x1f''--workspace-id'$'\x1f''w1'$'\x1f''--tab-id'$'\x1f''w1:t2'$'\x1f''--pane-id'$'\x1f''w1:p2'$'\x1f''--operation'$'\x1f''send-keys'$'\x1f''escape' "send_key did not normalize Escape to escape through the identity-bound operation"
   pass "fm_backend_herdr_send_key: normalizes the key and targets the right pane"
 }
 
@@ -3084,6 +3192,7 @@ test_busy_state_working_maps_to_busy() {
   dir="$TMP_ROOT/busy-working"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}\n' > "$resp/1.out"
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -3098,6 +3207,7 @@ test_busy_state_done_and_blocked_map_to_idle() {
   dir="$TMP_ROOT/busy-done"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}\n' > "$resp/1.out"
   printf '{"result":{"agent":{"agent_status":"done"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -3107,6 +3217,7 @@ test_busy_state_done_and_blocked_map_to_idle() {
   dir="$TMP_ROOT/busy-blocked"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}\n' > "$resp/1.out"
   printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -3120,6 +3231,7 @@ test_busy_state_refuses_failed_agent_read() {
   dir="$TMP_ROOT/busy-unknown"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}\n' > "$resp/1.out"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   printf '1\n' > "$resp/2.exit"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -3136,8 +3248,7 @@ test_fake_agent_fixture_preserves_malformed_identity() {
   : > "$log"
   printf '%s\n' '{"result":{"agent":{"agent_status":"idle"}}}' > "$dir/responses/1.out"
   fb=$(make_herdr_fakebin "$dir")
-  out=$(env -u FM_HERDR_FAKE_NORMALIZE_AGENT_IDENTITY \
-    PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$dir/responses" \
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$dir/responses" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_status_raw default w1:p2 w1 w1:t2' "$ROOT" 2>&1)
   status=$?
   [ "$status" -eq 2 ] || fail "malformed fake agent identity should remain a typed refusal: rc=$status out=$out"
@@ -3236,6 +3347,7 @@ test_composer_state_pi_separator_idle_is_empty() {
   dir="$TMP_ROOT/composer-pi-separated-idle"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '│ stale bordered transcript row │\n\x1b[0m\x1b[38;2;129;162;190m─────────────────────────────────────────────────────\x1b[0m\n\x1b[0m\x1b[7m \x1b[0m                                                    \n\x1b[0m\x1b[38;2;129;162;190m─────────────────────────────────────────────────────\x1b[0m\n\x1b[0m\x1b[38;2;102;102;102m~/synthetic-primary (main)\x1b[0m\n' > "$resp/1.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"idle"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state lab:w1:p2' "$ROOT" )
@@ -3259,6 +3371,7 @@ test_composer_state_pi_parked_prompt_is_not_empty() {
   dir="$TMP_ROOT/composer-pi-parked-prompt"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf 'Should I keep going?\n  1. Yes, continue\n\x1b[7m  2. Stop, do not act\x1b[0m\n\x1b[0m\x1b[38;2;129;162;190m─────────────────────────────────────────────────────\x1b[0m\n\x1b[0m\x1b[7m \x1b[0m                                                    \n\x1b[0m\x1b[38;2;129;162;190m─────────────────────────────────────────────────────\x1b[0m\n' > "$resp/1.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"blocked"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state lab:w1:p2' "$ROOT" )
@@ -3272,6 +3385,7 @@ test_composer_state_pi_separator_real_text_is_pending() {
   dir="$TMP_ROOT/composer-pi-separated-pending"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '\x1b[38;2;129;162;190m─────────────────────────────────────────────────────\x1b[0m\nprivacy safe human draft\x1b[7m \x1b[0m\n\x1b[38;2;129;162;190m─────────────────────────────────────────────────────\x1b[0m\n' > "$resp/1.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"done"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state lab:w1:p2' "$ROOT" )
@@ -3284,6 +3398,7 @@ test_composer_state_pi_incomplete_separator_below_stale_generic_is_unknown() {
   dir="$TMP_ROOT/composer-pi-separated-incomplete"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '│   │\n─────────────────────────────────────────────────────\n\n' > "$resp/1.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"idle"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state lab:w1:p2' "$ROOT" )
@@ -3314,12 +3429,8 @@ test_composer_state_pi_separator_requires_safe_native_identity() {
     out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
       bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state lab:w1:p2' "$ROOT" )
     status=$?
-    if [ "$case_id" = unreadable ]; then
-      [ "$status" -eq 2 ] || fail "unsafe Pi separator case '$case_id' must remain a typed refusal, got rc=$status out='$out'"
-      [ -z "$out" ] || fail "unsafe Pi separator case '$case_id' must not emit a neutral state: $out"
-    else
-      [ "$out" = unknown ] || fail "unsafe Pi separator case '$case_id' must remain unknown, got '$out'"
-    fi
+    [ "$status" -eq 2 ] || fail "unsafe Pi separator case '$case_id' must remain a typed refusal, got rc=$status out='$out'"
+    [ -z "$out" ] || fail "unsafe Pi separator case '$case_id' must not emit a neutral state: $out"
   done
   pass "fm_backend_herdr_composer_state: Pi separators never authorize working, non-Pi, unreadable, or over-tall targets"
 }
@@ -3488,6 +3599,7 @@ test_wait_for_working_returns_busy_on_first_poll() {
   local dir log resp fb out calls
   dir="$TMP_ROOT/wait-busy-first"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/1.out"
+  : > "$resp/1.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_wait_for_working default w1:p2 1 5 w1 w1:t2' "$ROOT" )
@@ -3504,8 +3616,11 @@ test_wait_for_working_catches_a_slow_transition_mid_window() {
   # MISSED by a single check-at-the-end design (the old composer approach's
   # shape) but is caught here because the budget is sampled repeatedly.
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/1.out"
+  : > "$resp/1.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/3.out"
+  : > "$resp/3.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_wait_for_working default w1:p2 0.03 3 w1 w1:t2' "$ROOT" )
@@ -3519,11 +3634,17 @@ test_wait_for_working_samples_budget_endpoint_without_final_sleep() {
   local dir log resp fb out sleep_log sleeps
   dir="$TMP_ROOT/wait-budget-endpoint"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; sleep_log="$dir/sleeps"; : > "$log"; : > "$sleep_log"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/1.out"
+  : > "$resp/1.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/3.out"
+  : > "$resp/3.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
+  : > "$resp/4.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/5.out"
+  : > "$resp/5.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/6.out"
+  : > "$resp/6.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_SLEEP_LOG="$sleep_log" \
     bash -c '. "$0/bin/backends/herdr.sh"; sleep() { printf "sleep:%s\n" "$1" >> "$FM_SLEEP_LOG"; }; fm_backend_herdr_wait_for_working default w1:p2 0.5 6 w1 w1:t2' "$ROOT" )
@@ -3537,12 +3658,19 @@ test_send_text_submit_applies_herdr_minimum_confirm_budget() {
   local dir log resp fb out sleep_log sleeps
   dir="$TMP_ROOT/submit-min-budget"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; sleep_log="$dir/sleeps"; : > "$log"; : > "$sleep_log"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
+  : > "$resp/4.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/5.out"
+  : > "$resp/5.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/6.out"
+  : > "$resp/6.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/7.out"
+  : > "$resp/7.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/8.out"
+  : > "$resp/8.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/9.out"
+  : > "$resp/9.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_SLEEP_LOG="$sleep_log" FM_BACKEND_HERDR_SUBMIT_POLLS=6 FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0.6 \
     bash -c '. "$0/bin/backends/herdr.sh"; sleep() { printf "sleep:%s\n" "$1" >> "$FM_SLEEP_LOG"; }; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.4 0' "$ROOT" )
@@ -3557,7 +3685,9 @@ test_wait_for_working_returns_idle_when_never_busy_but_readable() {
   local dir log resp fb out
   dir="$TMP_ROOT/wait-idle"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/1.out"
+  : > "$resp/1.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_wait_for_working default w1:p2 0.02 2 w1 w1:t2' "$ROOT" )
@@ -3582,6 +3712,7 @@ test_wait_for_working_treats_blocked_as_submit_active() {
   local dir log resp fb out
   dir="$TMP_ROOT/wait-blocked"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/1.out"
+  : > "$resp/1.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_wait_for_working default w1:p2 0.01 1 w1 w1:t2' "$ROOT" )
@@ -3608,7 +3739,9 @@ test_send_text_submit_detects_landed_send() {
   # 3: send-keys enter
   # 4: agent get - agent_status working (a real turn started: submitted)
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/4.out"
+  : > "$resp/4.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 3 0.01 0.01' "$ROOT" )
@@ -3626,11 +3759,15 @@ test_send_text_submit_detects_swallowed_enter() {
   # Every post-Enter agent-get read still reports idle, and the composer still
   # holds the typed text: a genuine swallow, not a queued Enter.
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
+  : > "$resp/4.normalize-agent"
   printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/7.out"
+  : > "$resp/7.normalize-agent"
   printf '  \xe2\x9d\xaf hello captain\n' > "$resp/8.out"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/9.out"
+  : > "$resp/9.normalize-agent"
   printf '  ready\n' > "$resp/10.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
@@ -3653,13 +3790,16 @@ test_send_text_submit_popup_autocomplete_requires_second_enter() {
   # 3: send-keys enter (#1) - closes the popup, fills the placeholder; no turn starts
   # 4: agent get -> idle (not submitted yet)
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
+  : > "$resp/4.normalize-agent"
   # 5: composer still holds the placeholder fill; native idle falls through
   #    to the shared composer verdict, which retries rather than confirming.
   printf '  \xe2\x9d\xaf /compact\n' > "$resp/5.out"
   # 6: send-keys enter (#2) - actually submits
   # 7: agent get -> working (submitted)
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/7.out"
+  : > "$resp/7.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "/compact" 3 0.01 1.2' "$ROOT" )
@@ -3673,8 +3813,10 @@ test_send_text_submit_confirms_blocked_after_enter() {
   local dir log resp fb out enter_count
   dir="$TMP_ROOT/submit-blocked"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   : > "$resp/3.out"
   printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/4.out"
+  : > "$resp/4.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "needs approval" 3 0.01 0.01' "$ROOT" )
@@ -3692,9 +3834,11 @@ test_send_text_submit_preexisting_working_pending_is_queued_enter() {
   # current turn ends. Footer transition is not the confirmation path here
   # because the pre-Enter native status is already working.
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   printf '  ready\n' > "$resp/3.out"
   printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/6.out"
+  : > "$resp/6.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
@@ -3705,37 +3849,36 @@ test_send_text_submit_preexisting_working_pending_is_queued_enter() {
 }
 
 test_send_text_submit_preexisting_working_does_not_confirm_failed_enter() {
-  local dir log resp fb out enter_count
+  local dir log resp fb out status
   dir="$TMP_ROOT/submit-preexisting-working-enter-failed"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
-  printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}' > "$resp/3.out"
-  printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}' > "$resp/4.out"
-  printf '  ready\n' > "$resp/5.out"
-  printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}' > "$resp/6.out"
-  printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}' > "$resp/7.out"
-  printf '1\n' > "$resp/8.exit"
+  : > "$resp/2.normalize-agent"
+  printf '  ready\n' > "$resp/3.out"
+  printf '1\n' > "$resp/4.exit"
   fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
-  [ "$out" = send-failed ] || fail "a failed Enter must not be reported as queued delivery merely because native status is working, got '$out'"
-  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
-  [ "$enter_count" -eq 1 ] || fail "send_text_submit should attempt the configured number of Enters, made $enter_count attempt(s)"
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_target_ready() { fm_backend_herdr_parse_target "$1"; FM_BACKEND_HERDR_EXPECTED_TARGET="$1"; FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=w1; FM_BACKEND_HERDR_EXPECTED_TAB_ID=w1:t2; }; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
+  status=$?
+  [ "$status" -eq 2 ] || fail "a failed Enter must remain a typed native refusal, got rc=$status out='$out'"
+  [ -z "$out" ] || fail "a failed Enter must not emit a neutral delivery state: $out"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''identity-bound'$'\x1f''--workspace-id'$'\x1f''w1'$'\x1f''--tab-id'$'\x1f''w1:t2'$'\x1f''--pane-id'$'\x1f''w1:p2'$'\x1f''--operation'$'\x1f''send-keys'$'\x1f''enter' "send_text_submit did not attempt the identity-bound Enter"
+  [ "$(grep -c $'\x1f''agent'$'\x1f''get' "$log")" -eq 1 ] || fail "a failed Enter must not run native delivery confirmation"
   pass "fm_backend_herdr_send_text_submit: a failed Enter cannot borrow preexisting working state as queued-delivery proof"
 }
 
 test_send_text_submit_idle_baseline_does_not_confirm_failed_enter() {
-  local dir log resp fb out enter_count
+  local dir log resp fb out status
   dir="$TMP_ROOT/submit-idle-enter-failed"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
-  printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}' > "$resp/3.out"
-  printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}' > "$resp/4.out"
-  printf '1\n' > "$resp/5.exit"
+  : > "$resp/2.normalize-agent"
+  printf '1\n' > "$resp/3.exit"
   fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
-  [ "$out" = send-failed ] || fail "a failed Enter must not borrow a later native transition as delivery proof, got '$out'"
-  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
-  [ "$enter_count" -eq 1 ] || fail "send_text_submit should attempt the configured number of Enters, made $enter_count attempt(s)"
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_target_ready() { fm_backend_herdr_parse_target "$1"; FM_BACKEND_HERDR_EXPECTED_TARGET="$1"; FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=w1; FM_BACKEND_HERDR_EXPECTED_TAB_ID=w1:t2; }; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
+  status=$?
+  [ "$status" -eq 2 ] || fail "a failed Enter must remain a typed native refusal, got rc=$status out='$out'"
+  [ -z "$out" ] || fail "a failed Enter must not emit a neutral delivery state: $out"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''identity-bound'$'\x1f''--workspace-id'$'\x1f''w1'$'\x1f''--tab-id'$'\x1f''w1:t2'$'\x1f''--pane-id'$'\x1f''w1:p2'$'\x1f''--operation'$'\x1f''send-keys'$'\x1f''enter' "send_text_submit did not attempt the identity-bound Enter"
   [ "$(grep -c $'\x1f''agent'$'\x1f''get' "$log")" -eq 1 ] || fail "a failed Enter must not run native delivery confirmation"
   pass "fm_backend_herdr_send_text_submit: a failed Enter cannot borrow a later native transition as delivery proof"
 }
@@ -3747,7 +3890,9 @@ test_send_text_submit_idle_native_empty_composer_confirms_delivery() {
   # After Enter, native wait_for_working stays idle and the composer clears:
   # that empty verdict is positive delivery, not a swallow.
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
+  : > "$resp/4.normalize-agent"
   printf '  \xe2\x9d\xaf\n' > "$resp/5.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
@@ -3764,9 +3909,12 @@ test_send_text_submit_idle_native_pending_plus_rendered_busy_is_queued() {
   # Idle native baseline (Claude never leaves idle) with proven pending text
   # and a generating footer after retries is a queued follow-up Enter.
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
+  : > "$resp/4.normalize-agent"
   printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/6.out"
+  : > "$resp/6.normalize-agent"
   printf 'thinking... esc to interrupt\n' > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
@@ -3854,6 +4002,7 @@ test_send_text_submit_confirms_never_idle_native_state_via_footer_transition() {
   # 6: pane read - rendered footer now busy: an idle-to-busy transition ACROSS
   #    our Enter, which is the submission proof
   printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   herdr_cursor_idle_plain > "$resp/3.out"
   herdr_cursor_midturn_ansi > "$resp/5.out"
   herdr_cursor_midturn_plain > "$resp/6.out"
@@ -3873,6 +4022,7 @@ test_send_text_submit_never_idle_native_state_keeps_pending_without_a_transition
   # evidence about OUR message: the verdict must stay pending rather than
   # borrowing someone else's turn as proof of our delivery.
   printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   herdr_cursor_midturn_plain > "$resp/3.out"
   herdr_cursor_midturn_ansi > "$resp/5.out"
   herdr_cursor_midturn_ansi > "$resp/7.out"
@@ -3892,7 +4042,9 @@ test_send_text_submit_confirms_despite_codex_idle_tip_composer() {
   local dir log resp fb out
   dir="$TMP_ROOT/submit-codex-idle-tip"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/4.out"
+  : > "$resp/4.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "reply with just OK" 3 0.01 0.01' "$ROOT" )
@@ -3944,9 +4096,13 @@ test_send_text_submit_slow_transition_within_one_enter_needs_no_extra_enter() {
   dir="$TMP_ROOT/submit-slow-transition"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   # 1: send-text  2: baseline idle  3: send-keys enter  4,5: agent get -> idle  6: agent get -> working
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
+  : > "$resp/4.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/5.out"
+  : > "$resp/5.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/6.out"
+  : > "$resp/6.normalize-agent"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=3 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 3 0.03 0.01' "$ROOT" )
@@ -3957,27 +4113,31 @@ test_send_text_submit_slow_transition_within_one_enter_needs_no_extra_enter() {
 }
 
 test_send_text_submit_send_failed() {
-  local dir log resp fb out
+  local dir log resp fb out status
   dir="$TMP_ROOT/submit-fail"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t1"}}}' > "$resp/1.out"
-  printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t1"}}}' > "$resp/2.out"
-  printf '1\n' > "$resp/3.exit"
+  printf '1\n' > "$resp/2.exit"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "x" 2 0.01 0.01' "$ROOT" )
-  [ "$out" = send-failed ] || fail "send_text_submit should report send-failed when the literal send itself fails, got '$out'"
-  pass "fm_backend_herdr_send_text_submit: reports 'send-failed' when the literal send-text call itself errors"
+  status=$?
+  [ "$status" -eq 2 ] || fail "send_text_submit should preserve a typed refusal when the literal send itself fails, got rc=$status out='$out'"
+  [ -z "$out" ] || fail "a failed literal send must not emit a neutral delivery state: $out"
+  pass "fm_backend_herdr_send_text_submit: preserves a typed refusal when the literal send-text call itself errors"
 }
 
 test_send_text_submit_unknown_on_capture_failure() {
-  local dir log resp fb out enter_count
+  local dir log resp fb out enter_count status
   dir="$TMP_ROOT/submit-read-fail"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   printf '1\n' > "$resp/4.exit"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "x" 2 0.01 0.01' "$ROOT" )
-  [ "$out" = unknown ] || fail "send_text_submit should report unknown when the post-Enter agent-get read fails, got '$out'"
+  status=$?
+  [ "$status" -eq 2 ] || fail "send_text_submit should preserve a typed refusal when the post-Enter agent-get read fails, got rc=$status out='$out'"
+  [ -z "$out" ] || fail "send_text_submit should not emit a neutral state when the post-Enter agent-get read fails: $out"
   enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
   [ "$enter_count" -eq 1 ] || fail "send_text_submit must never retry past an unreadable target (that is a hard I/O failure, not a timing race), sent $enter_count Enter(s)"
   pass "fm_backend_herdr_send_text_submit: reports 'unknown' when the post-Enter agent-get read fails (never retries past an unreadable target)"
@@ -3987,7 +4147,9 @@ test_send_text_submit_unknown_on_composer_capture_failure() {
   local dir log resp fb out enter_count status
   dir="$TMP_ROOT/submit-composer-read-fail"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  : > "$resp/2.normalize-agent"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
+  : > "$resp/4.normalize-agent"
   printf '1\n' > "$resp/5.exit"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \

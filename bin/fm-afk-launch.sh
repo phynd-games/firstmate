@@ -376,33 +376,84 @@ fm_afk_launch_commit_terminal() {  # <backend> <target> <workspace> [tab] [alrea
 
 fm_afk_launch_herdr_recover_created() {  # <session> <label>
   local session=$1 label=$2 workspaces ws_count wsid panes pane_count pane tab attempt=0
+  local workspaces_rc panes_rc
   while [ "$attempt" -lt 20 ]; do
     attempt=$((attempt + 1))
-    workspaces=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || { sleep 0.05; continue; }
+    if workspaces=$(fm_backend_herdr_cli "$session" workspace list 2>&1); then
+      workspaces_rc=0
+    else
+      workspaces_rc=$?
+    fi
+    if [ "$workspaces_rc" -ne 0 ] || ! printf '%s' "$workspaces" | jq -e '
+      (.result.workspaces | type) == "array"
+      and all(.result.workspaces[]; (. | type) == "object"
+        and (.workspace_id | type) == "string" and (.workspace_id | length) > 0
+        and (.label | type) == "string")
+    ' >/dev/null 2>&1; then
+      fm_backend_policy_refuse "AFK Herdr workspace recovery" herdr \
+        "The native Herdr workspace inventory failed or was malformed while recovering the daemon terminal. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+      return 2
+    fi
     ws_count=$(printf '%s' "$workspaces" | jq --arg want "$label" \
-      '[.result.workspaces[]? | select(.label == $want)] | length' 2>/dev/null) || { sleep 0.05; continue; }
+      '[.result.workspaces[] | select(.label == $want)] | length' 2>/dev/null) || {
+      fm_backend_policy_refuse "AFK Herdr workspace recovery" herdr \
+        "The native Herdr workspace inventory could not be parsed while recovering the daemon terminal. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+      return 2
+    }
     if [ "$ws_count" = 0 ]; then
       sleep 0.05
       continue
     fi
-    [ "$ws_count" = 1 ] || return 1
+    [ "$ws_count" = 1 ] || {
+      fm_backend_policy_refuse "AFK Herdr workspace recovery" herdr \
+        "The daemon terminal recovery matched multiple Herdr workspaces with the same label. Resolve the ambiguity, then verify the named session with 'herdr status --json'." || true
+      return 2
+    }
     wsid=$(printf '%s' "$workspaces" | jq -r --arg want "$label" \
-      '.result.workspaces[]? | select(.label == $want) | .workspace_id' 2>/dev/null) || return 1
-    [ -n "$wsid" ] || return 1
-    panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$wsid" 2>/dev/null) || { sleep 0.05; continue; }
-    pane_count=$(printf '%s' "$panes" | jq '[.result.panes[]?] | length' 2>/dev/null) || { sleep 0.05; continue; }
+      '.result.workspaces[] | select(.label == $want) | .workspace_id' 2>/dev/null) || {
+      fm_backend_policy_refuse "AFK Herdr workspace recovery" herdr \
+        "The native Herdr workspace identity could not be read while recovering the daemon terminal. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+      return 2
+    }
+    if panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$wsid" 2>&1); then
+      panes_rc=0
+    else
+      panes_rc=$?
+    fi
+    if [ "$panes_rc" -ne 0 ] || ! printf '%s' "$panes" | jq -e --arg workspace "$wsid" '
+      (.result.panes | type) == "array"
+      and all(.result.panes[]; (. | type) == "object"
+        and (.pane_id | type) == "string" and (.pane_id | length) > 0
+        and (.tab_id | type) == "string" and (.tab_id | length) > 0
+        and (.workspace_id | type) == "string" and (.workspace_id | length) > 0
+        and .workspace_id == $workspace)
+    ' >/dev/null 2>&1; then
+      fm_backend_policy_refuse "AFK Herdr pane recovery" herdr \
+        "The native Herdr pane inventory failed or was malformed while recovering the daemon terminal. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+      return 2
+    fi
+    pane_count=$(printf '%s' "$panes" | jq '[.result.panes[]] | length' 2>/dev/null) || {
+      fm_backend_policy_refuse "AFK Herdr pane recovery" herdr \
+        "The native Herdr pane inventory could not be parsed while recovering the daemon terminal. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+      return 2
+    }
     if [ "$pane_count" = 0 ]; then
       sleep 0.05
       continue
     fi
-    [ "$pane_count" = 1 ] || return 1
-    pane=$(printf '%s' "$panes" | jq -r '.result.panes[0].pane_id // empty' 2>/dev/null) || return 1
-    tab=$(printf '%s' "$panes" | jq -r '.result.panes[0].tab_id // empty' 2>/dev/null) || return 1
-    [ -n "$pane" ] && [ -n "$tab" ] || return 1
+    [ "$pane_count" = 1 ] || {
+      fm_backend_policy_refuse "AFK Herdr pane recovery" herdr \
+        "The daemon terminal recovery matched multiple Herdr panes in one workspace. Resolve the ambiguity, then verify the named session with 'herdr status --json'." || true
+      return 2
+    }
+    pane=$(printf '%s' "$panes" | jq -r '.result.panes[0].pane_id' 2>/dev/null) || return 2
+    tab=$(printf '%s' "$panes" | jq -r '.result.panes[0].tab_id' 2>/dev/null) || return 2
     printf '%s\t%s\t%s' "$wsid" "$tab" "$pane"
     return 0
   done
-  return 1
+  fm_backend_policy_refuse "AFK Herdr workspace recovery" herdr \
+    "The native Herdr daemon terminal did not become uniquely visible before recovery timed out. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+  return 2
 }
 
 # Reconcile a recorded-but-dead terminal: if a record exists and no live daemon
@@ -420,6 +471,31 @@ fm_afk_launch_reconcile() {
   elif [ "$read_result" -eq 2 ]; then
     return 1
   fi
+}
+
+fm_afk_launch_validate_herdr_identity() {  # <session> <workspace> <tab> <pane>
+  local session=$1 workspace=$2 expected_tab=$3 pane=$4 out actual_tab rc=0
+  if out=$(fm_backend_herdr_pane_get_checked "$session" "$workspace" "$expected_tab" "$pane" 0); then
+    :
+  else
+    rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    fm_backend_policy_refuse "AFK Herdr terminal identity" herdr \
+      "The native Herdr pane identity could not be verified before recording the daemon terminal. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+    return 2
+  fi
+  actual_tab=$(printf '%s' "$out" | jq -er '.result.pane.tab_id' 2>/dev/null) || {
+    fm_backend_policy_refuse "AFK Herdr terminal identity" herdr \
+      "The native Herdr pane identity response was malformed before recording the daemon terminal. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+    return 2
+  }
+  if [ -n "$expected_tab" ] && [ "$actual_tab" != "$expected_tab" ]; then
+    fm_backend_policy_refuse "AFK Herdr terminal identity" herdr \
+      "The native Herdr pane and tab identities disagreed before recording the daemon terminal. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+    return 2
+  fi
+  printf '%s' "$actual_tab"
 }
 
 fm_afk_launch_restore_backup() {  # <backup> <had-afk>
@@ -449,7 +525,7 @@ fm_afk_launch_restore_backup() {  # <backup> <had-afk>
 # dedicated background workspace (--no-focus) holds exactly one tab/pane; it
 # never touches the captain's active tab. Prints the record line on success.
 fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
-  local captain_target=$1 captain_backend=$2 session out wsid tab pane entry cmd label recovered create_result pane_info
+  local captain_target=$1 captain_backend=$2 session out wsid tab pane entry cmd label recovered create_result verified_tab
   session=${captain_target%%:*}
   if [ -z "$session" ] || [ "$session" = "$captain_target" ]; then
     fm_afk_launch_log "cannot derive herdr session from captain target '$captain_target'"
@@ -463,9 +539,12 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
   wsid=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
   tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
-  if [ -n "$pane" ] && [ -z "$tab" ]; then
-    pane_info=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>/dev/null)
-    tab=$(printf '%s' "$pane_info" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
+  if [ -n "$wsid" ] && [ -n "$pane" ]; then
+    if verified_tab=$(fm_afk_launch_validate_herdr_identity "$session" "$wsid" "$tab" "$pane"); then
+      tab=$verified_tab
+    else
+      return 2
+    fi
   fi
   if [ "$create_result" -ne 0 ] && [ -n "$wsid" ] && [ -n "$pane" ]; then
     fm_afk_launch_log "herdr create failed after returning exact ids; closing $session:$pane"
@@ -482,10 +561,14 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
   fi
   if [ -z "$wsid" ] || [ -z "$pane" ]; then
     recovered=$(fm_afk_launch_herdr_recover_created "$session" "$label") || {
-      fm_afk_launch_log "herdr create did not yield a recoverable exact workspace/pane id"
-      return 1
+      return 2
     }
     IFS=$'\t' read -r wsid tab pane <<< "$recovered"
+  fi
+  if [ -z "$wsid" ] || [ -z "$tab" ] || [ -z "$pane" ]; then
+    fm_backend_policy_refuse "AFK Herdr terminal identity" herdr \
+      "The native Herdr daemon terminal response did not contain an exact workspace, tab, and pane identity. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+    return 2
   fi
   entry=$(fm_afk_launch_entry_cmd)
   cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q %q' \
