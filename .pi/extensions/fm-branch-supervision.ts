@@ -584,6 +584,10 @@ export default function (pi: ExtensionAPI) {
       return { ok: false, reason: "merge refused after supervision replacement or lock loss" };
     }
     if (verdict === "captain") {
+      const refreshed = runOutcomeScript(["note-render", "--task", task, "--strict"]);
+      if (!refreshed.ok) {
+        return { ok: false, reason: `routine note marker refresh failed: ${refreshed.detail}` };
+      }
       const message = {
         customType: "fm-branch-merge",
         content: captainOutcomeInput(task, summary),
@@ -591,10 +595,6 @@ export default function (pi: ExtensionAPI) {
       };
       if (!sendToMain(message, { triggerTurn: true, deliverAs: "followUp" })) {
         return { ok: false, reason: "delivery failed after durable append; outcome remains unread" };
-      }
-      const refreshed = runOutcomeScript(["note-render", "--task", task, "--strict"]);
-      if (!refreshed.ok) {
-        return { ok: false, reason: `captain delivery succeeded, but routine note marker refresh failed: ${refreshed.detail}` };
       }
     } else {
       // The note gate owns routine duplicate coalescing and fails toward

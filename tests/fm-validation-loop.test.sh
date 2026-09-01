@@ -250,6 +250,16 @@ test_malformed_evidence_stop() {
     || fail "malformed evidence created a continuation journal without a valid run"
   ev_running "$ev" 01RUN running pending
   fold "$state" malformed-outcome "$ev" 1000
+  cat >> "$ev" <<'EOF'
+findings[2]{id,severity,file,line,action,description}:
+  r1,error,a.go,,auto-fix,partial findings
+EOF
+  if fm_vloop_observe "$state" malformed-outcome "$ev"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 2 ] || fail "incomplete TOON table evidence was accepted"
+  [ "$(fm_vloop_reason "$state" malformed-outcome)" = \
+    'validation evidence malformed or incomplete for task malformed-outcome' ] \
+    || fail "incomplete TOON table evidence did not stop with a recovery reason"
+  ev_running "$ev" 01RUN running pending
   printf 'status: bogus\n' >> "$ev"
   if fm_vloop_observe "$state" malformed-outcome "$ev"; then rc=0; else rc=$?; fi
   [ "$rc" -eq 2 ] || fail "duplicate scalar evidence fields were accepted"
@@ -906,9 +916,9 @@ ack_wake_cycle() {
 }
 
 test_watcher_surfaces_validation_loop_limit() {
-  local dir state fakebin out failed_out drain_out capture_file window key pane_hash ev pid
+  local dir state fakebin out failed_out marker_failure_out drain_out capture_file window key pane_hash ev pid
   dir=$(make_case vloop-watcher); state="$dir/state"; fakebin="$dir/fakebin"
-  out="$dir/watch.out"; failed_out="$dir/watch-failed.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  out="$dir/watch.out"; failed_out="$dir/watch-failed.out"; marker_failure_out="$dir/marker-failure.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
   window="test:fm-loopy"
   printf 'static validation pane' > "$capture_file"
   printf 'window=%s\nkind=ship\n' "$window" > "$state/loopy.meta"
@@ -940,6 +950,18 @@ test_watcher_surfaces_validation_loop_limit() {
     fail "watcher reported success when the limit wake queue was unavailable: $(cat "$failed_out" 2>/dev/null || true)"
   fi
   [ ! -e "$state/.stale-limit-$key" ] || fail "a failed limit wake committed its suppression marker"
+
+  mkdir "$state/.stale-limit-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_WATCH_HANDLING_SUCCESSOR=1 \
+    FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$marker_failure_out" &
+  pid=$!
+  if wait_for_exit "$pid" 100; then
+    fail "watcher reported success when limit suppression could not be committed"
+  fi
+  [ -d "$state/.stale-limit-$key" ] || fail "suppression failure removed the recovery marker"
+  rmdir "$state/.stale-limit-$key" || fail "could not reset the failed suppression marker"
 
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_WATCH_HANDLING_SUCCESSOR=1 \

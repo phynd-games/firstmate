@@ -86,7 +86,7 @@ triage_log() {
 
 # Exit after reporting one actionable wake. Tests override this callback.
 wake() {
-  local output_status=0
+  local output_status=0 post_output_status=0
   case "$1" in
     heartbeat*) echo $(( $(cat "$STATE/.heartbeat-streak" 2>/dev/null || echo 0) + 1 )) > "$STATE/.heartbeat-streak" ;;
     *) echo 0 > "$STATE/.heartbeat-streak" ;;
@@ -102,9 +102,10 @@ wake() {
     output_status=1
   fi
   if [ -n "$FM_WAKE_POST_OUTPUT_ACTION" ]; then
-    "$FM_WAKE_POST_OUTPUT_ACTION" "$output_status" || true
+    "$FM_WAKE_POST_OUTPUT_ACTION" "$output_status" || post_output_status=$?
   fi
   [ "$output_status" -eq 0 ] || exit "$output_status"
+  [ "$post_output_status" -eq 0 ] || exit "$post_output_status"
   exit 0
 }
 

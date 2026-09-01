@@ -179,6 +179,57 @@ _fm_vloop_outcome_valid() {  # <status> <outcome>
   return 1
 }
 
+_fm_vloop_toon_tables_valid() {  # <evidence-content>
+  printf '%s\n' "$1" | awk '
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+    function close_table() {
+      if (in_table && row_count != declared) invalid = 1
+      in_table = 0
+    }
+    function valid_header(value) {
+      return value ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*\[[0-9]+\]\{[^{}]+\}:[[:space:]]*$/
+    }
+    /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*\[[0-9]+\]/ {
+      close_table()
+      if (!valid_header($0)) { invalid = 1; next }
+      header = $0
+      sub(/^[[:space:]]*/, "", header)
+      table_name = header
+      sub(/\[.*/, "", table_name)
+      if (table_name ~ /^(changes|change_set|changed_files)$/) next
+      declared = header
+      sub(/^[^[]*\[/, "", declared)
+      sub(/\].*/, "", declared)
+      fields = header
+      sub(/^[^{]*\{/, "", fields)
+      sub(/\}.*/, "", fields)
+      field_count = split(fields, field_values, ",")
+      delete seen_fields
+      for (i = 1; i <= field_count; i++) {
+        field_values[i] = trim(field_values[i])
+        if (field_values[i] == "" || seen_fields[field_values[i]]) invalid = 1
+        seen_fields[field_values[i]] = 1
+      }
+      in_table = 1
+      row_count = 0
+      next
+    }
+    in_table && $0 ~ /^[[:space:]]+[^[:space:]].*$/ {
+      row_count++
+      next
+    }
+    in_table { close_table() }
+    END {
+      close_table()
+      exit invalid
+    }
+  '
+}
+
 _fm_vloop_scope_paths() {  # <evidence>
   local content=$1
   printf '%s\n' "$content" | awk '
@@ -461,6 +512,7 @@ fm_vloop_evidence_valid() {  # <content>
   outcome=$(fm_nm_strip_quotes "$(fm_nm_field "$content" outcome)")
   _fm_vloop_status_valid "$status" || return 1
   _fm_vloop_outcome_valid "$status" "$outcome" || return 1
+  _fm_vloop_toon_tables_valid "$content" || return 1
   return 0
 }
 
