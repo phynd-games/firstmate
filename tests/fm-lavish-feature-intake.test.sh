@@ -200,10 +200,10 @@ vm.runInNewContext(script, {
   document: { querySelector: (selector) => selector === "#feature-intake" ? form : status },
   window: { lavish: { queuePrompt: () => { calls += 1; } } },
 });
-handler({ preventDefault() {} });
-if (!button.disabled) throw new Error("submit control stayed enabled");
-if (!button.disabled) handler({ preventDefault() {} });
-if (calls !== 1) throw new Error(`queued ${calls} submissions`);
+  handler({ preventDefault() {} });
+  if (!button.disabled) throw new Error("submit control stayed enabled");
+  handler({ preventDefault() {} });
+  if (calls !== 1) throw new Error(`queued ${calls} submissions`);
 NODE
   pass "Lavish intake: submit control queues only one answer"
 }
@@ -307,8 +307,9 @@ test_explicit_exemptions_require_reason() {
   assert_contains "$(run_intake "$home" verify exemption-a1)" "not-applicable" \
     "valid exemption did not verify"
   run_brief "$home" exemption-a1 firstmate --mode no-mistakes \
-    --not-applicable 'documentation: target=intake exemption coverage; action=update coverage instructions' >/dev/null 2>&1 && \
-    fail "brief overwrote existing exemption evidence"
+    --not-applicable 'documentation: target=intake exemption coverage; action=update coverage instructions' >/dev/null
+  assert_present "$home/data/exemption-a1/brief.md" \
+    "same-reason exemption retry did not converge on a brief"
 
   run_brief "$home" exemption-b2 firstmate --mode no-mistakes \
     --not-applicable 'dependency: target=test dependency; action=pin dependency version without behavior change' >/dev/null
@@ -334,6 +335,29 @@ PY
   [ "$rc" -ne 0 ] || fail "edited exemption reason passed check-brief"
   assert_contains "$out" "does not match intake evidence" "exemption mismatch refusal was unclear"
   pass "Lavish intake: exemptions require and retain concrete reasons"
+}
+
+test_brief_exemption_stages_before_receipt() {
+  local home out rc reason
+  home=$(make_home staged-exemption)
+  reason='configuration: target=brief staging fixture; action=exercise retry behavior without product change'
+  printf 'not a directory\n' > "$home/data/staged-a1"
+  set +e
+  out=$(run_brief "$home" staged-a1 firstmate --mode no-mistakes \
+    --not-applicable "$reason" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "brief staging failure unexpectedly succeeded"
+  assert_absent "$home/state/staged-a1.lavish-intake" \
+    "brief staging failure published exemption evidence"
+  rm -f "$home/data/staged-a1"
+  run_brief "$home" staged-a1 firstmate --mode no-mistakes \
+    --not-applicable "$reason" >/dev/null
+  assert_present "$home/data/staged-a1/brief.md" \
+    "brief retry did not publish the staged brief"
+  assert_contains "$(run_intake "$home" verify staged-a1)" "not-applicable" \
+    "brief retry did not publish resumable exemption evidence"
+  pass "Lavish intake: exemption publication follows resumable brief staging"
 }
 
 test_exemption_rejects_active_intake() {
@@ -667,6 +691,7 @@ test_start_rejects_closed_task
 test_artifact_task_mismatch_refused
 test_ambiguous_classification_refuses_dispatch
 test_explicit_exemptions_require_reason
+test_brief_exemption_stages_before_receipt
 test_exemption_rejects_active_intake
 test_absent_and_closed_without_feedback_refused
 test_malformed_captured_feedback_refused

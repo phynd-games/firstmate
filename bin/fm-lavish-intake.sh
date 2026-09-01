@@ -662,13 +662,16 @@ EOF
   const form = document.querySelector("#feature-intake");
   const status = document.querySelector("#intake-status");
   const submit = form.querySelector('[data-lavish-intake-submit="true"]');
+  let submitted = false;
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (submitted) return;
     const intake = Object.fromEntries(fields.map((field) => [field, form.elements[field].value.trim()]));
     if (fields.some((field) => !intake[field])) {
       status.textContent = "Complete every field before queueing.";
       return;
     }
+    submitted = true;
     submit.disabled = true;
     try {
       window.lavish.queuePrompt("Feature intake submitted", {
@@ -679,6 +682,7 @@ EOF
       });
       status.textContent = "Queued. Send this answer to the agent in Lavish.";
     } catch (error) {
+      submitted = false;
       submit.disabled = false;
       status.textContent = "Could not queue the intake. Try again.";
     }

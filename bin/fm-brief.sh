@@ -206,12 +206,33 @@ if [ "$INTAKE_MODE" = submitted ]; then
 fi
 if [ "$INTAKE_MODE" = not-applicable ]; then
   [ -n "$INTAKE_REASON" ] || { echo "error: --not-applicable requires a concrete reason" >&2; exit 1; }
-  "$FM_ROOT/bin/fm-lavish-intake.sh" exempt "$ID" --reason "$INTAKE_REASON" >/dev/null \
-    || { echo "error: could not record not-applicable intake classification for $ID" >&2; exit 1; }
   INTAKE_EVIDENCE="$STATE/$ID.lavish-intake"
 fi
 
 mkdir -p "$DATA/$ID"
+BRIEF_TMP=$(mktemp "$DATA/$ID/.brief.XXXXXX") \
+  || { echo "error: could not stage brief for $ID" >&2; exit 1; }
+
+publish_brief() {
+  local receipt="$STATE/$ID.lavish-intake" receipt_reason
+  if [ "$INTAKE_MODE" = not-applicable ]; then
+    if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+      [ -f "$receipt" ] && [ ! -L "$receipt" ] \
+        || { echo "error: not-applicable intake evidence is unsafe for $ID" >&2; exit 1; }
+      receipt_reason=$(sed -n 's/^reason=//p' "$receipt" | head -1)
+      [ "$receipt_reason" = "$INTAKE_REASON" ] \
+        || { echo "error: existing not-applicable reason differs for $ID" >&2; exit 1; }
+      "$FM_ROOT/bin/fm-lavish-intake.sh" verify "$ID" --evidence "$receipt" >/dev/null \
+        || { echo "error: existing not-applicable intake evidence is invalid for $ID" >&2; exit 1; }
+    else
+      "$FM_ROOT/bin/fm-lavish-intake.sh" exempt "$ID" --reason "$INTAKE_REASON" >/dev/null \
+        || { echo "error: could not record not-applicable intake classification for $ID" >&2; exit 1; }
+    fi
+  fi
+  mv -f "$BRIEF_TMP" "$BRIEF" \
+    || { echo "error: could not publish brief for $ID" >&2; exit 1; }
+  BRIEF_TMP=
+}
 
 shell_quote() {
   printf "'"
@@ -256,7 +277,7 @@ else
   PROJECT_CLONES_BODY=$(printf '%s\n' "$SECONDMATE_PROJECTS" | tr ' ' '\n' | sed 's/^/- /')
   PROJECT_CLONES_NOTE="The projects above are local clones for work you supervise; they are not an exclusive ownership claim."
 fi
-cat > "$BRIEF" <<EOF
+cat > "$BRIEF_TMP" <<EOF
 You are a persistent second mate managed by the main firstmate. Work on your own; do not wait for a human.
 
 # Charter
@@ -317,6 +338,7 @@ When you have no assigned or in-flight work after that reconciliation, go idle a
 An empty queue is a healthy resting state, not a cue to invent work: never spawn a survey, audit, or any self-directed "find work" task on your own initiative.
 If this charter cannot be carried out, append \`blocked: {why}\` or \`failed: {why}\` to the main status file and stop.
 EOF
+publish_brief
 if [ "$SECONDMATE_CHARTER" = "{TASK}" ]; then
   echo "scaffolded: $BRIEF (secondmate charter; replace {TASK})"
 else
@@ -386,7 +408,7 @@ if [ "$KIND" != secondmate ]; then
 fi
 
 if [ "$KIND" = scout ]; then
-cat > "$BRIEF" <<EOF
+cat > "$BRIEF_TMP" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 # Task
@@ -435,6 +457,7 @@ Before reporting done, read and follow \`$FM_ROOT/.agents/skills/captain-hold-li
 When the report is complete, append \`done: {one-line conclusion}\` to the status file and stop.
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
 EOF
+publish_brief
 echo "scaffolded: $BRIEF (scout; replace {TASK})"
 exit 0
 fi
@@ -501,7 +524,7 @@ esac
 # briefs stay byte-identical to the historical Bash 5 output.
 DOD=${DOD%$'\n'}
 
-cat > "$BRIEF" <<EOF
+cat > "$BRIEF_TMP" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 # Task
@@ -557,4 +580,5 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 
 $DOD
 EOF
+publish_brief
 echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"
