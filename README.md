@@ -60,9 +60,10 @@ The setup never overwrites an existing path that is not a Git checkout.
 
 ## Default configuration
 
-Global Firstmate Pi defaults live only in `defaults/pi-settings.json`.
-Harness-local `.pi/settings.json` imports that canonical file through a relative symlink, while setup merges the same source into `~/.pi/agent/settings.json` without deleting unrelated settings.
-Additional harness defaults live in `defaults/pi-open-tui.json` and `defaults/phynd-concise.md`, with each harness consuming only its relevant settings.
+[`defaults/pi-settings.json`](defaults/pi-settings.json) is the single canonical Pi captain startup profile.
+Tracked [`.pi/settings.json`](.pi/settings.json) is a relative symlink to that file, so plain Pi startup in a trusted Firstmate clone imports the canonical profile before model selection instead of consulting an independent project-local authority.
+Workstation setup shallow-merges that same canonical file into global Pi settings, preserving unrelated global keys while installing its theme and packages.
+Open TUI defaults and the Claude concise prompt remain separate in `defaults/pi-open-tui.json` and `defaults/phynd-concise.md`.
 
 | Purpose | Default |
 | --- | --- |

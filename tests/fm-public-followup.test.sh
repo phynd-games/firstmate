@@ -154,13 +154,16 @@ seed_commitment() {
 # The pi-rearm shape: a report-ready promised-final bound to a secondmate.
 seed_repro_commitment() {   # <home> <obligation> <request> <work-home> <work-id>
   local home=$1 obligation=$2 request=$3 work_home=$4 work_id=$5
-  jq -n --arg r "$request" \
+  # Keep the fixture's 2026-08-28 thread window usable on every test date.
+  export FMX_NOW_OVERRIDE=${FMX_NOW_OVERRIDE:-1787539200}
+  local expiry=${6:-2099-08-28T01:12:00Z}
+  jq -n --arg r "$request" --arg expiry "$expiry" \
     '{request_id:$r, platform:"discord",
       context_binding:{version:"ctx1", value:("ctx1_" + $r)},
       public_safe_summary:"reproduce a Pi recovery notification loop",
       received_at:"2026-08-21T01:12:00Z",
-      followup_expires_at:"2026-08-28T01:12:00Z",
-      reservation_expires_at:"2026-08-28T01:12:00Z"}' > "$home/request.json"
+      followup_expires_at:$expiry,
+      reservation_expires_at:$expiry}' > "$home/request.json"
   jq -n '{type:"report-ready", project:"firstmate",
           required_deliverables:["report_path"], completion_policy:"all-required"}' \
     > "$home/expected.json"
@@ -1447,7 +1450,7 @@ test_rechain_delivers_second_post_on_same_thread() {
   FAKE_CURL_LOG="$log" run_pf "$parent" deliver public-final-a >/dev/null || fail "deliver failed"
   [ "$(followup_posts "$log")" = 1 ] || fail "expected the investigation post"
 
-  out=$(FAKE_CURL_LOG="$log" run_pf "$parent" rechain public-final-b --from public-final-a \
+  out=$(FMX_NOW_OVERRIDE=1787539200 FAKE_CURL_LOG="$log" run_pf "$parent" rechain public-final-b --from public-final-a \
     --work-home main --work-id ship-b --expected pr-merged) \
     || fail "rechain failed: $out"
   assert_contains "$out" "retired public-final-a reason=handed on to public-final-b" \
@@ -1466,8 +1469,8 @@ SH
   ')
   assert_contains "$command" "--outcome-text" \
     "the exact rechain command must remain continuous through outcome text"
-  command=${command/"$ROOT/bin/fm-public-followup-emit.sh"/"$parent/fakebin/record-emit"}
-  command=${command//<value>/https://github.com/example/repo/pull/99}
+  command=$(printf '%s\n' "$command" | sed "s|${ROOT}/bin/fm-public-followup-emit.sh|${parent}/fakebin/record-emit|")
+  command=$(printf '%s\n' "$command" | sed 's|<value>|https://github.com/example/repo/pull/99|g')
   RECORD_ARGS="$command_log" bash -c "$command" \
     || fail "the exact rechain command must execute after filling its deliverable value"
   assert_grep '--deliverable' "$command_log" \
@@ -2009,7 +2012,7 @@ test_retention_creates_no_false_teardown_refusal() {
 test_expiry_escalation_uses_now_override() {
   local home out exp now_closing now_expired registry tmp
   home=$(make_home expiry-window)
-  seed_repro_commitment "$home" pf-exp req-exp main work-exp
+  seed_repro_commitment "$home" pf-exp req-exp main work-exp 2026-08-28T01:12:00Z
   exp=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' '2026-08-28T01:12:00Z' +%s 2>/dev/null) \
     || exp=$(date -u -d '2026-08-28T01:12:00Z' +%s)
   now_closing=$((exp - 3600))

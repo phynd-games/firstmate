@@ -240,11 +240,16 @@ done < <(node -e 'for (const p of require(process.argv[1]).packages) console.log
 printf 'Refreshing installed Pi extensions...\n'
 pi update --extensions
 
+PI_PROFILE=$(node -e '
+const settings = require(process.argv[1]);
+const fields = [settings.defaultProvider, settings.defaultModel, settings.defaultThinkingLevel];
+if (fields.some((value) => typeof value !== "string" || value.length === 0)) {
+  throw new Error("Pi captain startup profile requires defaultProvider, defaultModel, and defaultThinkingLevel");
+}
+process.stdout.write(fields[0] + "/" + fields[1] + " with " + fields[2] + " thinking");
+' "$SETTINGS_SOURCE")
 printf 'Phynd Pi setup complete.\n'
-node - "$SETTINGS_SOURCE" <<'NODE'
-const settings = require(process.argv[2]);
-console.log(`Default model: ${settings.defaultProvider}/${settings.defaultModel} with ${settings.defaultThinkingLevel} thinking.`);
-NODE
+printf 'Default model: %s.\n' "$PI_PROFILE"
 printf 'Default Firstmate backend: herdr.\n'
 printf 'Herdr presentation spaces: on (one visible workspace per task).\n'
 printf 'Theme: cosmic-lagoon.\n'

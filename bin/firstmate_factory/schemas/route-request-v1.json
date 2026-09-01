@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "firstmate.route-request.v1",
+  "title": "Firstmate execution route request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "level_floor", "role"],
+  "properties": {
+    "schema": {"const": "firstmate.route-request.v1"},
+    "level_floor": {"enum": ["L0", "L1", "L2", "L3", "L4"]},
+    "role": {"enum": ["implementer", "scout", "planner", "reviewer", "validator", "design-author", "route-scout"]},
+    "harness": {"type": "string", "minLength": 1},
+    "model": {"type": "string", "minLength": 1},
+    "effort": {"enum": ["low", "medium", "high", "xhigh"]}
+  }
+}
