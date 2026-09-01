@@ -40,8 +40,9 @@ A key that names no task, names a task that is not captain-held, or names a task
 
 Two channels feed that one intake today, and both are ordinary callers rather than special cases.
 `bin/fm-send.sh --resolve-key` is the chat channel: its status-log close is unchanged for a key the status log still owns, and a key the status log no longer owns is resolved to a still-open captain-held task - the key as a task id, then the legacy derived identity - and fed as one keyed line.
-`bin/fm-procevent.sh` is the captured-result channel: after capture, a bound built-in source has its result passed to `bin/fm-procevent-<adapter>.sh answers <result-file>` and whatever that prints is piped into the intake, so any built-in adapter with an `answers` command works and the runner names no adapter, parses no result, and carries no decision rule.
-Trusted external process-event adapters intentionally expose no answer operation and cannot feed this authority-bearing intake; [`extension-bindings.md`](extension-bindings.md#trust-boundary) owns that boundary.
+`bin/fm-procevent.sh` is captured-result channel: after capture, ordinary bound built-in source passes its result to `bin/fm-procevent-<adapter>.sh answers <result-file>` and pipes output into intake, so any built-in adapter with an `answers` command works while runner names no adapter, parses no result, and carries no decision rule.
+Lavish intake is exception: keyed rows remain unhandled until `bin/fm-lavish-intake.sh record` validates exact captured payload and routes one exact release through captain-hold.
+Trusted external process-event adapters expose no answer operation and cannot feed this authority-bearing intake; [`extension-bindings.md`](extension-bindings.md#trust-boundary) owns that boundary.
 `bin/fm-procevent-lavish.sh answers` is one such adapter command; it reads only rows tagged `choice`, relays a card's declared close mode, and can never let freeform captain prose forge a task id or a mode.
 
 ## Structured read surfaces

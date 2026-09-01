@@ -37,9 +37,9 @@ When a source carries captain answers to captain-held tasks, bind it BEFORE armi
 bin/fm-captain-hold.sh bind <source-id>
 ```
 
-The runner then passes each captured result to that source's own adapter `answers` command and pipes the keyed answers it prints into the one keyed-answer intake, which owns every rule about what they mean; the keys are captain-held task ids.
-This is generic across built-in adapters with an `answers` command, and the runner still wakes you to act on the result.
-External process-event bindings intentionally expose no answer operation and cannot feed the captain-answer intake.
+The runner normally passes each captured result to that built-in source's adapter `answers` command and pipes keyed answers into the one keyed-answer intake, which owns every rule about what they mean; keys are captain-held task ids.
+Explicit Lavish feature-intake registration is exception: runner withholds keyed rows until `bin/fm-lavish-intake.sh record` validates captured payload and performs exact release through captain-hold owner.
+Runner still wakes you to act on result; external process-event bindings expose no answer operation and cannot feed captain-answer intake.
 `captain-hold-lifecycle` owns when a binding is required and what the keys must be.
 
 A configured remote secondmate reply source is armed and handled through `bin/fm-procevent-remote-reply.sh`.

@@ -382,8 +382,21 @@ make_project() {  # <dir>
   git -C "$dir" remote add origin "file://$dir.origin.git"
 }
 
+write_exempt_brief() {
+  local home=$1 id=$2
+  FM_GATE_REFUSE_BYPASS=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
+    "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes \
+    --not-applicable \
+    'configuration: target=tests/fm-backend-herdr-presentation-e2e.test.sh Herdr presentation fixture; action=exercise isolated projection lifecycle' \
+    >/dev/null
+}
+
 spawn_task() {  # <id> <home> <project>
   local id=$1 home=$2 project=$3
+  if [ ! -e "$home/state/$id.lavish-intake" ] && [ ! -L "$home/state/$id.lavish-intake" ]; then
+    write_exempt_brief "$home" "$id"
+  fi
   FM_GATE_REFUSE_BYPASS=1 FM_SPAWN_NO_GUARD=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'sleep 120'" --mode no-mistakes --yolo off --backend herdr
 }
@@ -409,6 +422,9 @@ finish_concurrent_expected_abort() {  # <id> <status> <stdout> <stderr>
 
 spawn_secondmate_task() {
   local id=$1 home=$2
+  if [ ! -e "$HOME_DIR/state/$id.lavish-intake" ] && [ ! -L "$HOME_DIR/state/$id.lavish-intake" ]; then
+    write_exempt_brief "$HOME_DIR" "$id"
+  fi
   FM_GATE_REFUSE_BYPASS=1 FM_SPAWN_NO_GUARD=1 FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$ROOT" \
     "$ROOT/bin/fm-spawn.sh" "$id" "$home" "sh -c 'sleep 120'" --secondmate --backend herdr
 }

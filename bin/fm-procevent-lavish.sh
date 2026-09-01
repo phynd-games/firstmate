@@ -6,10 +6,11 @@
 #   fm-procevent-lavish.sh classify <result-file>
 #   fm-procevent-lavish.sh terminal <result-file>
 #   fm-procevent-lavish.sh silent <result-file>
-#   fm-procevent-lavish.sh answers <result-file>
+#   fm-procevent-lavish.sh answers [--intake] <result-file>
+#   fm-procevent-lavish.sh intake <result-file> <task-id>
 #   fm-procevent-lavish.sh read <result-file>
 #   fm-procevent-lavish.sh source-id <artifact.html>
-#   fm-procevent-lavish.sh retire <artifact.html>
+#   fm-procevent-lavish.sh retire <artifact.html> [--expect-intake-task <task-id>]
 #   fm-procevent-lavish.sh poll <artifact.html>
 #
 # classify   Print the lifecycle state a handler should act on: feedback, ended,
@@ -114,6 +115,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
+STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
@@ -142,30 +144,72 @@ cmd_source_id() {
   fi
 }
 
+lavish_intake_ownership_present() {
+  local id=$1 path source
+  for path in "$STATE/procevent/$id.intake" "$STATE/procevent/$id.source"; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    [ -L "$path" ] && return 0
+    [ "${path##*.}" = intake ] && return 0
+    grep -qx 'intake=1' "$path" && return 0
+  done
+  for path in "$STATE"/*.lavish-intake-session; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    [ -L "$path" ] && return 0
+    source=$(sed -n 's/^source_id=//p' "$path" | head -1)
+    [ "$source" = "$id" ] && return 0
+  done
+  "$SCRIPT_DIR/fm-captain-hold.sh" binding-intake "$id" >/dev/null 2>&1
+}
+
 cmd_arm() {
-  local artifact=${1-} id real
+  local artifact=${1-} id real intake=0
   [ -n "$artifact" ] || usage
-  [ "$#" -eq 1 ] || usage
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --intake) intake=1; shift ;;
+      *) usage ;;
+    esac
+  done
   command -v lavish-axi >/dev/null 2>&1 || die "lavish-axi is not installed"
   poll_retry_delay >/dev/null
   id=$(cmd_source_id "$artifact") || exit 1
   real=$(perl -MCwd=realpath -e '$p = realpath($ARGV[0]); defined($p) or exit 1; print "$p\n"' "$artifact" 2>/dev/null) \
     || die "cannot resolve the artifact path: $artifact"
+  if [ "$intake" -eq 0 ] && lavish_intake_ownership_present "$id"; then
+    die "cannot ordinary-arm Lavish source while intake ownership remains: $id"
+  fi
   # This adapter's own listener command, which runs the plain blocking form with
   # no --timeout-ms so completion is a server event, and absorbs only the exact
   # transient interruption. Registering raw poll output is what let that
   # interruption reach the runner as a captured result.
-  "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" \
-    -- "$SCRIPT_DIR/fm-procevent-lavish.sh" poll "$real" || exit 1
+  if [ "$intake" -eq 1 ]; then
+    "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" --intake \
+      -- "$SCRIPT_DIR/fm-procevent-lavish.sh" poll "$real" || exit 1
+  else
+    "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" \
+      -- "$SCRIPT_DIR/fm-procevent-lavish.sh" poll "$real" || exit 1
+  fi
   printf 'armed: %s\n' "$id"
   printf 'artifact: %s\n' "$real"
 }
 
 cmd_retire() {
-  local artifact=${1-} id
+  local artifact=${1-} id expected_task=''
   [ -n "$artifact" ] || usage
+  shift || true
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --expect-intake-task) [ "$#" -ge 2 ] || die "--expect-intake-task requires a task id"; expected_task=$2; shift 2 ;;
+      *) die "unknown retire argument: $1" ;;
+    esac
+  done
   id=$(cmd_source_id "$artifact") || exit 1
-  "$SCRIPT_DIR/fm-procevent.sh" retire "$id"
+  if [ -n "$expected_task" ]; then
+    "$SCRIPT_DIR/fm-procevent.sh" retire "$id" --expect-intake-task "$expected_task"
+  else
+    "$SCRIPT_DIR/fm-procevent.sh" retire "$id"
+  fi
 }
 
 # The bounded quiet retry described in the header. The bound is a constant
@@ -332,11 +376,29 @@ cmd_classify() {
 # produce, and the published poll delivers the final feedback of a `Send & End`
 # review marked with session_ended and returns only empty ended sessions after
 # it. Anything else - including an unreadable result - keeps the source armed.
+lavish_intake_result() {
+  local file=$1 source registration
+  source=$(fm_procevent_result_source_id "$file" 2>/dev/null || true)
+  [ -n "$source" ] || return 1
+  registration="$STATE/procevent/$source.source"
+  [ -f "$registration" ] && [ ! -L "$registration" ] || return 1
+  grep -qx 'intake=1' "$registration"
+}
+
 cmd_terminal() {
-  local file=${1-}
+  local file=${1-} classification
   [ -n "$file" ] || usage
   [ -f "$file" ] || die "result file does not exist: $file"
-  case "$(cmd_classify "$file")" in
+  classification=$(cmd_classify "$file")
+  if lavish_intake_result "$file"; then
+    case "$classification" in
+      feedback) return 1 ;;
+      ended) return 1 ;;
+      missing) return 1 ;;
+      *) return 1 ;;
+    esac
+  fi
+  case "$classification" in
     ended|missing) return 0 ;;
   esac
   case "$(session_field "$file" session_ended)" in
@@ -384,6 +446,7 @@ cmd_silent() {
   local file=${1-} content_rc
   [ -n "$file" ] || usage
   [ -f "$file" ] && [ ! -L "$file" ] || die "result file does not exist: $file"
+  lavish_intake_result "$file" && return 1
   [ "$(cmd_classify "$file")" = ended ] || return 1
   result_has_queued_content "$file"
   content_rc=$?
@@ -407,29 +470,108 @@ cmd_silent() {
 # `<origin>-decision-<key>` identities pre-collapse decks still carry; the
 # security property is the slug SHAPE, which is unchanged.
 cmd_answers() {
-  local file=${1-}
+  local file='' source expected='' session_source session_file intake_marker marker_task intake_registration=0 result_intake_marker intake=0 intake_binding=0 allow_retired=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --intake) intake=1 ;;
+      --allow-retired) allow_retired=1 ;;
+      *) [ -z "$file" ] || usage; file=$1 ;;
+    esac
+    shift
+  done
   [ -n "$file" ] || usage
   [ -f "$file" ] && [ ! -L "$file" ] || die "result file does not exist: $file"
+  source=$(fm_procevent_result_source_id "$file" 2>/dev/null || true)
+  [ "$intake" -eq 0 ] || [ -n "$source" ] || die "Lavish intake result has no source identity"
+  if [ -n "$source" ]; then
+    intake_marker="$STATE/procevent/$source.intake"
+    intake_registration="$STATE/procevent/$source.source"
+    result_intake_marker="${file%.result}.intake"
+    if "$SCRIPT_DIR/fm-captain-hold.sh" binding-intake "$source" >/dev/null 2>&1; then
+      intake_binding=1
+    fi
+    if [ "$intake" -eq 1 ] && [ "$intake_binding" -ne 1 ] && [ "$allow_retired" -ne 1 ]; then
+      die "Lavish result is not bound to an intake source"
+    fi
+    if [ "$intake" -eq 1 ] && [ "$allow_retired" -eq 1 ] && [ "$intake_binding" -ne 1 ]; then
+      [ -f "$intake_marker" ] && [ ! -L "$intake_marker" ] \
+        || die "retired Lavish result has no intake provenance marker"
+      [ ! -e "$intake_registration" ] && [ ! -L "$intake_registration" ] \
+        || die "retired Lavish result is still registered"
+      expected=$(sed -n 's/^task_id=//p' "$intake_marker" | head -1)
+      [ -n "$expected" ] || die "retired Lavish result has no intake task"
+    fi
+    if [ "$intake" -eq 1 ] && [ "$allow_retired" -eq 1 ] && [ "$intake_binding" -ne 1 ]; then
+      :
+    elif [ "$intake_binding" -eq 1 ] \
+      || { [ -f "$intake_registration" ] && [ ! -L "$intake_registration" ] \
+      && grep -qx 'intake=1' "$intake_registration"; } \
+      || [ -e "$intake_marker" ] || [ -L "$intake_marker" ] \
+      || [ -e "$result_intake_marker" ] || [ -L "$result_intake_marker" ]; then
+      [ -e "$intake_marker" ] || [ -L "$intake_marker" ] \
+        || die "Lavish intake source marker is missing"
+      [ -f "$intake_marker" ] && [ ! -L "$intake_marker" ] \
+        || die "Lavish intake source marker is unsafe"
+      expected=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$source" 2>/dev/null || true)
+      marker_task=$(sed -n 's/^task_id=//p' "$intake_marker" | head -1)
+      [ -n "$expected" ] && [ "$expected" != "(any)" ] \
+        || die "Lavish intake source has no exact task binding"
+      [ "$marker_task" = "$expected" ] \
+        || die "Lavish intake source marker does not match its binding"
+      session_file="$STATE/$expected.lavish-intake-session"
+      [ -f "$session_file" ] && [ ! -L "$session_file" ] \
+        || die "Lavish intake source has no active session"
+      session_source=$(sed -n 's/^source_id=//p' "$session_file" | head -1)
+      [ "$source" = "$session_source" ] \
+        || die "captured result source does not match the active intake session"
+    elif [ "$intake" -eq 1 ]; then
+      die "Lavish intake source has no exact binding"
+    else
+      expected=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$source" 2>/dev/null || true)
+      if [ -n "$expected" ] && [ "$expected" != "(any)" ]; then
+        session_file="$STATE/$expected.lavish-intake-session"
+        if [ -f "$session_file" ] && [ ! -L "$session_file" ]; then
+          session_source=$(sed -n 's/^source_id=//p' "$session_file" | head -1)
+          [ "$source" = "$session_source" ] || die "captured result source does not match the active intake session"
+        else
+          expected=''
+        fi
+      fi
+    fi
+  fi
   perl -MJSON::PP -e '
     use strict; use warnings;
-    my ($path) = @ARGV;
+    my ($path, $expected, $intake) = @ARGV;
+    my $strict = defined($expected) && length($expected) && $expected ne "(any)";
     open my $fh, "<", $path or exit 1;
-    my (@fields, $want, @rows);
+    my (@blocks, $block);
     while (my $line = <$fh>) {
-      if (!@fields) {
-        next unless $line =~ /^prompts\[(\d+)\]\{([^}]*)\}:\s*$/;
-        ($want, @fields) = ($1, split /,/, $2);
+      if ($line =~ /^(?:prompts|feedback)\[(\d+)\]\{([^}]*)\}:\s*$/) {
+        $block = { want => $1, fields => [split /,/, $2], rows => [] };
+        push @blocks, $block;
         next;
       }
-      last unless $line =~ /^\s/;
-      last if @rows >= $want;
+      next unless $block && $line =~ /^\s/;
       chomp $line;
-      push @rows, $line;
+      push @{$block->{rows}}, $line;
     }
     close $fh;
+    my @rows;
+    if ($intake) {
+      for my $candidate (@blocks) {
+        push @rows, map { { line => $_, fields => $candidate->{fields} } } @{$candidate->{rows}};
+      }
+    } elsif (@blocks) {
+      @rows = map { { line => $_, fields => $blocks[0]{fields} } } @{$blocks[0]{rows}};
+      splice @rows, $blocks[0]{want} if @rows > $blocks[0]{want};
+    }
     my %seen;
+    my %raw_seen;
+    my $matched = 0;
     my @out;
-    for my $row (@rows) {
+    for my $entry (@rows) {
+      my $row = $entry->{line};
+      my $fields = $entry->{fields};
       $row =~ s/^\s+//;
       my @vals;
       while (length $row) {
@@ -444,15 +586,27 @@ cmd_answers() {
         last unless $row =~ s/^,//;
       }
       my %f;
-      $f{$fields[$_]} = $vals[$_] for 0 .. $#fields;
+      $f{$fields->[$_]} = $vals[$_] for 0 .. $#{$fields};
       next unless defined $f{tag} && $f{tag} eq "choice";
       my $prompt = $f{prompt};
+      if ($intake && $strict) {
+        die "captured result contains a malformed keyed answer\n"
+          unless defined $prompt && $prompt =~ /Context data:\s*(\{.*\})/s;
+      }
       next unless defined $prompt && $prompt =~ /Context data:\s*(\{.*\})/s;
       my $ctx = $1;
       my $data = eval { decode_json($ctx) };
+      die "captured result contains malformed keyed answer\n"
+        if $intake && $strict && ref($data) ne "HASH";
       next unless ref($data) eq "HASH";
       my $key = $data->{question};
       my $answer = $data->{answer};
+      if ($intake && $strict) {
+        die "captured result contains an answer for another task\n"
+          unless defined($key) && !ref($key) && $key eq $expected;
+        $raw_seen{$key}++;
+        die "captured result contains more than one raw keyed answer\n" if $raw_seen{$key} > 1;
+      }
       next if !defined($key) || ref($key) || !defined($answer) || ref($answer);
       my $mode = "";
       if (exists $data->{close}) {
@@ -462,6 +616,11 @@ cmd_answers() {
       }
       next unless $key =~ /\A[A-Za-z0-9._-]{1,128}\z/;
       next unless length $answer && length($answer) <= 512;
+      if ($strict) {
+        die "captured result contains an answer for another task\n" unless $key eq $expected;
+        $matched++;
+        die "captured result contains more than one keyed answer\n" if $matched > 1;
+      }
       my $label = defined $f{text} ? $f{text} : "";
       s/[\x00-\x1f\x7f]/ /g for ($answer, $label);
       $label = substr($label, 0, 512);
@@ -470,8 +629,64 @@ cmd_answers() {
       $seen{$key} = scalar @out;
       push @out, length $mode ? "$key\t$answer\t$label\t$mode" : "$key\t$answer\t$label";
     }
+    die "captured result does not contain exactly one answer for its bound task\n"
+      if $strict && $matched != 1;
     print "$_\n" for grep { defined } @out;
-  ' "$file"
+  ' "$file" "$expected" "$intake"
+}
+
+cmd_intake() {
+  local file=${1-} task=${2-}
+  [ -n "$file" ] && [ -n "$task" ] || usage
+  [ "$#" -eq 2 ] || usage
+  [ -f "$file" ] && [ ! -L "$file" ] || die "result file does not exist: $file"
+  perl -MJSON::PP -e '
+    use strict; use warnings;
+    my ($path, $task) = @ARGV;
+    open my $fh, "<", $path or exit 1;
+    my (@blocks, $block);
+    while (my $line = <$fh>) {
+      if ($line =~ /^(?:prompts|feedback)\[(\d+)\]\{([^}]*)\}:\s*$/) {
+        $block = { fields => [split /,/, $2], rows => [] };
+        push @blocks, $block;
+        next;
+      }
+      next unless $block && $line =~ /^\s/;
+      chomp $line;
+      push @{$block->{rows}}, $line;
+    }
+    close $fh;
+    my ($selected, $matches);
+    for my $candidate (@blocks) {
+      for my $row (@{$candidate->{rows}}) {
+      $row =~ s/^\s+//;
+      my @vals;
+      while (length $row) {
+        if ($row =~ s/^"((?:[^"\\]|\\.)*)"//) {
+          my $v = $1;
+          $v =~ s/\\(.)/$1 eq "n" ? "\n" : $1 eq "t" ? "\t" : $1 eq "r" ? "\r" : $1/ge;
+          push @vals, $v;
+        } else {
+          $row =~ s/^([^,]*)//;
+          push @vals, $1;
+        }
+        last unless $row =~ s/^,//;
+      }
+      my %f;
+      $f{$candidate->{fields}[$_]} = $vals[$_] for 0 .. $#{$candidate->{fields}};
+      next unless defined $f{tag} && $f{tag} eq "choice";
+      next unless defined $f{prompt} && $f{prompt} =~ /Context data:\s*(\{.*\})/s;
+      my $data = eval { decode_json($1) };
+      next unless ref($data) eq "HASH";
+      next unless defined $data->{question} && !ref($data->{question}) && $data->{question} eq $task;
+      $matches++;
+      exit 1 if $matches > 1;
+      $selected = $data;
+      }
+    }
+    exit 1 unless $selected;
+    print encode_json($selected), "\n";
+  ' "$file" "$task"
 }
 
 # Present one already-captured result for a handler. Body lines are prefixed
@@ -622,6 +837,7 @@ case "${1-}" in
   terminal)  shift; cmd_terminal "$@" ;;
   silent)    shift; cmd_silent "$@" ;;
   answers)   shift; cmd_answers "$@" ;;
+  intake)    shift; cmd_intake "$@" ;;
   read)      shift; cmd_read "$@" ;;
   ''|-h|--help|help) usage ;;
   *) die "unknown command: $1" ;;

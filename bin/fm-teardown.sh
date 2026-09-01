@@ -185,6 +185,10 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 # shellcheck source=bin/fm-secondmate-parent-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-procevent-lib.sh
+. "$SCRIPT_DIR/fm-procevent-lib.sh"
 # shellcheck source=bin/fm-pending-reply-lib.sh
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
@@ -2960,6 +2964,42 @@ fi
 remove_grok_turnend_auth "$STATE" "$ID" || exit 1
 remove_kimi_turnend_auth "$STATE" "$ID" || exit 1
 fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
+INTAKE_SOURCE=
+INTAKE_ARTIFACT=
+INTAKE_SESSION="$STATE/$ID.lavish-intake-session"
+if [ -e "$INTAKE_SESSION" ] || [ -L "$INTAKE_SESSION" ]; then
+  [ -f "$INTAKE_SESSION" ] && [ ! -L "$INTAKE_SESSION" ] \
+    || { echo "error: Lavish intake session is unsafe for $ID; preserving task records" >&2; exit 1; }
+  [ -f "$STATE/$ID.lavish-intake" ] && [ ! -L "$STATE/$ID.lavish-intake" ] \
+    || { echo "error: Lavish intake evidence is missing for $ID; preserving task records" >&2; exit 1; }
+  INTAKE_ARTIFACT=$(sed -n 's/^artifact=//p' "$INTAKE_SESSION" | head -1)
+  [ -n "$INTAKE_ARTIFACT" ] && [ -f "$INTAKE_ARTIFACT" ] && [ ! -L "$INTAKE_ARTIFACT" ] \
+    || { echo "error: Lavish intake artifact is missing for $ID; preserving task records" >&2; exit 1; }
+  INTAKE_SOURCE=$(sed -n 's/^source_id=//p' "$INTAKE_SESSION" | head -1)
+  fm_procevent_source_id_valid "$INTAKE_SOURCE" \
+    || { echo "error: Lavish intake source identity is invalid for $ID; preserving task records" >&2; exit 1; }
+  INTAKE_REGISTRATION="$STATE/procevent/$INTAKE_SOURCE.source"
+  INTAKE_MARKER="$STATE/procevent/$INTAKE_SOURCE.intake"
+  INTAKE_BOUND=$($FM_ROOT/bin/fm-captain-hold.sh binding "$INTAKE_SOURCE" 2>/dev/null || true)
+  if [ -e "$INTAKE_REGISTRATION" ] || [ -L "$INTAKE_REGISTRATION" ] \
+    || [ -e "$INTAKE_MARKER" ] || [ -L "$INTAKE_MARKER" ] \
+    || [ -n "$INTAKE_BOUND" ]; then
+    "$FM_ROOT/bin/fm-procevent-lavish.sh" retire "$INTAKE_ARTIFACT" --expect-intake-task "$ID" >/dev/null \
+      || { echo "error: could not retire Lavish intake source $INTAKE_SOURCE; preserving task records" >&2; exit 1; }
+    rm -f "$INTAKE_MARKER"
+  fi
+  INTAKE_SESSION_CREATED=$(sed -n 's/^lavish_session_created=//p' "$INTAKE_SESSION" | head -1)
+  case "$INTAKE_SESSION_CREATED" in
+    1)
+      command -v lavish-axi >/dev/null 2>&1 \
+        || { echo "error: lavish-axi is unavailable for intake session cleanup; preserving task records" >&2; exit 1; }
+      lavish-axi end "$INTAKE_ARTIFACT" >/dev/null \
+        || { echo "error: could not end the Lavish intake session for $ID; preserving task records" >&2; exit 1; }
+      ;;
+    0|'') ;;
+    *) echo "error: Lavish intake session ownership is invalid for $ID; preserving task records" >&2; exit 1 ;;
+  esac
+fi
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
 [ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
@@ -2973,7 +3013,10 @@ rm -f "$STATE/$ID.turn-ended" \
   "$STATE/$ID.control-relaunch" "$STATE/$ID.control-relaunch.meta-prior" \
   "$STATE/$ID.control-relaunch.brief-prior" "$STATE/$ID.control-relaunch.note" \
   "$STATE/$ID.reconcile-nudged" "$STATE/$ID.validation-loop" \
-  "$STATE/.branch-note-sig-$ID"
+  "$STATE/.branch-note-sig-$ID" \
+  "$STATE/$ID.lavish-intake" "$STATE/$ID.lavish-intake-session" \
+  "$STATE/$ID.lavish-intake-classification" "$STATE/$ID.lavish-intake-hold" \
+  "$STATE/$ID.lavish-intake-pending" "$STATE/$ID.lavish-intake-owner"
 # The steering inbox (bin/fm-task-inbox-lib.sh) is runtime state for the
 # retired endpoint; teardown only runs after landing is confirmed, so any
 # leftover unhandled steer here is moot rather than unlanded work. Handoff

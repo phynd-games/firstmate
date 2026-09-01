@@ -117,6 +117,8 @@ state/               runtime records and signals; gitignored
   <id>.meta          task metadata; each producer script's header owns its exact fields and mutation contract, with docs/configuration.md routing operator-facing backend and trace-context details
   <id>.validation-loop  durable validation-loop journal bounding automatic validation continuation; bin/fm-validation-loop-lib.sh owns the contract and thresholds; removed by teardown
   .branch-note-sig-*  per-task last-rendered routine branch-note novelty signature powering deterministic duplicate coalescing; bin/fm-branch-outcome.sh's note-render header owns it; removed by teardown
+  <id>.lavish-intake  hash-bound Lavish intake receipt; removed by teardown after landing
+  <id>.lavish-intake-session <id>.lavish-intake-classification  active intake binding or explicit exemption marker; removed by teardown
   <id>.herdr-presentation  quarantinable attempt and restart-binding journal for Herdr's optional visual projection; never task or endpoint authority; see docs/herdr-backend.md "Presentation spaces"
   <id>.check.sh      authenticated slow poll; the watcher dispatches validated PR data and the byte-identified Relay shim through trusted repository scripts, runs registered custom checks from hash-validated private snapshots, and rejects every other state check without execution
   <id>.check-trust   private content binding created by fm-check-register.sh for an intentional custom check
@@ -566,6 +568,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `communication-discipline` - load before composing captain-facing output, worker instructions, progress updates, or review results.
 - `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap, network-checks, or dashboard section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH: invalid`, `FLEET_SYNC:`, `NETWORK_CHECKS:`, `PR_CHECK_MIGRATION:`, `HOME_SUMMARY:`, `BACKLOG_RECONCILE:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, `HERDR_SUPERVISOR:`, `DASHBOARD_BLOCKED:`, or `FMX:`), or when `BOOTSTRAP_INFO:` says an interrupted backlog cleanup may have left an endpoint or local copy; silence and other `BOOTSTRAP_INFO:` facts need no load.
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
+- `lavish-feature-intake` - load before planning, designing, implementing, or dispatching potentially significant work; uncertainty requires its interactive intake gate.
 - `ask-user-authority` - load before deciding any ask-user finding and before approving a validation review step.
 - `quota-array-dispatch` - load before choosing among a matched crew-dispatch profile array from current quota-axi default TOON.
 - `harness-adapters` - load before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter.

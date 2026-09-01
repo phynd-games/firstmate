@@ -129,9 +129,10 @@ fm_procevent_source_lock_release() {
   fm_lock_release "$(fm_procevent_source_lock_path "$1")"
 }
 
-fm_procevent_registration_publish_locked() {  # <state> <adapter> <source-id> <argv...>
-  local state=$1 adapter=$2 id=$3 reg dest tmp arg
-  shift 3
+fm_procevent_registration_publish_locked() {  # <state> <adapter> <source-id> <intake> <argv...>
+  local state=$1 adapter=$2 id=$3 intake=$4 reg dest tmp arg
+  shift 4
+  case "$intake" in 0|1) ;; *) return 1 ;; esac
   fm_procevent_adapter_valid "$adapter" || return 1
   fm_procevent_source_id_valid "$id" || return 1
   [ "$#" -ge 1 ] || return 1
@@ -145,6 +146,7 @@ fm_procevent_registration_publish_locked() {  # <state> <adapter> <source-id> <a
   tmp=$(umask 077; mktemp "$reg/.source.XXXXXX") || return 1
   if {
     printf 'adapter=%s\n' "$adapter"
+    printf 'intake=%s\n' "$intake"
     printf 'argc=%s\n' "$#"
     printf 'argv:\n'
     printf '%s\n' "$@"
@@ -656,6 +658,7 @@ fm_procevent_capture() {
   local state=$1 id=$2 adapter=$3 src=$4 extension_id=${5-} extension_version=${6-}
   local capability_version=${7-} package_digest=${8-} binding_digest=${9-}
   local inbox seq dest tmp adapter_dest adapter_tmp extension_dest='' extension_tmp=''
+  local intake_dest='' intake_tmp='' intake=0 registration marker
   [ "$#" -eq 4 ] || [ "$#" -eq 9 ] || return 1
   fm_procevent_source_id_valid "$id" || return 1
   fm_procevent_adapter_valid "$adapter" || return 1
@@ -687,6 +690,16 @@ fm_procevent_capture() {
   while [ -e "$inbox/$id.$seq.result" ]; do seq=$((seq + 1)); done
   dest="$inbox/$id.$seq.result"
   adapter_dest="$inbox/$id.$seq.adapter"
+  if [ "$#" -eq 4 ]; then
+    registration="$state/procevent/$id.source"
+    marker="$state/procevent/$id.intake"
+    if { [ -f "$registration" ] && [ ! -L "$registration" ] && grep -qx 'intake=1' "$registration"; } \
+      || { [ -f "$marker" ] && [ ! -L "$marker" ]; }; then
+      intake=1
+      intake_dest="$inbox/$id.$seq.intake"
+      [ ! -e "$intake_dest" ] && [ ! -L "$intake_dest" ] || return 1
+    fi
+  fi
   if [ "$#" -eq 9 ]; then
     [ ! -e "$dest" ] && [ ! -L "$dest" ] \
       && [ ! -e "$adapter_dest" ] && [ ! -L "$adapter_dest" ] || return 1
@@ -701,9 +714,16 @@ fm_procevent_capture() {
     }
     extension_tmp=$(umask 077; mktemp "$inbox/.extension.XXXXXX") \
       || { rm -f -- "$tmp" "$adapter_tmp"; return 1; }
+  elif [ "$intake" -eq 1 ]; then
+    intake_tmp=$(umask 077; mktemp "$inbox/.intake.XXXXXX") \
+      || { rm -f -- "$tmp" "$adapter_tmp"; return 1; }
   fi
-  if ! cat "$src" > "$tmp"; then rm -f -- "$tmp" "$adapter_tmp" "$extension_tmp"; return 1; fi
-  if ! printf '%s\n' "$adapter" > "$adapter_tmp"; then rm -f -- "$tmp" "$adapter_tmp" "$extension_tmp"; return 1; fi
+  if ! cat "$src" > "$tmp"; then rm -f -- "$tmp" "$adapter_tmp" "$extension_tmp" "$intake_tmp"; return 1; fi
+  if ! printf '%s\n' "$adapter" > "$adapter_tmp"; then rm -f -- "$tmp" "$adapter_tmp" "$extension_tmp" "$intake_tmp"; return 1; fi
+  if [ "$intake" -eq 1 ] && ! printf 'intake=1\n' > "$intake_tmp"; then
+    rm -f -- "$tmp" "$adapter_tmp" "$intake_tmp"
+    return 1
+  fi
   if [ "$#" -eq 9 ] && ! {
     printf 'schema=fm-procevent-extension-owner.v1\n'
     printf 'extension_id=%s\n' "$extension_id"
@@ -716,21 +736,30 @@ fm_procevent_capture() {
     return 1
   fi
   if ! chmod 0600 "$tmp" "$adapter_tmp"; then
-    rm -f -- "$tmp" "$adapter_tmp" "$extension_tmp"
+    rm -f -- "$tmp" "$adapter_tmp" "$extension_tmp" "$intake_tmp"
     return 1
   fi
   if [ "$#" -eq 9 ] && ! chmod 0600 "$extension_tmp"; then
     rm -f -- "$tmp" "$adapter_tmp" "$extension_tmp"
     return 1
   fi
-  if ! mv -f -- "$adapter_tmp" "$adapter_dest"; then rm -f -- "$tmp" "$adapter_tmp" "$extension_tmp"; return 1; fi
+  if [ "$intake" -eq 1 ] && ! chmod 0600 "$intake_tmp"; then
+    rm -f -- "$tmp" "$adapter_tmp" "$intake_tmp"
+    return 1
+  fi
+  if ! mv -f -- "$adapter_tmp" "$adapter_dest"; then rm -f -- "$tmp" "$adapter_tmp" "$extension_tmp" "$intake_tmp"; return 1; fi
   if [ "$#" -eq 9 ] && ! mv -f -- "$extension_tmp" "$extension_dest"; then
     rm -f -- "$tmp" "$adapter_dest" "$extension_tmp"
+    return 1
+  fi
+  if [ "$intake" -eq 1 ] && ! mv -f -- "$intake_tmp" "$intake_dest"; then
+    rm -f -- "$tmp" "$adapter_dest" "$intake_tmp"
     return 1
   fi
   if ! mv -f -- "$tmp" "$dest"; then
     rm -f -- "$tmp" "$adapter_dest"
     [ -z "$extension_dest" ] || rm -f -- "$extension_dest"
+    [ -z "$intake_dest" ] || rm -f -- "$intake_dest"
     return 1
   fi
   if [ "$#" -eq 9 ]; then

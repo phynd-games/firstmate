@@ -545,6 +545,31 @@ assert_absent "$FM_PROCEVENT_CLAIM_ROOT/retire-fail-src.claim" \
   || fail "retirement recovery reran the terminal source"
 pass "failed terminal retirement is fail-closed and idempotently recoverable"
 
+HCAPFAIL="$TMP_ROOT/hcapture-fail"; new_home "$HCAPFAIL"
+PE_TRACKED+=("$HCAPFAIL|capture-fail-src")
+CAPTURE_FAIL_BIN=$(fm_fakebin "$TMP_ROOT/capture-fail-bin")
+REAL_MV=$(command -v mv)
+export REAL_MV
+cat > "$CAPTURE_FAIL_BIN/mv" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in */procevent-inbox/*.result) exit 1 ;; esac
+done
+exec "$REAL_MV" "$@"
+SH
+chmod +x "$CAPTURE_FAIL_BIN/mv"
+pe_adapter "$HCAPFAIL" register endnow capture-fail-src --intake -- /bin/echo "capture failure payload" >/dev/null
+set +e
+out=$(PATH="$CAPTURE_FAIL_BIN:$PATH" pe_adapter "$HCAPFAIL" start capture-fail-src 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "failed result publication was reported as successful"
+assert_absent "$HCAPFAIL/state/procevent-inbox/capture-fail-src.1.result" \
+  "failed result publication left a partial result"
+assert_absent "$HCAPFAIL/state/procevent-inbox/capture-fail-src.1.intake" \
+  "failed result publication left an orphan intake marker"
+pass "failed intake result publication removes its moved provenance marker"
+
 # --- end-user-aligned regression: one Send & End, one captured result -------
 # The dogfood defect: a real armed Lavish source received one human `Send & End`
 # action, and the runner captured four results - the human's real feedback, then
@@ -593,6 +618,16 @@ LAVISH_RESULT=$(first_result "$HLT" "$lavish_id" || true)
 assert_grep 'ship it' "$LAVISH_RESULT" "automatic retirement retains the human's final feedback"
 out=$(PATH="$LAVISH_BIN:$PATH" FM_HOME="$HLT" "$ROOT/bin/fm-procevent-lavish.sh" retire "$REVIEW_ART")
 assert_contains "$out" "retired: $lavish_id" "explicit adapter retirement stays supported after automatic retirement"
+terminal_task=terminal-intake-task
+FM_HOME="$HLT" "$ROOT/bin/fm-captain-hold.sh" bind "$lavish_id" "$terminal_task" --intake >/dev/null
+printf 'task_id=%s\nsource_id=%s\n' "$terminal_task" "$lavish_id" > "$HLT/state/procevent/$lavish_id.intake"
+out=$(PATH="$LAVISH_BIN:$PATH" FM_HOME="$HLT" "$ROOT/bin/fm-procevent.sh" retire "$lavish_id" --expect-intake-task "$terminal_task")
+assert_contains "$out" "retired: $lavish_id" "intake retirement remains idempotent after terminal source retirement"
+assert_present "$HLT/state/procevent/$lavish_id.intake" "terminal intake retirement preserves its teardown ownership marker"
+assert_absent "$HLT/state/decision-bindings/$lavish_id.origin" "terminal intake retirement left its binding"
+out=$(PATH="$LAVISH_BIN:$PATH" FM_HOME="$HLT" "$ROOT/bin/fm-procevent.sh" retire "$lavish_id" --expect-intake-task "$terminal_task")
+assert_contains "$out" "retired: $lavish_id" "marker-only intake retirement is idempotent after record cleanup"
+rm -f "$HLT/state/procevent/$lavish_id.intake"
 pass "one Send & End yields exactly one captured result, automatic retirement, and no recurring poll"
 
 # --- end-user-aligned regression: an empty board close is not news ------------
@@ -952,8 +987,12 @@ pe_register "$HA" lavish shared-src -- "$BLOCKER" "$TRIG2" "shared" >/dev/null
 pe_register "$HB" lavish shared-src -- "$BLOCKER" "$TRIG2" "shared" >/dev/null
 pe "$HA" reconcile >/dev/null
 sleep 0.5
-out=$(pe "$HB" start shared-src)
-assert_contains "$out" "already owned" "a second home cannot own a source another home already owns"
+set +e
+out=$(pe "$HB" start shared-src 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "a second home reported success for a source another home owns"
+assert_contains "$out" "already owned by another home" "a cross-home ownership conflict was not reported"
 [ -z "$(wake_payloads "$HB")" ] || fail "the losing home published an event"
 pass "one owner per canonical source across homes"
 

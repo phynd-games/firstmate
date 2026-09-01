@@ -48,6 +48,14 @@ write_brief() {  # <home> <id> [<recorded-mode>]
     printf 'You are a crewmate.\n\n# Definition of done\n'
     [ -z "$mode" ] || printf 'Delivery contract: mode=%s\n' "$mode"
   } > "$home/data/$id/brief.md"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-lavish-intake.sh" exempt "$id" \
+      --reason 'configuration: target=tests/fm-task-delivery.test.sh delivery contract fixture; action=exercise behavior without product change' >/dev/null
+  cat >> "$home/data/$id/brief.md" <<EOF
+Lavish intake contract: not-applicable
+Lavish intake evidence: $home/state/$id.lavish-intake
+Lavish intake reason: configuration: target=tests/fm-task-delivery.test.sh delivery contract fixture; action=exercise behavior without product change
+EOF
 }
 
 run_spawn() {  # <home> <fakebin> <spawn-args...>

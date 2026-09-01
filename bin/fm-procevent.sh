@@ -4,13 +4,13 @@
 # durable wakes.
 #
 # Usage:
-#   fm-procevent.sh register <adapter> <source-id> -- <argv>...
+#   fm-procevent.sh register <adapter> <source-id> [--intake] -- <argv>...
 #   fm-procevent.sh register-extension <adapter> <source-id> --config-ref <reference>
 #   fm-procevent.sh start <source-id>
 #   fm-procevent.sh reconcile
 #   fm-procevent.sh classify <result-file>
 #   fm-procevent.sh handled <source-id> <sequence>
-#   fm-procevent.sh retire <source-id> [--if-absent|--if-matches <adapter> -- <argv>...|--if-owner <registration-token>]
+#   fm-procevent.sh retire <source-id> [--if-absent|--if-matches <adapter> -- <argv>...|--if-owner <registration-token>|--expect-intake-task <task-id>]
 #   fm-procevent.sh sweep-home [--preflight]
 #   fm-procevent.sh binding-retirement-preflight <binding-digest>
 #   fm-procevent.sh extension-retirement <binding|transfer> <retirement-arguments...>
@@ -130,14 +130,14 @@
 # and this runner still decides nothing about them. Some sources carry the
 # captain's answer to a captain-held task. What such an answer MEANS is owned
 # once, by bin/fm-captain-hold.sh's keyed-answer intake, and reaching it must not
-# depend on an agent remembering. So after capture, a bound source
-# has its result passed to
-# `bin/fm-procevent-<adapter>.sh answers <result-file>`, and whatever that prints
-# is piped straight into that one intake. The adapter reports only what the
-# captain chose; the intake owns every rule about what happens next. This runner
-# names no adapter, parses no result, and knows no decision rule, so a future
-# built-in source needs nothing here beyond an `answers` command and a binding.
-# External binding responses never enter this authority-bearing intake.
+# depend on an agent remembering. After capture, an ordinary bound built-in source
+# has its result passed to `bin/fm-procevent-<adapter>.sh answers <result-file>`, and
+# whatever that prints is piped straight into that one intake. A Lavish intake
+# registration is the explicit exception: the runner withholds its keyed rows
+# until bin/fm-lavish-intake.sh record validates the captured payload and performs
+# the exact release. The adapter reports only what the captain chose; the intake
+# owns every rule about what happens next. External binding responses never enter
+# this authority-bearing intake.
 #
 # Feeding is deliberately independent of handling: it never acknowledges a result
 # and never suppresses a wake. Recording the captain's answer is transcription,
@@ -330,15 +330,30 @@ adapter_autohandle() {  # <adapter> <source-id> <result-file>
 # leave the capture untouched and still announced, because this never
 # acknowledges anything (see the keyed-answer note in the header).
 feed_keyed_answers() {  # <adapter> <source-id> <result-file>
-  local adapter=$1 id=$2 result=$3 script origin seq
+  local adapter=$1 id=$2 result=$3 script origin seq rows
   script=$(adapter_script "$adapter")
   [ -f "$script" ] && [ ! -L "$script" ] || return 1
   origin=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$id" 2>/dev/null) || return 1
   [ -n "$origin" ] || return 1
   seq=$(fm_procevent_result_sequence "$result") || return 1
-  "$script" answers "$result" 2>/dev/null \
+  rows=$("$script" answers "$result" 2>/dev/null) || return 1
+  [ -n "$rows" ] || return 1
+  printf '%s\n' "$rows" \
     | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$origin" \
         --source "the captured result $id sequence $seq" >/dev/null 2>&1
+}
+
+lavish_intake_source_marker() {
+  [ "$1" = lavish ] || return 1
+  local marker="$STATE/procevent/$2.intake"
+  [ -e "$marker" ] || [ -L "$marker" ]
+}
+
+lavish_intake_registration() {
+  [ "$1" = lavish ] || return 1
+  local registration="$REG/$2.source"
+  [ -f "$registration" ] && [ ! -L "$registration" ] || return 1
+  grep -qx 'intake=1' "$registration"
 }
 
 read_adapter() {  # <source-id>
@@ -380,8 +395,15 @@ extension_registration_replacement_safe_locked() {  # <source-id>
 }
 
 cmd_register() {
-  local adapter=${1-} id=${2-} sep=${3-}
-  shift 3 2>/dev/null || usage
+  local adapter=${1-} id=${2-} sep intake=0
+  [ "$#" -ge 3 ] || usage
+  shift 2
+  if [ "${1:-}" = --intake ]; then
+    intake=1
+    shift
+  fi
+  sep=${1-}
+  shift
   fm_procevent_adapter_valid "$adapter" || die "adapter name must be lowercase alphanumeric or dash: $adapter"
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe and at most 64 characters: $id"
   [ "$sep" = -- ] || usage
@@ -396,7 +418,7 @@ cmd_register() {
     fm_procevent_source_lock_release "$id"
     die "cannot replace extension registration while its prior runner remains active: $id"
   fi
-  if ! fm_procevent_registration_publish_locked "$STATE" "$adapter" "$id" "$@"; then
+  if ! fm_procevent_registration_publish_locked "$STATE" "$adapter" "$id" "$intake" "$@"; then
     fm_procevent_source_lock_release "$id"
     die "cannot publish the registration"
   fi
@@ -590,7 +612,7 @@ cmd_start_public() {
 }
 
 cmd_start() {
-  local id=${1-} adapter out rc claimed bound_rc published_capture=0 handled_capture=0 self_announcing=0
+  local id=${1-} adapter out rc claimed bound_rc claim_home published_capture=0 handled_capture=0 self_announcing=0
   local extension_owner=0 extension_load_state extension_sequence='' extension_request_id=''
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
   require_runner_group
@@ -650,7 +672,13 @@ cmd_start() {
   fm_procevent_source_lock_release "$id"
   case "$claimed" in
     0) ;;
-    2) printf 'already owned: %s\n' "$id"; exit 0 ;;
+    2)
+      claim_home=${FM_PROCEVENT_CLAIM_HOME:-}
+      [ -n "$claim_home" ] && [ "$claim_home" = "$FM_HOME" ] \
+        || die "source is already owned by another home: ${claim_home:-unknown}"
+      printf 'already owned: %s\n' "$id"
+      exit 0
+      ;;
     *) die "cannot claim source: $id" ;;
   esac
   CLAIM_ID=$id
@@ -796,8 +824,12 @@ EOF
 
   # Independent of publication and acknowledgement, so it runs once per capture
   # for every adapter and cannot change what the handler receives.
-  if [ "$extension_owner" -eq 0 ] \
-    && feed_keyed_answers "$adapter" "$id" "$durable"; then
+  if [ "$extension_owner" -eq 1 ]; then
+    :
+  elif lavish_intake_registration "$adapter" "$id" \
+    || lavish_intake_source_marker "$adapter" "$id"; then
+    :
+  elif feed_keyed_answers "$adapter" "$id" "$durable"; then
     printf 'answers-fed: %s\n' "$id"
   fi
 
@@ -1088,7 +1120,7 @@ cmd_handled() {
 
 cmd_retire() {
   local id=${1-} condition=${2-} adapter='' sep='' expected_owner='' owner='' pid='' token='' identity='' stop_state owner_state
-  local extension_binding_digest=''
+  local extension_binding_digest='' expected_task='' registration marker bound='' unbound=0
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
   case "$condition" in
     '') [ "$#" -eq 1 ] || usage ;;
@@ -1107,9 +1139,34 @@ cmd_retire() {
         || die "adapter name must be lowercase alphanumeric or dash: $adapter"
       [ "$sep" = -- ] && [ "$#" -ge 1 ] || usage
       ;;
+    --expect-intake-task)
+      [ "$#" -eq 3 ] || usage
+      expected_task=${3-}
+      fm_task_id_path_safe "$expected_task" \
+        || die "expected intake task is not path-safe: $expected_task"
+      ;;
     *) usage ;;
   esac
   fm_procevent_source_lock_acquire "$id" || die "cannot lock source: $id"
+  if [ -n "$expected_task" ]; then
+    registration=$(source_file "$id")
+    marker="$STATE/procevent/$id.intake"
+    if [ -e "$registration" ] || [ -L "$registration" ]; then
+      [ -f "$registration" ] && [ ! -L "$registration" ] \
+        && [ "$(awk -F= '$1 == "adapter" { print $2; exit }' "$registration")" = lavish ] \
+        && [ "$(awk -F= '$1 == "intake" { print $2; exit }' "$registration")" = 1 ] \
+        || { fm_procevent_source_lock_release "$id"; die "current source registration is not an intake source for task $expected_task"; }
+    fi
+    [ -f "$marker" ] && [ ! -L "$marker" ] \
+      && [ "$(awk -F= '$1 == "task_id" { print substr($0, length($1) + 2); exit }' "$marker")" = "$expected_task" ] \
+      && [ "$(awk -F= '$1 == "source_id" { print substr($0, length($1) + 2); exit }' "$marker")" = "$id" ] \
+      || { fm_procevent_source_lock_release "$id"; die "current intake marker is not owned by task $expected_task"; }
+    bound=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$id" 2>/dev/null || true)
+    if [ -n "$bound" ]; then
+      [ "$bound" = "$expected_task" ] \
+        || { fm_procevent_source_lock_release "$id"; die "current source binding is not owned by task $expected_task"; }
+    fi
+  fi
   if [ -e "$(source_file "$id")" ] || [ -L "$(source_file "$id")" ]; then
     if [ -z "$condition" ]; then
       fm_procevent_extension_registration_load_locked "$STATE" "$id"
@@ -1184,13 +1241,18 @@ cmd_retire() {
     fm_procevent_source_lock_release "$id"
     die "cannot prove external adapter cleanup; source remains registered: $id"
   fi
+  if [ -n "$expected_task" ] && [ -n "$bound" ]; then
+    "$SCRIPT_DIR/fm-captain-hold.sh" unbind "$id" >/dev/null 2>&1 \
+      || { fm_procevent_source_lock_release "$id"; die "cannot unbind intake source: $id"; }
+    unbound=1
+  fi
   rm -f -- "$(source_file "$id")"
   rm -f -- "$(runner_file "$id")"
   fm_procevent_source_lock_release "$id"
   # A retired source produces no further answer, so drop any decision binding it
   # carried. Generic and idempotent: the binding owner is asked to forget this
   # source id, and an unbound source is unaffected.
-  "$SCRIPT_DIR/fm-captain-hold.sh" unbind "$id" >/dev/null 2>&1 || true
+  [ "$unbound" -eq 1 ] || "$SCRIPT_DIR/fm-captain-hold.sh" unbind "$id" >/dev/null 2>&1 || true
   printf 'retired: %s\n' "$id"
 }
 

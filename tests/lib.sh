@@ -109,8 +109,12 @@ fm_test_install_pi_extension_lib() {
 }
 
 fm_test_tmproot() {
-  local prefix=${1:-fm-test} root
-  root=$(mktemp -d "${TMPDIR:-/tmp}/${prefix}.XXXXXX") || return 1
+  local prefix=${1:-fm-test} root created
+  created=$(mktemp -d "${TMPDIR:-/tmp}/${prefix}.XXXXXX") || return 1
+  root=$(cd -P -- "$created" && pwd -P) || {
+    rm -rf -- "$created"
+    return 1
+  }
   if ! printf '%s\n%s\n' "$$" "$FM_TEST_OWNER_IDENTITY" > "$root/.fm-test-fixture" ||
     ! printf '%s\n' "$root" >> "$FM_TEST_CLEANUP_REGISTRY"; then
     rm -rf "$root"
@@ -245,6 +249,22 @@ fm_git_worktree() {
   fm_git_init_commit "$repo"
   fm_git_add_origin "$repo" "$repo.origin.git"
   git -C "$repo" worktree add --quiet -b "$branch" "$worktree"
+}
+
+fm_write_exempt_brief() {
+  local home id state data config
+  home=$1
+  id=$2
+  state=${3:-$home/state}
+  data=${4:-$home/data}
+  config=${5:-$home/config}
+  mkdir -p "$data/$id" "$state" "$config"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$state" \
+    FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
+    "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes \
+    --not-applicable \
+    'configuration: target=tests/lib.sh spawn backend fixture; action=exercise isolated harness lifecycle' \
+    >/dev/null
 }
 
 # --- state/<id>.meta writers ------------------------------------------------

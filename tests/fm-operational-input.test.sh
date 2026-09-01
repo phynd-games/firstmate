@@ -186,7 +186,7 @@ assert properties["authorization_granted"]["const"] is False
 assert properties["provenance_verified"]["const"] is False
 assert properties["body_byte_count"]["maximum"] == 1048576
 assert set(properties["kind"]["enum"]) == {
-    "away-supervisor", "branch-adjudication", "branch-outcome", "from-firstmate",
+    "away-supervisor", "branch-adjudication", "branch-outcome", "from-firstmate", "launch-brief",
     "session-start", "turn-end-guard", "watcher",
 }
 PY
