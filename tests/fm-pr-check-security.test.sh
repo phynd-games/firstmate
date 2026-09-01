@@ -257,7 +257,7 @@ surface_behavior_digest() {
   local before_hex=none after_hex=none
   [ "$consequence_side" = old ] && before_hex=$consequence_hex
   [ "$fix_side" = new ] && after_hex=$fix_hex
-  printf '%s\n' "$surface|$evidence_ref|$consequence_ref|$consequence_side|$consequence_digest|$consequence_hex|$before_hex|$after_hex|$fix_ref|$fix_side|$fix_digest|$fix_hex|$before_hex|$after_hex|$change_digest|$before_hex|$after_hex|$behavior|$action" | fm_pr_sha256_stream
+  printf '%s\n' "$surface|$evidence_ref|$consequence_ref|$consequence_side|$consequence_digest|$consequence_hex|$before_hex|$after_hex|$fix_ref|$fix_side|$fix_digest|$fix_hex|$before_hex|$after_hex|$change_digest|$before_hex|$after_hex|$behavior|$action|observed:$evidence_ref:$fix_digest:$fix_hex|transition:$before_hex->$after_hex|applied:$fix_ref:$fix_digest:$fix_hex" | fm_pr_sha256_stream
 }
 
 surface_review_record() {
@@ -278,8 +278,8 @@ surface_review_record() {
   }
   behavior_digest=$(surface_behavior_digest "$surface" "$file:2" "$file:2" old "$old_digest" "$old_hex" "$file:2" new "$new_digest" "$new_hex" "$change_digest" "$behavior" "$action") || return 1
   binding=$(surface_transition_binding_digest "$surface" "$file:2" "$new_digest" "$change_digest" "$new_hex" "$file:2" old "$old_digest" "$old_hex" "$file:2" new "$new_digest" "$new_hex" "$behavior_digest") || return 1
-  printf '%s: reviewed; surface=%s; files=%s; evidence=%s:2 sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s:2 behavior=%s behavior-sha256=%s; consequence=anchor=%s:2 side=old sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s:2 behavior=%s behavior-sha256=%s binding=%s; fix=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s:2 behavior=%s action=%s behavior-sha256=%s binding=%s\n' \
-    "$label" "$surface" "$file" "$file" "$new_digest" "$change_digest" "$new_hex" "$old_hex" "$new_hex" "$file" "$behavior" "$behavior_digest" "$file" "$old_digest" "$change_digest" "$old_hex" "$old_hex" "$new_hex" "$file" "$behavior" "$behavior_digest" "$binding" "$file" "$new_digest" "$change_digest" "$new_hex" "$old_hex" "$new_hex" "$file" "$behavior" "$action" "$behavior_digest" "$binding"
+  printf '%s: reviewed; surface=%s; files=%s; evidence=%s:2 sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s:2 claim=observed:%s:2:%s:%s behavior=%s behavior-sha256=%s; consequence=anchor=%s:2 side=old sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s:2 claim=transition:%s->%s behavior=%s behavior-sha256=%s binding=%s; fix=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s:2 claim=applied:%s:2:%s:%s behavior=%s action=%s behavior-sha256=%s binding=%s\n' \
+    "$label" "$surface" "$file" "$file" "$new_digest" "$change_digest" "$new_hex" "$old_hex" "$new_hex" "$file" "$file" "$new_digest" "$new_hex" "$behavior" "$behavior_digest" "$file" "$old_digest" "$change_digest" "$old_hex" "$old_hex" "$new_hex" "$file" "$old_hex" "$new_hex" "$behavior" "$behavior_digest" "$binding" "$file" "$new_digest" "$change_digest" "$new_hex" "$old_hex" "$new_hex" "$file" "$file" "$new_digest" "$new_hex" "$behavior" "$action" "$behavior_digest" "$binding"
 }
 
 surface_review_single_record() {
@@ -295,8 +295,8 @@ surface_review_single_record() {
   esac
   behavior_digest=$(surface_behavior_digest "$surface" "$file:2" "$file:2" new "$digest" "$line_hex" "$file:2" new "$digest" "$line_hex" "$change_digest" "$behavior" "$action") || return 1
   binding=$(surface_transition_binding_digest "$surface" "$file:2" "$digest" "$change_digest" "$line_hex" "$file:2" new "$digest" "$line_hex" "$file:2" new "$digest" "$line_hex" "$behavior_digest") || return 1
-  printf '%s: reviewed; surface=%s; files=%s; evidence=%s:2 sha256=%s change-sha256=%s line-hex=%s before-hex=none after-hex=%s hunk=%s:2 behavior=%s behavior-sha256=%s; consequence=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s before-hex=none after-hex=%s hunk=%s:2 behavior=%s behavior-sha256=%s binding=%s; fix=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s before-hex=none after-hex=%s hunk=%s:2 behavior=%s action=%s behavior-sha256=%s binding=%s\n' \
-    "$label" "$surface" "$file" "$file" "$digest" "$change_digest" "$line_hex" "$line_hex" "$file" "$behavior" "$behavior_digest" "$file" "$digest" "$change_digest" "$line_hex" "$line_hex" "$file" "$behavior" "$behavior_digest" "$binding" "$file" "$digest" "$change_digest" "$line_hex" "$line_hex" "$file" "$behavior" "$action" "$behavior_digest" "$binding"
+  printf '%s: reviewed; surface=%s; files=%s; evidence=%s:2 sha256=%s change-sha256=%s line-hex=%s before-hex=none after-hex=%s hunk=%s:2 claim=observed:%s:2:%s:%s behavior=%s behavior-sha256=%s; consequence=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s before-hex=none after-hex=%s hunk=%s:2 claim=transition:none->%s behavior=%s behavior-sha256=%s binding=%s; fix=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s before-hex=none after-hex=%s hunk=%s:2 claim=applied:%s:2:%s:%s behavior=%s action=%s behavior-sha256=%s binding=%s\n' \
+    "$label" "$surface" "$file" "$file" "$digest" "$change_digest" "$line_hex" "$line_hex" "$file" "$file" "$digest" "$line_hex" "$behavior" "$behavior_digest" "$file" "$digest" "$change_digest" "$line_hex" "$line_hex" "$file" "$line_hex" "$behavior" "$behavior_digest" "$binding" "$file" "$digest" "$change_digest" "$line_hex" "$line_hex" "$file" "$file" "$digest" "$line_hex" "$behavior" "$action" "$behavior_digest" "$binding"
 }
 
 surface_review_single_record_at_line() {
@@ -320,8 +320,8 @@ surface_review_single_record_at_line() {
     before_hex=none
     after_hex=$line_hex
   fi
-  printf '%s: reviewed; surface=%s; files=%s; evidence=%s sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s behavior=%s behavior-sha256=%s; consequence=anchor=%s side=%s sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s behavior=%s behavior-sha256=%s binding=%s; fix=anchor=%s side=%s sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s behavior=%s action=%s behavior-sha256=%s binding=%s\n' \
-    "$label" "$surface" "$file" "$reference" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$behavior" "$behavior_digest" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$behavior" "$behavior_digest" "$binding" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$behavior" "$action" "$behavior_digest" "$binding"
+  printf '%s: reviewed; surface=%s; files=%s; evidence=%s sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s claim=observed:%s:%s:%s behavior=%s behavior-sha256=%s; consequence=anchor=%s side=%s sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s claim=transition:%s->%s behavior=%s behavior-sha256=%s binding=%s; fix=anchor=%s side=%s sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s claim=applied:%s:%s:%s behavior=%s action=%s behavior-sha256=%s binding=%s\n' \
+    "$label" "$surface" "$file" "$reference" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$reference" "$digest" "$line_hex" "$behavior" "$behavior_digest" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$before_hex" "$after_hex" "$behavior" "$behavior_digest" "$binding" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$reference" "$digest" "$line_hex" "$behavior" "$action" "$behavior_digest" "$binding"
 }
 
 write_self_review_report() {
@@ -624,6 +624,34 @@ test_pr_ready_requires_durable_self_review() {
   set -e
   [ "$rc" -ne 0 ] || fail "PR-ready path accepted a shallow self-review report"
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "shallow self-review report left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  python3 - "$report" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+lines = path.read_text(encoding="utf-8").splitlines()
+for index, line in enumerate(lines):
+    if not line.startswith("Authority: "):
+        continue
+    prefix, claim_and_after = line.split("claim=observed:", 1)
+    claim, suffix = claim_and_after.split(" behavior=", 1)
+    reference, digest, line_hex = claim.rsplit(":", 2)
+    lines[index] = prefix + "claim=observed:" + reference + ":" + "0" * 64 + ":" + line_hex + " behavior=" + suffix
+    break
+else:
+    raise SystemExit("authority observation claim was not found")
+text = "\n".join(lines) + "\n"
+path.write_text(text, encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/103 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted an unbound surface observation"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "unbound surface observation left a runnable poll"
 
   write_self_review_report "$dir/home" task-a
   python3 - "$report" <<'PY'

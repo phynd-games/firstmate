@@ -72,6 +72,10 @@ class DuplicateKeyError(ValueError):
     """Raised when JSON contains an object key more than once."""
 
 
+class NonStandardJSONConstantError(ValueError):
+    """Raised when JSON contains a non-standard numeric constant."""
+
+
 class Errors:
     """Collect deterministic validation errors."""
 
@@ -93,13 +97,13 @@ class Errors:
 def canonical_json_bytes(value: Any) -> bytes:
     """Encode one JSON value in the canonical form owned by this package."""
     serialized = json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
     ) + "\n"
     try:
         return serialized.encode("utf-8")
     except UnicodeEncodeError:
         return (json.dumps(
-            value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+            value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False
         ) + "\n").encode("utf-8")
 
 
@@ -120,6 +124,10 @@ def _object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, An
             raise DuplicateKeyError(f"duplicate object key: {key}")
         result[key] = value
     return result
+
+
+def _reject_nonstandard_json_constant(value: str) -> Any:
+    raise NonStandardJSONConstantError(value)
 
 
 def _contains_lone_surrogate(value: Any) -> bool:
@@ -153,13 +161,22 @@ def _parse_json(data: bytes, errors: Errors) -> Any | None:
         errors.add("json.utf8", "$", f"input is not UTF-8: byte {exc.start}")
         return None
     try:
-        parsed = json.loads(text, object_pairs_hook=_object_without_duplicate_keys)
+        parsed = json.loads(
+            text,
+            object_pairs_hook=_object_without_duplicate_keys,
+            parse_constant=_reject_nonstandard_json_constant,
+        )
     except DuplicateKeyError as exc:
         errors.add("json.duplicate-key", "$", str(exc))
     except json.JSONDecodeError as exc:
         errors.add(
             "json.syntax", "$",
             f"invalid JSON at line {exc.lineno} column {exc.colno}",
+        )
+    except NonStandardJSONConstantError as exc:
+        errors.add(
+            "json.non-standard-constant", "$",
+            f"non-standard JSON constant: {exc}",
         )
     except ValueError:
         errors.add("json.parse-limit", "$", "JSON value exceeds supported limits")

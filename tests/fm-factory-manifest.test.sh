@@ -350,16 +350,17 @@ test_malformed_manifest_fixtures() {
 }
 
 test_malformed_json_limits() {
-  local oversized="$TMP_ROOT/oversized-integer.json" deep="$TMP_ROOT/deep-json.json" invalid_utf8="$TMP_ROOT/invalid-utf8.json" report rc
-  python3 - "$oversized" "$deep" <<'PY'
+  local oversized="$TMP_ROOT/oversized-integer.json" deep="$TMP_ROOT/deep-json.json" invalid_utf8="$TMP_ROOT/invalid-utf8.json" nonstandard="$TMP_ROOT/nonstandard.json" report rc
+  python3 - "$oversized" "$deep" "$nonstandard" <<'PY'
 import pathlib
 import sys
 
 pathlib.Path(sys.argv[1]).write_bytes(b'{"value":' + b'9' * 5000 + b'}')
 pathlib.Path(sys.argv[2]).write_bytes(b'[' * 2000 + b']' * 2000)
+pathlib.Path(sys.argv[3]).write_bytes(b'{"value":NaN}')
 PY
   printf '\377\376\375' >"$invalid_utf8"
-  for fixture in "$oversized" "$deep" "$invalid_utf8"; do
+  for fixture in "$oversized" "$deep" "$invalid_utf8" "$nonstandard"; do
     report="$fixture.report"
     set +e
     "$CLI" validate-source --source "$fixture" --expected-sha256 "$(sha256_file "$fixture")" >"$report"
@@ -370,7 +371,19 @@ PY
   done
   error_codes_include "$oversized.report" json.parse-limit
   error_codes_include "$invalid_utf8.report" json.utf8
-  pass "oversized integers, deep JSON, and invalid UTF-8 produce deterministic validation reports"
+  error_codes_include "$nonstandard.report" json.non-standard-constant
+  python3 - "$nonstandard.report" <<'PY'
+import json
+import pathlib
+import sys
+
+report = pathlib.Path(sys.argv[1]).read_bytes()
+decoded = json.loads(report)
+assert decoded["valid"] is False
+json.dumps(decoded, allow_nan=False)
+assert decoded["errors"][0]["code"] == "json.non-standard-constant"
+PY
+  pass "oversized integers, deep JSON, constants, and invalid UTF-8 reject deterministically"
 }
 
 write_long_chain_manifest() {
