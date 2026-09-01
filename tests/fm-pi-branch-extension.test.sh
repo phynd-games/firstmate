@@ -482,12 +482,6 @@ const pi = {
   sendMessage(message, options) {
     if (globalThis.__fmSendMessageError) throw new Error(globalThis.__fmSendMessageError);
     sentToMain.push({ message, options: options ?? {} });
-    if (globalThis.__fmMainEntries) {
-      globalThis.__fmMainEntries.push({
-        type: "custom",
-        message: { role: "custom", customType: message.customType, content: message.content },
-      });
-    }
   },
   sendUserMessage(content, options) {
     mainUserMessages.push({ content, options: options ?? {} });
@@ -545,28 +539,12 @@ JS
 DRIVER_PRELUDE=$(cat "$DRIVER_PRELUDE_FILE")
 
 test_branch_dispatch_two_stage_filter_and_prefix_contract() {
-  local repo home out status fakebin
+  local repo home out status
   repo="$TMP_ROOT/dispatch-root"
   home="$TMP_ROOT/dispatch-home"
-  fakebin="$home/fakebin"
-  mkdir -p "$home/state" "$home/config" "$fakebin"
-  cat > "$fakebin/mktemp" <<'SH'
-#!/usr/bin/env bash
-case "${1:-}" in
-  */.branch-note-sig.XXXXXX)
-    if [ -f "$FM_HOME/state/.branch-note-sig-task-captain" ] &&
-       grep -q '^pending$' "$FM_HOME/state/.branch-note-sig-task-captain" &&
-       [ ! -e "$FM_HOME/state/.captain-commit-injected" ]; then
-      touch "$FM_HOME/state/.captain-commit-injected"
-      exit 1
-    fi
-    ;;
-esac
-exec /usr/bin/mktemp "$@"
-SH
-  chmod +x "$fakebin/mktemp"
+  mkdir -p "$home/state" "$home/config"
   install_pi_branch_extension_fixture "$repo"
-  PATH="$fakebin:$PATH" PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
 const prelude = process.env.DRIVER_PRELUDE;
 await eval(`(async () => { ${prelude}; globalThis.__t = { pi, fire, dispatch, settle, outcomeScript, sentToMain, mainUserMessages, mainTools, renderers, home, realRoot }; })()`);
@@ -574,10 +552,7 @@ const { pi, fire, dispatch, settle, outcomeScript, sentToMain, mainUserMessages,
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 writeFileSync(`${home}/state/.lock`, `${process.ppid}\n`);
-const mainEntries = [];
-globalThis.__fmMainEntries = mainEntries;
-const mainSessionContext = { sessionManager: { getSessionFile: () => `${home}/main.jsonl`, getEntries: () => mainEntries } };
-fire("session_start", {}, mainSessionContext);
+fire("session_start", {}, {});
 
 // 1. An accepted wake reaches the branch session, never main.
 const offer = dispatch("signal: task-9 done: PR https://example.com/pr/9 checks green");
@@ -765,35 +740,20 @@ if (sentToMain[4].message.display !== true) {
 globalThis.__fmSendMessageError = "synthetic send failure";
 const failedDelivery = await report.execute("call-delivery-fail", { task: "task-delivery", verdict: "routine", summary: "delivery should retry" }, undefined, undefined, {});
 if (!failedDelivery.isError) throw new Error("failed routine delivery must be reported as an error");
-if (existsSync(`${home}/state/.branch-note-sig-task-delivery`)) {
-  throw new Error("failed routine delivery must roll back its novelty marker");
-}
+if (!existsSync(`${home}/state/.branch-note-sig-task-delivery`)) throw new Error("the decision marker was not durable before delivery");
+if (!outcomeScript(["unread"]).includes("delivery should retry")) throw new Error("the failed delivery lost its durable outcome row");
 globalThis.__fmSendMessageError = undefined;
 const retriedDelivery = await report.execute("call-delivery-retry", { task: "task-delivery", verdict: "routine", summary: "delivery should retry" }, undefined, undefined, {});
 if (retriedDelivery.isError) throw new Error(`routine delivery retry failed: ${JSON.stringify(retriedDelivery)}`);
-if (sentToMain.length !== 6 || sentToMain[5].message.display !== true) {
-  throw new Error("a routine note must render after delivery retry");
-}
+if (sentToMain[5].message.display !== false) throw new Error("a retry after the bounded delivery crash rendered a duplicate routine note");
 writeFileSync(`${home}/state/task-captain.status`, "failed: captain outcome\n");
 const captainBefore = sentToMain.length;
-const failedCaptain = await report.execute("call-captain-send-before-commit", { task: "task-captain", verdict: "captain", summary: "captain delivery retries safely" }, undefined, undefined, {});
-if (!failedCaptain.isError) throw new Error("captain commit failure must be reported as an error");
-if (sentToMain.length !== captainBefore + 1) throw new Error("captain outcome was not sent before the injected commit failure");
-if (!/⁣FM_BRANCH_DELIVERY_ID:[0-9a-f]+⁣/.test(sentToMain[captainBefore].message.content)) {
-  throw new Error("captain outcome lacked its deterministic delivery identity");
-}
-const captainRetry = await report.execute("call-captain-retry", { task: "task-captain", verdict: "captain", summary: "captain delivery retries safely" }, undefined, undefined, {});
-if (captainRetry.isError) throw new Error(`captain retry after commit failure failed: ${JSON.stringify(captainRetry)}`);
-if (sentToMain.length !== captainBefore + 1) throw new Error("captain retry duplicated a delivery whose append already succeeded");
-fire("session_shutdown", {});
-fire("session_start", {}, mainSessionContext);
-const replacement = dispatch("signal: captain owner replacement");
-if (!replacement.accepted) throw new Error("replacement wake was not accepted");
-await settle(() => (globalThis.__fmSessions ?? []).length === 2, "replacement branch session");
-const replacementReport = globalThis.__fmSessions[1].options.customTools.find((tool) => tool.name === "fm_branch_report");
-const replacementResult = await replacementReport.execute("call-captain-replay", { task: "task-captain", verdict: "captain", summary: "captain delivery retries safely" }, undefined, undefined, {});
-if (replacementResult.isError) throw new Error(`captain replay after owner replacement failed: ${JSON.stringify(replacementResult)}`);
-if (sentToMain.length !== captainBefore + 1) throw new Error("custom merge replay duplicated an already appended captain outcome");
+const captainReport = await report.execute("call-captain-send", { task: "task-captain", verdict: "captain", summary: "captain delivery remains actionable" }, undefined, undefined, {});
+if (captainReport.isError) throw new Error(`captain outcome failed: ${JSON.stringify(captainReport)}`);
+if (sentToMain.length !== captainBefore + 1) throw new Error("captain outcome was not delivered");
+if (sentToMain[captainBefore].message.content.includes("FM_BRANCH_DELIVERY_ID:")) throw new Error("captain outcome exposed obsolete delivery identity state");
+const captainAgain = await report.execute("call-captain-replay", { task: "task-captain", verdict: "captain", summary: "captain delivery was reworded" }, undefined, undefined, {});
+if (captainAgain.isError || sentToMain.length !== captainBefore + 2) throw new Error("captain escalation was suppressed by routine coalescing state");
 if (!renderers.has("fm-branch-merge")) throw new Error("merge-note renderer missing");
 const assertRenderedNote = (note, glyph) => {
   const fgCalls = [];
@@ -827,12 +787,6 @@ const assertRenderedNote = (note, glyph) => {
   }
 };
 assertRenderedNote(sentToMain[0].message.content, "⛵");
-const fallbackRendered = renderers.get("fm-branch-merge")(
-  { content: "⛵ task-fallback: retry⁣FM_BRANCH_DELIVERY_ID:seq-42⁣" },
-  { expanded: false },
-  { fg(_color, text) { return text; } },
-);
-if (String(fallbackRendered.text).includes("FM_BRANCH_DELIVERY_ID")) throw new Error("fallback delivery identity leaked into the rendered note");
 process.exit(0);
 EOF
   status=$?

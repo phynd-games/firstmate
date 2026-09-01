@@ -133,16 +133,12 @@ const CAPTAIN_OUTCOME_INSTRUCTION =
   "This is a supervision outcome delivered automatically by the supervision branch. " +
   "It was not typed by the captain and it is not your own earlier output. " +
   "Relay only this outcome to the captain now, in one short message, in captain outcome language. " +
-  "Do not restate or repeat any earlier answer. " +
-  "The trailing routing identity is not part of the outcome and must not be relayed.";
+  "Do not restate or repeat any earlier answer.";
 type MirrorItem = { tag: "captain" | "main"; text: string };
 type MirrorCursor = { file: string; index: number };
 type Verdict = "routine" | "captain";
 type LockOwnership = "owned" | "other" | "missing";
-type MainSessionContext = {
-  model?: { provider: string; id: string };
-  sessionManager?: ReadonlyEntries;
-};
+type MainSessionContext = { model?: { provider: string; id: string } };
 
 const scriptEnv = {
   ...process.env,
@@ -368,7 +364,6 @@ export default function (pi: ExtensionAPI) {
   let branch: AgentSession | null = null;
   let branchBroken = "";
   let mainStreaming = false;
-  let mainSession: ReadonlyEntries | null = null;
   let shuttingDown = false;
   // Bumps at every session replacement so a stale chain continuation from the
   // prior generation cannot act into the new one.
@@ -404,7 +399,6 @@ export default function (pi: ExtensionAPI) {
 
   function rememberMainModel(ctx?: MainSessionContext): void {
     if (ctx?.model) mainModel = { provider: ctx.model.provider, id: ctx.model.id };
-    if (ctx?.sessionManager) mainSession = ctx.sessionManager;
   }
 
   // Resolves one model against the isolated branch runtime using only the
@@ -552,67 +546,17 @@ export default function (pi: ExtensionAPI) {
   }
 
   // Append-only merge into main. The store row is already durable when this
-  // runs; the note is a cache of it at main's tail. Delivery modes per the
-  // design: routine+idle appends now with no turn, routine+busy appends after
-  // the captain's next prompt, captain-relevant triggers exactly one turn
-  // (queued as a follow-up while main is busy) - that follow-up turn is
-  // itself the captain-visible outcome, so the captain-facing note is
-  // delivered silently (display: false) rather than printed or rendered a
-  // second time; routine notes stay rendered except an explicitly silent
-  // no-change heartbeat and a deterministic duplicate of the last rendered
-  // note for that task (the note-render gate below). The read cursor advances
-  // once the note is handed to
-  // Pi; a crash inside Pi's
-  // own delivery window leaves the outcome durable in the store, where
-  // main's fm_branch_outcomes tool still reads it on demand.
+  // runs; the note is a cache of it at main's tail. Routine notes use the
+  // deterministic note-render gate, while captain outcomes always trigger a
+  // follow-up turn.
   //
-  // Pi keeps only `content` when it converts a custom message for the model:
-  // customType, display, and details never reach the provider. A captain note
-  // therefore has to carry its own identity inside `content`, or main receives
-  // an unattributed user message written in main's own captain-facing voice
-  // and cannot tell an incoming outcome from its own earlier answer. When that
-  // happens main re-emits its previous answer instead of relaying the outcome,
-  // and the outcome is lost. The typed operational envelope is what makes the
-  // note self-describing; it stays invisible to the captain because the note
-  // is never rendered.
-  //
-  // Encoding shells out, so it can fail on a broken checkout. This file's
-  // failure direction applies: an outcome that cannot be typed is still
-  // delivered, carrying the same instruction as plain text, because an
-  // untyped outcome main can still read beats an outcome the captain never
-  // sees.
-  function deliveryMarker(deliveryId: string): string {
-    return `⁣FM_BRANCH_DELIVERY_ID:${deliveryId}⁣`;
-  }
-
-  function captainOutcomeInput(task: string, summary: string, deliveryId: string): string {
-    const body = `${CAPTAIN_OUTCOME_INSTRUCTION}\n\n${task}: ${summary}${deliveryMarker(deliveryId)}`;
+  function captainOutcomeInput(task: string, summary: string): string {
+    const body = `${CAPTAIN_OUTCOME_INSTRUCTION}\n\n${task}: ${summary}`;
     try {
       return encodeFirstmateOperationalInput("branch-outcome", body);
     } catch {
       return body;
     }
-  }
-
-  function mainHasDelivery(deliveryId: string): boolean {
-    if (!mainSession) return false;
-    try {
-      return mainSession.getEntries().some((entry) => {
-        const record = entry as {
-          type: string;
-          message?: { content?: unknown };
-          content?: unknown;
-        };
-        if (record.type !== "message" && record.type !== "custom" && record.type !== "custom_message") return false;
-        return textOfContent(record.message?.content ?? record.content).includes(deliveryMarker(deliveryId));
-      });
-    } catch {
-      return false;
-    }
-  }
-
-  function outcomeOwner(expectedGeneration: number): string {
-    return `${process.pid}:${expectedGeneration}`;
   }
 
   function mergeIntoMain(
@@ -624,154 +568,28 @@ export default function (pi: ExtensionAPI) {
     silent: boolean,
   ): boolean {
     if (!actingAsOwner(expectedGeneration)) return false;
-    let noteReservationToken: string | null = null;
-    let deliveryId = `seq-${seq}`;
     if (verdict === "captain") {
-      const gate = runOutcomeScript([
-        "note-reserve",
-        "--task",
-        task,
-        "--generation",
-        String(expectedGeneration),
-        "--owner",
-        outcomeOwner(expectedGeneration),
-        "--kind",
-        "captain",
-        "--summary",
-        summary,
-      ]);
-      if (gate.ok && gate.stdout.startsWith("coalesce")) {
-        noteReservationToken = null;
-      } else if (gate.ok && gate.stdout.startsWith("render ")) {
-        const reservation = gate.stdout.slice("render ".length).trim().split(/\s+/);
-        noteReservationToken = reservation[0] || null;
-        deliveryId = reservation[1] || "";
-      }
-      if (!gate.ok) return false;
-      if (noteReservationToken && !/^[0-9a-f]+$/.test(deliveryId)) return false;
-      if (!noteReservationToken && gate.stdout.startsWith("render-unreserved")) {
-        const message = {
-          customType: "fm-branch-merge",
-          content: captainOutcomeInput(task, summary, deliveryId),
-          display: false,
-          details: { deliveryId },
-        };
-        try {
-          if (!mainHasDelivery(deliveryId)) pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
-        } catch {
-          return false;
-        }
-      } else if (noteReservationToken) {
-        const message = {
-          customType: "fm-branch-merge",
-          content: captainOutcomeInput(task, summary, deliveryId),
-          display: false,
-          details: { deliveryId },
-        };
-        try {
-          if (!mainHasDelivery(deliveryId)) pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
-        } catch {
-          if (!runOutcomeScript([
-            "note-rollback",
-            "--task",
-            task,
-            "--generation",
-            String(expectedGeneration),
-            "--owner",
-            outcomeOwner(expectedGeneration),
-            "--token",
-            noteReservationToken,
-          ]).ok) return false;
-          return false;
-        }
-        if (!runOutcomeScript([
-          "note-commit",
-          "--task",
-          task,
-          "--generation",
-          String(expectedGeneration),
-          "--owner",
-          outcomeOwner(expectedGeneration),
-          "--token",
-          noteReservationToken,
-        ]).ok) return false;
-      }
+      const message = {
+        customType: "fm-branch-merge",
+        content: captainOutcomeInput(task, summary),
+        display: false,
+      };
+      pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
     } else {
-      // Deterministic duplicate coalescing for routine notes: once main owns
-      // a task's supervision state, another no-change note about it renders
-      // nothing new, so the note gate (fm-branch-outcome.sh, the
-      // contract owner) suppresses rendering when the task's durable novelty
-      // signature - failure/decision/terminal status, PR/CI identity,
-      // validation-loop stop - is unchanged since the last rendered note. The
-      // durable store row, the read cursor, and captain-verdict escalation
-      // are untouched, and a gate that cannot answer fails toward rendering,
-      // never toward silence.
+      // The note gate owns routine duplicate coalescing and fails toward
+      // rendering when it cannot answer.
       let display = !(task === "fleet" && silent);
       if (display && task !== "fleet") {
-        const gate = runOutcomeScript([
-          "note-reserve",
-          "--task",
-          task,
-          "--generation",
-          String(expectedGeneration),
-          "--owner",
-          outcomeOwner(expectedGeneration),
-          "--kind",
-          "routine",
-          "--summary",
-          summary,
-        ]);
+        const gate = runOutcomeScript(["note-render", "--task", task]);
         if (gate.ok && gate.stdout.startsWith("coalesce")) display = false;
-        else if (gate.ok && gate.stdout.startsWith("render ")) {
-          const reservation = gate.stdout.slice("render ".length).trim().split(/\s+/);
-          const token = reservation[0];
-          deliveryId = reservation[1] || "";
-          if (token && !/^[0-9a-f]+$/.test(deliveryId)) return false;
-          if (token) noteReservationToken = token;
-        }
-      }
-      if (!actingAsOwner(expectedGeneration)) {
-        if (noteReservationToken && !runOutcomeScript(["note-rollback", "--task", task, "--generation", String(expectedGeneration), "--token", noteReservationToken]).ok) return false;
-        return false;
       }
       const message = {
         customType: "fm-branch-merge",
-        content: `${MERGE_NOTE_BOAT} ${task}: ${summary}${deliveryMarker(deliveryId)}`,
+        content: `${MERGE_NOTE_BOAT} ${task}: ${summary}`,
         display,
-        details: { deliveryId },
       };
-      try {
-        const alreadyDelivered = mainHasDelivery(deliveryId);
-        if (!alreadyDelivered && mainStreaming) {
-          pi.sendMessage(message, { deliverAs: "nextTurn" });
-        } else if (!alreadyDelivered) {
-          pi.sendMessage(message, {});
-        }
-      } catch {
-        if (noteReservationToken && !runOutcomeScript([
-          "note-rollback",
-          "--task",
-          task,
-          "--generation",
-          String(expectedGeneration),
-          "--owner",
-          outcomeOwner(expectedGeneration),
-          "--token",
-          noteReservationToken,
-        ]).ok) return false;
-        return false;
-      }
-      if (noteReservationToken && !runOutcomeScript([
-        "note-commit",
-        "--task",
-        task,
-        "--generation",
-        String(expectedGeneration),
-        "--owner",
-        outcomeOwner(expectedGeneration),
-        "--token",
-        noteReservationToken,
-      ]).ok) return false;
+      if (mainStreaming) pi.sendMessage(message, { deliverAs: "nextTurn" });
+      else pi.sendMessage(message, {});
     }
     if (/^[0-9]+$/.test(seq)) {
       if (!actingAsOwner(expectedGeneration)) return false;
@@ -1562,7 +1380,7 @@ ${context.command}
   // mergeIntoMain sets for every routine note except an explicitly silent
   // fleet heartbeat; captain-facing notes are never printed or rendered here.
   pi.registerMessageRenderer?.("fm-branch-merge", (message, _options, theme) => {
-    const note = textOfContent(message.content).replace(/⁣FM_BRANCH_DELIVERY_ID:[^⁣\s]+⁣/g, "");
+    const note = textOfContent(message.content);
     const hasGlyph = note.startsWith(MERGE_NOTE_BOAT);
     const rest = hasGlyph ? note.slice(MERGE_NOTE_BOAT.length) : note;
     const outputPad = 1;

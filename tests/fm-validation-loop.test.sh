@@ -333,7 +333,7 @@ EOF
 }
 
 test_terminal_transition_stops_before_reactivation() {
-  local state ev dir rc v
+  local state ev dir rc v coarse_state coarse_ev
   dir=$(make_case vloop-terminal-transition); state="$dir/state"; ev="$dir/ev"
   ev_running "$ev" 01RUN running pending
   fold "$state" terminal "$ev" 1000
@@ -357,6 +357,19 @@ EOF
   esac
   grep -q '^active=0$' "$state/terminal.validation-loop" \
     || fail "terminal-to-running rejection reactivated the journal"
+
+  dir=$(make_case vloop-coarse-terminal-transition); coarse_state="$dir/state"; coarse_ev="$dir/ev"
+  ev_running "$coarse_ev" 01RUN running pending
+  fold "$coarse_state" coarse-terminal "$coarse_ev" 1000
+  printf 'coarse: completed\n' > "$coarse_ev"
+  fold "$coarse_state" coarse-terminal "$coarse_ev" 1010
+  grep -q '^phase=terminal$' "$coarse_state/coarse-terminal.validation-loop" \
+    || fail "a coarse completed observation was not recorded as terminal"
+  ev_running "$coarse_ev" 01RUN running pending
+  if fm_vloop_observe "$coarse_state" coarse-terminal "$coarse_ev"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 2 ] || fail "a coarse terminal run reactivated instead of rejecting the transition"
+  grep -q '^active=0$' "$coarse_state/coarse-terminal.validation-loop" \
+    || fail "coarse terminal-to-running rejection reactivated the journal"
   pass "terminal transition: a completed run cannot reactivate under the same run id"
 }
 
@@ -369,7 +382,7 @@ test_journal_state_matrix() {
     ci,ci,1 ci,running,1 \
     gate,awaiting_approval,1 gate,fix_review,1 gate,running,1 \
     terminal,completed,0 terminal,failed,0 terminal,cancelled,0 \
-    coarse,running,1 coarse,completed,0 coarse,failed,0 coarse,cancelled,0; do
+    coarse,running,1; do
     IFS=, read -r phase status active <<< "$variant"
     n=$((n + 1))
     cat > "$state/valid-$n.validation-loop" <<EOF
@@ -427,7 +440,7 @@ EOF
     ci,completed,1 ci,failed,1 \
     gate,failed,1 gate,completed,0 \
     terminal,completed,1 terminal,running,0 \
-    coarse,ci,1 coarse,awaiting_approval,1; do
+    coarse,completed,0 coarse,failed,0 coarse,cancelled,0 coarse,ci,1 coarse,awaiting_approval,1; do
     IFS=, read -r phase status active <<< "$variant"
     n=$((n + 1))
     cat > "$state/invalid-$n.validation-loop" <<EOF

@@ -349,10 +349,7 @@ _fm_vloop_journal_valid() {  # <journal-content>
       case "$status" in completed|failed|cancelled) ;; *) return 1 ;; esac
       ;;
     coarse)
-      case "$status:$active" in
-        running:1|completed:0|failed:0|cancelled:0) ;;
-        *) return 1 ;;
-      esac
+      [ "$status:$active" = running:1 ] || return 1
       ;;
     *) return 1 ;;
   esac
@@ -556,10 +553,10 @@ _fm_vloop_record_time_stop() {  # <state> <id> <now>
 fm_vloop_observe() {  # <state> <id> <evidence-file>
   local state=$1 id=$2 ev=$3 worktree=${4:-${FM_VLOOP_WORKTREE:-}} journal now content first stored=''
   local run_id status outcome head phase findings_sig steps_sig progress_sig
-  local s_run s_phase s_findings_sig s_progress_sig s_fix_rounds s_themes s_last_progress s_status s_stop_reason s_head s_heads
+  local s_run s_phase s_findings_sig s_progress_sig s_fix_rounds s_themes s_last_progress s_status s_stop_reason s_head s_heads s_active
   local s_scope_base s_scope_head s_scope_paths scope_base scope_head scope_paths evidence_base evidence_paths
   local scope_evidence_present
-  local fix_rounds themes heads last_progress active stop_reason='' max_fix max_theme theme_max tmp
+  local fix_rounds themes heads last_progress active stop_reason='' max_fix max_theme theme_max tmp prior_terminal coarse_run coarse_head
   local head_transition=0
   [ -n "$state" ] && [ -d "$state" ] || return 0
   journal=$(fm_vloop_journal_path "$state" "$id")
@@ -577,6 +574,7 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   s_run=$(_fm_vloop_journal_get "$stored" run)
   s_phase=$(_fm_vloop_journal_get "$stored" phase)
   s_status=$(_fm_vloop_journal_get "$stored" status)
+  s_active=$(_fm_vloop_journal_get "$stored" active)
   s_findings_sig=$(_fm_vloop_journal_get "$stored" findings_sig)
   s_progress_sig=$(_fm_vloop_journal_get "$stored" progress_sig)
   s_fix_rounds=$(_fm_vloop_journal_get "$stored" fix_rounds)
@@ -602,16 +600,22 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
       last_progress=$s_last_progress
       [ "$status" = "$s_status" ] || last_progress=$now
       case "$status" in
-        completed|failed|cancelled) active=0 ;;
-        *) active=1 ;;
+        completed|failed|cancelled) active=0; phase=terminal ;;
+        *) active=1; phase=coarse ;;
       esac
+      coarse_run=$s_run
+      coarse_head=$s_head
+      if [ "$phase" = terminal ] && [ -z "$coarse_run" ]; then
+        coarse_run=coarse
+        coarse_head=coarse
+      fi
       tmp="$journal.tmp.$$"
       {
         printf 'version=1\n'
-        printf 'run=%s\n' "$s_run"
-        printf 'head=%s\n' "$(_fm_vloop_journal_get "$stored" head)"
+        printf 'run=%s\n' "$coarse_run"
+        printf 'head=%s\n' "$coarse_head"
         printf 'status=%s\n' "$status"
-        printf 'phase=coarse\n'
+        printf 'phase=%s\n' "$phase"
         printf 'findings_sig=%s\n' "$s_findings_sig"
         printf 'progress_sig=%s\n' "$s_progress_sig"
         printf 'fix_rounds=%s\n' "$s_fix_rounds"
@@ -642,7 +646,13 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   outcome=$(fm_nm_strip_quotes "$(fm_nm_field "$content" outcome)")
   head=$(fm_nm_strip_quotes "$(fm_nm_field "$content" head)")
   phase=$(_fm_vloop_phase "$content" "$status" "$outcome")
-  if [ "$run_id" = "$s_run" ] && [ "$s_phase" = terminal ] && [ "$phase" != terminal ]; then
+  prior_terminal=0
+  case "$s_status:$s_active" in
+    completed:0|failed:0|cancelled:0) prior_terminal=1 ;;
+  esac
+  if [ "$run_id" = "$s_run" ] && [ "$phase" != terminal ] && {
+    [ "$s_phase" = terminal ] || [ "$prior_terminal" = 1 ]
+  }; then
     stop_reason="incoherent terminal-to-nonterminal transition for run $run_id"
     _fm_vloop_record_stop "$state" "$id" "$stop_reason" || return 1
     return 2
