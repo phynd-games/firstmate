@@ -1239,11 +1239,16 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # primitive so callers that only need a fast alive/dead read (recovery
 # digests, the session-start fleet digest) do not re-derive it inline.
 fm_backend_target_exists() {  # <backend> <target> [expected-label] [expected-workspace] [expected-tab]
-  local backend=$1 target=$2 expected_label=${3:-} session pane pane_out pane_rc expected_workspace=${4:-} expected_tab=${5:-} identity
+  local backend=$1 target=$2 expected_label=${3:-} session pane pane_out pane_rc expected_workspace=${4:-} expected_tab=${5:-} identity identity_rc=0 validate_rc=0
   # The tmux arm below calls the tmux CLI directly rather than through
   # fm_backend_source, so the invariant is enforced here explicitly: a retained
   # legacy backend is refused before any runtime command runs.
-  fm_backend_validate "$backend" || return 1
+  if fm_backend_validate "$backend"; then
+    :
+  else
+    validate_rc=$?
+    return "$validate_rc"
+  fi
   case "$backend" in
     tmux)
       tmux display-message -p -t "$target" '#{pane_id}' >/dev/null 2>&1
@@ -1253,11 +1258,28 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label] [expected-wo
       pane=${target#*:}
       [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
       fm_backend_herdr_capability_preflight "target existence check" "$session" || return 2
-      [ -n "$expected_workspace" ] && [ -n "$expected_tab" ] || {
-        fm_backend_policy_refuse "Herdr target $target" herdr \
-          "The endpoint has no recorded workspace and tab identity. Repair the endpoint metadata or verify the native Herdr target with 'herdr status --json'."
-        return 2
-      }
+      if [ -z "$expected_workspace" ] || [ -z "$expected_tab" ]; then
+        if identity=$(fm_backend_herdr_pane_get_checked "$session" "" "" "$pane" 0); then
+          :
+        else
+          identity_rc=$?
+        fi
+        if [ "$identity_rc" -ne 0 ]; then
+          fm_backend_policy_refuse "Herdr target $target" herdr \
+            "The native Herdr target identity could not be resolved. Repair Herdr, then verify the named session with 'herdr status --json'."
+          return 2
+        fi
+        expected_workspace=$(printf '%s' "$identity" | jq -er '.result.pane.workspace_id' 2>/dev/null) || {
+          fm_backend_policy_refuse "Herdr target $target" herdr \
+            "The native Herdr target response omitted its workspace identity. Repair Herdr, then verify the named session with 'herdr status --json'."
+          return 2
+        }
+        expected_tab=$(printf '%s' "$identity" | jq -er '.result.pane.tab_id' 2>/dev/null) || {
+          fm_backend_policy_refuse "Herdr target $target" herdr \
+            "The native Herdr target response omitted its tab identity. Repair Herdr, then verify the named session with 'herdr status --json'."
+          return 2
+        }
+      fi
       # fm_backend_herdr_cli (not a raw HERDR_SESSION-only call): verified
       # empirically (docs/herdr-backend.md "Session targeting") that the bare
       # env var alone is NOT reliably honored once another herdr server is

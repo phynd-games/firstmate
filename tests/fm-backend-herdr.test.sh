@@ -57,16 +57,6 @@ if [ "${1:-} ${2:-}" = "session list" ] \
   exit 0
 fi
 if [ "${1:-} ${2:-}" = "pane get" ] && [ ! -f "$RESP/$next.exit" ]; then
-  if [ -n "${FM_HERDR_PS_BIN:-}" ] && [ ! -e "$RESP/.pane-proofed" ] \
-    && [ -f "$RESP/$next.out" ] \
-    && ! jq -e '(.result.pane | type) == "object"' "$RESP/$next.out" >/dev/null 2>&1; then
-    pane=${3:-}
-    workspace=${pane%%:*}
-    tab_number=${pane##*:}
-    printf '{"result":{"pane":{"pane_id":"%s","workspace_id":"%s","tab_id":"%s:t%s"}}}\n' \
-      "$pane" "$workspace" "$workspace" "${tab_number#p}"
-    exit 0
-  fi
   if { [ "${FM_HERDR_FAKE_CONSUME_PANE_GET:-0}" = 1 ] || [ -f "$RESP/$next.consume-pane-get" ]; } \
     && [ -f "$RESP/$next.out" ] \
     && jq -e '(.result.pane | type) == "object"' "$RESP/$next.out" >/dev/null 2>&1; then
@@ -82,9 +72,6 @@ if [ "${1:-} ${2:-}" = "pane get" ] && [ ! -f "$RESP/$next.exit" ]; then
       "$pane" "$workspace" "$workspace" "${tab_number#p}"
     exit 0
   fi
-fi
-if [ -n "${FM_HERDR_PS_BIN:-}" ] && [ "${1:-} ${2:-}" = "pane process-info" ]; then
-  : > "$RESP/.pane-proofed"
 fi
 n=$next
 echo "$n" > "$COUNT_FILE"
@@ -191,8 +178,8 @@ case "$cmd $sub" in
        | (.tabs |= map(.focused = false))
        | .tabs += [{tab_id:$tabid, label:"1", workspace_id:$wsid, pane_id:$paneid, focused:true}]
        | .next = (.next + 2)' | save
-    printf '{"result":{"workspace":{"workspace_id":"%s","label":"%s"},"tab":{"tab_id":"%s"},"root_pane":{"pane_id":"%s"}}}\n' \
-      "$wsid" "$label" "$wsid:t$dn" "$wsid:p$dn"
+    printf '{"result":{"workspace":{"workspace_id":"%s","label":"%s"},"tab":{"tab_id":"%s","workspace_id":"%s"},"root_pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s"}}}\n' \
+      "$wsid" "$label" "$wsid:t$dn" "$wsid" "$wsid:p$dn" "$wsid:t$dn" "$wsid"
     ;;
   "tab list")
     jq_state --arg w "$ws" '{result:{tabs:[.tabs[]|select(.workspace_id==$w)]}}'
@@ -204,7 +191,7 @@ case "$cmd $sub" in
        | .tabs += [{tab_id:$tabid, label:$wlabel, workspace_id:$w, pane_id:$paneid, focused:($focused == 0)}]
        | if $focused == 0 then .workspaces |= map(if .workspace_id == $w then .focused = true | .active_tab_id = $tabid else . end) else . end
        | .next = (.next + 1)' | save
-    printf '{"result":{"tab":{"tab_id":"%s"},"root_pane":{"pane_id":"%s"}}}\n' "$tabid" "$paneid"
+    printf '{"result":{"tab":{"tab_id":"%s","workspace_id":"%s"},"root_pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s"}}}\n' "$tabid" "$ws" "$paneid" "$tabid" "$ws"
     ;;
   "pane list")
     jq_state --arg w "$ws" '{result:{panes:[.tabs[]|select(.workspace_id==$w)|{pane_id:.pane_id, tab_id:.tab_id, workspace_id:.workspace_id}]}}'
@@ -1603,6 +1590,7 @@ case "\$*" in
   "-p $pid -o stat=") printf 'Ss+\n' ;;
   "-p $pid -o comm=") printf -- '-zsh\n' ;;
   "-p $pid -o lstart=") printf 'Mon Jan  1 00:00:00 2024\n' ;;
+  "-p $pid -o pgid=") printf '$pid\n' ;;
   *) exit 1 ;;
 esac
 SH

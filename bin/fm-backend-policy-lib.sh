@@ -39,6 +39,8 @@ FM_BACKEND_RETAINED_LEGACY="tmux zellij orca cmux"
 
 fm_backend_policy_legacy_lane() {
   [ "${FM_BACKEND_LEGACY_TEST_LANE:-}" = 1 ] || return 1
+  [ "${FM_BACKEND_TEST_HARNESS:-}" = 1 ] || return 1
+  [ "${FM_GATE_REFUSE_BYPASS:-}" = 1 ] || return 1
   [ -n "${FM_STATE_OVERRIDE:-}" ] || [ -n "${FM_CONFIG_OVERRIDE:-}" ] \
     || [ -n "${FM_ROOT_OVERRIDE:-}" ]
 }

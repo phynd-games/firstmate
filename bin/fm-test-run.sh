@@ -1727,12 +1727,15 @@ else
       export TMPDIR="$work/tmp"
       export TMP="$work/tmp"
       unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
-        FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
+        FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND \
+        FM_BACKEND_TEST_HARNESS FM_GATE_REFUSE_BYPASS 2>/dev/null || true
       case "$family" in
         legacy-adapter|cmux|zellij|orca)
           export FM_ROOT_OVERRIDE="$ROOT"
           export FM_STATE_OVERRIDE="$work/state"
           export FM_BACKEND_LEGACY_TEST_LANE=1
+          export FM_BACKEND_TEST_HARNESS=1
+          export FM_GATE_REFUSE_BYPASS=1
           mkdir -p "$FM_STATE_OVERRIDE"
           ;;
       esac

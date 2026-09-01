@@ -533,13 +533,16 @@ fm_afk_launch_restore_backup() {  # <backup> <had-afk>
 # dedicated background workspace (--no-focus) holds exactly one tab/pane; it
 # never touches the captain's active tab. Prints the record line on success.
 fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
-  local captain_target=$1 captain_backend=$2 session out wsid tab pane entry cmd label recovered create_result verified_tab
+  local captain_target=$1 captain_backend=$2 session out wsid tab pane entry cmd label recovered create_result verified_tab captain_workspace captain_tab
   session=${captain_target%%:*}
   if [ -z "$session" ] || [ "$session" = "$captain_target" ]; then
     fm_afk_launch_log "cannot derive herdr session from captain target '$captain_target'"
     return 1
   fi
   fm_backend_source herdr "AFK terminal creation" "$session" || return 1
+  fm_backend_herdr_target_ready "$captain_target" || return 2
+  captain_workspace=$FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID
+  captain_tab=$FM_BACKEND_HERDR_EXPECTED_TAB_ID
   fm_backend_herdr_server_ensure "$session" || { fm_afk_launch_log "herdr server not ready for session '$session'"; return 1; }
   label=${FM_AFK_LAUNCH_LABEL:-"$FM_AFK_LAUNCH_WS_LABEL-$$-${RANDOM:-0}-$(date '+%s')"}
   out=$(fm_backend_herdr_cli "$session" workspace create --cwd "$FM_HOME" --label "$label" --no-focus 2>/dev/null)
@@ -579,8 +582,8 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
     return 2
   fi
   entry=$(fm_afk_launch_entry_cmd)
-  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q %q' \
-    "$FM_HOME" "$captain_target" "$captain_backend" "$entry")
+  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q HERDR_WORKSPACE_ID=%q HERDR_TAB_ID=%q %q' \
+    "$FM_HOME" "$captain_target" "$captain_backend" "$captain_workspace" "$captain_tab" "$entry")
   if ! fm_afk_launch_record_write herdr "$session:$pane" "$wsid" "$tab"; then
     fm_afk_launch_log "failed to persist herdr daemon terminal record; closing $session:$pane"
     FM_AFK_REC_WORKSPACE=$wsid

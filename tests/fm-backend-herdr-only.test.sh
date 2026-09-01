@@ -37,6 +37,7 @@ TMP_ROOT=$(fm_test_tmproot fm-backend-herdr-only)
 
 # Every marker the environment could contribute, stripped for every case.
 STRIP=(-u FM_BACKEND_LEGACY_TEST_LANE -u FM_BACKEND
+  -u FM_BACKEND_TEST_HARNESS
   -u FM_STATE_OVERRIDE -u FM_CONFIG_OVERRIDE -u FM_ROOT_OVERRIDE
   -u TMUX -u TMUX_PANE
   -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID
@@ -123,7 +124,7 @@ test_legacy_lane_runs_only_in_test_world() {
   mkdir -p "$home/config"
   printf 'tmux\n' > "$home/config/backend"
   run_capture trusted-lane lib_probe "FM_HOME=$home" FM_ROOT_OVERRIDE="$home" \
-    FM_BACKEND_LEGACY_TEST_LANE=1 -- 'fm_backend_policy_permits tmux'
+    FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_HARNESS=1 -- 'fm_backend_policy_permits tmux'
   [ "$RC" -eq 0 ] || fail "the selected legacy lane must permit retained adapters in a test world: rc=$RC out=$OUT err=$ERR"
   [ -z "$OUT" ] || fail "the legacy lane predicate should not print output"
   pass "retained-adapter conformance is reachable only in the selected test world"
@@ -458,6 +459,37 @@ test_stable_operation_uses_supported_command() {
   pass "stable Herdr operations use the documented pane command"
 }
 
+test_idle_shell_proof_requires_native_endpoint_identity() {
+  run_capture idle-proof-missing-identity lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() {
+      printf "%s" '\''{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane1","shell_pid":67,"foreground_process_group_id":67,"foreground_processes":[]}}}'\''
+    }
+    fm_backend_herdr_pane_idle_shell_sample fmtest pane1 ws1 tab1
+  '
+  [ "$RC" -eq 2 ] && [ -z "$OUT" ] \
+    || fail "idle-shell proof must refuse process info without native workspace/tab identity: rc=$RC out=$OUT"
+  pass "Herdr idle-shell proof refuses process info without exact endpoint identity"
+}
+
+test_tab_focus_refuses_rebound_identity() {
+  local marker="$TMP_ROOT/tab-focus-rebound"
+  rm -f "$marker"
+  run_capture tab-focus-rebound lib_probe "FOCUS_MARKER=$marker" -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() {
+      case "$2 $3" in
+        "tab get") printf "%s" '\''{"result":{"tab":{"tab_id":"tab1","workspace_id":"other"}}}'\'' ;;
+        "tab focus") : > "$FOCUS_MARKER" ;;
+      esac
+    }
+    fm_backend_herdr_tab_focus_stable fmtest ws1 tab1
+  '
+  [ "$RC" -eq 2 ] && [ ! -e "$marker" ] \
+    || fail "tab focus must refuse a rebound identity before mutation: rc=$RC out=$OUT"
+  pass "Herdr focus restoration refuses a rebound tab identity"
+}
+
 test_malformed_herdr_targets_are_typed_failures() {
   local operation
   for operation in agent_state composer_state; do
@@ -484,6 +516,25 @@ test_task_creation_refuses_malformed_tab_inventory() {
   [ -e "$marker" ] || fail "task inventory fixture did not run"
   assert_contains "$ERR" "REFUSED: " "malformed task inventory must preserve the policy refusal"
   pass "task creation refuses malformed Herdr tab inventory before mutation"
+}
+
+test_task_creation_refuses_unbound_create_response() {
+  local marker="$TMP_ROOT/task-create-response"
+  rm -f "$marker"
+  run_capture malformed-task-create-response lib_probe "TASK_MARKER=$marker" -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() {
+      case "$2 $3" in
+        "tab list") printf "%s" '\''{"result":{"tabs":[]}}'\'' ;;
+        "tab create") : > "$TASK_MARKER"; printf "%s" '\''{"result":{"tab":{"tab_id":"tab1"},"root_pane":{"pane_id":"pane1","workspace_id":"other","tab_id":"tab1"}}}'\'' ;;
+      esac
+    }
+    fm_backend_herdr_create_task fmtest:ws1 fm-task /tmp
+  '
+  [ "$RC" -eq 2 ] && [ -z "$OUT" ] || fail "unbound create response must refuse without publishing ids: rc=$RC out=$OUT"
+  [ -e "$marker" ] || fail "create-response fixture did not run"
+  assert_contains "$ERR" "REFUSED: " "unbound create response must preserve the policy refusal"
+  pass "task creation refuses a create response without exact parent identity"
 }
 
 test_projection_recovery_inventory_failure_refuses() {
@@ -590,6 +641,31 @@ test_workspace_presence_rejects_malformed_inventory() {
   '
   [ "$RC" -eq 2 ] && [ -z "$OUT" ] || fail "malformed workspace inventory must refuse without a state: rc=$RC out=$OUT"
   pass "workspace presence refuses malformed Herdr identities"
+}
+
+test_workspace_presence_rejects_duplicate_identity() {
+  run_capture duplicate-workspace-inventory lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() {
+      printf "%s" '\''{"result":{"workspaces":[{"workspace_id":"ws1"},{"workspace_id":"ws1"}]}}'\''
+    }
+    fm_backend_herdr_workspace_presence_state fmtest ws1
+  '
+  [ "$RC" -eq 2 ] && [ -z "$OUT" ] \
+    || fail "duplicate workspace identities must refuse without a state: rc=$RC out=$OUT"
+  pass "workspace presence refuses duplicate Herdr identities"
+}
+
+test_live_inventory_failure_remains_typed() {
+  run_capture live-inventory-failure lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() { return 1; }
+    fm_backend_herdr_list_live fmtest
+  '
+  [ "$RC" -eq 2 ] && [ -z "$OUT" ] \
+    || fail "live inventory failure must not become an empty task set: rc=$RC out=$OUT"
+  assert_contains "$ERR" "REFUSED: " "live inventory failure must preserve the Herdr blocker"
+  pass "Herdr live-task discovery preserves native inventory failures"
 }
 
 test_native_read_failures_do_not_parse_success_bodies() {
@@ -727,7 +803,7 @@ test_recovery_agent_failures_refuse_before_replacement() {
     }
     fm_backend_herdr_cli() {
       case "$*" in
-        *"tab create"*) printf "%s" '\''{"result":{"tab":{"tab_id":"tab2"},"root_pane":{"pane_id":"pane2"}}}'\'' ;;
+        *"tab create"*) printf "%s" '\''{"result":{"tab":{"tab_id":"tab2","workspace_id":"ws1"},"root_pane":{"pane_id":"pane2","workspace_id":"ws1","tab_id":"tab2"}}}'\'' ;;
         *"tab get"*) printf "%s" '\''{"result":{"tab":{"tab_id":"tab2","workspace_id":"ws1"}}}'\'' ;;
         *"pane get"*) printf "%s" '\''{"result":{"pane":{"pane_id":"pane2","tab_id":"tab2","workspace_id":"ws1"}}}'\'' ;;
       esac
@@ -1214,14 +1290,19 @@ test_pane_presence_requires_complete_identity
 test_shared_pane_identity_boundary_is_typed_and_fail_closed
 test_stable_operation_refuses_when_identity_precheck_fails
 test_stable_operation_uses_supported_command
+test_tab_focus_refuses_rebound_identity
+test_idle_shell_proof_requires_native_endpoint_identity
 test_malformed_herdr_targets_are_typed_failures
 test_task_creation_refuses_malformed_tab_inventory
+test_task_creation_refuses_unbound_create_response
 test_projection_recovery_inventory_failure_refuses
 test_send_preserves_empty_native_failure_status
 test_pane_presence_not_found_is_idempotently_dead
 test_agent_state_rejects_rebound_identity_and_failed_body
 test_seeded_tab_inventory_failure_refuses_before_prune
 test_workspace_presence_rejects_malformed_inventory
+test_workspace_presence_rejects_duplicate_identity
+test_live_inventory_failure_remains_typed
 test_native_read_failures_do_not_parse_success_bodies
 test_target_ready_rechecks_recorded_native_identity
 test_quarantine_server_failure_is_a_typed_refusal
