@@ -941,7 +941,6 @@ command_intake_resolution() {
     captain)
       [ "$state" = done ] || return 1
       [ "$(show_field_value "$show" hold_reason)" = "$owner_reason" ] || return 1
-      return 1
       ;;
     *) return 1 ;;
   esac

@@ -238,7 +238,7 @@ fm_write_exempt_brief() {
     FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
     "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes \
     --not-applicable \
-    'configuration: target=spawn backend fixture; action=exercise isolated harness lifecycle' \
+    'configuration: target=tests/lib.sh spawn backend fixture; action=exercise isolated harness lifecycle' \
     >/dev/null
 }
 

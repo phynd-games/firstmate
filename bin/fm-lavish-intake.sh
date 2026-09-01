@@ -5,7 +5,7 @@
 #   fm-lavish-intake.sh template <task-id> --output <artifact.html>
 #   fm-lavish-intake.sh start <task-id> --artifact <artifact.html> [--reason <text>]
 #   fm-lavish-intake.sh record <task-id> --artifact <artifact.html> --result <result>
-#   fm-lavish-intake.sh exempt <task-id> --reason '<class>: target=<subject>; action=<change>'
+#   fm-lavish-intake.sh exempt <task-id> --reason '<class>: target=<path-like subject>; action=<specific multiword change>'
 #   fm-lavish-intake.sh verify <task-id> [--evidence <receipt>]
 #   fm-lavish-intake.sh check-brief <task-id> <brief.md>
 #
@@ -187,7 +187,7 @@ require_unique_meta() {
 }
 
 artifact_fields_present() {
-  local artifact=$1 task=$2 contract_error
+  local artifact=$1 task=$2 contract_error validation_nonce
   if ! contract_error=$(perl - "$artifact" "$task" "$FIELDS" 2>&1 <<'PERL'
 use strict;
 use warnings;
@@ -251,12 +251,15 @@ PERL
   ); then
     fail "$contract_error"
   fi
-  if ! contract_error=$(node - "$artifact" "$task" "$FIELDS" 2>&1 <<'NODE'
+  validation_nonce=$(LC_ALL=C od -An -N16 -tx1 /dev/urandom | tr -d '[:space:]') \
+    || fail "could not create an intake validation nonce"
+  [ -n "$validation_nonce" ] || fail "could not create an intake validation nonce"
+  if ! contract_error=$(node - "$artifact" "$task" "$FIELDS" "$validation_nonce" 2>&1 <<'NODE'
 'use strict';
 const fs = require('fs');
 const vm = require('vm');
 
-const [path, task, fieldText] = process.argv.slice(2);
+const [path, task, fieldText, validationNonce] = process.argv.slice(2);
 const fields = fieldText.split(/\s+/);
 const html = fs.readFileSync(path, 'utf8').replace(/<!--[\s\S]*?-->/g, '');
 const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)].map((match) => match[1]);
@@ -267,7 +270,7 @@ const fail = (message) => {
 
 try {
   if (scripts.length === 0) fail('artifact has no executable intake script');
-  const sentinels = Object.fromEntries(fields.map((field) => [field, `sentinel-${field}-value`]));
+  const sentinels = Object.fromEntries(fields.map((field) => [field, `${validationNonce}-${field}`]));
   const elements = Object.fromEntries(fields.map((field) => [field, { value: sentinels[field] }]));
   const submit = { disabled: false };
   const status = { textContent: '' };
@@ -343,7 +346,7 @@ validate_exemption_reason() {
     target=${BASH_REMATCH[1]}
     action_detail=${BASH_REMATCH[2]}
   else
-    fail "exemption reason must use target=<specific subject>; action=<specific change>"
+    fail "exemption reason must use target=<path-like subject>; action=<specific multiword change>"
   fi
   target=$(printf '%s' "$target" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
   action_detail=$(printf '%s' "$action_detail" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
@@ -353,7 +356,7 @@ validate_exemption_reason() {
     || fail "exemption reason must name a bounded scope with sufficient detail"
   target_words=$(printf '%s\n' "$target" | awk '{print NF}')
   action_words=$(printf '%s\n' "$action_detail" | awk '{print NF}')
-  [ "$target_words" -ge 2 ] && [ "$action_words" -ge 2 ] \
+  [ "$target_words" -ge 2 ] && [ "$action_words" -ge 3 ] \
     || fail "exemption reason must name a concrete target and action"
   first_word=$(printf '%s\n' "$action_detail" | awk '{print $1}')
   action=$(printf '%s' "$first_word" | tr '[:upper:]' '[:lower:]')
@@ -363,14 +366,16 @@ validate_exemption_reason() {
   esac
   meaningful_count=$(printf '%s\n' "$target" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '\n' | awk '
     BEGIN {
-      split("a an all any and area bar broken change code every fix foo here in item misc no none now of on problem project safely same something stuff task that the thing this to update various whatever work", words)
+      split("a an all any and area backend bar behavior broken change code every fix foo fixture here in item misc no none now of on problem project safely same something source stuff task that the thing this to update various whatever work", words)
       for (i in words) ignored[words[i]]=1
     }
     !ignored[$0] { count++ }
     END { print count + 0 }
   ')
-  [ "$meaningful_count" -ge 2 ] \
+  [ "$meaningful_count" -ge 3 ] \
     || fail "exemption reason must name a concrete target"
+  [[ "$target" =~ (^|[[:space:]])[[:alnum:]_.-]+[./_-][[:alnum:]_.-]+($|[[:space:]]) ]] \
+    || fail "exemption reason must name a path-like bounded target"
   normalized=$(printf '%s %s' "$target" "$action_detail" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' ' ')
   printf '%s' "$normalized" | grep -Eiq '(^|[[:space:]])(foo|bar|code|project|stuff|now|safely|thing|something|whatever|misc|various|item|area)($|[[:space:]])' \
     && fail "exemption reason must name a concrete target"

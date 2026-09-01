@@ -625,21 +625,21 @@ cmd_intake() {
     use strict; use warnings;
     my ($path, $task) = @ARGV;
     open my $fh, "<", $path or exit 1;
-    my (@fields, $want, @rows);
+    my (@blocks, $block);
     while (my $line = <$fh>) {
-      if (!@fields) {
-        next unless $line =~ /^prompts\[(\d+)\]\{([^}]*)\}:\s*$/;
-        ($want, @fields) = ($1, split /,/, $2);
+      if ($line =~ /^(?:prompts|feedback)\[(\d+)\]\{([^}]*)\}:\s*$/) {
+        $block = { fields => [split /,/, $2], rows => [] };
+        push @blocks, $block;
         next;
       }
-      last unless $line =~ /^\s/;
-      last if @rows >= $want;
+      next unless $block && $line =~ /^\s/;
       chomp $line;
-      push @rows, $line;
+      push @{$block->{rows}}, $line;
     }
     close $fh;
-    my $selected;
-    for my $row (@rows) {
+    my ($selected, $matches);
+    for my $candidate (@blocks) {
+      for my $row (@{$candidate->{rows}}) {
       $row =~ s/^\s+//;
       my @vals;
       while (length $row) {
@@ -654,13 +654,16 @@ cmd_intake() {
         last unless $row =~ s/^,//;
       }
       my %f;
-      $f{$fields[$_]} = $vals[$_] for 0 .. $#fields;
+      $f{$candidate->{fields}[$_]} = $vals[$_] for 0 .. $#{$candidate->{fields}};
       next unless defined $f{tag} && $f{tag} eq "choice";
       next unless defined $f{prompt} && $f{prompt} =~ /Context data:\s*(\{.*\})/s;
       my $data = eval { decode_json($1) };
       next unless ref($data) eq "HASH";
       next unless defined $data->{question} && !ref($data->{question}) && $data->{question} eq $task;
+      $matches++;
+      exit 1 if $matches > 1;
       $selected = $data;
+      }
     }
     exit 1 unless $selected;
     print encode_json($selected), "\n";

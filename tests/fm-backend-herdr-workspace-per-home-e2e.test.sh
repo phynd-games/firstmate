@@ -116,7 +116,7 @@ write_exempt_brief() {
     FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes \
     --not-applicable \
-    'configuration: target=Herdr workspace fixture; action=exercise isolated spawn placement' \
+    'configuration: target=tests/fm-backend-herdr-workspace-per-home-e2e.test.sh Herdr workspace fixture; action=exercise isolated spawn placement' \
     >/dev/null
 }
 

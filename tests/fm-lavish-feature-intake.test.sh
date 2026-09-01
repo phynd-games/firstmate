@@ -78,7 +78,7 @@ add_task() {
 }
 
 fixture_for() {
-  local home=$1 task=$2 status=${3:-feedback} shape=${4:-valid}
+  local home=$1 task=$2 status=${3:-feedback} shape=${4:-valid} block=prompts
   if [ "$status" != feedback ]; then
     cat > "$home/lavish-poll.txt" <<EOF
 session:
@@ -112,12 +112,13 @@ prompts[1]{uid,prompt,selector,tag,text}:
 EOF
     return
   fi
+  [ "$shape" = feedback-block ] && block=feedback
   cat > "$home/lavish-poll.txt" <<EOF
 session:
   file: $home/intake.html
   status: feedback
   session_ended: true
-prompts[1]{uid,prompt,selector,tag,text}:
+${block}[1]{uid,prompt,selector,tag,text}:
   "1","Feature intake submitted\\n\\nContext data:\\n{\\n  \\"question\\": \\"$task\\",\\n  \\"answer\\": \\"submitted\\",\\n  \\"close\\": \\"release\\",\\n  \\"submitted\\": true,\\n  \\"intake\\": { \\"product_goal\\": \\"goal\\", \\"intended_users\\": \\"users\\", \\"use_cases\\": \\"uses\\", \\"scope\\": \\"scope\\", \\"non_goals\\": \\"none\\", \\"constraints\\": \\"none\\", \\"visual_product_references\\": \\"reference\\", \\"key_choices\\": \\"choice\\", \\"acceptance_criteria\\": \\"criteria\\", \\"open_questions\\": \\"none\\" }\\n}","form",choice,"Feature intake submitted"
 EOF
 }
@@ -347,6 +348,7 @@ test_explicit_exemptions_require_reason() {
     'exemption-invalid-configuration|configuration: no'
     'exemption-invalid-documentation|documentation: update thing here now'
     'exemption-invalid-placeholders|configuration: target=foo bar; action=update now safely'
+    'exemption-invalid-generic-target|configuration: target=backend behavior; action=update source'
   )
   for entry in "${invalid_reasons[@]}"; do
     id=${entry%%|*}
@@ -357,16 +359,16 @@ test_explicit_exemptions_require_reason() {
     set -e
     [ "$rc" -ne 0 ] || fail "generic exemption scope was accepted: $reason"
   done
-  run_intake "$home" exempt exemption-a1 --reason 'documentation: target=intake exemption coverage; action=update coverage instructions' >/dev/null
+  run_intake "$home" exempt exemption-a1 --reason 'documentation: target=tests/fm-lavish-feature-intake.test.sh exemption coverage; action=update coverage instructions' >/dev/null
   assert_contains "$(run_intake "$home" verify exemption-a1)" "not-applicable" \
     "valid exemption did not verify"
   run_brief "$home" exemption-a1 firstmate --mode no-mistakes \
-    --not-applicable 'documentation: target=intake exemption coverage; action=update coverage instructions' >/dev/null
+    --not-applicable 'documentation: target=tests/fm-lavish-feature-intake.test.sh exemption coverage; action=update coverage instructions' >/dev/null
   assert_present "$home/data/exemption-a1/brief.md" \
     "same-reason exemption retry did not converge on a brief"
 
   run_brief "$home" exemption-b2 firstmate --mode no-mistakes \
-    --not-applicable 'dependency: target=test dependency; action=pin dependency version without behavior change' >/dev/null
+    --not-applicable 'dependency: target=.tasks.toml test dependency; action=pin dependency version without behavior change' >/dev/null
   brief=$home/data/exemption-b2/brief.md
   [ "$(run_intake "$home" check-brief exemption-b2 "$brief" | sed -n 's/^status=//p')" = not-applicable ] \
     || fail "valid exemption brief did not preserve its classification"
@@ -377,7 +379,7 @@ import sys
 path = Path(sys.argv[1])
 text = path.read_text()
 text = text.replace(
-    "Lavish intake reason: dependency: target=test dependency; action=pin dependency version without behavior change",
+    "Lavish intake reason: dependency: target=.tasks.toml test dependency; action=pin dependency version without behavior change",
     "Lavish intake reason: altered exemption reason",
 )
 path.write_text(text)
@@ -394,7 +396,7 @@ PY
 test_brief_exemption_stages_before_receipt() {
   local home out rc reason
   home=$(make_home staged-exemption)
-  reason='configuration: target=brief staging fixture; action=exercise retry behavior without product change'
+  reason='configuration: target=tests/fm-lavish-feature-intake.test.sh brief staging fixture; action=exercise retry behavior without product change'
   printf 'not a directory\n' > "$home/data/staged-a1"
   set +e
   out=$(run_brief "$home" staged-a1 firstmate --mode no-mistakes \
@@ -423,7 +425,7 @@ test_exemption_rejects_active_intake() {
   run_intake "$home" start active-a1 --artifact "$artifact" >/dev/null
   set +e
   out=$(run_intake "$home" exempt active-a1 \
-    --reason 'documentation: target=active intake setup; action=update setup instructions' 2>&1)
+    --reason 'documentation: target=bin/fm-lavish-intake.sh active intake setup; action=update setup instructions' 2>&1)
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "active intake accepted a not-applicable exemption"
@@ -535,7 +537,7 @@ test_intake_flag_rejects_exemption() {
   local home receipt out rc
   home=$(make_home intake-classification)
   add_task "$home" classification-a1
-  run_intake "$home" exempt classification-a1 --reason 'documentation: target=classification test; action=update test coverage' >/dev/null
+  run_intake "$home" exempt classification-a1 --reason 'documentation: target=tests/fm-lavish-feature-intake.test.sh classification test; action=update test coverage' >/dev/null
   receipt=$home/state/classification-a1.lavish-intake
   set +e
   out=$(run_brief "$home" classification-a1 firstmate --mode no-mistakes --intake "$receipt" 2>&1)
@@ -675,7 +677,7 @@ test_successful_captured_feedback_and_followup() {
   run_intake "$home" start feature-a1 --artifact "$artifact" >/dev/null
   sid=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
     "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
-  fixture_for "$home" feature-a1
+  fixture_for "$home" feature-a1 feedback feedback-block
   run_process_event "$home" "$sid" >/dev/null
   result=$home/state/procevent-inbox/$sid.1.result
   out=$(run_intake "$home" record feature-a1 --artifact "$artifact" --result "$result")
