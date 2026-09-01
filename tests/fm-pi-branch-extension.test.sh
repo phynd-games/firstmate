@@ -781,13 +781,13 @@ if (sentToMain[1].message.display !== false) {
   throw new Error(`a duplicate routine note must be coalesced: display=${sentToMain[1].message.display}`);
 }
 await report.execute("call-5", { task: "task-9", verdict: "routine", summary: "no change again" }, undefined, undefined, {});
-if (sentToMain[3].message.display !== false) {
-  throw new Error(`a repeated no-change routine note must stay coalesced: display=${sentToMain[3].message.display}`);
+if (sentToMain[4].message.display !== false) {
+  throw new Error(`a repeated no-change routine note must stay coalesced: display=${sentToMain[4].message.display}`);
 }
 writeFileSync(`${home}/state/task-9.status`, "failed: build broke\n");
 await report.execute("call-6", { task: "task-9", verdict: "routine", summary: "worker failed its build" }, undefined, undefined, {});
-if (sentToMain[4].message.display !== true) {
-  throw new Error(`a genuinely new outcome must render: display=${sentToMain[4].message.display}`);
+if (sentToMain[5].message.display !== true) {
+  throw new Error(`a genuinely new outcome must render: display=${sentToMain[5].message.display}`);
 }
 globalThis.__fmSendMessageError = "synthetic send failure";
 const failedDelivery = await report.execute("call-delivery-fail", { task: "task-delivery", verdict: "routine", summary: "delivery should retry" }, undefined, undefined, {});
@@ -797,7 +797,7 @@ if (!outcomeScript(["unread"]).includes("delivery should retry")) throw new Erro
 globalThis.__fmSendMessageError = undefined;
 const retriedDelivery = await report.execute("call-delivery-retry", { task: "task-delivery", verdict: "routine", summary: "delivery should retry" }, undefined, undefined, {});
 if (retriedDelivery.isError) throw new Error(`routine delivery retry failed: ${JSON.stringify(retriedDelivery)}`);
-if (sentToMain[5].message.display !== false) throw new Error("a retry after the bounded delivery crash rendered a duplicate routine note");
+if (sentToMain[6].message.display !== false) throw new Error("a retry after the bounded delivery crash rendered a duplicate routine note");
 writeFileSync(`${home}/state/task-captain.status`, "failed: captain outcome\n");
 const captainBefore = sentToMain.length;
 const captainReport = await report.execute("call-captain-send", { task: "task-captain", verdict: "captain", summary: "captain delivery remains actionable" }, undefined, undefined, {});
@@ -813,7 +813,7 @@ if (captainRoutine.isError || sentToMain[sentToMain.length - 1].message.display 
 mkdirSync(`${home}/state/task-captain-marker-fail.status`);
 const captainMarkerFailureBefore = sentToMain.length;
 const markerRefreshFailure = await report.execute("call-captain-marker-refresh-fail", { task: "task-captain-marker-fail", verdict: "captain", summary: "marker refresh should be retryable" }, undefined, undefined, {});
-if (!markerRefreshFailure.isError || !markerRefreshFailure.content[0].text.includes("routine note marker refresh failed")) {
+if (!markerRefreshFailure.isError || !markerRefreshFailure.content[0].text.includes("outcome marker refresh failed")) {
   throw new Error("a captain marker refresh failure was not returned as a typed retryable error");
 }
 if (sentToMain.length !== captainMarkerFailureBefore) {
