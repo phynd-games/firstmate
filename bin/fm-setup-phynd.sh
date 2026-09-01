@@ -241,7 +241,10 @@ printf 'Refreshing installed Pi extensions...\n'
 pi update --extensions
 
 printf 'Phynd Pi setup complete.\n'
-printf 'Default model: openai-codex/gpt-5.6-luna with xhigh thinking.\n'
+node - "$SETTINGS_SOURCE" <<'NODE'
+const settings = require(process.argv[2]);
+console.log(`Default model: ${settings.defaultProvider}/${settings.defaultModel} with ${settings.defaultThinkingLevel} thinking.`);
+NODE
 printf 'Default Firstmate backend: herdr.\n'
 printf 'Herdr presentation spaces: on (one visible workspace per task).\n'
 printf 'Theme: cosmic-lagoon.\n'

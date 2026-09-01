@@ -28,7 +28,7 @@
         },
         {
           "harness": "claude",
-          "model": "fable",
+          "model": "opus-5",
           "effort": "xhigh"
         }
       ],
