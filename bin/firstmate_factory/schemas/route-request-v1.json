@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "firstmate.route-request.v1",
   "title": "Firstmate execution route request",
+  "description": "Offline routing claim. Structural validation does not activate routing or authorize a worker launch.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "level_floor", "role"],

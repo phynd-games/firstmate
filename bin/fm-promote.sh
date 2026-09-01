@@ -2,14 +2,10 @@
 # Promote a scout task to a ship task in place: the crewmate keeps its window,
 # worktree, and loaded context; only the contract changes. Flips kind= to ship in
 # state/<task-id>.meta so fm-teardown.sh applies the full ship-task teardown protection
-# again. Promotion also writes the crewmate's ship instructions to
-# data/<task-id>/ship-instructions.md and prints the fm-send.sh command that
-# delivers them. Those instructions carry the scratch-state inventory, the clean
-# default-branch base, the fm/<task-id> branch, and - rendered from
-# bin/fm-dod-lib.sh, the single owner an ordinary ship brief also uses - the
-# mode-specific Definition of done, so a promoted worker receives exactly the same
-# delivery contract as a briefed one, including the no-mistakes mode's ask-user
-# escalation rule and --yes ban.
+# again. Promotion atomically replaces scout instructions with standard ship
+# instructions bound to approved target base, preserving scout task context and
+# rendering mode-specific completion rules through the same brief owner used by
+# ordinary ship intake.
 # A scout records no delivery posture, so promotion is where this task's delivery
 # contract is decided: --mode and --yolo are REQUIRED and written into the meta
 # alongside the kind= flip. Firstmate resolves both at promotion time, having just
@@ -97,9 +93,23 @@ CONTROL_LOCK_HELD=0
 META_LOCK=
 META_LOCK_HELD=0
 TMP=
+PROMOTE_TASK_TMP=
+PROMOTE_SHIP_TMP=
+PROMOTE_BRIEF_BACKED_UP=0
+promote_restore_scout_brief() {
+  [ "$PROMOTE_BRIEF_BACKED_UP" -eq 1 ] || return 0
+  rm -f -- "$PROMOTE_BRIEF" || return 1
+  mv -- "$PROMOTE_BRIEF_BACKUP" "$PROMOTE_BRIEF" || return 1
+  PROMOTE_BRIEF_BACKED_UP=0
+}
 promote_cleanup() {
   local status=$?
   [ -z "$TMP" ] || rm -f -- "$TMP" 2>/dev/null || true
+  [ -z "$PROMOTE_TASK_TMP" ] || rm -f -- "$PROMOTE_TASK_TMP" 2>/dev/null || true
+  [ -z "$PROMOTE_SHIP_TMP" ] || rm -f -- "$PROMOTE_SHIP_TMP" 2>/dev/null || true
+  if [ "$status" -ne 0 ] && [ "$PROMOTE_BRIEF_BACKED_UP" -eq 1 ]; then
+    promote_restore_scout_brief || true
+  fi
   if [ "$META_LOCK_HELD" = 1 ]; then
     META_LOCK_HELD=0
     fm_lock_release "$META_LOCK" || true
@@ -128,38 +138,132 @@ if ! fm_backlog_record_present "$META" "task record" "$STATE"; then
 fi
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
 
-# The promoted worker must receive the same delivery contract an ordinary ship
-# brief carries, so the mode-specific Definition of done is rendered from its
-# single owner (bin/fm-dod-lib.sh) rather than summarised into a hint line. A
-# promoted no-mistakes worker that never received the ask-user escalation rule or
-# the --yes ban is the delivery hole this file used to leave open.
-INSTRUCTIONS="$DATA/$ID/ship-instructions.md"
-mkdir -p "$DATA/$ID"
-[ ! -d "$INSTRUCTIONS" ] || { echo "error: ship instructions path is a directory: $INSTRUCTIONS" >&2; exit 1; }
-TMP="$DATA/$ID/.ship-instructions.md.${BASHPID:-$$}"
-{
-  cat <<EOF
-Your scout task has been promoted to a ship task, mode=$MODE. Your window, worktree, and context stay as they are; only the contract below changes.
-
-# Ship instructions
-1. **Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from. If either does not resolve to the worktree you were launched in, stop and escalate to firstmate.
-2. Inventory this worktree's scratch state with \`git status\` and \`git log\` before changing anything.
-3. Return to a clean default-branch base, then create your branch: \`git checkout -b fm/$ID\`.
-4. Carry over only the intended fix changes. Leave scratch commits, debug edits, and experiment files behind.
-5. If you reproduced a bug, turn that reproduction into a regression test.
-6. These ship instructions supersede the scout delivery rules and report-based Definition of done. Everything else in your original instructions carries over unchanged: the status protocol; the instruction inbox and its acknowledgement; the escalation rules, including ask-user; and every safety rule.
-
+PROMOTE_WT=$(fmx_meta_get "$META" worktree || true)
+[ -n "$PROMOTE_WT" ] && [ -d "$PROMOTE_WT" ] && [ ! -L "$PROMOTE_WT" ] || {
+  echo "error: scout $ID has no valid worktree for its approved target base" >&2
+  exit 1
+}
+PROMOTE_PROJECT=$(fmx_meta_get "$META" project || true)
+[ -n "$PROMOTE_PROJECT" ] || PROMOTE_PROJECT=$(basename "$PROMOTE_WT")
+PROMOTE_BRIEF="$DATA/$ID/brief.md"
+PROMOTE_BRIEF_BACKUP="$DATA/$ID/.scout-brief.promote.$$"
+PROMOTE_BRIEF_BACKED_UP=0
+if [ -L "$PROMOTE_BRIEF" ]; then
+  echo "error: scout $ID has an unsafe brief symlink" >&2
+  exit 1
+fi
+PROMOTE_BASE_REF_COUNT=$(grep -c '^review_base_ref=' "$META" || true)
+PROMOTE_BASE_SHA_COUNT=$(grep -c '^review_base_sha=' "$META" || true)
+if [ "$PROMOTE_BASE_REF_COUNT" -ne 0 ] || [ "$PROMOTE_BASE_SHA_COUNT" -ne 0 ]; then
+  PROMOTE_BASE=$(fm_pr_review_base_from_meta "$META") || {
+    echo "error: scout $ID has an invalid approved target base" >&2
+    exit 1
+  }
+elif [ -f "$DATA/$ID/brief.md" ] && [ ! -L "$DATA/$ID/brief.md" ]; then
+  if PROMOTE_BASE=$(fm_pr_review_base_from_brief "$DATA/$ID/brief.md"); then
+    :
+  else
+    PROMOTE_BASE_STATUS=$?
+    [ "$PROMOTE_BASE_STATUS" -eq 2 ] || {
+      echo "error: scout $ID has an invalid or ambiguous approved target base in its brief" >&2
+      exit 1
+    }
+    PROMOTE_BASE=
+  fi
+else
+  PROMOTE_BASE=
+fi
+if [ -z "$PROMOTE_BASE" ]; then
+  echo "error: scout $ID has no approved target base; promotion refuses a moving default" >&2
+  exit 1
+fi
+IFS="$(printf '\t')" read -r PROMOTE_BASE_REF PROMOTE_BASE_SHA <<EOF
+$PROMOTE_BASE
 EOF
-  fm_dod_block "$MODE" "$ID"
-} > "$TMP" || { echo "error: could not render ship instructions for mode=$MODE" >&2; exit 1; }
-mv "$TMP" "$INSTRUCTIONS"
-TMP=
-[ -f "$INSTRUCTIONS" ] && [ -r "$INSTRUCTIONS" ] || { echo "error: ship instructions were not published as a readable file: $INSTRUCTIONS" >&2; exit 1; }
+PROMOTE_RESOLVED_BASE=$(fm_pr_review_base_resolve "$PROMOTE_WT" "$PROMOTE_BASE_REF" "$PROMOTE_BASE_SHA") || {
+  echo "error: scout $ID's approved target base is unavailable" >&2
+  exit 1
+}
+[ -n "$PROMOTE_RESOLVED_BASE" ] || { echo "error: scout $ID's approved target base is unavailable" >&2; exit 1; }
+PROMOTE_BASE_REF=$PROMOTE_RESOLVED_BASE
 
+if [ -e "$PROMOTE_BRIEF" ]; then
+  [ -f "$PROMOTE_BRIEF" ] || {
+    echo "error: scout $ID's brief is not a regular file" >&2
+    exit 1
+  }
+  PROMOTE_TASK_TMP="$DATA/$ID/.scout-task.promote.$$"
+  if ! awk '
+    $0 == "# Task" { in_task = 1; next }
+    in_task && ($0 == "# Setup" || $0 == "# Herdr isolation") { exit }
+    in_task && $0 ~ /^Target-project approved base:/ { next }
+    in_task { print }
+  ' "$PROMOTE_BRIEF" > "$PROMOTE_TASK_TMP"; then
+    rm -f -- "$PROMOTE_TASK_TMP"
+    PROMOTE_TASK_TMP=
+    echo "error: could not preserve scout $ID task context" >&2
+    exit 1
+  fi
+  if [ ! -s "$PROMOTE_TASK_TMP" ]; then
+    if ! grep -v '^Target-project approved base:' "$PROMOTE_BRIEF" > "$PROMOTE_TASK_TMP"; then
+      rm -f -- "$PROMOTE_TASK_TMP"
+      PROMOTE_TASK_TMP=
+      echo "error: could not preserve scout $ID task context" >&2
+      exit 1
+    fi
+  fi
+  chmod 600 "$PROMOTE_TASK_TMP"
+  if grep -Fqx '{TASK}' "$PROMOTE_TASK_TMP"; then
+    rm -f -- "$PROMOTE_TASK_TMP"
+    PROMOTE_TASK_TMP=
+    echo "error: scout $ID's brief still contains the unfilled {TASK} placeholder" >&2
+    exit 1
+  fi
+  mv -- "$PROMOTE_BRIEF" "$PROMOTE_BRIEF_BACKUP"
+  PROMOTE_BRIEF_BACKED_UP=1
+fi
+if ! FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" \
+  FM_STATE_OVERRIDE="$STATE" "$FM_ROOT/bin/fm-brief.sh" "$ID" "$PROMOTE_PROJECT" \
+  --mode "$MODE" --approved-base-ref "$PROMOTE_BASE_REF" \
+  --approved-base-sha "$PROMOTE_BASE_SHA" >/dev/null; then
+  promote_restore_scout_brief || true
+  echo "error: could not install the ship brief for promoted scout $ID" >&2
+  exit 1
+fi
+if [ -n "$PROMOTE_TASK_TMP" ]; then
+  PROMOTE_SHIP_TMP="$DATA/$ID/.ship-brief.promote.$$"
+  if ! awk -v task_file="$PROMOTE_TASK_TMP" '
+    $0 == "{TASK}" {
+      found = 1
+      while ((getline line < task_file) > 0) print line
+      close(task_file)
+      next
+    }
+    { print }
+    END { if (!found) exit 1 }
+  ' "$PROMOTE_BRIEF" > "$PROMOTE_SHIP_TMP"; then
+    rm -f -- "$PROMOTE_SHIP_TMP" "$PROMOTE_BRIEF"
+    promote_restore_scout_brief || true
+    echo "error: could not restore scout $ID task context in the ship brief" >&2
+    exit 1
+  fi
+  mv -- "$PROMOTE_SHIP_TMP" "$PROMOTE_BRIEF"
+  PROMOTE_SHIP_TMP=
+  rm -f -- "$PROMOTE_TASK_TMP"
+  PROMOTE_TASK_TMP=
+fi
+PROMOTE_WRITTEN_BASE=$(fm_pr_review_base_from_brief "$PROMOTE_BRIEF" || true)
+[ "$PROMOTE_WRITTEN_BASE" = "$PROMOTE_BASE_REF	$PROMOTE_BASE_SHA" ] || {
+  promote_restore_scout_brief || true
+  echo "error: promoted scout $ID's ship brief did not retain the approved target base" >&2
+  exit 1
+}
 TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
-grep -v -e '^kind=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"
+grep -v -e '^kind=' -e '^review_base_ref=' -e '^review_base_sha=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"
 {
   echo "kind=ship"
+  echo "review_base_ref=$PROMOTE_BASE_REF"
+  echo "review_base_sha=$PROMOTE_BASE_SHA"
   echo "mode=$MODE"
   echo "yolo=$YOLO"
 } >> "$TMP"
@@ -170,10 +274,13 @@ if ! fm_backlog_atomic_transition publish "$TMP" "$META" "task record" "$STATE";
   exit 1
 fi
 TMP=
+PROMOTE_BRIEF_BACKED_UP=0
+rm -f -- "$PROMOTE_BRIEF_BACKUP" 2>/dev/null || true
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
 
 HOME_Q=$(printf '%q' "$FM_HOME")
+INSTRUCTIONS=$PROMOTE_BRIEF
 INSTRUCTIONS_Q=$(printf '%q' "$INSTRUCTIONS")
 echo "promoted $ID to ship mode=$MODE yolo=$YOLO (teardown protection restored)"
 echo "wrote ship instructions for mode=$MODE: $INSTRUCTIONS"

@@ -6,7 +6,7 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> --approved-base-ref <ref> --approved-base-sha <full-sha> [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -57,6 +57,14 @@
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
 # over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
 # self-governance section when a touched project AGENTS.md lacks it.
+# Every ship brief also records the Firstmate substrate root, its exact launch
+# SHA, and a private durable report path, then requires the shared
+# firstmate-pr-self-review skill before validation, PR creation, or local landing.
+# Ship intake supplies the exact target-project base as
+# `Target-project approved base: ref=<ref>; sha=<full-sha>` before spawn.
+# Ship scaffolds require that approved base as `--approved-base-ref` and
+# `--approved-base-sha`, or the equivalent FM_APPROVED_BASE_REF and
+# FM_APPROVED_BASE_SHA intake values, and persist the validated pair themselves.
 # Refuses to overwrite an existing brief.
 set -eu
 
@@ -80,6 +88,8 @@ esac
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-dod-lib.sh
 . "$SCRIPT_DIR/fm-dod-lib.sh"
+# shellcheck source=bin/fm-pr-lib.sh
+. "$SCRIPT_DIR/fm-pr-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 
 resolve_directory_input() {
@@ -111,6 +121,10 @@ HERDR_LAB=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
+APPROVED_BASE_REF=${FM_APPROVED_BASE_REF:-}
+APPROVED_BASE_SHA=${FM_APPROVED_BASE_SHA:-}
+APPROVED_BASE_REF_SET=0
+APPROVED_BASE_SHA_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -120,6 +134,8 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
+      approved-base-ref) APPROVED_BASE_REF=$a; APPROVED_BASE_REF_SET=1 ;;
+      approved-base-sha) APPROVED_BASE_SHA=$a; APPROVED_BASE_SHA_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -132,6 +148,10 @@ for a in "$@"; do
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
+    --approved-base-ref) want_value=approved-base-ref ;;
+    --approved-base-ref=*) APPROVED_BASE_REF=${a#--approved-base-ref=}; APPROVED_BASE_REF_SET=1 ;;
+    --approved-base-sha) want_value=approved-base-sha ;;
+    --approved-base-sha=*) APPROVED_BASE_SHA=${a#--approved-base-sha=}; APPROVED_BASE_SHA_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's merge authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -159,6 +179,12 @@ elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
   exit 1
 fi
+[ "$KIND" = ship ] || {
+  [ "$APPROVED_BASE_REF_SET" -eq 0 ] && [ "$APPROVED_BASE_SHA_SET" -eq 0 ] || {
+    echo "error: --approved-base-ref/--approved-base-sha apply only to ship briefs" >&2
+    exit 1
+  }
+}
 ID=${POS[0]}
 
 if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
@@ -303,6 +329,22 @@ fi
 
 REPO=${POS[1]}
 
+if [ "$KIND" = ship ]; then
+  [ -n "$APPROVED_BASE_REF" ] && [ -n "$APPROVED_BASE_SHA" ] || {
+    echo "error: ship briefs require --approved-base-ref and --approved-base-sha (or equivalent intake values)" >&2
+    exit 1
+  }
+  case "$APPROVED_BASE_REF" in
+    ''|[-.]*|*..*|*@\{*|*[!A-Za-z0-9._/-]*)
+      echo "error: approved target base ref is invalid: $APPROVED_BASE_REF" >&2
+      exit 1 ;;
+  esac
+  fm_pr_head_valid "$APPROVED_BASE_SHA" || {
+    echo "error: approved target base SHA must be a full lowercase Git object ID" >&2
+    exit 1
+  }
+fi
+
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
 # shellcheck disable=SC2016  # single quotes are deliberate: these lines are literal brief text whose backtick-wrapped $(...) and "$HERDR_LAB_SESSION" snippets must reach the reading agent verbatim, not expand at scaffold time; only the '"$VAR"' break-outs interpolate.
@@ -398,18 +440,33 @@ case "$MODE" in
   direct-PR)
     SETUP2=""
     RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
+
     ;;
   local-only)
     SETUP2=""
     RULE1="1. Never push to any remote and never open a PR. Work only on your \`fm/$ID\` branch; firstmate handles the merge into local \`main\`."
+
     ;;
   *)  # no-mistakes
     SETUP2="
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
     RULE1='1. Never push to the default branch. Never merge a PR.'
+
     ;;
 esac
 DOD=$(fm_dod_block "$MODE" "$ID") || exit 1
+
+SELF_REVIEW_SKILL="$FM_ROOT/.agents/skills/firstmate-pr-self-review/SKILL.md"
+[ -f "$SELF_REVIEW_SKILL" ] || { echo "error: required PR self-review skill is missing: $SELF_REVIEW_SKILL" >&2; exit 1; }
+SELF_REVIEW_REPORT="$DATA/$ID/pr-self-review.md"
+SUBSTRATE_ROOT=$(cd "$FM_ROOT" && pwd -P) || {
+  echo "error: cannot resolve the Firstmate substrate root at $FM_ROOT" >&2
+  exit 1
+}
+SUBSTRATE_LAUNCH_SHA=$(git -C "$FM_ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || {
+  echo "error: cannot resolve the Firstmate substrate launch SHA at $FM_ROOT" >&2
+  exit 1
+}
 
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -417,10 +474,13 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 # Task
 {TASK}
 
+Target-project approved base: ref=$APPROVED_BASE_REF; sha=$APPROVED_BASE_SHA
+
 $HERDR_SECTION
 
 # Setup
-You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
+You are in a disposable git worktree of $REPO at the exact approved target base recorded for this task, not a moving default branch.
+The spawn has validated and recorded that base; verify the starting `git rev-parse HEAD` against the approved base in this brief or task metadata before branching, and do not reset or rebase onto the default branch.
 
 **Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.
 The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
@@ -430,7 +490,7 @@ If the top-level path is the primary checkout or not the worktree you were launc
 
 # Rules
 $RULE1
-2. Stay inside this worktree; modify nothing outside it.
+2. Stay inside this worktree; modify nothing outside it except the status file, inbox acknowledgements, and exact durable self-review report path named below.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
@@ -464,6 +524,15 @@ Record only project knowledge useful to almost every future session.
 For anything the codebase already shows, prefer a pointer to the authoritative file, command, or doc over copying the detail.
 If you touch a project \`AGENTS.md\` that lacks \`## Maintaining this file\`, add that short self-governance section from \`$FM_ROOT/bin/fm-ensure-agents-md.sh\` in the same pass.
 Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced no durable project knowledge.
+
+# Required PR self-review
+Before reporting implementation ready for validation, PR creation, or local landing, read and follow \`$SELF_REVIEW_SKILL\`.
+Write its findings-first durable report to exactly \`$SELF_REVIEW_REPORT\`.
+Use these pinned substrate inputs for the skill's separate Firstmate substrate review:
+- Firstmate substrate launch SHA: \`$SUBSTRATE_LAUNCH_SHA\`
+- Firstmate substrate root: \`$SUBSTRATE_ROOT\`
+Review the complete target-project diff and the separate Firstmate substrate diff with exact base/head evidence.
+This self-review adds no reviewer, delivery, approval, or merge authority; the selected delivery path below remains authoritative.
 
 $DOD
 EOF

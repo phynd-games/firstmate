@@ -101,7 +101,7 @@ record_body() {  # <record-path>
 }
 
 test_secondmate_target_is_marked() {
-  local dir fb log home rc got corr
+  local dir fb log home rc got corr inspection
   dir="$TMP_ROOT/sm"; mkdir -p "$dir"
   fb=$(make_stubs "$dir"); log="$dir/send.log"
   home=$(setup_home sm)
@@ -125,7 +125,19 @@ test_secondmate_target_is_marked() {
   corr=$(fm_pending_reply_extract_corr "$got")
   [ -f "$(fm_pending_reply_path "$home/state" "$corr")" ] \
     || fail "marked secondmate send should create a parent pending-reply record"
-  pass "fm-send: a kind=secondmate target gets the from-firstmate marker and corr prepended"
+  inspection=$(printf '%s' "$got" | "$ROOT/bin/fm-operational-input.sh" inspect) \
+    || fail "actual secondmate steer did not satisfy agent interchange schema"
+  INSPECTION="$inspection" python3 - <<'PY' \
+    || fail "actual secondmate steer inspection overstated its trust"
+import json
+import os
+report = json.loads(os.environ["INSPECTION"])
+assert report["kind"] == "from-firstmate"
+assert report["structurally_valid"] is True
+assert report["authorization_granted"] is False
+assert report["provenance_verified"] is False
+PY
+  pass "fm-send: a kind=secondmate target gets a bounded, non-authorizing from-firstmate interchange"
 }
 
 test_exact_secondmate_task_id_is_marked() {

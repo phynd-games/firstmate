@@ -24,6 +24,9 @@ FM_PR_PATH=
 FM_PR_OWNER=
 FM_PR_REPO=
 FM_PR_NUMBER=
+FM_PR_REMOTE_PROVIDER=
+FM_PR_REMOTE_HOST=
+FM_PR_REMOTE_PATH=
 FM_PR_DATA_PROVIDER=
 FM_PR_DATA_URL=
 FM_PR_DATA_HOST=
@@ -207,6 +210,64 @@ fm_pr_url_parse() {
   FM_PR_NUMBER=${BASH_REMATCH[3]}
 }
 
+fm_pr_git_remote_identity() {
+  local repo=$1 raw authority host path
+  FM_PR_REMOTE_PROVIDER=
+  FM_PR_REMOTE_HOST=
+  FM_PR_REMOTE_PATH=
+  [ -d "$repo" ] && [ ! -L "$repo" ] || return 1
+  raw=$(git -C "$repo" remote get-url origin 2>/dev/null) || return 1
+  case "$raw" in
+    git@*:*)
+      host=${raw#git@}
+      host=${host%%:*}
+      path=${raw#*:}
+      ;;
+    ssh://git@*/*)
+      authority=${raw#ssh://git@}
+      host=${authority%%/*}
+      path=${authority#*/}
+      ;;
+    https://*/*|http://*/*)
+      authority=${raw#*://}
+      host=${authority%%/*}
+      path=${authority#*/}
+      ;;
+    *) return 1 ;;
+  esac
+  case "$host" in ''|*:*|*[^A-Za-z0-9.-]*) return 1 ;; esac
+  case "$path" in ''|/*|*/|*//*|*\?*|*#*) return 1 ;; esac
+  case "$path" in *.git) path=${path%.git} ;; esac
+  [ -n "$path" ] || return 1
+  if [ "$host" = github.com ]; then
+    [[ "$path" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$ ]] || return 1
+    FM_PR_REMOTE_PROVIDER=github
+  else
+    fm_pr_gitlab_host_valid "$host" || return 1
+    fm_pr_gitlab_path_valid "$path" || return 1
+    FM_PR_REMOTE_PROVIDER=gitlab
+  fi
+  FM_PR_REMOTE_HOST=$host
+  FM_PR_REMOTE_PATH=$path
+}
+
+fm_pr_git_remote_matches() {
+  local repo=$1 provider=$2 host=$3 path=$4
+  fm_pr_git_remote_identity "$repo" || return 1
+  [ "$FM_PR_REMOTE_PROVIDER" = "$provider" ] \
+    && [ "$FM_PR_REMOTE_HOST" = "$host" ] \
+    && [ "$FM_PR_REMOTE_PATH" = "$path" ]
+}
+
+fm_pr_git_common_dir() {
+  local repo=$1 common
+  common=$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null) || return 1
+  case "$common" in
+    /*) (cd "$common" && pwd -P) || return 1 ;;
+    *) (cd "$repo" && cd "$common" && pwd -P) || return 1 ;;
+  esac
+}
+
 fm_pr_head_valid() {
   local head=${1-}
   local LC_ALL=C
@@ -269,6 +330,919 @@ fm_pr_private_file_valid() {
   [ "$(fm_pr_file_mode "$path")" = "$mode" ] || return 1
   [ "$(fm_pr_file_device "$path")" = "$device" ] || return 1
   [ "$(fm_pr_file_link_count "$path")" = 1 ]
+}
+
+fm_pr_self_review_report_path() {
+  local data=$1 id=$2
+  fm_pr_task_id_valid "$id" || return 1
+  [ -d "$data" ] && [ ! -L "$data" ] || return 1
+  [ -d "$data/$id" ] && [ ! -L "$data/$id" ] || return 1
+  printf '%s/%s/pr-self-review.md\n' "$data" "$id"
+}
+
+fm_pr_delivery_lock_path() {
+  local state=$1 id=$2
+  fm_pr_task_id_valid "$id" || return 1
+  [ -d "$state" ] && [ ! -L "$state" ] || return 1
+  printf '%s/.delivery-%s.lock\n' "$state" "$id"
+}
+
+fm_pr_default_branch() {
+  local repo=$1 ref branch
+  [ -d "$repo" ] && [ ! -L "$repo" ] || return 1
+  ref=$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  if [ -n "$ref" ]; then
+    printf '%s\n' "$ref"
+    return 0
+  fi
+  for branch in main master; do
+    if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
+      printf '%s\n' "$branch"
+      return 0
+    fi
+  done
+  return 1
+}
+
+fm_pr_review_base_from_meta() {
+  local meta=$1 ref sha
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  [ "$(fm_pr_file_link_count "$meta")" = 1 ] || return 1
+  [ "$(grep -c '^review_base_ref=' "$meta" || true)" = 1 ] || return 1
+  [ "$(grep -c '^review_base_sha=' "$meta" || true)" = 1 ] || return 1
+  ref=$(sed -n 's/^review_base_ref=//p' "$meta")
+  sha=$(sed -n 's/^review_base_sha=//p' "$meta")
+  case "$ref" in
+    ''|[-.]*|*..*|*@\{*|*[!A-Za-z0-9._/-]*) return 1 ;;
+  esac
+  fm_pr_head_valid "$sha" || return 1
+  printf '%s\t%s\n' "$ref" "$sha"
+}
+
+fm_pr_review_base_from_brief() {
+  local brief=$1 line count ref sha
+  [ -f "$brief" ] && [ ! -L "$brief" ] || return 1
+  count=$(grep -c '^Target-project approved base:' "$brief" || true)
+  [ "$count" = 1 ] || {
+    [ "$count" = 0 ] && return 2
+    return 1
+  }
+  line=$(grep '^Target-project approved base:' "$brief")
+  printf '%s\n' "$line" | grep -Eq '^Target-project approved base: ref=[A-Za-z0-9._/-][A-Za-z0-9._/-]*; sha=[0-9a-f][0-9a-f]*$' || return 1
+  line=$(sed -n 's/^Target-project approved base: ref=\([^;]*\); sha=\([0-9a-f][0-9a-f]*\)$/\1\t\2/p' "$brief")
+  IFS="$(printf '\t')" read -r ref sha <<EOF
+$line
+EOF
+  case "$ref" in
+    ''|[-.]*|*..*|*@\{*|*[!A-Za-z0-9._/-]*) return 1 ;;
+  esac
+  fm_pr_head_valid "$sha" || return 1
+  printf '%s\t%s\n' "$ref" "$sha"
+}
+
+fm_pr_review_base_branch() {
+  local ref=${1-} branch
+  case "$ref" in
+    origin/*) branch=${ref#origin/} ;;
+    refs/remotes/origin/*) branch=${ref#refs/remotes/origin/} ;;
+    refs/heads/*) branch=${ref#refs/heads/} ;;
+    refs/*) return 1 ;;
+    *) branch=$ref ;;
+  esac
+  case "$branch" in
+    ''|[-.]*|*..*|*@\{*|*[!A-Za-z0-9._/-]*) return 1 ;;
+  esac
+  printf '%s\n' "$branch"
+}
+
+fm_pr_review_base_resolve() {
+  local worktree=$1 approved_ref=$2 approved_sha=$3 branch remote_ref resolved
+  [ -d "$worktree" ] && [ ! -L "$worktree" ] || return 1
+  fm_pr_head_valid "$approved_sha" || return 1
+  resolved=$(git -C "$worktree" rev-parse --verify --quiet "$approved_ref^{commit}" 2>/dev/null || true)
+  if [ "$resolved" = "$approved_sha" ]; then
+    printf '%s\n' "$approved_ref"
+    return 0
+  fi
+  branch=$(fm_pr_review_base_branch "$approved_ref") || return 1
+  remote_ref="refs/remotes/origin/$branch"
+  resolved=$(git -C "$worktree" rev-parse --verify --quiet "$remote_ref^{commit}" 2>/dev/null || true)
+  if [ "$resolved" != "$approved_sha" ]; then
+    git -C "$worktree" fetch --quiet origin "+refs/heads/$branch:$remote_ref" || return 1
+    resolved=$(git -C "$worktree" rev-parse --verify --quiet "$remote_ref^{commit}" 2>/dev/null) || return 1
+  fi
+  [ "$resolved" = "$approved_sha" ] || return 1
+  printf 'origin/%s\n' "$branch"
+}
+
+fm_pr_substrate_launch_sha() {
+  local data=$1 id=$2 brief value count
+  fm_pr_task_id_valid "$id" || return 1
+  [ -d "$data" ] && [ ! -L "$data" ] || return 1
+  [ -d "$data/$id" ] && [ ! -L "$data/$id" ] || return 1
+  brief="$data/$id/brief.md"
+  [ -f "$brief" ] && [ ! -L "$brief" ] || return 1
+  count=$(grep -c '^- Firstmate substrate launch SHA: `\([0-9a-f][0-9a-f]*\)`$' "$brief" || true)
+  [ "$count" = 1 ] || return 1
+  value=$(sed -n 's/^- Firstmate substrate launch SHA: `\([0-9a-f][0-9a-f]*\)`$/\1/p' "$brief")
+  fm_pr_head_valid "$value" || return 1
+  printf '%s\n' "$value"
+}
+
+fm_pr_substrate_root_from_brief() {
+  local brief=$1 root count actual_root git_root
+  [ -f "$brief" ] && [ ! -L "$brief" ] || return 1
+  count=$(grep -c '^- Firstmate substrate root: `.*`$' "$brief" || true)
+  [ "$count" = 1 ] || return 1
+  root=$(sed -n 's/^- Firstmate substrate root: `\(.*\)`$/\1/p' "$brief")
+  case "$root" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ -d "$root" ] && [ ! -L "$root" ] || return 1
+  actual_root=$(cd "$root" && pwd -P) || return 1
+  git_root=$(git -C "$root" rev-parse --show-toplevel 2>/dev/null || true)
+  [ -n "$git_root" ] || return 1
+  [ "$(cd "$git_root" && pwd -P)" = "$actual_root" ] || return 1
+  printf '%s\n' "$actual_root"
+}
+
+fm_pr_sha256_stream() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+fm_pr_review_path_encode() {
+  local path=$1 encoded
+  encoded=$(printf '%s' "$path" | LC_ALL=C od -An -tx1 | tr -d '[:space:]') || return 1
+  [ -n "$encoded" ] || return 1
+  printf 'hex:%s\n' "$encoded"
+}
+
+fm_pr_self_review_report_valid() {
+  local data=$1 id=$2 expected_head=${3-} worktree=${4-} substrate_root=${5-} expected_base_ref=${6-} expected_base_sha=${7-} expected_substrate_base=${8-}
+  local report data_device parsed target_repository base_ref base_sha head_sha merge_base_sha changed_files tree_status
+  local substrate_base_sha substrate_head_sha substrate_changed_files
+  [ -n "$worktree" ] && [ -d "$worktree" ] && [ ! -L "$worktree" ] || return 1
+  [ -n "$substrate_root" ] && [ -d "$substrate_root" ] && [ ! -L "$substrate_root" ] || return 1
+  report=$(fm_pr_self_review_report_path "$data" "$id") || return 1
+  data_device=$(fm_pr_file_device "$data") || return 1
+  fm_pr_private_file_valid "$report" 600 "$data_device" || return 1
+  [ "$(wc -c < "$report" | tr -d '[:space:]')" -le 1048576 ] || return 1
+  parsed=$(awk -v task="$id" -v expected_head="$expected_head" '
+    BEGIN {
+      headings[1] = "# Findings"
+      headings[2] = "# Target-project diff evidence"
+      headings[3] = "# Firstmate substrate diff evidence"
+      headings[4] = "# Surface review"
+      headings[5] = "# Verification"
+      headings[6] = "# Residual risks"
+      expected = 1
+      valid = 1
+    }
+    function field(prefix) {
+      return substr($0, length(prefix) + 1)
+    }
+    function full_sha(value) {
+      return (length(value) == 40 || length(value) == 64) && value !~ /[^0-9a-f]/
+    }
+    function full_digest(value) {
+      return length(value) == 64 && value !~ /[^0-9a-f]/
+    }
+    NR == 1 {
+      valid = valid && ($0 == "Self-review report: firstmate-pr-self-review.v1")
+      next
+    }
+    NR == 2 {
+      valid = valid && ($0 == "Task id: " task)
+      next
+    }
+    NR == 3 {
+      valid = valid && ($0 == headings[1])
+      if (!valid) bad = 1
+      expected = 2
+      next
+    }
+    {
+      if ($0 == headings[expected]) {
+        if (expected > 1 && !content) bad = 1
+        content = 0
+        expected++
+        next
+      }
+      for (i = 1; i <= 6; i++) {
+        if ($0 == headings[i]) {
+          bad = 1
+          next
+        }
+      }
+      if ($0 !~ /^[[:space:]]*$/) content = 1
+      if (expected == 2) {
+        if ($0 == "Review status: complete") finding_review = 1
+        if (index($0, "Finding count: ") == 1 && field("Finding count: ") ~ /^[0-9]+$/) {
+          finding_count = field("Finding count: ") + 0
+          finding_count_seen = 1
+        }
+        if ($0 == "Finding summary: none") finding_summary = 1
+        if (index($0, "Finding: ") == 1) {
+          finding_entries++
+          if (substr($0, length("Finding: ") + 1) !~ /^severity=(error|warning|info); path=[^;[:space:]][^;]*:[1-9][0-9]*; evidence=[^;[:space:]][^;]*[[:space:]][^;[:space:]]; consequence=[^;[:space:]][^;]*[[:space:]][^;[:space:]]; fix=[^;[:space:]][^;]*[[:space:]][^;[:space:]]$/) bad = 1
+        }
+      }
+      if (expected == 3) {
+        if (index($0, "Target repository: ") == 1 && length(field("Target repository: ")) > 0) {
+          target_repository = 1
+          target_repository_value = field("Target repository: ")
+        }
+        if (index($0, "Base ref: ") == 1 && length(field("Base ref: ")) > 0) {
+          base_ref = 1
+          base_ref_value = field("Base ref: ")
+        }
+        if (index($0, "Base SHA: ") == 1 && full_sha(field("Base SHA: "))) {
+          base_sha = 1
+          base_sha_value = field("Base SHA: ")
+        }
+        if (index($0, "Head SHA: ") == 1 && full_sha(field("Head SHA: "))) {
+          head_sha = field("Head SHA: ")
+          target_head = 1
+        }
+        if (index($0, "Merge-base SHA: ") == 1 && full_sha(field("Merge-base SHA: "))) {
+          merge_base_sha = 1
+          merge_base_sha_value = field("Merge-base SHA: ")
+        }
+        if (index($0, "Changed files: ") == 1 && full_digest(field("Changed files: "))) {
+          changed_files = 1
+          changed_files_value = field("Changed files: ")
+        }
+        if ($0 == "Tree status: clean") {
+          tree_status = 1
+          tree_status_value = "clean"
+        }
+      }
+      if (expected == 4) {
+        if (index($0, "Substrate base SHA: ") == 1 && full_sha(field("Substrate base SHA: "))) {
+          substrate_base_sha = 1
+          substrate_base_sha_value = field("Substrate base SHA: ")
+        }
+        if (index($0, "Substrate head SHA: ") == 1 && full_sha(field("Substrate head SHA: "))) {
+          substrate_head_sha = 1
+          substrate_head_sha_value = field("Substrate head SHA: ")
+        }
+        if (index($0, "Substrate changed files: ") == 1 && full_digest(field("Substrate changed files: "))) {
+          substrate_changed_files = 1
+          substrate_changed_files_value = field("Substrate changed files: ")
+        }
+        if ($0 == "Substrate diff: no substrate diff") substrate_no_diff = 1
+      }
+      if (expected == 5) {
+        if (index($0, "Authority: ") == 1) { authority_count++; if (substantive(field("Authority: "), "authority") || unaffected(field("Authority: "), "authority")) authority = 1 }
+        if (index($0, "Security: ") == 1) { security_count++; if (substantive(field("Security: "), "security") || unaffected(field("Security: "), "security")) security = 1 }
+        if (index($0, "Path: ") == 1) { path_count++; if (substantive(field("Path: "), "path") || unaffected(field("Path: "), "path")) path = 1 }
+        if (index($0, "Failure: ") == 1) { failure_count++; if (substantive(field("Failure: "), "failure") || unaffected(field("Failure: "), "failure")) failure = 1 }
+        if (index($0, "Tests: ") == 1) { tests_count++; if (substantive(field("Tests: "), "tests") || unaffected(field("Tests: "), "tests")) tests = 1 }
+        if (index($0, "Documentation: ") == 1) { documentation_count++; if (substantive(field("Documentation: "), "documentation") || unaffected(field("Documentation: "), "documentation")) documentation = 1 }
+        if (index($0, "Delivery: ") == 1) { delivery_count++; if (substantive(field("Delivery: "), "delivery") || unaffected(field("Delivery: "), "delivery")) delivery = 1 }
+      }
+      if (expected == 6) {
+        if (index($0, "Command: ") == 1 && length(field("Command: ")) > 0) command = 1
+        if (index($0, "Result: ") == 1 && length(field("Result: ")) > 0) result = 1
+      }
+    }
+    END {
+      if (!content) bad = 1
+      if (!finding_review || !finding_count_seen || finding_count != finding_entries) bad = 1
+      if (finding_count == 0 && !finding_summary) bad = 1
+      if (!target_repository || !base_ref || !base_sha || !target_head || !merge_base_sha || !changed_files || !tree_status) bad = 1
+      if (!substrate_base_sha || !substrate_head_sha || !substrate_changed_files) bad = 1
+      if (!authority || !security || !path || !failure || !tests || !documentation || !delivery) bad = 1
+      if (authority_count != 1 || security_count != 1 || path_count != 1 || failure_count != 1 || tests_count != 1 || documentation_count != 1 || delivery_count != 1) bad = 1
+      if (!command || !result) bad = 1
+      if (expected_head != "" && head_sha != expected_head) bad = 1
+      if (valid && !bad && expected == 7 && NR >= 8) {
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", target_repository_value, base_ref_value, base_sha_value, head_sha, merge_base_sha_value, changed_files_value, tree_status_value, substrate_base_sha_value, substrate_head_sha_value, substrate_changed_files_value, substrate_no_diff
+        exit 0
+      }
+      exit 1
+    }
+    function substantive(value, surface,    n, parts, reference, hunk) {
+      n = split(value, parts, "; ")
+      if (n != 6 || parts[1] != "reviewed" || parts[2] != "surface=" surface) return 0
+      if (parts[3] !~ /^files=[^;[:space:]][^;]*$/) return 0
+      if (parts[4] !~ /^evidence=[^;[:space:]][^;]*:[1-9][0-9]* sha256=[0-9a-f]+ change-sha256=[0-9a-f]+ line-hex=[0-9a-f]+ before-hex=(none|[0-9a-f]+) after-hex=(none|[0-9a-f]+) hunk=[^;[:space:]][^;]* claim=observed:[^;[:space:]]+ behavior=[^;[:space:]]+ behavior-sha256=[0-9a-f]+$/) return 0
+      reference = parts[4]
+      sub(/^evidence=/, "", reference)
+      evidence_hash = reference
+      sub(/^.* sha256=/, "", evidence_hash)
+      sub(/ change-sha256=.*/, "", evidence_hash)
+      change_hash = parts[4]
+      sub(/^.* change-sha256=/, "", change_hash)
+      sub(/ line-hex=.*/, "", change_hash)
+      line_hex = parts[4]
+      sub(/^.* line-hex=/, "", line_hex)
+    sub(/ before-hex=.*/, "", line_hex)
+      sub(/ sha256=.*/, "", reference)
+      hunk = parts[4]
+      sub(/^.* hunk=/, "", hunk)
+      sub(/ claim=observed:[^;[:space:]]+ behavior=[^;[:space:]]+ behavior-sha256=.*/, "", hunk)
+      if (hunk != reference) return 0
+      if (parts[5] !~ /^consequence=anchor=[^;[:space:]][^;]*:[1-9][0-9]* side=(old|new) sha256=[0-9a-f]+ change-sha256=[0-9a-f]+ line-hex=[0-9a-f]+ before-hex=(none|[0-9a-f]+) after-hex=(none|[0-9a-f]+) hunk=[^;[:space:]][^;]* claim=transition:(none|[0-9a-f]+)->(none|[0-9a-f]+) behavior=[^;[:space:]]+ behavior-sha256=[0-9a-f]+ binding=[0-9a-f]+$/) return 0
+      if (parts[6] !~ /^fix=anchor=[^;[:space:]][^;]*:[1-9][0-9]* side=(old|new) sha256=[0-9a-f]+ change-sha256=[0-9a-f]+ line-hex=[0-9a-f]+ before-hex=(none|[0-9a-f]+) after-hex=(none|[0-9a-f]+) hunk=[^;[:space:]][^;]* claim=applied:[^;[:space:]]+ behavior=[^;[:space:]]+ action=[^;[:space:]]+ behavior-sha256=[0-9a-f]+ binding=[0-9a-f]+$/) return 0
+      if (line_hex !~ /^[0-9a-f]+$/ || length(line_hex) % 2 != 0) return 0
+      return 1
+    }
+    function unaffected(value, surface,    n, parts, rationale) {
+      n = split(value, parts, "; ")
+      if (n != 6 || parts[1] != "reviewed" || parts[2] != "surface=" surface || parts[3] != "scope=unaffected") return 0
+      if (parts[4] !~ /^files=[^;[:space:]][^;]*$/) return 0
+      rationale = "rationale=no applicable changed " surface " surface"
+      if (parts[5] != rationale) return 0
+      return parts[6] ~ /^binding=[0-9a-f]+$/ && length(parts[6]) == 72
+    }
+  ' "$report") || return 1
+  IFS="$(printf '\t')" read -r target_repository base_ref base_sha head_sha merge_base_sha changed_files tree_status \
+    substrate_base_sha substrate_head_sha substrate_changed_files substrate_no_diff <<EOF
+$parsed
+EOF
+  case "$base_ref" in
+    ''|[-.]*|*..*|*@\{*|*[!A-Za-z0-9._/-]*) return 1 ;;
+  esac
+  local actual_repository actual_head resolved_base actual_merge_base actual_changed_files actual_changed_paths actual_changed_path_count
+  actual_repository=$(cd "$worktree" && pwd -P) || return 1
+  actual_head=$(git -C "$worktree" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1
+  [ "$target_repository" = "$actual_repository" ] || return 1
+  [ "$head_sha" = "$actual_head" ] || return 1
+  [ -n "$expected_base_ref" ] && [ "$base_ref" = "$expected_base_ref" ] || return 1
+  [ -n "$expected_base_sha" ] && [ "$base_sha" = "$expected_base_sha" ] || return 1
+  resolved_base=$(git -C "$worktree" rev-parse --verify "$base_ref^{commit}" 2>/dev/null) || return 1
+  [ "$base_sha" = "$resolved_base" ] || return 1
+  actual_merge_base=$(git -C "$worktree" merge-base "$base_sha" "$head_sha" 2>/dev/null) || return 1
+  [ "$merge_base_sha" = "$actual_merge_base" ] || return 1
+  actual_changed_files=$(git -C "$worktree" diff --name-status "$merge_base_sha" "$head_sha" | fm_pr_sha256_stream) || return 1
+  [ "$changed_files" = "$actual_changed_files" ] || return 1
+  actual_changed_paths=$(
+    set -o pipefail
+    git -C "$worktree" diff --name-only -z "$merge_base_sha" "$head_sha" |
+      while IFS= read -r -d '' changed_path; do
+        fm_pr_review_path_encode "$changed_path" || exit 1
+      done
+  ) || return 1
+  [ -n "$actual_changed_paths" ] || return 1
+  actual_changed_path_count=$(printf '%s\n' "$actual_changed_paths" | awk 'NF { count++ } END { print count + 0 }') || return 1
+  [ -z "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] || return 1
+  [ -z "$(git -C "$substrate_root" status --porcelain 2>/dev/null)" ] || return 1
+  fm_pr_review_path_syntax_valid() {
+    local candidate=$1 encoded decoded
+    case "$candidate" in
+      hex:*)
+        encoded=${candidate#hex:}
+        case "$encoded" in
+          ''|*[!0-9a-f]*) return 1 ;;
+        esac
+        [ $(( ${#encoded} % 2 )) -eq 0 ] || return 1
+        printf -v decoded '%b' "$(printf '%s' "$encoded" | sed 's/../\\x&/g')" || return 1
+        ;;
+      ''|/*|*';'*|*,*|*:*|*[[:space:]]*) return 1 ;;
+      *) decoded=$candidate ;;
+    esac
+    case "$decoded" in
+      ''|/*) return 1 ;;
+      *';'*|*,*|*:*|*[[:space:]]*)
+        case "$candidate" in
+          hex:*) ;;
+          *) return 1 ;;
+        esac
+        ;;
+    esac
+    case "/$decoded/" in
+      */../*|*/./*) return 1 ;;
+    esac
+    FM_PR_REVIEW_PATH=$decoded
+    return 0
+  }
+  local line finding_path finding_file finding_line surface_files surface_file review_root
+  local surface_evidence evidence_ref evidence_rest evidence_file evidence_line evidence_side evidence_hash evidence_change_hash evidence_line_hex evidence_before_hex evidence_after_hex evidence_claim evidence_behavior evidence_behavior_hash evidence_hunk_id evidence_hunk_shape hunk_old_count hunk_new_count expected_before_hex expected_after_hex line_content actual_evidence_hash actual_change_hash actual_line_hex surface_review_files surface_evidence_files surface_evidence_refs surface_evidence_hunks changed_path surface_name surface_consequence surface_fix surface_behavior surface_action surface_binding surface_behavior_hash surface_body surface_unaffected_files surface_unaffected_binding surface_unaffected_expected_binding consequence_ref consequence_file consequence_side consequence_hash consequence_change_hash consequence_line_hex consequence_before_hex consequence_after_hex consequence_claim consequence_behavior consequence_behavior_hash consequence_hunk consequence_rest consequence_line fix_ref fix_file fix_side fix_hash fix_change_hash fix_line_hex fix_before_hex fix_after_hex fix_claim fix_behavior fix_action fix_behavior_hash fix_hunk fix_rest fix_line
+  surface_review_files=
+  surface_evidence_files=
+  surface_evidence_refs=
+  surface_evidence_hunks=
+  fm_pr_review_file_valid() {
+    local review_file=$1
+    for review_root in "$worktree" "$substrate_root"; do
+      if [ -f "$review_root/$review_file" ] && [ ! -L "$review_root/$review_file" ] \
+        && git -C "$review_root" ls-files --error-unmatch -- "$review_file" >/dev/null 2>&1; then
+        return 0
+      fi
+    done
+    if [ "$(git -C "$worktree" cat-file -t "$merge_base_sha:$review_file" 2>/dev/null)" = blob ]; then
+      return 0
+    fi
+    if [ "$(git -C "$substrate_root" cat-file -t "$substrate_base_sha:$review_file" 2>/dev/null)" = blob ]; then
+      return 0
+    fi
+    return 1
+  }
+  while IFS= read -r line || [ -n "$line" ]; do
+    finding_path=${line#* path=}
+    finding_path=${finding_path%%; evidence=*}
+    finding_file=${finding_path%:*}
+    finding_line=${finding_path##*:}
+    fm_pr_review_path_syntax_valid "$finding_file" || return 1
+    finding_file=$FM_PR_REVIEW_PATH
+    [ "$finding_line" -ge 1 ] 2>/dev/null || return 1
+    fm_pr_review_file_valid "$finding_file" || return 1
+  done < <(awk '/^Finding: / { print }' "$report")
+  while IFS= read -r line || [ -n "$line" ]; do
+    surface_files=${line#*files=}
+    surface_files=${surface_files%%; evidence=*}
+    surface_files=${surface_files%%; rationale=*}
+    [ -n "$surface_files" ] || return 1
+    while IFS= read -r surface_file || [ -n "$surface_file" ]; do
+      fm_pr_review_path_syntax_valid "$surface_file" || return 1
+      surface_file=$FM_PR_REVIEW_PATH
+      fm_pr_review_file_valid "$surface_file" || return 1
+      surface_file=$(fm_pr_review_path_encode "$surface_file") || return 1
+      surface_review_files="$surface_review_files$surface_file
+"
+    done < <(printf '%s\n' "$surface_files" | tr ',' '\n')
+  done < <(awk '/^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): / { print }' "$report")
+  fm_pr_review_surface_file_valid() {
+    local candidate=$1 allowed_files listed encoded_candidate
+    allowed_files=${2-$surface_review_files}
+    encoded_candidate=$(fm_pr_review_path_encode "$candidate") || return 1
+    while IFS= read -r listed || [ -n "$listed" ]; do
+      fm_pr_review_path_syntax_valid "$listed" || return 1
+      listed=$FM_PR_REVIEW_PATH
+      listed=$(fm_pr_review_path_encode "$listed") || return 1
+      [ "$listed" = "$encoded_candidate" ] && return 0
+    done < <(printf '%s\n' "$allowed_files" | tr ',' '\n')
+    return 1
+  }
+  fm_pr_changed_path_valid() {
+    local candidate=$1 changed_path encoded_candidate
+    encoded_candidate=$(fm_pr_review_path_encode "$candidate") || return 1
+    while IFS= read -r changed_path || [ -n "$changed_path" ]; do
+      [ "$encoded_candidate" = "$changed_path" ] && return 0
+    done <<EOF
+$actual_changed_paths
+EOF
+    return 1
+  }
+  fm_pr_review_surface_owner_path_valid() {
+    local review_surface=$1 review_file=$2
+    case "$review_surface" in
+      authority)
+        case "$review_file" in
+          AGENTS.md|.agents/skills/*|bin/fm-brief.sh|bin/fm-spawn.sh|bin/fm-promote.sh|bin/fm-pr-check.sh|bin/fm-merge-local.sh|bin/fm-pr-create.sh|bin/fm-pr-merge.sh|schemas/*) return 0 ;;
+        esac
+        ;;
+      security)
+        case "$review_file" in
+          .agents/skills/*|bin/fm-pr-lib.sh|bin/fm-pr-self-review-check.sh|bin/fm-operational-input.sh|bin/fm-send.sh|bin/fm-message*.sh|bin/fm-remote-*.sh|bin/firstmate_factory/*|schemas/*) return 0 ;;
+        esac
+        ;;
+      path)
+        case "$review_file" in
+          bin/fm-pr-lib.sh|bin/fm-review-diff.sh|bin/fm-spawn.sh|bin/fm-pr-check.sh|bin/fm-pr-create.sh|bin/fm-pr-self-review-check.sh|bin/fm-merge-local.sh|bin/fm-operational-input.sh|bin/fm-send.sh|schemas/*) return 0 ;;
+        esac
+        ;;
+      failure)
+        case "$review_file" in
+          bin/*|schemas/*) return 0 ;;
+        esac
+        ;;
+      tests)
+        case "$review_file" in
+          bin/fm-test*.sh|tests/*) return 0 ;;
+        esac
+        ;;
+      documentation)
+        case "$review_file" in
+          AGENTS.md|.agents/skills/*|CONTRIBUTING.md|README*|docs/*) return 0 ;;
+        esac
+        ;;
+      delivery)
+        case "$review_file" in
+          AGENTS.md|.github/workflows/*|bin/fm-brief.sh|bin/fm-spawn.sh|bin/fm-promote.sh|bin/fm-pr-check.sh|bin/fm-pr-create.sh|bin/fm-pr-merge.sh|bin/fm-merge-local.sh) return 0 ;;
+        esac
+        ;;
+    esac
+    return 1
+  }
+  fm_pr_review_surface_has_relevant_changed_path() {
+    local review_surface=$1 changed_path relevant=0
+    while IFS= read -r changed_path || [ -n "$changed_path" ]; do
+      fm_pr_review_path_syntax_valid "$changed_path" || return 1
+      changed_path=$FM_PR_REVIEW_PATH
+      if fm_pr_review_surface_owner_path_valid "$review_surface" "$changed_path"; then
+        relevant=1
+        break
+      fi
+    done <<EOF
+$actual_changed_paths
+EOF
+    [ "$relevant" -eq 1 ]
+  }
+  fm_pr_review_surface_path_valid() {
+    local review_surface=$1 review_file=$2
+    fm_pr_review_surface_has_relevant_changed_path "$review_surface" || return 1
+    fm_pr_review_surface_owner_path_valid "$review_surface" "$review_file"
+  }
+  fm_pr_review_hunk_id() {
+    local review_file=$1 review_line=$2 side=${3:-new} encoded_file
+    case "$side" in
+      old|new) ;;
+      *) return 1 ;;
+    esac
+    encoded_file=$(fm_pr_review_path_encode "$review_file") || return 1
+    git -C "$worktree" diff --no-color --unified=0 "$merge_base_sha" "$head_sha" -- "$review_file" |
+      awk -v target="$review_line" -v path="$encoded_file" -v side="$side" '
+        function range_start(value, parts) {
+          sub(/^[-+]/, "", value)
+          split(value, parts, ",")
+          return parts[1] + 0
+        }
+        function range_count(value, parts) {
+          split(value, parts, ",")
+          return parts[2] == "" ? 1 : parts[2] + 0
+        }
+        /^@@ / {
+          old_start = range_start($2)
+          old_count = range_count($2)
+          new_start = range_start($3)
+          new_count = range_count($3)
+          hunk = path "|" old_start "," old_count "|" new_start "," new_count
+          if (!found && side == "new" && new_count > 0 && target >= new_start && target < new_start + new_count) {
+            matched_hunk = hunk
+            found = 1
+          }
+          if (!found && side == "old" && old_count > 0 && target >= old_start && target < old_start + old_count) {
+            matched_hunk = hunk
+            found = 1
+          }
+        }
+        END {
+          if (found) print matched_hunk
+          exit found ? 0 : 1
+        }
+      '
+  }
+  fm_pr_review_hunk_shape() {
+    local review_file=$1 review_line=$2 side=$3
+    case "$side" in
+      old|new) ;;
+      *) return 1 ;;
+    esac
+    git -C "$worktree" diff --no-color --unified=0 "$merge_base_sha" "$head_sha" -- "$review_file" |
+      awk -v target="$review_line" -v side="$side" '
+        function range_start(value, parts) {
+          sub(/^[-+]/, "", value)
+          split(value, parts, ",")
+          return parts[1] + 0
+        }
+        function range_count(value, parts) {
+          split(value, parts, ",")
+          return parts[2] == "" ? 1 : parts[2] + 0
+        }
+        /^@@ / {
+          old_start = range_start($2)
+          old_count = range_count($2)
+          new_start = range_start($3)
+          new_count = range_count($3)
+          if (!found && side == "new" && new_count > 0 && target >= new_start && target < new_start + new_count) {
+            printf "%d|%d\n", old_count, new_count
+            found = 1
+          }
+          if (!found && side == "old" && old_count > 0 && target >= old_start && target < old_start + old_count) {
+            printf "%d|%d\n", old_count, new_count
+            found = 1
+          }
+        }
+        END { exit found ? 0 : 1 }
+      '
+  }
+  fm_pr_review_changed_line_valid() {
+    local review_file=$1 review_line=$2 side=${3:-new}
+    case "$side" in
+      old|new) ;;
+      *) return 1 ;;
+    esac
+    git -C "$worktree" diff --no-color --unified=0 "$merge_base_sha" "$head_sha" -- "$review_file" |
+      awk -v target="$review_line" -v side="$side" '
+        function range_start(value, parts) {
+          sub(/^[-+]/, "", value)
+          split(value, parts, ",")
+          return parts[1] + 0
+        }
+        /^@@ / {
+          old_line = range_start($2)
+          new_line = range_start($3)
+          next
+        }
+        /^\+\+\+ / { next }
+        /^--- / { next }
+        /^\+/ {
+          if (side == "new" && new_line == target) found = 1
+          new_line++
+          next
+        }
+        /^-/ {
+          if (side == "old" && old_line == target) found = 1
+          old_line++
+          next
+        }
+        {
+          old_line++
+          new_line++
+        }
+        END { exit found ? 0 : 1 }
+      '
+  }
+  fm_pr_review_line_evidence_valid() {
+    local review_file=$1 review_line=$2 side=$3 expected_hash=$4 expected_line_hex=$5 commit actual_hash actual_line_hex
+    fm_pr_review_changed_line_valid "$review_file" "$review_line" "$side" || return 1
+    if [ "$side" = new ]; then
+      commit=$head_sha
+    else
+      commit=$merge_base_sha
+    fi
+    FM_PR_REVIEW_LINE_CONTENT=$(git -C "$worktree" show "$commit:$review_file" | awk -v target="$review_line" 'NR == target { printf "%s", $0; found = 1; exit } END { if (!found) exit 1 }') || return 1
+    actual_hash=$(printf '%s\n' "$FM_PR_REVIEW_LINE_CONTENT" | fm_pr_sha256_stream) || return 1
+    actual_line_hex=$(printf '%s' "$FM_PR_REVIEW_LINE_CONTENT" | od -An -tx1 | tr -d ' \n') || return 1
+    [ "$actual_hash" = "$expected_hash" ] || return 1
+    [ "$actual_line_hex" = "$expected_line_hex" ] || return 1
+  }
+  while IFS= read -r changed_path || [ -n "$changed_path" ]; do
+    fm_pr_review_path_syntax_valid "$changed_path" || return 1
+    changed_path=$FM_PR_REVIEW_PATH
+    fm_pr_changed_path_valid "$changed_path" || return 1
+    fm_pr_review_surface_file_valid "$changed_path" || return 1
+  done <<EOF
+$actual_changed_paths
+EOF
+  while IFS= read -r line || [ -n "$line" ]; do
+    surface_name=$(printf '%s' "${line%%:*}" | tr '[:upper:]' '[:lower:]') || return 1
+    case "$surface_name" in
+      authority) surface_behavior=non-authorizing; surface_action=retain-owner ;;
+      security) surface_behavior=provenance-bound; surface_action=retain-boundary ;;
+      path) surface_behavior=path-safe; surface_action=retain-validation ;;
+      failure) surface_behavior=fail-closed; surface_action=retain-refusal ;;
+      tests) surface_behavior=behavioral; surface_action=retain-regression ;;
+      documentation) surface_behavior=contract-aligned; surface_action=retain-contract ;;
+      delivery) surface_behavior=no-mistakes-owned; surface_action=retain-no-mistakes ;;
+      *) return 1 ;;
+    esac
+    surface_body=${line#*: }
+    case "$surface_body" in
+      "reviewed; surface=$surface_name; scope=unaffected; files="*)
+        surface_unaffected_files=${surface_body#*; scope=unaffected; files=}
+        surface_unaffected_files=${surface_unaffected_files%%; rationale=*}
+        surface_unaffected_binding=${surface_body##*; binding=}
+        [ "$surface_unaffected_files" != "$surface_body" ] || return 1
+        [ "$surface_body" = "reviewed; surface=$surface_name; scope=unaffected; files=$surface_unaffected_files; rationale=no applicable changed $surface_name surface; binding=$surface_unaffected_binding" ] || return 1
+        [ "${#surface_unaffected_binding}" -eq 64 ] || return 1
+        case "$surface_unaffected_binding" in *[!0-9a-f]*) return 1 ;; esac
+        surface_unaffected_expected_binding=$(printf '%s\n' "$surface_name|unaffected|$surface_unaffected_files|$changed_files|$surface_behavior|$surface_action" | fm_pr_sha256_stream) || return 1
+        [ "$surface_unaffected_binding" = "$surface_unaffected_expected_binding" ] || return 1
+        while IFS= read -r surface_unaffected_file || [ -n "$surface_unaffected_file" ]; do
+          fm_pr_review_path_syntax_valid "$surface_unaffected_file" || return 1
+          surface_unaffected_file=$FM_PR_REVIEW_PATH
+          fm_pr_changed_path_valid "$surface_unaffected_file" || return 1
+        done < <(printf '%s\n' "$surface_unaffected_files" | tr ',' '\n')
+        if fm_pr_review_surface_has_relevant_changed_path "$surface_name"; then return 1; fi
+        continue
+        ;;
+    esac
+    actual_evidence_hash=
+    surface_files=${line#*files=}
+    surface_files=${surface_files%%; evidence=*}
+    surface_files=${surface_files%%; rationale=*}
+    while IFS= read -r surface_file || [ -n "$surface_file" ]; do
+      fm_pr_review_path_syntax_valid "$surface_file" || return 1
+      surface_file=$FM_PR_REVIEW_PATH
+      fm_pr_changed_path_valid "$surface_file" || return 1
+    done < <(printf '%s\n' "$surface_files" | tr ',' '\n')
+    surface_evidence=${line#*; evidence=}
+    surface_evidence=${surface_evidence%%; consequence=*}
+    evidence_ref=${surface_evidence%% sha256=*}
+    evidence_rest=${surface_evidence#"$evidence_ref" }
+    evidence_side=new
+    evidence_hash=${evidence_rest#sha256=}
+    evidence_hash=${evidence_hash%% *}
+    evidence_change_hash=${evidence_rest#*change-sha256=}
+    evidence_change_hash=${evidence_change_hash%% *}
+    evidence_line_hex=${evidence_rest#*line-hex=}
+    evidence_line_hex=${evidence_line_hex%% *}
+    evidence_before_hex=${evidence_rest#*before-hex=}
+    evidence_before_hex=${evidence_before_hex%% *}
+    evidence_after_hex=${evidence_rest#*after-hex=}
+    evidence_after_hex=${evidence_after_hex%% *}
+    evidence_claim=${evidence_rest#*claim=}
+    evidence_claim=${evidence_claim%% behavior=*}
+    evidence_behavior=${evidence_rest#*behavior=}
+    evidence_behavior=${evidence_behavior%% behavior-sha256=*}
+    evidence_behavior_hash=${evidence_rest#*behavior-sha256=}
+    evidence_behavior_hash=${evidence_behavior_hash%% *}
+    surface_consequence=${line#*; consequence=}
+    surface_consequence=${surface_consequence%%; fix=*}
+    surface_fix=${line#*; fix=}
+    evidence_file=${evidence_ref%:*}
+    evidence_line=${evidence_ref##*:}
+    consequence_ref=${surface_consequence#anchor=}
+    consequence_ref=${consequence_ref%% side=*}
+    consequence_rest=${surface_consequence#"anchor=$consequence_ref "}
+    consequence_side=${consequence_rest#side=}
+    consequence_side=${consequence_side%% sha256=*}
+    consequence_hash=${consequence_rest#*sha256=}
+    consequence_hash=${consequence_hash%% change-sha256=*}
+    consequence_change_hash=${consequence_rest#*change-sha256=}
+    consequence_change_hash=${consequence_change_hash%% line-hex=*}
+    consequence_line_hex=${consequence_rest#*line-hex=}
+    consequence_line_hex=${consequence_line_hex%% before-hex=*}
+    consequence_before_hex=${consequence_rest#*before-hex=}
+    consequence_before_hex=${consequence_before_hex%% after-hex=*}
+    consequence_after_hex=${consequence_rest#*after-hex=}
+    consequence_after_hex=${consequence_after_hex%% hunk=*}
+    consequence_claim=${consequence_rest#*claim=}
+    consequence_claim=${consequence_claim%% behavior=*}
+    consequence_behavior=${consequence_rest#*behavior=}
+    consequence_behavior=${consequence_behavior%% behavior-sha256=*}
+    consequence_behavior_hash=${consequence_rest#*behavior-sha256=}
+    consequence_behavior_hash=${consequence_behavior_hash%% binding=*}
+    consequence_hunk=${consequence_rest#*hunk=}
+    consequence_hunk=${consequence_hunk%% claim=transition:*}
+    consequence_hunk=${consequence_hunk%% binding=*}
+    fix_ref=${surface_fix#anchor=}
+    fix_ref=${fix_ref%% side=*}
+    fix_rest=${surface_fix#"anchor=$fix_ref "}
+    fix_side=${fix_rest#side=}
+    fix_side=${fix_side%% sha256=*}
+    fix_hash=${fix_rest#*sha256=}
+    fix_hash=${fix_hash%% change-sha256=*}
+    fix_change_hash=${fix_rest#*change-sha256=}
+    fix_change_hash=${fix_change_hash%% line-hex=*}
+    fix_line_hex=${fix_rest#*line-hex=}
+    fix_line_hex=${fix_line_hex%% before-hex=*}
+    fix_before_hex=${fix_rest#*before-hex=}
+    fix_before_hex=${fix_before_hex%% after-hex=*}
+    fix_after_hex=${fix_rest#*after-hex=}
+    fix_after_hex=${fix_after_hex%% hunk=*}
+    fix_claim=${fix_rest#*claim=}
+    fix_claim=${fix_claim%% behavior=*}
+    fix_behavior=${fix_rest#*behavior=}
+    fix_behavior=${fix_behavior%% action=*}
+    fix_action=${fix_rest#*action=}
+    fix_action=${fix_action%% behavior-sha256=*}
+    fix_behavior_hash=${fix_rest#*behavior-sha256=}
+    fix_behavior_hash=${fix_behavior_hash%% binding=*}
+    fix_hunk=${fix_rest#*hunk=}
+    fix_hunk=${fix_hunk%% claim=applied:*}
+    fix_hunk=${fix_hunk%% binding=*}
+    fm_pr_review_path_syntax_valid "$evidence_file" || return 1
+    evidence_file=$FM_PR_REVIEW_PATH
+    fm_pr_review_surface_path_valid "$surface_name" "$evidence_file" || return 1
+    [ "$evidence_line" -ge 1 ] 2>/dev/null || return 1
+    [ "${#evidence_hash}" -eq 64 ] || return 1
+    case "$evidence_hash" in
+      *[!0-9a-f]*) return 1 ;;
+    esac
+    [ "${#evidence_change_hash}" -eq 64 ] || return 1
+    case "$evidence_change_hash" in
+      *[!0-9a-f]*) return 1 ;;
+    esac
+    [ "${#evidence_behavior_hash}" -eq 64 ] || return 1
+    case "$evidence_behavior_hash" in
+      *[!0-9a-f]*) return 1 ;;
+    esac
+    [ "${#evidence_line_hex}" -gt 0 ] || return 1
+    [ $(( ${#evidence_line_hex} % 2 )) -eq 0 ] || return 1
+    case "$evidence_line_hex" in
+      *[!0-9a-f]*) return 1 ;;
+    esac
+    fm_pr_review_path_syntax_valid "${consequence_ref%:*}" || return 1
+    consequence_file=$FM_PR_REVIEW_PATH
+    consequence_line=${consequence_ref##*:}
+    fm_pr_review_path_syntax_valid "${fix_ref%:*}" || return 1
+    fix_file=$FM_PR_REVIEW_PATH
+    fix_line=${fix_ref##*:}
+    [ "$consequence_file" = "$evidence_file" ] || return 1
+    [ "$fix_file" = "$evidence_file" ] || return 1
+    [ "$consequence_line" -ge 1 ] 2>/dev/null || return 1
+    [ "$fix_line" -ge 1 ] 2>/dev/null || return 1
+    [ "$consequence_change_hash" = "$evidence_change_hash" ] || return 1
+    [ "$fix_change_hash" = "$evidence_change_hash" ] || return 1
+    [ "$evidence_behavior" = "$surface_behavior" ] || return 1
+    [ "$consequence_behavior" = "$surface_behavior" ] || return 1
+    [ "$fix_behavior" = "$surface_behavior" ] || return 1
+    [ "$fix_action" = "$surface_action" ] || return 1
+    [ "$consequence_hash" != '' ] && [ "$fix_hash" != '' ] || return 1
+    [ "$consequence_line_hex" != '' ] && [ "$fix_line_hex" != '' ] || return 1
+    [ $(( ${#consequence_line_hex} % 2 )) -eq 0 ] || return 1
+    [ $(( ${#fix_line_hex} % 2 )) -eq 0 ] || return 1
+    case "$consequence_hash$consequence_line_hex$fix_hash$fix_line_hex" in
+      *[!0-9a-f]*) return 1 ;;
+    esac
+    case "$evidence_before_hex$evidence_after_hex$consequence_before_hex$consequence_after_hex$fix_before_hex$fix_after_hex" in
+      *[!0-9a-fnone]*) return 1 ;;
+    esac
+    [ "${#consequence_behavior_hash}" -eq 64 ] || return 1
+    [ "${#fix_behavior_hash}" -eq 64 ] || return 1
+    case "$consequence_behavior_hash$fix_behavior_hash" in
+      *[!0-9a-f]*) return 1 ;;
+    esac
+    fm_pr_review_surface_file_valid "$evidence_file" "$surface_files" || return 1
+    fm_pr_changed_path_valid "$evidence_file" || return 1
+    if ! fm_pr_review_changed_line_valid "$evidence_file" "$evidence_line" new; then
+      evidence_side=old
+      fm_pr_review_changed_line_valid "$evidence_file" "$evidence_line" old || return 1
+    fi
+    evidence_hunk_id=$(fm_pr_review_hunk_id "$evidence_file" "$evidence_line" "$evidence_side") || return 1
+    fm_pr_review_line_evidence_valid "$evidence_file" "$evidence_line" "$evidence_side" "$evidence_hash" "$evidence_line_hex" || return 1
+    actual_evidence_hash=$evidence_hash
+    actual_change_hash=$(git -C "$worktree" diff --no-color --unified=0 "$merge_base_sha" "$head_sha" -- "$evidence_file" | fm_pr_sha256_stream) || return 1
+    actual_line_hex=$evidence_line_hex
+    evidence_hunk_shape=$(fm_pr_review_hunk_shape "$evidence_file" "$evidence_line" "$evidence_side") || return 1
+    consequence_hunk_id=$(fm_pr_review_hunk_id "$evidence_file" "$consequence_line" "$consequence_side") || return 1
+    fix_hunk_id=$(fm_pr_review_hunk_id "$evidence_file" "$fix_line" "$fix_side") || return 1
+    [ "$consequence_hunk" = "$consequence_ref" ] || return 1
+    [ "$fix_hunk" = "$fix_ref" ] || return 1
+    [ "$consequence_hunk_id" = "$evidence_hunk_id" ] || return 1
+    [ "$fix_hunk_id" = "$evidence_hunk_id" ] || return 1
+    hunk_old_count=${evidence_hunk_shape%%|*}
+    hunk_new_count=${evidence_hunk_shape#*|}
+    [ "$hunk_old_count" != "$evidence_hunk_shape" ] || return 1
+    case "$hunk_old_count$hunk_new_count" in
+      *[!0-9]*) return 1 ;;
+    esac
+    if [ "$hunk_old_count" -eq 0 ]; then
+      [ "$hunk_new_count" -gt 0 ] || return 1
+      [ "$consequence_side" = new ] && [ "$fix_side" = new ] || return 1
+      expected_before_hex=none
+      expected_after_hex=$fix_line_hex
+    elif [ "$hunk_new_count" -eq 0 ]; then
+      [ "$consequence_side" = old ] && [ "$fix_side" = old ] || return 1
+      expected_before_hex=$consequence_line_hex
+      expected_after_hex=none
+    else
+      [ "$consequence_side" = old ] && [ "$fix_side" = new ] || return 1
+      [ "$consequence_hash" != "$fix_hash" ] && [ "$consequence_line_hex" != "$fix_line_hex" ] || return 1
+      expected_before_hex=$consequence_line_hex
+      expected_after_hex=$fix_line_hex
+    fi
+    [ "$evidence_before_hex" = "$expected_before_hex" ] && [ "$evidence_after_hex" = "$expected_after_hex" ] || return 1
+    [ "$consequence_before_hex" = "$expected_before_hex" ] && [ "$consequence_after_hex" = "$expected_after_hex" ] || return 1
+    [ "$fix_before_hex" = "$expected_before_hex" ] && [ "$fix_after_hex" = "$expected_after_hex" ] || return 1
+    [ "$evidence_claim" = "observed:$evidence_ref:$evidence_hash:$evidence_line_hex" ] || return 1
+    [ "$consequence_claim" = "transition:$expected_before_hex->$expected_after_hex" ] || return 1
+    [ "$fix_claim" = "applied:$fix_ref:$fix_hash:$fix_line_hex" ] || return 1
+    fm_pr_review_line_evidence_valid "$evidence_file" "$consequence_line" "$consequence_side" "$consequence_hash" "$consequence_line_hex" || return 1
+    fm_pr_review_line_evidence_valid "$evidence_file" "$fix_line" "$fix_side" "$fix_hash" "$fix_line_hex" || return 1
+    surface_behavior_hash=$(printf '%s\n' "$surface_name|$evidence_ref|$consequence_ref|$consequence_side|$consequence_hash|$consequence_line_hex|$expected_before_hex|$expected_after_hex|$fix_ref|$fix_side|$fix_hash|$fix_line_hex|$expected_before_hex|$expected_after_hex|$evidence_change_hash|$evidence_before_hex|$evidence_after_hex|$surface_behavior|$surface_action|$evidence_claim|$consequence_claim|$fix_claim" | fm_pr_sha256_stream) || return 1
+    [ "$evidence_behavior_hash" = "$surface_behavior_hash" ] || return 1
+    [ "$consequence_behavior_hash" = "$surface_behavior_hash" ] || return 1
+    [ "$fix_behavior_hash" = "$surface_behavior_hash" ] || return 1
+    surface_binding=$(printf '%s\n' "$surface_name|$evidence_ref|$evidence_hash|$evidence_change_hash|$evidence_line_hex|$consequence_ref|$consequence_side|$consequence_hash|$consequence_line_hex|$fix_ref|$fix_side|$fix_hash|$fix_line_hex|$surface_behavior_hash" | fm_pr_sha256_stream) || return 1
+    [ "$surface_evidence" = "$evidence_ref sha256=$evidence_hash change-sha256=$evidence_change_hash line-hex=$evidence_line_hex before-hex=$evidence_before_hex after-hex=$evidence_after_hex hunk=$evidence_ref claim=$evidence_claim behavior=$surface_behavior behavior-sha256=$surface_behavior_hash" ] || return 1
+    [ "$surface_consequence" = "anchor=$consequence_ref side=$consequence_side sha256=$consequence_hash change-sha256=$evidence_change_hash line-hex=$consequence_line_hex before-hex=$consequence_before_hex after-hex=$consequence_after_hex hunk=$consequence_ref claim=$consequence_claim behavior=$surface_behavior behavior-sha256=$surface_behavior_hash binding=$surface_binding" ] || return 1
+    [ "$surface_fix" = "anchor=$fix_ref side=$fix_side sha256=$fix_hash change-sha256=$evidence_change_hash line-hex=$fix_line_hex before-hex=$fix_before_hex after-hex=$fix_after_hex hunk=$fix_ref claim=$fix_claim behavior=$surface_behavior action=$surface_action behavior-sha256=$surface_behavior_hash binding=$surface_binding" ] || return 1
+    surface_evidence_hunks="$surface_evidence_hunks$evidence_hunk_id"$'\n'
+    evidence_file=$(fm_pr_review_path_encode "$evidence_file") || return 1
+    surface_evidence_files="$surface_evidence_files$evidence_file
+"
+    surface_evidence_refs="$surface_evidence_refs$evidence_ref
+"
+    [ "$actual_evidence_hash" = "$evidence_hash" ] || return 1
+    [ "$actual_change_hash" = "$evidence_change_hash" ] || return 1
+    [ "$actual_line_hex" = "$evidence_line_hex" ] || return 1
+  done < <(awk '/^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): / { print }' "$report")
+  local unique_surface_evidence_count unique_surface_evidence_hunk_count required_surface_evidence_count applicable_surface_count
+  unique_surface_evidence_count=$(printf '%s\n' "$surface_evidence_files" | LC_ALL=C sort -u | awk 'NF { count++ } END { print count + 0 }') || return 1
+  unique_surface_evidence_hunk_count=$(printf '%s\n' "$surface_evidence_hunks" | LC_ALL=C sort -u | awk 'NF { count++ } END { print count + 0 }') || return 1
+  applicable_surface_count=$(printf '%s\n' authority security path failure tests documentation delivery | while IFS= read -r surface_name; do
+    fm_pr_review_surface_has_relevant_changed_path "$surface_name" && printf '%s\n' 1
+  done | awk '{ count += $1 } END { print count + 0 }') || return 1
+  required_surface_evidence_count=$applicable_surface_count
+  [ "$required_surface_evidence_count" -le "$actual_changed_path_count" ] || required_surface_evidence_count=$actual_changed_path_count
+  [ "$unique_surface_evidence_hunk_count" -eq "$applicable_surface_count" ] || return 1
+  [ "$required_surface_evidence_count" -le 7 ] || required_surface_evidence_count=7
+  [ "$unique_surface_evidence_count" -ge "$required_surface_evidence_count" ] || return 1
+  local actual_substrate_head actual_substrate_changed empty_digest
+  actual_substrate_head=$(git -C "$substrate_root" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1
+  [ "$substrate_head_sha" = "$actual_substrate_head" ] || return 1
+  [ -n "$expected_substrate_base" ] && [ "$substrate_base_sha" = "$expected_substrate_base" ] || return 1
+  git -C "$substrate_root" cat-file -e "$substrate_base_sha^{commit}" 2>/dev/null || return 1
+  actual_substrate_changed=$(git -C "$substrate_root" diff --name-status "$substrate_base_sha" "$substrate_head_sha" | fm_pr_sha256_stream) || return 1
+  [ "$substrate_changed_files" = "$actual_substrate_changed" ] || return 1
+  empty_digest=$(printf '' | fm_pr_sha256_stream) || return 1
+  if [ "$actual_substrate_changed" = "$empty_digest" ]; then
+    [ "$substrate_no_diff" = 1 ] || return 1
+  else
+    [ -z "$substrate_no_diff" ] || return 1
+  fi
 }
 
 fm_pr_regular_destination_or_absent() {

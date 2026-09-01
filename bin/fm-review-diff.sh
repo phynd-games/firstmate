@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Review a crewmate branch against the authoritative base.
 #
-# Pooled project clones do not keep their local default branch current, so this
-# helper compares remote-backed projects against origin/<default> after fetching
-# the default branch, and local-only projects against the local default branch.
+# The task metadata freezes the approved target base as an exact ref/SHA pair,
+# and this helper reviews against that pair without substituting a moving default.
 # When state/<id>.meta records pr= (URL or number) for an open PR, the compare
 # side is ALWAYS a freshly fetched refs/pull/<n>/head by default so review stays
 # current after no-mistakes fix rounds push to the PR. A recorded pr_head= is
 # only a fallback when fetch fails (stale recorded SHAs must never win over a
 # reachable remote PR head). If neither PR head can be resolved, fall back to
 # the local branch with a warning. Without pr=, compare the local branch.
+# Output always pins and prints full base, compare, and merge-base SHAs before
+# diffing the immutable merge-base and compare identities, so a review report
+# can retain exact evidence for the complete PR-shaped diff.
 # Usage: fm-review-diff.sh <task-id> [--stat]
 #   --stat prints only the stat summary; default prints stat summary plus full diff.
 set -eu
@@ -19,6 +21,8 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 "$FM_ROOT/bin/fm-guard.sh" || true
+# shellcheck source=bin/fm-pr-lib.sh
+. "$SCRIPT_DIR/fm-pr-lib.sh"
 
 usage() {
   echo "usage: fm-review-diff.sh <task-id> [--stat]" >&2
@@ -49,23 +53,13 @@ PROJ=$(grep '^project=' "$META" | cut -d= -f2-)
 [ -d "$WT" ] || { echo "error: worktree for task $ID is missing: $WT" >&2; exit 1; }
 [ -d "$PROJ" ] || { echo "error: project for task $ID is missing: $PROJ" >&2; exit 1; }
 
-default_branch() {
-  local ref branch
-  ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
-  if [ -n "$ref" ]; then
-    echo "${ref#origin/}"
-    return 0
-  fi
-  for branch in main master; do
-    if git -C "$PROJ" show-ref --verify --quiet "refs/heads/$branch"; then
-      echo "$branch"
-      return 0
-    fi
-  done
-  return 1
+REVIEW_BASE=$(fm_pr_review_base_from_meta "$META") || {
+  echo "error: task $ID has no valid frozen approved target base" >&2
+  exit 1
 }
-
-DEFAULT=$(default_branch) || { echo "error: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master" >&2; exit 1; }
+IFS="$(printf '\t')" read -r REVIEW_BASE_REF REVIEW_BASE_SHA <<EOF
+$REVIEW_BASE
+EOF
 
 BRANCH="fm/$ID"
 if ! git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null; then
@@ -133,26 +127,23 @@ if [ -n "$PR_URL" ]; then
   fi
 fi
 
-if git -C "$PROJ" remote get-url origin >/dev/null 2>&1; then
-  # Update the remote-tracking ref itself; a bare single-branch fetch can leave
-  # origin/<default> stale on some Git versions and only refresh FETCH_HEAD.
-  git -C "$WT" fetch origin "+refs/heads/$DEFAULT:refs/remotes/origin/$DEFAULT" --quiet
-  BASE="origin/$DEFAULT"
-else
-  BASE="$DEFAULT"
-fi
+BASE="$REVIEW_BASE_REF"
+RESOLVED_BASE_SHA=$(git -C "$WT" rev-parse --verify "$BASE^{commit}" 2>/dev/null) || { echo "error: base $BASE does not exist in $WT" >&2; exit 1; }
+[ "$RESOLVED_BASE_SHA" = "$REVIEW_BASE_SHA" ] || { echo "error: frozen base $BASE does not match recorded SHA" >&2; exit 1; }
+BASE_SHA="$REVIEW_BASE_SHA"
+COMPARE_SHA=$(git -C "$WT" rev-parse --verify "$COMPARE_REF^{commit}" 2>/dev/null) || { echo "error: compare ref $COMPARE_REF does not resolve in $WT" >&2; exit 1; }
+MERGE_BASE_SHA=$(git -C "$WT" merge-base "$BASE_SHA" "$COMPARE_SHA" 2>/dev/null) || { echo "error: base $BASE_SHA and head $COMPARE_SHA have no merge base" >&2; exit 1; }
 
-git -C "$WT" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null || { echo "error: base $BASE does not exist in $WT" >&2; exit 1; }
-git -C "$WT" rev-parse --verify --quiet "$COMPARE_REF^{commit}" >/dev/null || { echo "error: compare ref $COMPARE_REF does not resolve in $WT" >&2; exit 1; }
-
-echo "diff base: $BASE"
-if git -C "$WT" diff --quiet "$BASE...$COMPARE_REF" --; then
-  echo "no changes vs $BASE"
+echo "diff base: $BASE ($BASE_SHA)"
+echo "diff head: $COMPARE_REF ($COMPARE_SHA)"
+echo "diff merge-base: $MERGE_BASE_SHA"
+if git -C "$WT" diff --quiet "$MERGE_BASE_SHA..$COMPARE_SHA" --; then
+  echo "no changes vs $MERGE_BASE_SHA"
   exit 0
 fi
 
-git -C "$WT" diff --stat "$BASE...$COMPARE_REF" --
+git -C "$WT" diff --stat "$MERGE_BASE_SHA..$COMPARE_SHA" --
 if ! "$STAT_ONLY"; then
   echo
-  git -C "$WT" diff "$BASE...$COMPARE_REF" --
+  git -C "$WT" diff "$MERGE_BASE_SHA..$COMPARE_SHA" --
 fi

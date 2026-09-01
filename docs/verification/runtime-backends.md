@@ -607,7 +607,7 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh bin/fm-test-run.sh --lane real-herdr-gated
 ```
 
 Both runs reported `family=real-herdr-gated count=11 failed=0`.
-The projection suite's unconfigured-home case is release-aware rather than pinned to one outcome, so it proves the projected default on 0.8.0 and the flat fallback with its naming warning on 0.7.4:
+The projection suite's unconfigured-home case is release-aware rather than pinned to one outcome, so it proves the projected default on the current 0.8.0 lane and the flat fallback with its naming warning on retained below-floor 0.7.4:
 
 ```text
 ok - real Herdr lab: a home that configured nothing is projected by default on herdr 0.8.0

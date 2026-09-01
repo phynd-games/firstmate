@@ -53,6 +53,8 @@ if mode == "nested-mismatch":
     doc["epics"][0]["tasks"][0][1] = "Changed only in nested form"
 elif mode == "count-mismatch":
     doc["task_count"] = 120
+elif mode == "integral-float-count":
+    doc["task_count"] = 121.0
 elif mode == "duplicate-id":
     doc["tasks"][1]["id"] = doc["tasks"][0]["id"]
 elif mode == "unknown-dependency":
@@ -63,6 +65,17 @@ elif mode == "cycle":
     doc["epics"][0]["tasks"][0][5] = ["E0.02"]
 elif mode == "malformed-epic":
     doc["tasks"][0]["epic"] = []
+elif mode == "empty-graph":
+    doc["task_count"] = 0
+    doc["epics"] = []
+    doc["tasks"] = []
+elif mode == "empty-epic":
+    doc["epics"][0]["tasks"] = []
+elif mode == "without-default-acceptance":
+    for epic in doc["epics"]:
+        epic["tasks"] = [item for item in epic["tasks"] if item[0] != "E7.14"]
+    doc["tasks"] = [task for task in doc["tasks"] if task["id"] != "E7.14"]
+    doc["task_count"] = len(doc["tasks"])
 else:
     raise SystemExit(f"unknown mutation: {mode}")
 pathlib.Path(output).write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
@@ -101,8 +114,12 @@ task firstmate.execution-task.v1
 route firstmate.route-request.v1
 EOF
   json_assert "$TMP_ROOT/schema-execution-manifest.json" "r['properties']['authority']['properties']['approval_id']['minLength'] == 1" "approval IDs must be non-empty in the published schema"
+  json_assert "$TMP_ROOT/schema-execution-manifest.json" "r['properties']['authority']['allOf'][0]['then']['properties']['scope']['minItems'] == 1" "published authority schema must require non-draft scope like runtime validation"
+  json_assert "$TMP_ROOT/schema-execution-manifest.json" "r['properties']['source']['minContains'] == 1 and r['properties']['source']['maxContains'] == 1" "published source schema must require exactly one task-graph binding like runtime validation"
   json_assert "$TMP_ROOT/schema-task.json" "r['properties']['source_refs']['minItems'] == 1" "source references must be non-empty in the published schema"
-  pass "public CLI exposes all four versioned schemas"
+  json_assert "$TMP_ROOT/schema-source.json" "r['properties']['task_count']['minimum'] == 1 and r['properties']['epics']['minItems'] == 1 and r['properties']['tasks']['minItems'] == 1" "published source schema must reject empty graphs like runtime validation"
+  json_assert "$TMP_ROOT/schema-source.json" "r['properties']['epics']['items']['properties']['tasks']['minItems'] == 1" "published source schema must reject empty epics like runtime validation"
+  pass "public CLI exposes four versioned schemas aligned with runtime trust constraints"
 }
 
 test_known_source_graph() {
@@ -112,13 +129,25 @@ test_known_source_graph() {
   "$CLI" validate-source --source "$SOURCE" --expected-sha256 "$SOURCE_SHA" >"$second" || fail "repeat source validation failed"
   cmp -s "$report" "$second" || fail "source validation report is not byte-stable"
   json_assert "$report" "r['valid'] is True and r['errors'] == []" "known source should be valid"
-  json_assert "$report" "r['input']['byte_count'] == 121697 and r['provenance']['matches'] is True" "source provenance facts differ"
+  json_assert "$report" "r['trust'] == {'artifact_origin_verified': False, 'authorization_granted': False, 'structural_validation_only': True}" "valid source report overstated structural validation trust"
+  json_assert "$report" "r['input']['byte_count'] == 121697 and r['provenance']['matches'] is True and r['provenance']['origin_verified'] is False" "source digest-binding facts differ"
   json_assert "$report" "r['graph']['declared_task_count'] == 121 and r['graph']['flat_task_count'] == 121 and r['graph']['nested_task_count'] == 121" "task counts differ"
   json_assert "$report" "r['graph']['epic_count'] == 8 and r['graph']['dependency_edge_count'] == 193" "epic or edge count differs"
   json_assert "$report" "r['graph']['cycle_count'] == 0 and r['graph']['wave_count'] == 26" "cycle or wave count differs"
   json_assert "$report" "r['graph']['roots'] == ['E0.01', 'E5.01'] and r['graph']['nested_flat_equal'] is True" "root or representation facts differ"
   json_assert "$report" "r['graph']['acceptance_reachability']['covered_task_count'] == 88 and r['graph']['acceptance_reachability']['uncovered_task_count'] == 33" "acceptance reachability facts differ"
   pass "known source reproduces 121 tasks, 8 epics, 193 edges, 0 cycles, 26 waves, and two roots"
+}
+
+test_integral_float_task_count() {
+  local fixture="$TMP_ROOT/source-integral-float-count.json" report="$TMP_ROOT/source-integral-float-count-report.json" sha
+  mutate_source integral-float-count "$fixture"
+  sha=$(sha256_file "$fixture")
+  "$CLI" validate-source --source "$fixture" --expected-sha256 "$sha" >"$report" \
+    || fail "schema-valid integral JSON task count should validate"
+  json_assert "$report" "r['valid'] is True and r['graph']['declared_task_count'] == 121" \
+    "integral JSON number task count should match runtime semantics"
+  pass "integral JSON number task counts normalize consistently with the published schema"
 }
 
 test_provenance_rejection() {
@@ -133,8 +162,8 @@ test_provenance_rejection() {
   pass "source provenance mismatch is rejected"
 }
 
-test_public_api_rejects_non_string_digest() {
-  FACTORY_ROOT="$ROOT" SOURCE="$SOURCE" python3 - <<'PY'
+test_public_api_rejects_malformed_arguments() {
+  FACTORY_ROOT="$ROOT" SOURCE="$SOURCE" SOURCE_SHA="$SOURCE_SHA" python3 - <<'PY'
 import os
 import sys
 
@@ -142,20 +171,61 @@ sys.path.insert(0, os.environ["FACTORY_ROOT"] + "/bin")
 from firstmate_factory import validate_source_bytes
 
 with open(os.environ["SOURCE"], "rb") as handle:
-    report = validate_source_bytes(handle.read(), None)
+    source = handle.read()
+report = validate_source_bytes(source, None)
 assert report["valid"] is False
 assert {error["code"] for error in report["errors"]} == {"provenance.expected-sha256"}
+
+for acceptance_task in (None, [], {}, 7, "bad"):
+    first = validate_source_bytes(source, os.environ["SOURCE_SHA"], acceptance_task)
+    second = validate_source_bytes(source, os.environ["SOURCE_SHA"], acceptance_task)
+    assert first == second
+    assert first["valid"] is False
+    assert first["graph"]["acceptance_reachability"]["targets"] == []
+    assert {error["path"] for error in first["errors"]} == {"$.acceptance_task"}
+    assert {error["code"] for error in first["errors"]} <= {"schema.pattern", "schema.type"}
 PY
-  pass "public API returns a deterministic report for a non-string expected digest"
+  pass "public API returns deterministic reports for malformed digest and acceptance-task arguments"
 }
 
 test_malformed_source_fixtures() {
+  local overflow="$TMP_ROOT/source-overflow-count.json" report rc sha
   run_invalid_source nested-mismatch representation.mismatch
   run_invalid_source count-mismatch count.declared
   run_invalid_source duplicate-id id.duplicate-flat-task
   run_invalid_source unknown-dependency graph.unknown-dependency
   run_invalid_source cycle graph.cycle
   run_invalid_source malformed-epic schema.type
+  run_invalid_source empty-graph schema.type
+  run_invalid_source empty-epic schema.min-items
+  python3 - "$SOURCE" "$overflow" <<'PY'
+import pathlib
+import re
+import sys
+
+source, output = map(pathlib.Path, sys.argv[1:])
+text = source.read_text(encoding="utf-8")
+text, count = re.subn(r'("task_count"\s*:\s*)[0-9]+', r'\g<1>1e400', text, count=1)
+assert count == 1
+output.write_text(text, encoding="utf-8")
+PY
+  report="$overflow.report"
+  sha=$(sha256_file "$overflow")
+  set +e
+  "$CLI" validate-source --source "$overflow" --expected-sha256 "$sha" >"$report"
+  rc=$?
+  set -e
+  [ "$rc" -eq 1 ] || fail "overflow task count should exit 1, got $rc"
+  json_assert "$report" "r['valid'] is False and r['errors']" "overflow task count should reject nonfinite numbers"
+  error_codes_include "$report" json.non-finite-number
+  python3 - "$report" <<'PY'
+import json
+import pathlib
+import sys
+
+value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+json.dumps(value, allow_nan=False)
+PY
   pass "malformed source fixtures reject mismatches, counts, IDs, edges, and cycles"
 }
 
@@ -212,6 +282,14 @@ elif mode == "unknown-source-ref":
     doc["tasks"][0]["source_refs"] = ["E999.99"]
 elif mode == "nonbmp-title":
     doc["tasks"][0]["title"] = "😀"
+elif mode == "active-null-approval":
+    doc["authority"] = {"state": "active", "approval_id": None, "scope": ["M1-001"]}
+elif mode == "active-empty-scope":
+    doc["authority"] = {"state": "active", "approval_id": "approval-1", "scope": []}
+elif mode == "multiple-source-bindings":
+    doc["source"].append(dict(doc["source"][0]))
+elif mode == "unhashable-dependency":
+    doc["tasks"][0]["dependencies"] = [[]]
 elif mode not in ("valid", "bad-hash"):
     raise SystemExit(f"unknown mode: {mode}")
 canonical = (json.dumps(doc, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
@@ -225,13 +303,43 @@ PY
 test_normalized_manifest() {
   local manifest="$TMP_ROOT/manifest.json" report="$TMP_ROOT/manifest-report.json" second="$TMP_ROOT/manifest-report-second.json"
   write_manifest valid "$manifest"
-  "$CLI" validate-manifest --manifest "$manifest" --source "$SOURCE" --expected-sha256 "$SOURCE_SHA" >"$report" || fail "normalized execution manifest did not validate"
-  "$CLI" validate-manifest --manifest "$manifest" --source "$SOURCE" --expected-sha256 "$SOURCE_SHA" >"$second" || fail "repeat execution manifest validation failed"
+  "$CLI" validate-manifest --manifest "$manifest" --source "$SOURCE" >"$report" || fail "normalized execution manifest did not validate"
+  "$CLI" validate-manifest --manifest "$manifest" --source "$SOURCE" >"$second" || fail "repeat execution manifest validation failed"
   cmp -s "$report" "$second" || fail "execution manifest validation report is not byte-stable"
   json_assert "$report" "r['valid'] is True and r['manifest_hash']['matches'] is True and r['source_provenance']['source_valid'] is True" "valid manifest report differs"
+  json_assert "$report" "r['trust']['authorization_granted'] is False and r['trust']['artifact_origin_verified'] is False and r['source_provenance']['artifact_origin_verified'] is False" "valid manifest report overstated authorization or artifact provenance"
   json_assert "$report" "r['graph']['task_count'] == 3 and r['graph']['roots'] == ['M1-001', 'M1-002'] and r['graph']['wave_count'] == 2" "manifest graph facts differ"
   json_assert "$report" "r['graph']['acceptance_reachability']['covered_task_count'] == 3 and r['graph']['acceptance_reachability']['uncovered_task_count'] == 0" "manifest acceptance does not cover all tasks"
   pass "normalized manifest validates hashes, routes, DAG waves, roots, and acceptance reachability"
+}
+
+test_manifest_does_not_impose_source_acceptance_default() {
+  local source="$TMP_ROOT/source-without-default-acceptance.json"
+  local manifest="$TMP_ROOT/manifest-without-default-acceptance.json"
+  local report="$TMP_ROOT/manifest-without-default-acceptance-report.json"
+  mutate_source without-default-acceptance "$source"
+  write_manifest valid "$manifest"
+  python3 - "$manifest" "$source" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+manifest_path, source_path = map(pathlib.Path, sys.argv[1:])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+source_sha = hashlib.sha256(source_path.read_bytes()).hexdigest()
+manifest["source"][0]["sha256"] = source_sha
+manifest_without_hash = dict(manifest)
+manifest_without_hash.pop("manifest_hash", None)
+canonical = (json.dumps(manifest_without_hash, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
+manifest["manifest_hash"] = hashlib.sha256(canonical).hexdigest()
+manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+PY
+  "$CLI" validate-manifest --manifest "$manifest" --source "$source" >"$report" \
+    || fail "manifest validation imposed the undeclared E7.14 source target"
+  json_assert "$report" "r['valid'] is True and r['source_provenance']['source_valid'] is True and r['source_provenance']['validation_errors'] == []" \
+    "manifest validation should accept a source graph without its standalone default acceptance target"
+  pass "manifest validation does not impose an undeclared source acceptance target"
 }
 
 run_invalid_manifest() {
@@ -240,7 +348,7 @@ run_invalid_manifest() {
   report="$TMP_ROOT/manifest-$mode-report.json"
   write_manifest "$mode" "$manifest"
   set +e
-  "$CLI" validate-manifest --manifest "$manifest" --source "$SOURCE" --expected-sha256 "$SOURCE_SHA" >"$report"
+  "$CLI" validate-manifest --manifest "$manifest" --source "$SOURCE" >"$report"
   rc=$?
   set -e
   [ "$rc" -eq 1 ] || fail "$mode manifest fixture should exit 1, got $rc"
@@ -254,52 +362,35 @@ test_malformed_manifest_fixtures() {
   run_invalid_manifest cycle graph.cycle
   run_invalid_manifest empty-source-ref schema.min-items
   run_invalid_manifest unknown-source-ref provenance.unknown-source-ref
+  run_invalid_manifest active-null-approval authority.approval-required
+  run_invalid_manifest active-empty-scope authority.scope-required
+  run_invalid_manifest multiple-source-bindings manifest.source-binding
   run_invalid_manifest bad-hash manifest.hash-mismatch
+  run_invalid_manifest unhashable-dependency schema.type
   write_manifest valid "$manifest"
   mutate_source count-mismatch "$source"
   set +e
-  "$CLI" validate-manifest --manifest "$manifest" --source "$source" --expected-sha256 "$SOURCE_SHA" >"$report"
+  "$CLI" validate-manifest --manifest "$manifest" --source "$source" >"$report"
   rc=$?
   set -e
   [ "$rc" -eq 1 ] || fail "source-drift manifest fixture should exit 1, got $rc"
   error_codes_include "$report" manifest.source-hash-mismatch
-
-  write_manifest valid "$manifest"
-  mutate_source count-mismatch "$source"
-  python3 - "$manifest" "$source" <<'PY'
-import hashlib
-import json
-import pathlib
-import sys
-
-manifest_path, source_path = map(pathlib.Path, sys.argv[1:])
-manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-manifest["source"][0]["sha256"] = hashlib.sha256(source_path.read_bytes()).hexdigest()
-canonical = (json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
-manifest["manifest_hash"] = hashlib.sha256(canonical).hexdigest()
-manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-PY
-  set +e
-  "$CLI" validate-manifest --manifest "$manifest" --source "$source" --expected-sha256 "$SOURCE_SHA" >"$report"
-  rc=$?
-  set -e
-  [ "$rc" -eq 1 ] || fail "self-updated source digest should exit 1, got $rc"
-  error_codes_include "$report" manifest.source-provenance-mismatch
-  json_assert "$report" "r['source_provenance']['expected_matches'] is False and r['source_provenance']['matches'] is True" "self-updated source digest bypassed independent provenance"
   pass "malformed manifest fixtures reject routes, edges, cycles, hash drift, and source drift"
 }
 
 test_malformed_json_limits() {
-  local oversized="$TMP_ROOT/oversized-integer.json" deep="$TMP_ROOT/deep-json.json" invalid_utf8="$TMP_ROOT/invalid-utf8.json" report rc
-  python3 - "$oversized" "$deep" <<'PY'
+  local oversized="$TMP_ROOT/oversized-integer.json" deep="$TMP_ROOT/deep-json.json" invalid_utf8="$TMP_ROOT/invalid-utf8.json" nonstandard="$TMP_ROOT/nonstandard.json" overflow="$TMP_ROOT/overflow-number.json" report rc
+  python3 - "$oversized" "$deep" "$nonstandard" "$overflow" <<'PY'
 import pathlib
 import sys
 
 pathlib.Path(sys.argv[1]).write_bytes(b'{"value":' + b'9' * 5000 + b'}')
 pathlib.Path(sys.argv[2]).write_bytes(b'[' * 2000 + b']' * 2000)
+pathlib.Path(sys.argv[3]).write_bytes(b'{"value":NaN}')
+pathlib.Path(sys.argv[4]).write_bytes(b'{"value":1e400}')
 PY
   printf '\377\376\375' >"$invalid_utf8"
-  for fixture in "$oversized" "$deep" "$invalid_utf8"; do
+  for fixture in "$oversized" "$deep" "$invalid_utf8" "$nonstandard" "$overflow"; do
     report="$fixture.report"
     set +e
     "$CLI" validate-source --source "$fixture" --expected-sha256 "$(sha256_file "$fixture")" >"$report"
@@ -310,7 +401,20 @@ PY
   done
   error_codes_include "$oversized.report" json.parse-limit
   error_codes_include "$invalid_utf8.report" json.utf8
-  pass "oversized integers, deep JSON, and invalid UTF-8 produce deterministic validation reports"
+  error_codes_include "$nonstandard.report" json.non-standard-constant
+  error_codes_include "$overflow.report" json.non-finite-number
+  python3 - "$nonstandard.report" <<'PY'
+import json
+import pathlib
+import sys
+
+report = pathlib.Path(sys.argv[1]).read_bytes()
+decoded = json.loads(report)
+assert decoded["valid"] is False
+json.dumps(decoded, allow_nan=False)
+assert decoded["errors"][0]["code"] == "json.non-standard-constant"
+PY
+  pass "oversized integers, deep JSON, nonfinite numbers, and invalid UTF-8 reject deterministically"
 }
 
 write_long_chain_manifest() {
@@ -362,11 +466,11 @@ test_long_chain_and_surrogate_inputs() {
   local unicode_manifest="$TMP_ROOT/unicode-manifest.json" unicode_report="$TMP_ROOT/unicode-report.json"
   local surrogate_manifest="$TMP_ROOT/surrogate-manifest.json" surrogate_report="$TMP_ROOT/surrogate-report.json" rc
   write_long_chain_manifest "$long_manifest"
-  "$CLI" validate-manifest --manifest "$long_manifest" --source "$SOURCE" --expected-sha256 "$SOURCE_SHA" >"$long_report" || fail "long dependency chain should validate without recursion failure"
+  "$CLI" validate-manifest --manifest "$long_manifest" --source "$SOURCE" >"$long_report" || fail "long dependency chain should validate without recursion failure"
   json_assert "$long_report" "r['valid'] is True and r['graph']['task_count'] == 1001 and r['graph']['cycle_count'] == 0 and r['graph']['wave_count'] == 1001" "long dependency chain report differs"
 
   write_manifest nonbmp-title "$unicode_manifest"
-  "$CLI" validate-manifest --manifest "$unicode_manifest" --source "$SOURCE" --expected-sha256 "$SOURCE_SHA" >"$unicode_report" || fail "valid escaped surrogate pair should validate"
+  "$CLI" validate-manifest --manifest "$unicode_manifest" --source "$SOURCE" >"$unicode_report" || fail "valid escaped surrogate pair should validate"
   json_assert "$unicode_report" "r['valid'] is True" "valid escaped surrogate pair should not be rejected"
 
   write_manifest valid "$surrogate_manifest"
@@ -381,7 +485,7 @@ doc["tasks"][0]["title"] = "\ud800"
 path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 PY
   set +e
-  "$CLI" validate-manifest --manifest "$surrogate_manifest" --source "$SOURCE" --expected-sha256 "$SOURCE_SHA" >"$surrogate_report"
+  "$CLI" validate-manifest --manifest "$surrogate_manifest" --source "$SOURCE" >"$surrogate_report"
   rc=$?
   set -e
   [ "$rc" -eq 1 ] || fail "lone surrogate input should exit 1, got $rc"
@@ -405,10 +509,12 @@ test_read_only_execution() {
 
 test_schema_interface
 test_known_source_graph
+test_integral_float_task_count
 test_provenance_rejection
-test_public_api_rejects_non_string_digest
+test_public_api_rejects_malformed_arguments
 test_malformed_source_fixtures
 test_normalized_manifest
+test_manifest_does_not_impose_source_acceptance_default
 test_malformed_manifest_fixtures
 test_malformed_json_limits
 test_long_chain_and_surrogate_inputs

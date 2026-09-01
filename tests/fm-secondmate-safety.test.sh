@@ -6,9 +6,13 @@
 # operator flow lives in fm-secondmate-lifecycle-e2e.test.sh; this file keeps the
 # destructive-invariant coverage that an e2e run cannot deterministically reach.
 set -u
+export FM_APPROVED_BASE_REF=main
+export FM_APPROVED_BASE_SHA=0000000000000000000000000000000000000000
 
 # shellcheck source=tests/secondmate-helpers.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/secondmate-helpers.sh"
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-pr-lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-secondmate-safety)
 export FM_BACKEND=herdr
@@ -74,7 +78,7 @@ SH
 }
 
 test_fm_home_parameterization() {
-  local brief home_one home_two out
+  local brief home_one home_two out task_wt target_head base_head merge_base_sha changed_digest substrate_root substrate_sha empty_digest surface_digest fakebin
   home_one="$TMP_ROOT/home one"
   home_two="$TMP_ROOT/home-two"
   mkdir -p "$home_one/data" "$home_one/state" "$home_two/data" "$home_two/state"
@@ -99,8 +103,100 @@ test_fm_home_parameterization() {
   brief="$home_one/data/task-c/brief.md"
   grep -F ">> '$home_one/state/task-c.status'" "$brief" >/dev/null || fail "secondmate brief did not shell-quote FM_HOME state path"
 
-  printf 'project=x\n' > "$home_one/state/task-a.meta"
-  FM_HOME="$home_one" FM_GUARD_GRACE=999999 "$ROOT/bin/fm-pr-check.sh" task-a https://github.com/example/repo/pull/1 >/dev/null 2>/dev/null \
+  task_wt="$home_one/task-wt"
+  fm_git_init_commit "$task_wt"
+  git -C "$task_wt" remote add origin https://github.com/example/repo.git
+  git -C "$task_wt" branch -M main
+  git -C "$task_wt" checkout -qb fm/task-a
+  printf 'reviewed surface\n' >> "$task_wt/README.md"
+  git -C "$task_wt" add README.md
+  git -C "$task_wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm change
+  substrate_root="$home_one/substrate"
+  fm_git_init_commit "$substrate_root"
+  target_head=$(git -C "$task_wt" rev-parse HEAD)
+  base_head=$(git -C "$task_wt" rev-parse main)
+  merge_base_sha=$(git -C "$task_wt" merge-base "$base_head" "$target_head")
+  changed_digest=$(git -C "$task_wt" diff --name-status "$merge_base_sha" "$target_head" | fm_pr_sha256_stream)
+  surface_digest=$(sed -n '2p' "$task_wt/README.md" | fm_pr_sha256_stream)
+  surface_line_hex=$(awk 'NR == 2 { printf "%s", $0 }' "$task_wt/README.md" | od -An -tx1 | tr -d ' \n')
+  change_digest=$(git -C "$task_wt" diff --no-color --unified=0 "$merge_base_sha" "$target_head" -- README.md | fm_pr_sha256_stream)
+  surface_binding_digest() {
+    local surface=$1 reference=$2 digest=$3 change_digest=$4 line_hex=$5 behavior=$6 action=$7
+    printf '%s\n' "$surface|$reference|$digest|$change_digest|$line_hex|$behavior|$action" | fm_pr_sha256_stream
+  }
+  surface_unaffected_record() {
+    local surface=$1 behavior=$2 action=$3 binding label
+    case "$surface" in
+      authority) label=Authority ;;
+      security) label=Security ;;
+      path) label=Path ;;
+      failure) label=Failure ;;
+      tests) label=Tests ;;
+      documentation) label=Documentation ;;
+      delivery) label=Delivery ;;
+    esac
+    binding=$(printf '%s\n' "$surface|unaffected|README.md|$changed_digest|$behavior|$action" | fm_pr_sha256_stream)
+    printf '%s: reviewed; surface=%s; scope=unaffected; files=README.md; rationale=no applicable changed %s surface; binding=%s' \
+      "$label" "$surface" "$surface" "$binding"
+  }
+  substrate_sha=$(git -C "$substrate_root" rev-parse HEAD)
+  sed -i.bak "s/^- Firstmate substrate launch SHA: .*/- Firstmate substrate launch SHA: \`$substrate_sha\`/" "$home_one/data/task-a/brief.md"
+  rm -f "$home_one/data/task-a/brief.md.bak"
+  sed -i.bak "s#^- Firstmate substrate root: .*#- Firstmate substrate root: \`$substrate_root\`#" "$home_one/data/task-a/brief.md"
+  rm -f "$home_one/data/task-a/brief.md.bak"
+  empty_digest=$(printf '' | fm_pr_sha256_stream)
+  printf '%s\n' \
+    'Self-review report: firstmate-pr-self-review.v1' \
+    'Task id: task-a' \
+    '# Findings' \
+    'Review status: complete' \
+    'Finding count: 0' \
+    'Finding summary: none' \
+    '# Target-project diff evidence' \
+    "Target repository: $(cd "$task_wt" && pwd -P)" \
+    'Base ref: main' \
+    "Base SHA: $base_head" \
+    "Head SHA: $target_head" \
+    "Merge-base SHA: $merge_base_sha" \
+    "Changed files: $changed_digest" \
+    'Tree status: clean' \
+    '# Firstmate substrate diff evidence' \
+    "Substrate base SHA: $substrate_sha" \
+    "Substrate head SHA: $substrate_sha" \
+    "Substrate changed files: $empty_digest" \
+    'Substrate diff: no substrate diff' \
+    '# Surface review' \
+    "$(surface_unaffected_record authority non-authorizing retain-owner)" \
+    "$(surface_unaffected_record security provenance-bound retain-boundary)" \
+    "$(surface_unaffected_record path path-safe retain-validation)" \
+    "$(surface_unaffected_record failure fail-closed retain-refusal)" \
+    "$(surface_unaffected_record tests behavioral retain-regression)" \
+    "$(surface_unaffected_record documentation contract-aligned retain-contract)" \
+    "$(surface_unaffected_record delivery no-mistakes-owned retain-no-mistakes)" \
+    '# Verification' \
+    'Command: fm-pr-check.sh task-a https://github.com/example/repo/pull/1' \
+    'Result: passed' \
+    '# Residual risks' \
+    'None.' > "$home_one/data/task-a/pr-self-review.md"
+  chmod 0600 "$home_one/data/task-a/pr-self-review.md"
+  fm_write_meta "$home_one/state/task-a.meta" \
+    "window=firstmate:fm-task-a" "worktree=$task_wt" "project=x" \
+    'review_base_ref=main' "review_base_sha=$base_head" \
+    'kind=ship' 'mode=no-mistakes'
+  fakebin="$home_one/fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+case " $* " in
+  *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:?}" ;;
+  *" baseRefName "*) printf '%s\n' main ;;
+  *) exit 2 ;;
+esac
+SH
+  chmod +x "$fakebin/gh"
+  FM_HOME="$home_one" FM_SUBSTRATE_ROOT_OVERRIDE="$substrate_root" FM_GUARD_GRACE=999999 \
+    FM_TEST_GH_HEAD="$target_head" PATH="$fakebin:$PATH" "$ROOT/bin/fm-pr-check.sh" task-a https://github.com/example/repo/pull/1 >/dev/null 2>/dev/null \
     || fail "fm-pr-check failed under FM_HOME"
   [ -f "$home_one/state/task-a.check.sh" ] || fail "pr check was not written under FM_HOME/state"
   [ ! -e "$home_two/state/task-a.check.sh" ] || fail "pr check leaked into another home"

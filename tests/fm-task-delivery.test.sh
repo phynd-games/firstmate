@@ -33,7 +33,7 @@ make_home() {  # <name> [<registry-line>...]
   projects="$TMP_ROOT/$name/projects"
   fakebin="$TMP_ROOT/$name/bin"
   mkdir -p "$home/data" "$home/state" "$home/config" "$projects/proj" "$fakebin"
-  printf '#!/bin/sh\nexit 1\n' > "$fakebin/tmux"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "${FM_TEST_TMUX_LOG:?}"\nexit 1\n' > "$fakebin/tmux"
   chmod +x "$fakebin/tmux"
   if [ "$#" -gt 0 ]; then
     printf '%s\n' "$@" > "$home/data/projects.md"
@@ -56,7 +56,7 @@ run_spawn() {  # <home> <fakebin> <spawn-args...>
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$TMP_ROOT/projects-unused" FM_CONFIG_OVERRIDE="$home/config" \
-    FM_SPAWN_NO_GUARD=1 FM_BACKEND=tmux PATH="$fakebin:$PATH" \
+    FM_SPAWN_NO_GUARD=1 FM_BACKEND=tmux FM_TEST_TMUX_LOG="$home/tmux.log" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" 2>&1
 }
 
@@ -147,6 +147,22 @@ EOF
   pass "fm-spawn: the brief's recorded mode and the spawn's explicit mode must agree"
 }
 
+test_ship_spawn_rejects_missing_base_before_endpoint_creation() {
+  local rec home proj fakebin out status
+  rec=$(make_home base-preflight)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  write_brief "$home" base-preflight-c1 no-mistakes
+  out=$(run_spawn "$home" "$fakebin" base-preflight-c1 "$proj" claude --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a ship spawn without an approved base should exit non-zero"
+  assert_contains "$out" "brief $home/data/base-preflight-c1/brief.md has no approved target base" \
+    "missing-base refusal did not identify the brief"
+  [ ! -s "$home/tmux.log" ] || fail "missing-base validation created a backend endpoint before refusing"
+  pass "fm-spawn: missing approved bases fail before endpoint creation"
+}
+
 # The registry is the captain's standing posture, so dropping below its rigor is
 # allowed but never silent, while matching or exceeding it stays quiet. An
 # unregistered project resolves to the same no-mistakes standing default
@@ -202,13 +218,18 @@ EOF
 # Promotion is where a scout's ship contract is finally decided, so it requires the
 # same explicit values and writes them into the task's durable record.
 test_promote_requires_and_records_the_delivery_contract() {
-  local home meta out status blocked_data instructions_path
+  local home meta out status blocked_data instructions_path proj wt base_sha local_proj local_wt local_base
   home="$TMP_ROOT/promote/home"
-  mkdir -p "$home/state"
+  proj="$TMP_ROOT/promote/proj"
+  wt="$TMP_ROOT/promote/wt"
+  mkdir -p "$home/state" "$home/data/promote-d1"
+  fm_git_worktree "$proj" "$wt" "task-promote-d1"
+  base_sha=$(git -C "$wt" rev-parse HEAD)
+  printf 'Scout brief.\n' > "$home/data/promote-d1/brief.md"
   meta="$home/state/promote-d1.meta"
 
   write_scout_meta() {
-    printf 'window=fm-promote-d1\nkind=scout\nworktree=/tmp/wt\n' > "$meta"
+    printf 'window=fm-promote-d1\nkind=scout\nworktree=%s\n' "$wt" > "$meta"
   }
 
   write_scout_meta
@@ -253,12 +274,65 @@ test_promote_requires_and_records_the_delivery_contract() {
 
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-d1 --mode direct-PR --yolo on 2>&1)
   status=$?
+  [ "$status" -ne 0 ] || fail "promotion without an approved target base should exit non-zero"
+  assert_contains "$out" "has no approved target base" "promote did not refuse a missing approved target base"
+  assert_grep 'kind=scout' "$meta" "missing-base promotion changed the task record"
+
+  printf 'Target-project approved base: ref=main; sha=%s\n' "$base_sha" >> "$home/data/promote-d1/brief.md"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-d1 --mode direct-PR --yolo on 2>&1)
+  status=$?
   expect_code 0 "$status" "a promotion carrying both flags should succeed"
   assert_grep 'kind=ship' "$meta" "promotion did not restore ship teardown protection"
+  assert_grep 'review_base_ref=main' "$meta" "promotion did not freeze the approved target base ref"
+  assert_grep "review_base_sha=$base_sha" "$meta" "promotion did not freeze the approved target base SHA"
   assert_grep 'mode=direct-PR' "$meta" "promotion did not record the decided delivery mode"
   assert_grep 'yolo=on' "$meta" "promotion did not record the decided merge posture"
+  assert_grep '# Required PR self-review' "$home/data/promote-d1/brief.md" "promotion did not install the ship self-review contract"
+  assert_grep 'Firstmate substrate launch SHA:' "$home/data/promote-d1/brief.md" "promotion did not install the substrate launch evidence"
+  assert_grep 'Target-project approved base: ref=main;' "$home/data/promote-d1/brief.md" "promotion did not record the approved base in the ship brief"
+  assert_contains "$(cat "$home/data/promote-d1/brief.md")" "Scout brief." "promotion did not preserve the scout task context"
+  [ "$(grep -c '^Target-project approved base:' "$home/data/promote-d1/brief.md")" = 1 ] \
+    || fail "promotion emitted more than one approved target base"
+  assert_not_contains "$out" 'reset to a clean default-branch base' "promotion still instructed a default-base reset"
   assert_contains "$out" "ship instructions for mode=direct-PR" "promotion hint did not carry the decided mode"
   [ "$(grep -c '^mode=' "$meta")" = 1 ] || fail "promotion left more than one mode= line in the task record"
+
+  git -C "$proj" branch approved-base "$base_sha"
+  git -C "$proj" push --quiet origin approved-base
+  git -C "$wt" update-ref -d refs/remotes/origin/approved-base
+  mkdir -p "$home/data/promote-fetch"
+  printf 'Scout brief for fetched base.\nTarget-project approved base: ref=origin/approved-base; sha=%s\n' \
+    "$base_sha" > "$home/data/promote-fetch/brief.md"
+  fm_write_meta "$home/state/promote-fetch.meta" \
+    "window=fm-promote-fetch" "kind=scout" "worktree=$wt"
+  [ "$(git -C "$wt" show-ref --verify --quiet refs/remotes/origin/approved-base; echo $?)" = 1 ] \
+    || fail "promotion fixture unexpectedly had the approved remote-tracking ref"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-fetch --mode local-only --yolo off 2>&1)
+  status=$?
+  expect_code 0 "$status" "promotion should fetch an approved base absent from the scout worktree"
+  assert_grep 'kind=ship' "$home/state/promote-fetch.meta" "fetched-base promotion did not complete"
+  assert_grep 'review_base_ref=origin/approved-base' "$home/state/promote-fetch.meta" \
+    "fetched-base promotion changed the approved ref"
+  assert_grep 'Target-project approved base: ref=origin/approved-base;' \
+    "$home/data/promote-fetch/brief.md" \
+    "fetched-base promotion did not persist the resolved approved ref"
+
+  local_proj="$TMP_ROOT/promote/local-proj"
+  local_wt="$TMP_ROOT/promote/local-wt"
+  fm_git_init_commit "$local_proj"
+  git -C "$local_proj" branch approved-local
+  git -C "$local_proj" worktree add --quiet -b task-promote-local "$local_wt"
+  local_base=$(git -C "$local_wt" rev-parse approved-local)
+  mkdir -p "$home/data/promote-local"
+  printf 'Scout brief for local base.\nTarget-project approved base: ref=approved-local; sha=%s\n' \
+    "$local_base" > "$home/data/promote-local/brief.md"
+  fm_write_meta "$home/state/promote-local.meta" \
+    "window=fm-promote-local" "kind=scout" "worktree=$local_wt"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-local --mode local-only --yolo off 2>&1)
+  status=$?
+  expect_code 0 "$status" "promotion should accept a matching local approved base without origin"
+  assert_grep 'kind=ship' "$home/state/promote-local.meta" "local-base promotion did not complete"
   pass "fm-promote: promotion requires the delivery contract and records it exactly once"
 }
 
@@ -374,6 +448,113 @@ STUB
   pass "fm-promote: a promoted worker receives the same mode-specific delivery contract a briefed one does"
 }
 
+test_promote_strips_base_metadata_from_preserved_task() {
+  local home meta brief out status proj wt base_sha
+  home="$TMP_ROOT/promote-task-base/home"
+  proj="$TMP_ROOT/promote-task-base/proj"
+  wt="$TMP_ROOT/promote-task-base/wt"
+  mkdir -p "$home/state" "$home/data/promote-task-base"
+  fm_git_worktree "$proj" "$wt" "task-promote-task-base"
+  base_sha=$(git -C "$wt" rev-parse HEAD)
+  brief="$home/data/promote-task-base/brief.md"
+  meta="$home/state/promote-task-base.meta"
+  {
+    printf 'You are a crewmate.\n\n# Task\nPreserve this task context.\n'
+    printf 'Target-project approved base: ref=main; sha=%s\n\n# Setup\n' "$base_sha"
+  } > "$brief"
+  printf 'window=fm-promote-task-base\nkind=scout\nworktree=%s\n' "$wt" > "$meta"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" \
+    promote-task-base --mode local-only --yolo off 2>&1)
+  status=$?
+  expect_code 0 "$status" "promotion with task-local base metadata should succeed"
+  assert_contains "$out" "promoted promote-task-base to ship" \
+    "task-local base promotion did not complete"
+  assert_contains "$(cat "$brief")" "Preserve this task context." \
+    "task-local base promotion lost task context"
+  [ "$(grep -c '^Target-project approved base:' "$brief")" = 1 ] \
+    || fail "task-local base promotion emitted duplicate approved-base metadata"
+  assert_grep "Target-project approved base: ref=main; sha=$base_sha" "$brief" \
+    "task-local base promotion did not emit the canonical approved base"
+  pass "fm-promote: preserved task content excludes duplicate base metadata"
+}
+
+test_promote_rejects_unfilled_scout_without_mutation() {
+  local home meta brief out status proj wt base_sha
+  home="$TMP_ROOT/promote-unfilled/home"
+  proj="$TMP_ROOT/promote-unfilled/proj"
+  wt="$TMP_ROOT/promote-unfilled/wt"
+  mkdir -p "$home/state" "$home/data/promote-unfilled"
+  fm_git_worktree "$proj" "$wt" "task-promote-unfilled"
+  base_sha=$(git -C "$wt" rev-parse HEAD)
+  brief="$home/data/promote-unfilled/brief.md"
+  meta="$home/state/promote-unfilled.meta"
+  {
+    printf 'You are a crewmate.\n\n# Task\n{TASK}\n\n# Setup\n'
+    printf 'Target-project approved base: ref=main; sha=%s\n' "$base_sha"
+  } > "$brief"
+  printf 'window=fm-promote-unfilled\nkind=scout\nworktree=%s\n' "$wt" > "$meta"
+  cp "$brief" "$brief.before"
+  cp "$meta" "$meta.before"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" \
+    promote-unfilled --mode local-only --yolo off 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "promotion of an unfilled scout brief should fail"
+  assert_contains "$out" "unfilled {TASK} placeholder" \
+    "unfilled scout refusal did not identify the placeholder"
+  cmp -s "$brief.before" "$brief" || fail "unfilled promotion changed the scout brief"
+  cmp -s "$meta.before" "$meta" || fail "unfilled promotion changed task metadata"
+  [ -z "$(find "$home/data/promote-unfilled" -name '.scout-brief.promote.*' -print -quit)" ] \
+    || fail "unfilled promotion left a brief backup behind"
+  pass "fm-promote: unfilled scout placeholders fail before mutation"
+}
+
+test_promote_restores_scout_when_metadata_publication_fails() {
+  local home meta brief out status proj wt base_sha fakebin real_mv
+  home="$TMP_ROOT/promote-rollback/home"
+  proj="$TMP_ROOT/promote-rollback/proj"
+  wt="$TMP_ROOT/promote-rollback/wt"
+  fakebin="$TMP_ROOT/promote-rollback/fakebin"
+  mkdir -p "$home/state" "$home/data/promote-rollback" "$fakebin"
+  fm_git_worktree "$proj" "$wt" "task-promote-rollback"
+  base_sha=$(git -C "$wt" rev-parse HEAD)
+  brief="$home/data/promote-rollback/brief.md"
+  meta="$home/state/promote-rollback.meta"
+  {
+    printf 'Scout task context.\n'
+    printf 'Target-project approved base: ref=main; sha=%s\n' "$base_sha"
+  } > "$brief"
+  printf 'window=fm-promote-rollback\nkind=scout\nworktree=%s\n' "$wt" > "$meta"
+  cp "$brief" "$brief.before"
+  cp "$meta" "$meta.before"
+  real_mv=$(command -v mv)
+  cat > "$fakebin/mv" <<'SH'
+#!/bin/sh
+last=
+for arg do last=$arg; done
+if [ "$last" = "${FM_TEST_PROMOTE_META:-}" ] && [ "${FM_TEST_FAIL_PROMOTE_META_MV:-0}" = 1 ]; then
+  exit 1
+fi
+exec "$FM_TEST_REAL_MV" "$@"
+SH
+  chmod +x "$fakebin/mv"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_TEST_REAL_MV="$real_mv" FM_TEST_PROMOTE_META="$meta" \
+    FM_TEST_FAIL_PROMOTE_META_MV=1 PATH="$fakebin:$PATH" "$PROMOTE" \
+    promote-rollback --mode local-only --yolo off 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "metadata publication failure should fail promotion"
+  assert_contains "$out" "the scout brief was restored" \
+    "metadata publication failure did not report brief restoration"
+  cmp -s "$brief.before" "$brief" || fail "metadata failure did not restore the scout brief"
+  cmp -s "$meta.before" "$meta" || fail "metadata failure changed the scout metadata"
+  [ -z "$(find "$home/data/promote-rollback" -name '.scout-brief.promote.*' -print -quit)" ] \
+    || fail "metadata failure left a brief backup behind"
+  pass "fm-promote: metadata publication failure rolls back the brief"
+}
+
 # The registry parser survives for the mechanical consumers only. It accepts the
 # conditional policy, maps it to its most rigorous leg for them, and exposes the
 # raw annotation for the one caller that must tell a policy from a flat mode.
@@ -416,5 +597,8 @@ test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
 test_promote_refuses_a_symlinked_task_record
 test_promotion_delivers_the_real_definition_of_done
+test_promote_strips_base_metadata_from_preserved_task
+test_promote_rejects_unfilled_scout_without_mutation
+test_promote_restores_scout_when_metadata_publication_fails
 test_project_mode_maps_the_conditional_policy
 echo "# all fm-task-delivery tests passed"

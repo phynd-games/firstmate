@@ -42,6 +42,7 @@ make_case() {
   git -C "$publisher" add advanced-main.txt
   git -C "$publisher" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm advance-main
   git -C "$publisher" push --quiet origin "$default"
+  printf '%s\n' "Target-project approved base: ref=$default; sha=$(git -C "$publisher" rev-parse HEAD)" >> "$home/data/$id/brief.md"
 
   printf '%s\n' "$case_dir|$home|$project|$pool|$fakebin|$initial|$default"
 }
@@ -81,7 +82,7 @@ test_stale_pool_base_refreshes_before_branching() {
 
   id='pool-current-base-repeat-r1'
   mkdir -p "$HOME_DIR/data/$id"
-  printf 'brief for %s\n' "$id" > "$HOME_DIR/data/$id/brief.md"
+  printf '%s\n' "brief for $id" "Target-project approved base: ref=$DEFAULT_BRANCH; sha=$current" > "$HOME_DIR/data/$id/brief.md"
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "repeating the base refresh should be idempotent"
@@ -181,25 +182,46 @@ test_dirty_pool_refuses_without_discarding_work() {
   pass "a dirty pooled worktree is refused without discarding its local work"
 }
 
-test_unresolved_remote_default_refuses_pool() {
+test_missing_approved_base_refuses_ship() {
   local rec id out status before
-  id='pool-unresolved-default-r5'
-  rec=$(make_case unresolved-default "$id")
+  id='pool-missing-approved-base-r5'
+  rec=$(make_case missing-approved-base "$id")
   read_case_record "$rec"
-  git --git-dir="$CASE_DIR/origin.git" symbolic-ref HEAD refs/heads/missing-default
+  sed -i.bak '/^Target-project approved base:/d' "$HOME_DIR/data/$id/brief.md"
+  rm -f "$HOME_DIR/data/$id/brief.md.bak"
   before=$(git -C "$POOL_DIR" rev-parse HEAD)
 
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
-  [ "$status" -ne 0 ] || fail "spawn succeeded despite an unresolved remote default branch"
-  assert_contains "$out" "could not resolve origin's current default branch" \
-    "spawn did not clearly refuse an unresolved remote default branch"
+  [ "$status" -ne 0 ] || fail "ship spawn succeeded without an approved target base"
+  assert_contains "$out" "has no approved target base" \
+    "spawn did not clearly refuse a missing approved target base"
   [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$before" ] \
-    || fail "spawn moved HEAD after failing to resolve the remote default branch"
+    || fail "spawn moved the pooled worktree after refusing a missing approved target base"
   if [ "${FM_TEST_EVIDENCE:-0}" = 1 ]; then
-    printf '# observed unresolved-default refusal: %s\n' "$(printf '%s\n' "$out" | tail -n 1)"
+    printf '# observed missing-approved-base refusal: %s\n' "$(printf '%s\n' "$out" | tail -n 1)"
   fi
-  pass "an unresolved remote default branch refuses the pooled worktree"
+  pass "a ship spawn refuses to launch without an approved target base"
+}
+
+test_full_branch_ref_uses_private_remote_tracking_ref() {
+  local rec id out status current
+  id='pool-full-branch-ref-r6'
+  rec=$(make_case full-branch-ref "$id")
+  read_case_record "$rec"
+  sed -i.bak "s/^Target-project approved base: ref=$DEFAULT_BRANCH;/Target-project approved base: ref=refs\\/heads\\/$DEFAULT_BRANCH;/" \
+    "$HOME_DIR/data/$id/brief.md"
+  rm -f "$HOME_DIR/data/$id/brief.md.bak"
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  expect_code 0 "$status" "spawn should normalize an approved full branch ref"
+  current=$(git -C "$POOL_DIR" rev-parse "origin/$DEFAULT_BRANCH")
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$current" ] \
+    || fail "full branch ref spawn did not start at the approved remote tip"
+  assert_grep "review_base_ref=origin/$DEFAULT_BRANCH" "$HOME_DIR/state/$id.meta" \
+    "full branch ref spawn did not record the private remote-tracking ref"
+  pass "full approved branch refs normalize to private remote-tracking state"
 }
 
 # A slot left on a stale submodule pin is the field failure this diagnosis exists
@@ -252,6 +274,7 @@ make_submodule_case() {  # <name> <id>
   git -C "$publisher" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qam advance-pin
   git -C "$publisher" push --quiet origin main
   advanced=$(git -C "$publisher" rev-parse HEAD)
+  printf '%s\n' "Target-project approved base: ref=main; sha=$advanced" >> "$home/data/$id/brief.md"
 
   printf '%s\n' "$case_dir|$home|$project|$pool|$fakebin|$subpin1|$subpin2|$advanced"
 }
@@ -269,7 +292,7 @@ EOF
 strand_submodule_pin_via_spawn() {  # <seed-id>
   local id=$1 out status
   mkdir -p "$HOME_DIR/data/$id"
-  printf 'brief for %s\n' "$id" > "$HOME_DIR/data/$id/brief.md"
+  printf '%s\n' "brief for $id" "Target-project approved base: ref=main; sha=$ADVANCED_SHA" > "$HOME_DIR/data/$id/brief.md"
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "the spawn that moves the submodule pin should succeed"
@@ -429,7 +452,8 @@ test_stale_pool_base_refreshes_before_branching
 test_non_main_default_branch_refreshes_before_branching
 test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work
-test_unresolved_remote_default_refuses_pool
+test_missing_approved_base_refuses_ship
+test_full_branch_ref_uses_private_remote_tracking_ref
 test_unreachable_origin_refuses_stale_pool_base
 test_stale_submodule_pin_explains_itself
 test_unpushed_submodule_commit_is_still_uncommitted_work

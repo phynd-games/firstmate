@@ -73,6 +73,8 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 fm_git_identity fmtest fmtest@example.invalid
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-pr-lib.sh"
 
 PR_MERGE="$ROOT/bin/fm-pr-merge.sh"
 TMP_ROOT=$(fm_test_tmproot fm-pr-merge-tests)
@@ -93,14 +95,100 @@ REAL_MV=$(command -v mv) || fail "these tests need mv to simulate a failed poll 
 # Build a fresh sandbox for one test case: a state dir with a task meta and a
 # fakebin with a gh-axi mock that records how it was invoked. Echoes the case dir.
 make_case() {
-  local name=$1 case_dir fakebin
+  local name=$1 case_dir fakebin target_head target_repository substrate_head empty_digest base_head merge_base_sha changed_digest surface_digest surface_line_hex
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
-  mkdir -p "$case_dir/state" "$fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/home/data/task-x1" "$case_dir/wt" "$case_dir/substrate" "$fakebin"
+  git init -q "$case_dir/wt"
+  git -C "$case_dir/wt" config user.name fmtest
+  git -C "$case_dir/wt" config user.email fmtest@example.invalid
+  printf 'fixture\n' > "$case_dir/wt/fixture.txt"
+  git -C "$case_dir/wt" add fixture.txt
+  git -C "$case_dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
+  git -C "$case_dir/wt" branch -M main
+  git -C "$case_dir/wt" remote add origin https://github.com/example/repo.git
+  git -C "$case_dir/wt" checkout -qb fm/task-x1
+  printf 'reviewed surface\n' >> "$case_dir/wt/fixture.txt"
+  git -C "$case_dir/wt" add fixture.txt
+  git -C "$case_dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm change
+  git -C "$case_dir/substrate" init -q
+  git -C "$case_dir/substrate" config user.name fmtest
+  git -C "$case_dir/substrate" config user.email fmtest@example.invalid
+  printf 'substrate fixture\n' > "$case_dir/substrate/fixture.txt"
+  git -C "$case_dir/substrate" add fixture.txt
+  git -C "$case_dir/substrate" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
+  target_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  base_head=$(git -C "$case_dir/wt" rev-parse main)
+  merge_base_sha=$(git -C "$case_dir/wt" merge-base "$base_head" "$target_head")
+  changed_digest=$(git -C "$case_dir/wt" diff --name-status "$merge_base_sha" "$target_head" | fm_pr_sha256_stream)
+  surface_digest=$(sed -n '2p' "$case_dir/wt/fixture.txt" | fm_pr_sha256_stream)
+  surface_line_hex=$(awk 'NR == 2 { printf "%s", $0 }' "$case_dir/wt/fixture.txt" | od -An -tx1 | tr -d ' \n')
+surface_binding_digest() {
+    local surface=$1 reference=$2 digest=$3 change_digest=$4 line_hex=$5 behavior=$6 action=$7
+    printf '%s\n' "$surface|$reference|$digest|$change_digest|$line_hex|$behavior|$action" | fm_pr_sha256_stream
+}
+  surface_unaffected_record() {
+    local surface=$1 behavior=$2 action=$3 binding label
+    case "$surface" in
+      authority) label=Authority ;;
+      security) label=Security ;;
+      path) label=Path ;;
+      failure) label=Failure ;;
+      tests) label=Tests ;;
+      documentation) label=Documentation ;;
+      delivery) label=Delivery ;;
+    esac
+    binding=$(printf '%s\n' "$surface|unaffected|fixture.txt|$changed_digest|$behavior|$action" | fm_pr_sha256_stream)
+    printf '%s: reviewed; surface=%s; scope=unaffected; files=fixture.txt; rationale=no applicable changed %s surface; binding=%s' \
+      "$label" "$surface" "$surface" "$binding"
+  }
+  target_repository=$(cd "$case_dir/wt" && pwd -P)
+  substrate_head=$(git -C "$case_dir/substrate" rev-parse HEAD)
+  empty_digest=$(printf '' | fm_pr_sha256_stream)
+  change_digest=$(git -C "$case_dir/wt" diff --no-color --unified=0 "$merge_base_sha" "$target_head" -- fixture.txt | fm_pr_sha256_stream)
+  printf '%s\n' "- Firstmate substrate root: \`$case_dir/substrate\`" \
+    "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$case_dir/home/data/task-x1/brief.md"
+  printf '%s\n' \
+    'Self-review report: firstmate-pr-self-review.v1' \
+    'Task id: task-x1' \
+    '# Findings' \
+    'Review status: complete' \
+    'Finding count: 0' \
+    'Finding summary: none' \
+    'None.' \
+    '# Target-project diff evidence' \
+    "Target repository: $target_repository" \
+    'Base ref: main' \
+    "Base SHA: $base_head" \
+    "Head SHA: $target_head" \
+    "Merge-base SHA: $merge_base_sha" \
+    "Changed files: $changed_digest" \
+    'Tree status: clean' \
+    '# Firstmate substrate diff evidence' \
+    "Substrate base SHA: $substrate_head" \
+    "Substrate head SHA: $substrate_head" \
+    "Substrate changed files: $empty_digest" \
+    'Substrate diff: no substrate diff' \
+    '# Surface review' \
+    "$(surface_unaffected_record authority non-authorizing retain-owner)" \
+    "$(surface_unaffected_record security provenance-bound retain-boundary)" \
+    "$(surface_unaffected_record path path-safe retain-validation)" \
+    "$(surface_unaffected_record failure fail-closed retain-refusal)" \
+    "$(surface_unaffected_record tests behavioral retain-regression)" \
+    "$(surface_unaffected_record documentation contract-aligned retain-contract)" \
+    "$(surface_unaffected_record delivery no-mistakes-owned retain-no-mistakes)" \
+    '# Verification' \
+    'Command: focused PR-ready boundary test' \
+    'Result: passed' \
+    '# Residual risks' \
+    'None.' > "$case_dir/home/data/task-x1/pr-self-review.md"
+  chmod 0600 "$case_dir/home/data/task-x1/pr-self-review.md"
   fm_write_meta "$case_dir/state/task-x1.meta" \
     "window=fm-task-x1" \
     "worktree=$case_dir/wt" \
-    "project=$case_dir/project" \
+    "project=$case_dir/wt" \
+    'review_base_ref=main' \
+    "review_base_sha=$base_head" \
     "kind=ship" \
     "mode=no-mistakes"
   printf '%s\n' \
@@ -110,16 +198,14 @@ make_case() {
     'base=main' > "$case_dir/github-outcome"
   : > "$case_dir/github-rules"
   : > "$case_dir/gh.log"
-  # No worktree/project on disk; fm-pr-check.sh tolerates a worktree it cannot
-  # stat and simply skips the pr_head lookup via `gh` in that case, so give it
-  # one that resolves for cases that want pr_head recorded.
   printf '%s\n' "$case_dir"
 }
 
 # gh-axi mock recording every invocation to a log file, and gh mock answering
 # headRefOid for fm-pr-check.sh's pr_head lookup. Args: case_dir head_sha
 add_gh_mocks() {
-  local case_dir=$1 head=$2
+  local case_dir=$1 head
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
@@ -139,6 +225,7 @@ case "\${1:-} \${2:-}" in
   "pr view")
     case " \$* " in
       *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
+      *baseRefName*) printf '%s\n' "\${FM_TEST_GH_BASE:-main}" ; exit 0 ;;
     esac
     ;;
   "api graphql")
@@ -159,6 +246,7 @@ SH
 # real merge failure is distinguishable from the recording step.
 add_gh_mocks_merge_fails() {
   local case_dir=$1
+  add_gh_mocks "$case_dir" ""
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
@@ -167,21 +255,6 @@ case "${1:-} ${2:-}" in
   esac
   exit 0
 SH
-  cat > "$case_dir/fakebin/gh" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
-case "${1:-} ${2:-}" in
-  "api graphql")
-    cat "$FM_TEST_GH_OUTCOME"
-    exit 0
-    ;;
-  api\ *)
-    cat "$FM_TEST_GH_RULES"
-    exit 0
-    ;;
-esac
-exit 0
-SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
 }
 
@@ -189,7 +262,8 @@ SH
 # outcome read, so a merge call that returned success is followed by a live
 # state nothing can prove. Args: case_dir head_sha
 add_gh_mock_outcome_read_fails() {
-  local case_dir=$1 head=$2
+  local case_dir=$1 head
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
   cat > "$case_dir/fakebin/gh" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "\$FM_TEST_GH_LOG"
@@ -197,6 +271,7 @@ case "\${1:-} \${2:-}" in
   "pr view")
     case " \$* " in
       *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
+      *baseRefName*) printf '%s\n' "\${FM_TEST_GH_BASE:-main}" ; exit 0 ;;
     esac
     ;;
   "api graphql")
@@ -354,7 +429,9 @@ glab_merge_line() {
 run_pr_merge() {
   local case_dir=$1 rc; shift
   FM_ROOT_OVERRIDE="$ROOT" \
-  FM_HOME="${FM_TEST_HOME:-$ROOT}" \
+  FM_SUBSTRATE_ROOT_OVERRIDE="$case_dir/substrate" \
+  FM_HOME="${FM_TEST_HOME:-$case_dir/home}" \
+  FM_DATA_OVERRIDE="${FM_TEST_DATA:-$case_dir/home/data}" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
   FM_TEST_GH_LOG="$case_dir/gh.log" \
@@ -384,7 +461,7 @@ write_github_outcome() {
 }
 
 test_verified_merge_records_pr_and_head() {
-  local case_dir rc
+  local case_dir rc head
   case_dir=$(make_case records-before-merge)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" deadbeefcafefeed0000000000000000deadbeef
@@ -395,11 +472,12 @@ test_verified_merge_records_pr_and_head() {
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
 
   expect_code 0 "$rc" "records-before-merge: fm-pr-merge should succeed"
   assert_grep 'pr=https://github.com/example/repo/pull/9' "$case_dir/state/task-x1.meta" \
     "records-before-merge: pr= was not recorded"
-  assert_grep 'pr_head=deadbeefcafefeed0000000000000000deadbeef' "$case_dir/state/task-x1.meta" \
+  assert_grep "pr_head=$head" "$case_dir/state/task-x1.meta" \
     "records-before-merge: pr_head= was not recorded"
   grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "records-before-merge: gh-axi pr merge was not invoked with number, --repo, and default --squash"

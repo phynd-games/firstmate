@@ -18,15 +18,22 @@
 #   fm-operational-input.sh encode <kind>  # body on stdin, encoded input stdout
 #   fm-operational-input.sh kind           # current input on stdin, kind stdout
 #   fm-operational-input.sh classify       # current or legacy input on stdin
-#   fm-operational-input.sh body           # current generic input on stdin
+#   fm-operational-input.sh body           # current input body on stdin
+#   fm-operational-input.sh inspect        # structural trust report on stdin
+#   fm-operational-input.sh schema         # versioned inspection JSON Schema
 #   fm-operational-input.sh --help
 #
+# Current bodies are non-empty and bounded to the schema-owned maximum.
+# Inspection binds exact body bytes with SHA-256 but explicitly grants no
+# authorization and verifies no provenance; structure is never authority.
 # All successful data commands print exactly one value and no diagnostics.
 # A non-match exits 1 silently. Invalid use exits 2. Bash 3.2 compatible.
 
 FM_OPERATIONAL_MARK=$'\xE2\x81\xA3'
 FM_OPERATIONAL_PREFIX="${FM_OPERATIONAL_MARK}FIRSTMATE_OP: "
 FM_OPERATIONAL_VERSION=v1
+FM_OPERATIONAL_SCHEMA=firstmate.agent-interchange.v1
+FM_OPERATIONAL_MAX_BODY_BYTES=1048576
 FM_OPERATIONAL_HEADER_PREFIX="${FM_OPERATIONAL_PREFIX}${FM_OPERATIONAL_VERSION} "
 FM_OPERATIONAL_KINDS='session-start watcher turn-end-guard away-supervisor launch-brief branch-outcome branch-adjudication'
 
@@ -47,11 +54,38 @@ fm_operational_kind_is_current() {  # <kind>
   return 1
 }
 
+fm_operational_body_byte_count() {  # <body> <result-var>
+  local body=${1-} result_var=${2-} measured LC_ALL
+  [ -n "$result_var" ] || return 2
+  LC_ALL=C
+  measured=${#body}
+  printf -v "$result_var" '%s' "$measured"
+}
+
+fm_operational_max_carrier_bytes() {  # <result-var>
+  local result_var=${1-} kind header_bytes max_header_bytes LC_ALL
+  [ -n "$result_var" ] || return 2
+  LC_ALL=C
+  max_header_bytes=${#FM_FROMFIRST_MARK}
+  for kind in $FM_OPERATIONAL_KINDS; do
+    header_bytes=$(( ${#FM_OPERATIONAL_HEADER_PREFIX} + ${#kind} + 2 ))
+    [ "$header_bytes" -le "$max_header_bytes" ] || max_header_bytes=$header_bytes
+  done
+  printf -v "$result_var" '%s' "$((FM_OPERATIONAL_MAX_BODY_BYTES + max_header_bytes))"
+}
+
+fm_operational_body_is_valid() {  # <body>
+  local body=${1-} count
+  [ -n "$body" ] || return 1
+  fm_operational_body_byte_count "$body" count || return 1
+  [ "$count" -le "$FM_OPERATIONAL_MAX_BODY_BYTES" ]
+}
+
 fm_operational_input_encode() {  # <generic-kind> <body> <result-var>
   local kind=${1-} body=${2-} result_var=${3-}
   [ -n "$result_var" ] || return 2
   fm_operational_kind_is_current "$kind" || return 2
-  [ -n "$body" ] || return 2
+  fm_operational_body_is_valid "$body" || return 2
   printf -v "$result_var" '%s%s: %s' "$FM_OPERATIONAL_HEADER_PREFIX" "$kind" "$body"
 }
 
@@ -76,7 +110,8 @@ fm_operational_generic_kind() {  # <message> <result-var>
   parsed_kind=${remainder%%': '*}
   fm_operational_kind_is_current "$parsed_kind" || return 1
   body=${remainder#"${parsed_kind}: "}
-  [ "$body" != "$remainder" ] && [ -n "$body" ] || return 1
+  [ "$body" != "$remainder" ] || return 1
+  fm_operational_body_is_valid "$body" || return 1
   printf -v "$result_var" '%s' "$parsed_kind"
 }
 
@@ -89,6 +124,7 @@ fm_operational_input_kind() {  # <message> <result-var>
   fi
   case "$message" in
     "$FM_FROMFIRST_MARK"?*)
+      fm_operational_body_is_valid "${message#"$FM_FROMFIRST_MARK"}" || return 1
       printf -v "$result_var" '%s' from-firstmate
       return 0
       ;;
@@ -107,6 +143,7 @@ fm_operational_input_body() {  # <current-message> <result-var>
   case "$message" in
     "$FM_FROMFIRST_MARK"?*)
       parsed_body=${message#"$FM_FROMFIRST_MARK"}
+      fm_operational_body_is_valid "$parsed_body" || return 1
       printf -v "$result_var" '%s' "$parsed_body"
       return 0
       ;;
@@ -162,12 +199,49 @@ fm_legacy_operational_input_kind() {  # <message> <result-var>
 fm_operational_input_classify() {  # <message> <result-var>
   local message=${1-} result_var=${2-} classified_kind
   [ -n "$result_var" ] || return 2
-  if fm_operational_input_kind "$message" classified_kind ||
-     fm_legacy_operational_input_kind "$message" classified_kind; then
+  if fm_operational_input_kind "$message" classified_kind; then
+    printf -v "$result_var" '%s' "$classified_kind"
+    return 0
+  fi
+  # A malformed current-version envelope never downgrades into the broad
+  # pre-version FIRSTMATE_OP compatibility parser.
+  if fm_operational_versioned_envelope_shape "$message"; then
+    return 1
+  fi
+  if fm_legacy_operational_input_kind "$message" classified_kind; then
     printf -v "$result_var" '%s' "$classified_kind"
     return 0
   fi
   return 1
+}
+
+fm_operational_versioned_envelope_shape() {  # <message>
+  local message=${1-} remainder version digits envelope kind
+  case "$message" in
+    "$FM_OPERATIONAL_PREFIX"v*) ;;
+    *) return 1 ;;
+  esac
+  remainder=${message#"$FM_OPERATIONAL_PREFIX"}
+  case "$remainder" in
+    *" "*) ;;
+    *) return 1 ;;
+  esac
+  version=${remainder%% *}
+  digits=${version#v}
+  [ "$digits" != "$version" ] && [ -n "$digits" ] || return 1
+  case "$digits" in
+    *[!0-9]*) return 1 ;;
+  esac
+  envelope=${remainder#"$version "}
+  case "$envelope" in
+    *": "*) ;;
+    *) return 1 ;;
+  esac
+  kind=${envelope%%": "*}
+  case "$kind" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  return 0
 }
 
 fm_message_from_firstmate() {  # <message>
@@ -181,16 +255,47 @@ fm_message_mark_from_firstmate() {  # <message> <result-var>
   if fm_message_from_firstmate "$message"; then
     transformed=$message
   else
+    case "$message" in "$FM_FROMFIRST_MARK"*) return 2 ;; esac
+    fm_operational_body_is_valid "$message" || return 2
     transformed="${FM_FROMFIRST_MARK}${message}"
   fi
   printf -v "$result_var" '%s' "$transformed"
 }
 
-fm_operational_read_stdin() {  # <result-var>
-  local result_var=${1-} value
+fm_operational_sha256_text() {  # <text> <result-var>
+  local text=${1-} result_var=${2-} calculated_digest
   [ -n "$result_var" ] || return 2
-  value=$(cat; printf x)
+  if command -v shasum >/dev/null 2>&1; then
+    calculated_digest=$(printf '%s' "$text" | shasum -a 256 2>/dev/null | awk '{print $1}') || return 2
+  elif command -v sha256sum >/dev/null 2>&1; then
+    calculated_digest=$(printf '%s' "$text" | sha256sum 2>/dev/null | awk '{print $1}') || return 2
+  else
+    return 2
+  fi
+  case "$calculated_digest" in ''|*[!0-9a-f]*) return 2 ;; esac
+  [ "${#calculated_digest}" -eq 64 ] || return 2
+  printf -v "$result_var" '%s' "$calculated_digest"
+}
+
+fm_operational_input_inspect() {  # <current-message> <result-var>
+  local message=${1-} result_var=${2-} kind body byte_count digest rendered
+  [ -n "$result_var" ] || return 2
+  fm_operational_input_kind "$message" kind || return 1
+  fm_operational_input_body "$message" body || return 1
+  fm_operational_body_byte_count "$body" byte_count || return 2
+  fm_operational_sha256_text "$body" digest || return 2
+  rendered=$(printf '{"authorization_granted":false,"body_byte_count":%s,"body_sha256":"%s","kind":"%s","provenance_evidence":"body-sha256-only","provenance_verified":false,"schema":"%s","structurally_valid":true,"wire_version":"%s"}' \
+    "$byte_count" "$digest" "$kind" "$FM_OPERATIONAL_SCHEMA" "$FM_OPERATIONAL_VERSION") || return 2
+  printf -v "$result_var" '%s' "$rendered"
+}
+
+fm_operational_read_stdin() {  # <result-var>
+  local result_var=${1-} max_bytes=${2:-$FM_OPERATIONAL_MAX_BODY_BYTES} value byte_count
+  [ -n "$result_var" ] || return 2
+  value=$(head -c "$((max_bytes + 1))" && printf x) || return 2
   value=${value%x}
+  fm_operational_body_byte_count "$value" byte_count || return 2
+  [ "$byte_count" -le "$max_bytes" ] || return 2
   printf -v "$result_var" '%s' "$value"
 }
 
@@ -201,6 +306,8 @@ Usage:
   bin/fm-operational-input.sh kind           # current input on stdin
   bin/fm-operational-input.sh classify       # current or legacy input on stdin
   bin/fm-operational-input.sh body           # current input on stdin
+  bin/fm-operational-input.sh inspect        # structural trust report on stdin
+  bin/fm-operational-input.sh schema         # versioned inspection JSON Schema
 
 Current construction kinds:
   session-start watcher turn-end-guard away-supervisor from-firstmate launch-brief
@@ -211,7 +318,8 @@ EOF
 }
 
 fm_operational_main() {
-  local command=${1-} argument=${2-} input output
+  local command=${1-} argument=${2-} input output script_dir carrier_limit
+  fm_operational_max_carrier_bytes carrier_limit || return 2
   case "$command" in
     -h|--help|help)
       fm_operational_usage
@@ -224,21 +332,35 @@ fm_operational_main() {
       ;;
     kind)
       [ "$#" -eq 1 ] || return 2
-      fm_operational_read_stdin input || return 2
+      fm_operational_read_stdin input "$carrier_limit" || return 2
       fm_operational_input_kind "$input" output || return 1
       printf '%s\n' "$output"
       ;;
     classify)
       [ "$#" -eq 1 ] || return 2
-      fm_operational_read_stdin input || return 2
+      fm_operational_read_stdin input "$carrier_limit" || return 2
       fm_operational_input_classify "$input" output || return 1
       printf '%s\n' "$output"
       ;;
     body)
       [ "$#" -eq 1 ] || return 2
-      fm_operational_read_stdin input || return 2
+      fm_operational_read_stdin input "$carrier_limit" || return 2
       fm_operational_input_body "$input" output || return 1
       printf '%s' "$output"
+      ;;
+    inspect)
+      [ "$#" -eq 1 ] || return 2
+      fm_operational_read_stdin input "$carrier_limit" || return 2
+      if fm_operational_input_inspect "$input" output; then
+        printf '%s\n' "$output"
+      else
+        return $?
+      fi
+      ;;
+    schema)
+      [ "$#" -eq 1 ] || return 2
+      script_dir=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) || return 2
+      cat "$script_dir/../schemas/firstmate-agent-interchange-v1.json" || return 2
       ;;
     *)
       fm_operational_usage >&2

@@ -2,18 +2,20 @@
 
 This module reads bytes and returns plain JSON-compatible dictionaries. It does
 not write files, import work, select routes, launch processes, read config, or
-make network requests.
+make network requests. Structural validity and digest equality never grant
+authorization or verify artifact origin.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-VALIDATOR_VERSION = "1.0.0"
+VALIDATOR_VERSION = "1.1.0"
 REPORT_SCHEMA = "firstmate.factory-validation-report.v1"
 SOURCE_SCHEMA = "phynd-firstmate-m1-task-graph.v1"
 MANIFEST_SCHEMA = "firstmate.m1-execution-manifest.v1"
@@ -28,6 +30,7 @@ SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 MANIFEST_ID = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+_NO_ACCEPTANCE_TASK = object()
 
 SOURCE_KEYS = {"schema", "title", "generated", "task_count", "epics", "tasks"}
 EPIC_KEYS = {"id", "title", "goal", "phase", "tasks"}
@@ -69,6 +72,10 @@ class DuplicateKeyError(ValueError):
     """Raised when JSON contains an object key more than once."""
 
 
+class NonStandardJSONConstantError(ValueError):
+    """Raised when JSON contains a non-standard numeric constant."""
+
+
 class Errors:
     """Collect deterministic validation errors."""
 
@@ -90,13 +97,13 @@ class Errors:
 def canonical_json_bytes(value: Any) -> bytes:
     """Encode one JSON value in the canonical form owned by this package."""
     serialized = json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
     ) + "\n"
     try:
         return serialized.encode("utf-8")
     except UnicodeEncodeError:
         return (json.dumps(
-            value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+            value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False
         ) + "\n").encode("utf-8")
 
 
@@ -117,6 +124,10 @@ def _object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, An
             raise DuplicateKeyError(f"duplicate object key: {key}")
         result[key] = value
     return result
+
+
+def _reject_nonstandard_json_constant(value: str) -> Any:
+    raise NonStandardJSONConstantError(value)
 
 
 def _contains_lone_surrogate(value: Any) -> bool:
@@ -143,6 +154,19 @@ def _contains_lone_surrogate(value: Any) -> bool:
     return False
 
 
+def _contains_nonfinite_number(value: Any) -> bool:
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, float) and not math.isfinite(current):
+            return True
+        if isinstance(current, dict):
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+    return False
+
+
 def _parse_json(data: bytes, errors: Errors) -> Any | None:
     try:
         text = data.decode("utf-8")
@@ -150,7 +174,11 @@ def _parse_json(data: bytes, errors: Errors) -> Any | None:
         errors.add("json.utf8", "$", f"input is not UTF-8: byte {exc.start}")
         return None
     try:
-        parsed = json.loads(text, object_pairs_hook=_object_without_duplicate_keys)
+        parsed = json.loads(
+            text,
+            object_pairs_hook=_object_without_duplicate_keys,
+            parse_constant=_reject_nonstandard_json_constant,
+        )
     except DuplicateKeyError as exc:
         errors.add("json.duplicate-key", "$", str(exc))
     except json.JSONDecodeError as exc:
@@ -158,11 +186,19 @@ def _parse_json(data: bytes, errors: Errors) -> Any | None:
             "json.syntax", "$",
             f"invalid JSON at line {exc.lineno} column {exc.colno}",
         )
+    except NonStandardJSONConstantError as exc:
+        errors.add(
+            "json.non-standard-constant", "$",
+            f"non-standard JSON constant: {exc}",
+        )
     except ValueError:
         errors.add("json.parse-limit", "$", "JSON value exceeds supported limits")
     except RecursionError:
         errors.add("json.depth", "$", "JSON nesting exceeds supported depth")
     else:
+        if _contains_nonfinite_number(parsed):
+            errors.add("json.non-finite-number", "$", "input contains a non-finite number")
+            return None
         if _contains_lone_surrogate(parsed):
             errors.add("json.unicode", "$", "input contains a lone surrogate code point")
             return None
@@ -404,7 +440,7 @@ def _acceptance_analysis(
             ancestors.add(task_id)
             deps = records[task_id].get("dependencies")
             if isinstance(deps, list):
-                stack.extend(dep for dep in deps if dep in ids)
+                stack.extend(dep for dep in deps if isinstance(dep, str) and dep in ids)
         covered.update(ancestors)
         per_target[target] = len(ancestors)
     return {
@@ -425,13 +461,18 @@ def _base_report(subject: str, data: bytes) -> dict[str, Any]:
         },
         "report_schema": REPORT_SCHEMA,
         "subject": subject,
+        "trust": {
+            "artifact_origin_verified": False,
+            "authorization_granted": False,
+            "structural_validation_only": True,
+        },
         "validator_version": VALIDATOR_VERSION,
         "valid": False,
     }
 
 
 def validate_source_bytes(
-    data: bytes, expected_sha256: str, acceptance_task: str = "E7.14"
+    data: bytes, expected_sha256: str, acceptance_task: Any = "E7.14"
 ) -> dict[str, Any]:
     """Validate immutable imported source bytes and return a deterministic report."""
     errors = Errors()
@@ -439,8 +480,10 @@ def validate_source_bytes(
     actual_sha256 = report["input"]["sha256"]
     provenance = {
         "actual_sha256": actual_sha256,
+        "binding_kind": "caller-supplied-sha256",
         "expected_sha256": expected_sha256,
         "matches": actual_sha256 == expected_sha256,
+        "origin_verified": False,
     }
     report["provenance"] = provenance
     if (
@@ -450,6 +493,12 @@ def validate_source_bytes(
         errors.add("provenance.expected-sha256", "$.expected_sha256", "expected SHA-256 must be 64 lowercase hexadecimal characters")
     elif actual_sha256 != expected_sha256:
         errors.add("provenance.mismatch", "$", "source bytes do not match the expected SHA-256")
+
+    acceptance_targets: list[str] = []
+    if acceptance_task is not _NO_ACCEPTANCE_TASK and _string(
+        acceptance_task, "$.acceptance_task", errors, SOURCE_ID
+    ):
+        acceptance_targets.append(acceptance_task)
 
     document = _parse_json(data, errors)
     if document is None:
@@ -465,17 +514,34 @@ def validate_source_bytes(
     _string(document["title"], "$.title", errors)
     _string(document["generated"], "$.generated", errors, DATE)
     declared_count = document["task_count"]
-    if type(declared_count) is not int or declared_count < 0:
-        errors.add("schema.type", "$.task_count", "expected non-negative integer")
+    if isinstance(declared_count, bool) or not isinstance(declared_count, (int, float)):
+        declared_count_valid = False
+    elif isinstance(declared_count, float):
+        declared_count_valid = (
+            math.isfinite(declared_count)
+            and declared_count >= 1
+            and declared_count.is_integer()
+        )
+    else:
+        declared_count_valid = declared_count >= 1
+    if not declared_count_valid:
+        errors.add("schema.type", "$.task_count", "expected positive integer")
+        declared_count = None
+    else:
+        declared_count = int(declared_count)
 
     epics = document["epics"]
     flat_tasks = document["tasks"]
     if not isinstance(epics, list):
         errors.add("schema.type", "$.epics", "expected array")
         epics = []
+    elif not epics:
+        errors.add("schema.min-items", "$.epics", "expected at least 1 item(s)")
     if not isinstance(flat_tasks, list):
         errors.add("schema.type", "$.tasks", "expected array")
         flat_tasks = []
+    elif not flat_tasks:
+        errors.add("schema.min-items", "$.tasks", "expected at least 1 item(s)")
 
     nested_records: dict[str, dict[str, Any]] = {}
     nested_locations: dict[str, str] = {}
@@ -497,6 +563,8 @@ def validate_source_bytes(
         if not isinstance(nested, list):
             errors.add("schema.type", f"{epic_path}.tasks", "expected array")
             continue
+        if not nested:
+            errors.add("schema.min-items", f"{epic_path}.tasks", "expected at least 1 item(s)")
         if valid_epic_id:
             epic_counts[epic_id] = len(nested)
         for task_index, item in enumerate(nested):
@@ -569,7 +637,7 @@ def validate_source_bytes(
                 errors.add("representation.mismatch", f"{flat_locations[task_id]}.{field}", f"nested and flat values differ for {task_id}.{field}")
 
     actual_count = len(flat_tasks)
-    if type(declared_count) is int and declared_count != actual_count:
+    if declared_count_valid and declared_count != actual_count:
         errors.add("count.declared", "$.task_count", f"declared {declared_count}, found {actual_count} flat tasks")
     if len(nested_records) != actual_count:
         errors.add("count.representations", "$.epics", f"found {len(nested_records)} unique nested tasks and {actual_count} flat task entries")
@@ -579,7 +647,7 @@ def validate_source_bytes(
         lambda task_id, index: f"{flat_locations.get(task_id, '$.tasks')}.dependencies[{index}]",
     )
     graph.update({
-        "acceptance_reachability": _acceptance_analysis(flat_records, [acceptance_task], errors),
+        "acceptance_reachability": _acceptance_analysis(flat_records, acceptance_targets, errors),
         "declared_task_count": declared_count,
         "epic_count": len(epics),
         "epic_task_counts": {key: epic_counts[key] for key in sorted(epic_counts)},
@@ -633,7 +701,7 @@ def _validate_execution_task(task: Any, path: str, errors: Errors) -> dict[str, 
 
 
 def validate_execution_manifest_bytes(
-    data: bytes, source_data: bytes, expected_sha256: str
+    data: bytes, source_data: bytes
 ) -> dict[str, Any]:
     """Validate a normalized manifest and its bound immutable source bytes."""
     errors = Errors()
@@ -674,28 +742,13 @@ def validate_execution_manifest_bytes(
     source_sha256 = hashlib.sha256(source_data).hexdigest()
     source_provenance: dict[str, Any] = {
         "actual_sha256": source_sha256,
-        "expected_sha256": expected_sha256,
+        "artifact_origin_verified": False,
+        "binding_kind": "manifest-declared-sha256",
         "bound_sha256": None,
         "matches": False,
-        "expected_matches": False,
         "source_valid": False,
     }
     source_task_ids: set[str] | None = None
-    source_report = validate_source_bytes(source_data, expected_sha256)
-    source_provenance["expected_matches"] = source_report["provenance"]["matches"]
-    source_provenance["source_valid"] = source_report["valid"]
-    source_provenance["validation_errors"] = source_report["errors"]
-    source_graph = source_report.get("graph", {})
-    if isinstance(source_graph, dict):
-        task_ids = source_graph.get("task_ids")
-        if isinstance(task_ids, list):
-            source_task_ids = {task_id for task_id in task_ids if isinstance(task_id, str)}
-    if not source_provenance["expected_matches"]:
-        errors.add(
-            "manifest.source-provenance-mismatch",
-            "$.expected_sha256",
-            "supplied source bytes do not match the independently expected SHA-256",
-        )
     if len(source_graph_bindings) != 1:
         errors.add(
             "manifest.source-binding",
@@ -707,6 +760,19 @@ def validate_execution_manifest_bytes(
         bound_sha256 = binding["sha256"]
         source_provenance["bound_sha256"] = bound_sha256
         source_provenance["matches"] = bound_sha256 == source_sha256
+        if isinstance(bound_sha256, str):
+            source_report = validate_source_bytes(
+                source_data, bound_sha256, _NO_ACCEPTANCE_TASK
+            )
+            source_provenance["source_valid"] = source_report["valid"]
+            source_provenance["validation_errors"] = source_report["errors"]
+            source_graph = source_report.get("graph", {})
+            if isinstance(source_graph, dict):
+                task_ids = source_graph.get("task_ids")
+                if isinstance(task_ids, list):
+                    source_task_ids = {task_id for task_id in task_ids if isinstance(task_id, str)}
+        else:
+            source_provenance["validation_errors"] = []
         if bound_sha256 != source_sha256:
             errors.add(
                 "manifest.source-hash-mismatch",

@@ -11,6 +11,8 @@ set -u
 . "$ROOT/bin/fm-check-lib.sh"
 
 PR_CHECK="$ROOT/bin/fm-pr-check.sh"
+SELF_REVIEW_CHECK="$ROOT/bin/fm-pr-self-review-check.sh"
+PR_CREATE="$ROOT/bin/fm-pr-create.sh"
 PR_MERGE="$ROOT/bin/fm-pr-merge.sh"
 POLL="$ROOT/bin/fm-pr-poll.sh"
 WATCH="$ROOT/bin/fm-watch.sh"
@@ -122,11 +124,47 @@ state_snapshot() {
 }
 
 make_case() {
-  local name=$1 dir fakebin fake_root
+  local name=$1 dir fakebin fake_root substrate_head
   dir="$TMP_ROOT/$name"
   fakebin="$dir/fakebin"
   fake_root="$dir/root"
-  mkdir -p "$dir/home/state" "$dir/home/data" "$dir/home/config" "$dir/wt" "$fakebin" "$fake_root/bin"
+  mkdir -p "$dir/home/state" "$dir/home/data/task-a" "$dir/home/config" "$dir/wt" "$dir/substrate" "$fakebin" "$fake_root/bin"
+  git init -q "$dir/wt"
+  git -C "$dir/wt" config user.name fmtest
+  git -C "$dir/wt" config user.email fmtest@example.invalid
+  printf 'fixture\n' > "$dir/wt/fixture.txt"
+  mkdir -p "$dir/wt/bin" "$dir/wt/tests" "$dir/wt/.agents/skills/firstmate-pr-self-review"
+  for fixture_file in \
+    bin/fm-pr-check.sh bin/fm-pr-lib.sh bin/fm-pr-self-review-check.sh \
+    bin/fm-operational-input.sh bin/fm-pr-create.sh bin/fm-merge-local.sh \
+    bin/fm-brief.sh tests/fm-pr-check-security.test.sh tests/fm-pr-merge.test.sh \
+    .agents/skills/firstmate-pr-self-review/SKILL.md; do
+    printf 'fixture\n' > "$dir/wt/$fixture_file"
+  done
+  printf 'fixture\nbase surface\n' > "$dir/wt/bin/fm-pr-check.sh"
+  git -C "$dir/wt" remote add origin https://github.com/o/r.git
+  git -C "$dir/wt" add fixture.txt bin tests .agents
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
+  git -C "$dir/wt" branch -M main
+  git -C "$dir/wt" checkout -qb fm/task-a
+  for fixture_file in \
+    bin/fm-pr-check.sh bin/fm-pr-lib.sh bin/fm-pr-self-review-check.sh \
+    bin/fm-operational-input.sh bin/fm-pr-create.sh \
+    tests/fm-pr-check-security.test.sh \
+    .agents/skills/firstmate-pr-self-review/SKILL.md; do
+    printf 'fixture\nreviewed surface\n' > "$dir/wt/$fixture_file"
+  done
+  git -C "$dir/wt" add bin tests .agents
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm change
+  git -C "$dir/substrate" init -q
+  git -C "$dir/substrate" config user.name fmtest
+  git -C "$dir/substrate" config user.email fmtest@example.invalid
+  printf 'substrate fixture\n' > "$dir/substrate/fixture.txt"
+  git -C "$dir/substrate" add fixture.txt
+  git -C "$dir/substrate" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm fixture
+  substrate_head=$(git -C "$dir/substrate" rev-parse HEAD)
+  printf '%s\n' "- Firstmate substrate root: \`$dir/substrate\`" \
+    "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$dir/home/data/task-a/brief.md"
   cat > "$fake_root/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'guard\n' >> "$FM_TEST_GUARD_LOG"
@@ -147,6 +185,7 @@ case "${1:-} ${2:-}" in
 esac
 case " $* " in
   *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}" ;;
+  *" baseRefName "*) printf '%s\n' "${FM_TEST_GH_BASE:-main}" ;;
   *" state "*)
     [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
     [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"
@@ -172,6 +211,25 @@ SH
 printf '%s\n' "$*" >> "$FM_TEST_GLAB_LOG"
 [ "${FM_TEST_GLAB_FAIL:-0}" = 0 ] || exit 1
 [ "${FM_TEST_GLAB_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GLAB_SLEEP"
+  case " $* " in
+  *" -F json "*)
+    glab_call_count=0
+    if [ -n "${FM_TEST_GLAB_CALL_COUNT:-}" ] && [ -f "$FM_TEST_GLAB_CALL_COUNT" ]; then
+      glab_call_count=$(cat "$FM_TEST_GLAB_CALL_COUNT")
+    fi
+    glab_call_count=$((glab_call_count + 1))
+    if [ -n "${FM_TEST_GLAB_CALL_COUNT:-}" ]; then
+      printf '%s\n' "$glab_call_count" > "$FM_TEST_GLAB_CALL_COUNT"
+    fi
+    if [ "${FM_TEST_GLAB_MERGE_UNREADABLE:-0}" = 1 ] && [ "$glab_call_count" -ge 2 ]; then
+      printf '{\n'
+      exit 0
+    fi
+    printf '{"diff_refs":{"head_sha":"%s"},"target_branch":"%s"}\n' \
+      "${FM_TEST_GLAB_HEAD:-0123456789abcdef0123456789abcdef01234567}" "${FM_TEST_GLAB_BASE:-main}"
+    exit 0
+    ;;
+esac
 printf 'title:\tfixture merge request\nstate:\t%s\nauthor:\tsomeone\n' "${FM_TEST_GLAB_STATE:-opened}"
 SH
   chmod +x "$fakebin/gh" "$fakebin/gh-axi" "$fakebin/glab"
@@ -183,14 +241,234 @@ SH
 }
 
 write_task_meta() {
-  local dir=$1 id=${2:-task-a}
+  local dir=$1 id=${2:-task-a} substrate_head target_head base_head
+  substrate_head=$(git -C "$dir/substrate" rev-parse HEAD)
+  target_head=$(git -C "$dir/wt" rev-parse HEAD)
+  base_head=$(git -C "$dir/wt" rev-parse main)
+  mkdir -p "$dir/home/data/$id"
+  printf '%s\n' "- Firstmate substrate root: \`$dir/substrate\`" \
+    "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$dir/home/data/$id/brief.md"
   fm_write_meta "$dir/home/state/$id.meta" \
     "window=firstmate:fm-$id" \
     "endpoint_task_id=$id" \
     "worktree=$dir/wt" \
     "project=$dir/project" \
+    'review_base_ref=main' \
+    "review_base_sha=$base_head" \
     "kind=ship" \
     "mode=no-mistakes"
+  write_self_review_report "$dir/home" "$id"
+}
+
+self_review_line_digest() {
+  local case_dir=$1 file=$2
+  if [ -f "$case_dir/wt/$file" ]; then
+    sed -n '2p' "$case_dir/wt/$file" | fm_pr_sha256_stream
+  else
+    git -C "$case_dir/wt" show "main:$file" | sed -n '2p' | fm_pr_sha256_stream
+  fi
+}
+
+self_review_line_hex() {
+  local case_dir=$1 file=$2
+  if [ -f "$case_dir/wt/$file" ]; then
+    awk 'NR == 2 { printf "%s", $0 }' "$case_dir/wt/$file" | od -An -tx1 | tr -d ' \n'
+  else
+    git -C "$case_dir/wt" show "main:$file" | awk 'NR == 2 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n'
+  fi
+}
+
+surface_binding_digest() {
+  local surface=$1 reference=$2 digest=$3 change_digest=$4 line_hex=$5 behavior=$6 action=$7
+  printf '%s\n' "$surface|$reference|$digest|$change_digest|$line_hex|$behavior|$action" | fm_pr_sha256_stream
+}
+
+surface_change_digest_for_file() {
+  local case_dir=$1 file=$2 base_head target_head merge_base_sha
+  base_head=$(git -C "$case_dir/wt" rev-parse main)
+  target_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  merge_base_sha=$(git -C "$case_dir/wt" merge-base "$base_head" "$target_head")
+  git -C "$case_dir/wt" diff --no-color --unified=0 "$merge_base_sha" "$target_head" -- "$file" | fm_pr_sha256_stream
+}
+
+surface_change_digest() {
+  local case_dir=$1 file=$2 base_head target_head merge_base_sha
+  base_head=$(git -C "$case_dir/wt" rev-parse main)
+  target_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  merge_base_sha=$(git -C "$case_dir/wt" merge-base "$base_head" "$target_head")
+  git -C "$case_dir/wt" diff --no-color --unified=0 "$merge_base_sha" "$target_head" -- "$file" | fm_pr_sha256_stream
+}
+
+surface_transition_binding_digest() {
+  local surface=$1 evidence_ref=$2 evidence_digest=$3 change_digest=$4 evidence_hex=$5
+  local consequence_ref=$6 consequence_side=$7 consequence_digest=$8 consequence_hex=$9
+  local fix_ref=${10} fix_side=${11} fix_digest=${12} fix_hex=${13} behavior_digest=${14}
+  printf '%s\n' "$surface|$evidence_ref|$evidence_digest|$change_digest|$evidence_hex|$consequence_ref|$consequence_side|$consequence_digest|$consequence_hex|$fix_ref|$fix_side|$fix_digest|$fix_hex|$behavior_digest" | fm_pr_sha256_stream
+}
+
+surface_behavior_digest() {
+  local surface=$1 evidence_ref=$2 consequence_ref=$3 consequence_side=$4 consequence_digest=$5 consequence_hex=$6
+  local fix_ref=$7 fix_side=$8 fix_digest=$9 fix_hex=${10} change_digest=${11} behavior=${12} action=${13}
+  local before_hex=none after_hex=none
+  [ "$consequence_side" = old ] && before_hex=$consequence_hex
+  [ "$fix_side" = new ] && after_hex=$fix_hex
+  printf '%s\n' "$surface|$evidence_ref|$consequence_ref|$consequence_side|$consequence_digest|$consequence_hex|$before_hex|$after_hex|$fix_ref|$fix_side|$fix_digest|$fix_hex|$before_hex|$after_hex|$change_digest|$before_hex|$after_hex|$behavior|$action|observed:$evidence_ref:$fix_digest:$fix_hex|transition:$before_hex->$after_hex|applied:$fix_ref:$fix_digest:$fix_hex" | fm_pr_sha256_stream
+}
+
+surface_review_record() {
+  local label=$1 surface=$2 file=$3 new_digest=$4 new_hex=$5 old_digest=$6 old_hex=$7 change_digest=$8 binding
+  local behavior behavior_digest action
+  case "$surface" in
+    authority) behavior=non-authorizing; action=retain-owner ;;
+    security) behavior=provenance-bound; action=retain-boundary ;;
+    path) behavior=path-safe; action=retain-validation ;;
+    failure) behavior=fail-closed; action=retain-refusal ;;
+    tests) behavior=behavioral; action=retain-regression ;;
+    documentation) behavior=contract-aligned; action=retain-contract ;;
+    delivery) behavior=no-mistakes-owned; action=retain-no-mistakes ;;
+  esac
+  [ -n "$old_hex" ] || {
+    surface_review_single_record "$label" "$surface" "$file" "$new_digest" "$new_hex" "$change_digest"
+    return
+  }
+  behavior_digest=$(surface_behavior_digest "$surface" "$file:2" "$file:2" old "$old_digest" "$old_hex" "$file:2" new "$new_digest" "$new_hex" "$change_digest" "$behavior" "$action") || return 1
+  binding=$(surface_transition_binding_digest "$surface" "$file:2" "$new_digest" "$change_digest" "$new_hex" "$file:2" old "$old_digest" "$old_hex" "$file:2" new "$new_digest" "$new_hex" "$behavior_digest") || return 1
+  printf '%s: reviewed; surface=%s; files=%s; evidence=%s:2 sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s:2 claim=observed:%s:2:%s:%s behavior=%s behavior-sha256=%s; consequence=anchor=%s:2 side=old sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s:2 claim=transition:%s->%s behavior=%s behavior-sha256=%s binding=%s; fix=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s:2 claim=applied:%s:2:%s:%s behavior=%s action=%s behavior-sha256=%s binding=%s\n' \
+    "$label" "$surface" "$file" "$file" "$new_digest" "$change_digest" "$new_hex" "$old_hex" "$new_hex" "$file" "$file" "$new_digest" "$new_hex" "$behavior" "$behavior_digest" "$file" "$old_digest" "$change_digest" "$old_hex" "$old_hex" "$new_hex" "$file" "$old_hex" "$new_hex" "$behavior" "$behavior_digest" "$binding" "$file" "$new_digest" "$change_digest" "$new_hex" "$old_hex" "$new_hex" "$file" "$file" "$new_digest" "$new_hex" "$behavior" "$action" "$behavior_digest" "$binding"
+}
+
+surface_review_single_record() {
+  local label=$1 surface=$2 file=$3 digest=$4 line_hex=$5 change_digest=$6 binding behavior action behavior_digest
+  case "$surface" in
+    authority) behavior=non-authorizing; action=retain-owner ;;
+    security) behavior=provenance-bound; action=retain-boundary ;;
+    path) behavior=path-safe; action=retain-validation ;;
+    failure) behavior=fail-closed; action=retain-refusal ;;
+    tests) behavior=behavioral; action=retain-regression ;;
+    documentation) behavior=contract-aligned; action=retain-contract ;;
+    delivery) behavior=no-mistakes-owned; action=retain-no-mistakes ;;
+  esac
+  behavior_digest=$(surface_behavior_digest "$surface" "$file:2" "$file:2" new "$digest" "$line_hex" "$file:2" new "$digest" "$line_hex" "$change_digest" "$behavior" "$action") || return 1
+  binding=$(surface_transition_binding_digest "$surface" "$file:2" "$digest" "$change_digest" "$line_hex" "$file:2" new "$digest" "$line_hex" "$file:2" new "$digest" "$line_hex" "$behavior_digest") || return 1
+  printf '%s: reviewed; surface=%s; files=%s; evidence=%s:2 sha256=%s change-sha256=%s line-hex=%s before-hex=none after-hex=%s hunk=%s:2 claim=observed:%s:2:%s:%s behavior=%s behavior-sha256=%s; consequence=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s before-hex=none after-hex=%s hunk=%s:2 claim=transition:none->%s behavior=%s behavior-sha256=%s binding=%s; fix=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s before-hex=none after-hex=%s hunk=%s:2 claim=applied:%s:2:%s:%s behavior=%s action=%s behavior-sha256=%s binding=%s\n' \
+    "$label" "$surface" "$file" "$file" "$digest" "$change_digest" "$line_hex" "$line_hex" "$file" "$file" "$digest" "$line_hex" "$behavior" "$behavior_digest" "$file" "$digest" "$change_digest" "$line_hex" "$line_hex" "$file" "$line_hex" "$behavior" "$behavior_digest" "$binding" "$file" "$digest" "$change_digest" "$line_hex" "$line_hex" "$file" "$file" "$digest" "$line_hex" "$behavior" "$action" "$behavior_digest" "$binding"
+}
+
+surface_review_single_record_at_line() {
+  local label=$1 surface=$2 file=$3 line=$4 digest=$5 line_hex=$6 change_digest=$7 side=${8:-new} binding reference behavior action behavior_digest
+  case "$surface" in
+    authority) behavior=non-authorizing; action=retain-owner ;;
+    security) behavior=provenance-bound; action=retain-boundary ;;
+    path) behavior=path-safe; action=retain-validation ;;
+    failure) behavior=fail-closed; action=retain-refusal ;;
+    tests) behavior=behavioral; action=retain-regression ;;
+    documentation) behavior=contract-aligned; action=retain-contract ;;
+    delivery) behavior=no-mistakes-owned; action=retain-no-mistakes ;;
+  esac
+  reference="$file:$line"
+  behavior_digest=$(surface_behavior_digest "$surface" "$reference" "$reference" "$side" "$digest" "$line_hex" "$reference" "$side" "$digest" "$line_hex" "$change_digest" "$behavior" "$action") || return 1
+  binding=$(surface_transition_binding_digest "$surface" "$reference" "$digest" "$change_digest" "$line_hex" "$reference" "$side" "$digest" "$line_hex" "$reference" "$side" "$digest" "$line_hex" "$behavior_digest") || return 1
+  if [ "$side" = old ]; then
+    before_hex=$line_hex
+    after_hex=none
+  else
+    before_hex=none
+    after_hex=$line_hex
+  fi
+  printf '%s: reviewed; surface=%s; files=%s; evidence=%s sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s claim=observed:%s:%s:%s behavior=%s behavior-sha256=%s; consequence=anchor=%s side=%s sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s claim=transition:%s->%s behavior=%s behavior-sha256=%s binding=%s; fix=anchor=%s side=%s sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s claim=applied:%s:%s:%s behavior=%s action=%s behavior-sha256=%s binding=%s\n' \
+    "$label" "$surface" "$file" "$reference" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$reference" "$digest" "$line_hex" "$behavior" "$behavior_digest" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$before_hex" "$after_hex" "$behavior" "$behavior_digest" "$binding" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$reference" "$digest" "$line_hex" "$behavior" "$action" "$behavior_digest" "$binding"
+}
+
+write_self_review_report() {
+  local home=$1 id=$2 report case_dir target_repository target_head base_head merge_base_sha substrate_root substrate_head empty_digest changed_digest
+  local authority_digest security_digest path_digest failure_digest tests_digest documentation_digest delivery_digest
+  local authority_old_digest security_old_digest path_old_digest failure_old_digest tests_old_digest documentation_old_digest delivery_old_digest
+  local authority_line_hex security_line_hex path_line_hex failure_line_hex tests_line_hex documentation_line_hex delivery_line_hex
+  local authority_old_line_hex security_old_line_hex path_old_line_hex failure_old_line_hex tests_old_line_hex documentation_old_line_hex delivery_old_line_hex
+  local authority_change_digest security_change_digest path_change_digest failure_change_digest tests_change_digest documentation_change_digest delivery_change_digest
+  report="$home/data/$id/pr-self-review.md"
+  case_dir=$(cd "$home/.." && pwd)
+  target_repository=$(cd "$case_dir/wt" && pwd -P)
+  target_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  base_head=$(git -C "$case_dir/wt" rev-parse main)
+  merge_base_sha=$(git -C "$case_dir/wt" merge-base "$base_head" "$target_head")
+  changed_digest=$(git -C "$case_dir/wt" diff --name-status "$merge_base_sha" "$target_head" | fm_pr_sha256_stream)
+  authority_digest=$(self_review_line_digest "$case_dir" bin/fm-pr-check.sh)
+  security_digest=$(self_review_line_digest "$case_dir" bin/fm-pr-lib.sh)
+  path_digest=$(self_review_line_digest "$case_dir" bin/fm-pr-self-review-check.sh)
+  failure_digest=$(self_review_line_digest "$case_dir" bin/fm-operational-input.sh)
+  tests_digest=$(self_review_line_digest "$case_dir" tests/fm-pr-check-security.test.sh)
+  documentation_digest=$(self_review_line_digest "$case_dir" .agents/skills/firstmate-pr-self-review/SKILL.md)
+  delivery_digest=$(self_review_line_digest "$case_dir" bin/fm-pr-create.sh)
+  authority_line_hex=$(self_review_line_hex "$case_dir" bin/fm-pr-check.sh)
+  security_line_hex=$(self_review_line_hex "$case_dir" bin/fm-pr-lib.sh)
+  path_line_hex=$(self_review_line_hex "$case_dir" bin/fm-pr-self-review-check.sh)
+  failure_line_hex=$(self_review_line_hex "$case_dir" bin/fm-operational-input.sh)
+  tests_line_hex=$(self_review_line_hex "$case_dir" tests/fm-pr-check-security.test.sh)
+  documentation_line_hex=$(self_review_line_hex "$case_dir" .agents/skills/firstmate-pr-self-review/SKILL.md)
+  delivery_line_hex=$(self_review_line_hex "$case_dir" bin/fm-pr-create.sh)
+  authority_old_digest=$(git -C "$case_dir/wt" show "main:bin/fm-pr-check.sh" | sed -n '2p' | fm_pr_sha256_stream)
+  security_old_digest=$(git -C "$case_dir/wt" show "main:bin/fm-pr-lib.sh" | sed -n '2p' | fm_pr_sha256_stream)
+  path_old_digest=$(git -C "$case_dir/wt" show "main:bin/fm-pr-self-review-check.sh" | sed -n '2p' | fm_pr_sha256_stream)
+  failure_old_digest=$(git -C "$case_dir/wt" show "main:bin/fm-operational-input.sh" | sed -n '2p' | fm_pr_sha256_stream)
+  tests_old_digest=$(git -C "$case_dir/wt" show "main:tests/fm-pr-check-security.test.sh" | sed -n '2p' | fm_pr_sha256_stream)
+  documentation_old_digest=$(git -C "$case_dir/wt" show "main:.agents/skills/firstmate-pr-self-review/SKILL.md" | sed -n '2p' | fm_pr_sha256_stream)
+  delivery_old_digest=$(git -C "$case_dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '2p' | fm_pr_sha256_stream)
+  authority_old_line_hex=$(git -C "$case_dir/wt" show "main:bin/fm-pr-check.sh" | awk 'NR == 2 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  security_old_line_hex=$(git -C "$case_dir/wt" show "main:bin/fm-pr-lib.sh" | awk 'NR == 2 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  path_old_line_hex=$(git -C "$case_dir/wt" show "main:bin/fm-pr-self-review-check.sh" | awk 'NR == 2 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  failure_old_line_hex=$(git -C "$case_dir/wt" show "main:bin/fm-operational-input.sh" | awk 'NR == 2 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  tests_old_line_hex=$(git -C "$case_dir/wt" show "main:tests/fm-pr-check-security.test.sh" | awk 'NR == 2 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  documentation_old_line_hex=$(git -C "$case_dir/wt" show "main:.agents/skills/firstmate-pr-self-review/SKILL.md" | awk 'NR == 2 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  delivery_old_line_hex=$(git -C "$case_dir/wt" show "main:bin/fm-pr-create.sh" | awk 'NR == 2 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  authority_change_digest=$(surface_change_digest "$case_dir" bin/fm-pr-check.sh)
+  security_change_digest=$(surface_change_digest "$case_dir" bin/fm-pr-lib.sh)
+  path_change_digest=$(surface_change_digest "$case_dir" bin/fm-pr-self-review-check.sh)
+  failure_change_digest=$(surface_change_digest "$case_dir" bin/fm-operational-input.sh)
+  tests_change_digest=$(surface_change_digest "$case_dir" tests/fm-pr-check-security.test.sh)
+  documentation_change_digest=$(surface_change_digest "$case_dir" .agents/skills/firstmate-pr-self-review/SKILL.md)
+  delivery_change_digest=$(surface_change_digest "$case_dir" bin/fm-pr-create.sh)
+  substrate_root=${FM_TEST_REPORT_SUBSTRATE_ROOT:-$case_dir/substrate}
+  substrate_head=$(git -C "$substrate_root" rev-parse HEAD)
+  empty_digest=$(printf '' | fm_pr_sha256_stream)
+  mkdir -p "$home/data/$id"
+  printf '%s\n' "- Firstmate substrate root: \`$substrate_root\`" \
+    "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$home/data/$id/brief.md"
+  printf '%s\n' \
+    'Self-review report: firstmate-pr-self-review.v1' \
+    "Task id: $id" \
+    '# Findings' \
+    'Review status: complete' \
+    'Finding count: 0' \
+    'Finding summary: none' \
+    'None.' \
+    '# Target-project diff evidence' \
+    "Target repository: $target_repository" \
+    'Base ref: main' \
+    "Base SHA: $base_head" \
+    "Head SHA: $target_head" \
+    "Merge-base SHA: $merge_base_sha" \
+    "Changed files: $changed_digest" \
+    'Tree status: clean' \
+    '# Firstmate substrate diff evidence' \
+    "Substrate base SHA: $substrate_head" \
+    "Substrate head SHA: $substrate_head" \
+    "Substrate changed files: $empty_digest" \
+    'Substrate diff: no substrate diff' \
+    '# Surface review' \
+    "$(surface_review_record Authority authority bin/fm-pr-check.sh "$authority_digest" "$authority_line_hex" "$authority_old_digest" "$authority_old_line_hex" "$authority_change_digest")" \
+    "$(surface_review_record Security security bin/fm-pr-lib.sh "$security_digest" "$security_line_hex" "$security_old_digest" "$security_old_line_hex" "$security_change_digest")" \
+    "$(surface_review_record Path path bin/fm-pr-self-review-check.sh "$path_digest" "$path_line_hex" "$path_old_digest" "$path_old_line_hex" "$path_change_digest")" \
+    "$(surface_review_record Failure failure bin/fm-operational-input.sh "$failure_digest" "$failure_line_hex" "$failure_old_digest" "$failure_old_line_hex" "$failure_change_digest")" \
+    "$(surface_review_record Tests tests tests/fm-pr-check-security.test.sh "$tests_digest" "$tests_line_hex" "$tests_old_digest" "$tests_old_line_hex" "$tests_change_digest")" \
+    "$(surface_review_record Documentation documentation .agents/skills/firstmate-pr-self-review/SKILL.md "$documentation_digest" "$documentation_line_hex" "$documentation_old_digest" "$documentation_old_line_hex" "$documentation_change_digest")" \
+    "$(surface_review_record Delivery delivery bin/fm-pr-create.sh "$delivery_digest" "$delivery_line_hex" "$delivery_old_digest" "$delivery_old_line_hex" "$delivery_change_digest")" \
+    '# Verification' \
+    'Command: focused PR-ready boundary test' \
+    'Result: passed' \
+    '# Residual risks' \
+    'None.' > "$report"
+  chmod 0600 "$report"
 }
 
 write_poll_meta() {
@@ -202,23 +480,992 @@ write_poll_meta() {
 
 
 run_check_entry() {
-  local dir=$1
+  local dir=$1 forge_head
   shift
+  forge_head=${FM_TEST_GH_HEAD-}
+  [ -n "$forge_head" ] || forge_head=$(git -C "$dir/wt" rev-parse HEAD)
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
+    FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
+    FM_TEST_GH_HEAD="$forge_head" FM_TEST_GLAB_HEAD="$forge_head" \
     PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_CHECK" "$@"
 }
 
-run_merge_entry() {
+run_create_entry() {
   local dir=$1
   shift
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
+    FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
     PATH="$dir/fakebin:$BASE_PATH" \
+    "$PR_CREATE" "$@"
+}
+
+run_merge_entry() {
+  local dir=$1 forge_head
+  shift
+  forge_head=${FM_TEST_GLAB_HEAD-}
+  [ -n "$forge_head" ] || forge_head=$(git -C "$dir/wt" rev-parse HEAD)
+  FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
+    FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" \
+    FM_DATA_OVERRIDE="$dir/home/data" \
+    FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
+    FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
+    FM_TEST_GLAB_CALL_COUNT="$dir/glab-call-count" \
+    FM_TEST_GH_HEAD="$forge_head" FM_TEST_GLAB_HEAD="$forge_head" \
+    FM_TEST_GLAB_MERGE_UNREADABLE="${FM_TEST_GLAB_MERGE_UNREADABLE:-0}" \
+    PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_MERGE" "$@"
+}
+
+test_pr_ready_requires_durable_self_review() {
+  local dir report rc fixture_digest delivery_digest spaced_path comma_path semi_path spaced_digest comma_digest semi_digest
+  dir=$(make_case self-review-required)
+  write_task_meta "$dir"
+  report="$dir/home/data/task-a/pr-self-review.md"
+  rm -f "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/101 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a missing self-review report"
+  grep -qF 'durable findings-first self-review report is unavailable or invalid' "$dir/stderr" \
+    || fail "missing self-review report refusal was not explicit"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "missing self-review report left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  chmod 0644 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/102 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a non-private self-review report"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "invalid self-review report left a runnable poll"
+
+  printf '%s\n' \
+    'Self-review report: firstmate-pr-self-review.v1' \
+    'Task id: task-a' \
+    '# Findings' 'word' \
+    '# Target-project diff evidence' 'word' \
+    '# Firstmate substrate diff evidence' 'word' \
+    '# Surface review' 'word' \
+    '# Verification' 'word' \
+    '# Residual risks' 'word' > "$report"
+  chmod 0600 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/102 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a shallow self-review report"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "shallow self-review report left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  python3 - "$report" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+lines = path.read_text(encoding="utf-8").splitlines()
+for index, line in enumerate(lines):
+    if not line.startswith("Authority: "):
+        continue
+    prefix, claim_and_after = line.split("claim=observed:", 1)
+    claim, suffix = claim_and_after.split(" behavior=", 1)
+    reference, digest, line_hex = claim.rsplit(":", 2)
+    lines[index] = prefix + "claim=observed:" + reference + ":" + "0" * 64 + ":" + line_hex + " behavior=" + suffix
+    break
+else:
+    raise SystemExit("authority observation claim was not found")
+text = "\n".join(lines) + "\n"
+path.write_text(text, encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/103 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted an unbound surface observation"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "unbound surface observation left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  python3 - "$report" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+path.write_text(text.replace("Base ref: main", "Base ref: HEAD"), encoding="utf-8")
+PY
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/104 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a self-referential target base"
+
+  write_self_review_report "$dir/home" task-a
+  git -C "$dir/wt" remote set-url origin https://github.com/other/repo.git
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/104 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a URL for another repository"
+  git -C "$dir/wt" remote set-url origin https://github.com/o/r.git
+
+  set +e
+  FM_TEST_GH_HEAD=0123456789abcdef0123456789abcdef01234567 \
+    run_check_entry "$dir" task-a https://github.com/o/r/pull/104 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  unset FM_TEST_GH_HEAD
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a forge head for another revision"
+
+  write_self_review_report "$dir/home" task-a
+  python3 - "$report" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace(
+    "Finding count: 0\nFinding summary: none\nNone.",
+    "Finding count: 1\nFinding: severity=error; path=missing-file.sh:1; evidence=observed invalid path handling; consequence=review evidence could be fabricated; fix=reject paths absent from the repository."
+)
+path.write_text(text, encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/104 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a finding for a nonexistent file"
+
+  write_self_review_report "$dir/home" task-a
+  python3 - "$report" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+import re
+path.write_text(re.sub(r"Changed files: [0-9a-f]{64}", "Changed files: " + "1" * 64, text, count=1), encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/102 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a stale changed-file digest"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "stale self-review evidence left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  sed -i.bak 's/^Authority: .*/Authority: reviewed; x=files; y=weak; z=claims; q=pass./' "$report"
+  rm -f "$report.bak"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/107 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted arbitrary surface evidence fields"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "arbitrary surface evidence left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  fixture_digest=$(printf 'fixture\n' | fm_pr_sha256_stream)
+  fixture_line_hex=$(printf 'fixture' | od -An -tx1 | tr -d ' \n')
+  fixture_binding=$(surface_binding_digest authority fixture.txt:1 "$fixture_digest" empty "$fixture_line_hex" non-authorizing retain-owner)
+  sed -i.bak "s#^Authority: .*#Authority: reviewed; surface=authority; files=fixture.txt; evidence=fixture.txt:1 sha256=$fixture_digest change-sha256=$(printf empty | fm_pr_sha256_stream) line-hex=$fixture_line_hex hunk=fixture.txt:1; consequence=anchor=fixture.txt:1 sha256=$fixture_digest change-sha256=$(printf empty | fm_pr_sha256_stream) line-hex=$fixture_line_hex behavior=non-authorizing binding=$fixture_binding; fix=anchor=fixture.txt:1 sha256=$fixture_digest change-sha256=$(printf empty | fm_pr_sha256_stream) line-hex=$fixture_line_hex action=retain-owner binding=$fixture_binding#" "$report"
+  rm -f "$report.bak"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted unchanged-file surface evidence"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "unchanged-file surface evidence left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  authority_digest=$(sed -n '1p' "$dir/wt/bin/fm-pr-check.sh" | fm_pr_sha256_stream)
+  authority_line_hex=$(awk 'NR == 1 { printf "%s", $0 }' "$dir/wt/bin/fm-pr-check.sh" | od -An -tx1 | tr -d ' \n')
+  authority_change_digest=$(surface_change_digest "$dir" bin/fm-pr-check.sh)
+  authority_binding=$(surface_binding_digest authority bin/fm-pr-check.sh:1 "$authority_digest" "$authority_change_digest" "$authority_line_hex" non-authorizing retain-owner)
+  authority_record="Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:1 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$authority_line_hex hunk=bin/fm-pr-check.sh:1; consequence=anchor=bin/fm-pr-check.sh:1 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$authority_line_hex behavior=non-authorizing binding=$authority_binding; fix=anchor=bin/fm-pr-check.sh:1 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$authority_line_hex action=retain-owner binding=$authority_binding"
+  python3 - "$report" "$authority_record" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+record = sys.argv[2]
+text = path.read_text(encoding="utf-8")
+text = "\n".join(record if line.startswith("Authority: ") else line for line in text.split("\n"))
+path.write_text(text, encoding="utf-8")
+PY
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted an unchanged context line as surface evidence"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "unchanged context evidence left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  python3 - "$report" "$dir/wt/bin/fm-pr-check.sh" <<'PY'
+import hashlib
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+authority = pathlib.Path(sys.argv[2])
+line = authority.read_bytes().splitlines(keepends=True)[1]
+digest = hashlib.sha256(line).hexdigest()
+binding = hashlib.sha256(("authority|bin/fm-pr-check.sh:2|" + digest + "|non-authorizing|retain-owner\n").encode()).hexdigest()
+text = report.read_text(encoding="utf-8")
+text = re.sub(
+    r"(?m)^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): (.*?; evidence=)[^;]+;",
+    lambda match: match.group(1) + ": " + match.group(2) + "bin/fm-pr-check.sh:2 sha256=" + digest + " hunk=bin/fm-pr-check.sh:2; consequence=anchor=bin/fm-pr-check.sh:2 sha256=" + digest + " behavior=non-authorizing binding=" + binding + "; fix=anchor=bin/fm-pr-check.sh:2 sha256=" + digest + " action=retain-owner binding=" + binding,
+    text,
+)
+report.write_text(text, encoding="utf-8")
+PY
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted reusable evidence across all review surfaces"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "reusable surface evidence left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  security_digest=$(self_review_line_digest "$dir" bin/fm-pr-lib.sh)
+  python3 - "$report" "$security_digest" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+security_digest = sys.argv[2]
+binding = __import__("hashlib").sha256(("authority|bin/fm-pr-lib.sh:2|" + security_digest + "|non-authorizing|retain-owner\n").encode()).hexdigest()
+text = report.read_text(encoding="utf-8")
+text = re.sub(
+    r"(?m)^Authority: .*",
+    "Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-lib.sh:2 sha256=" + security_digest + " hunk=bin/fm-pr-lib.sh:2; consequence=anchor=bin/fm-pr-lib.sh:2 sha256=" + security_digest + " behavior=non-authorizing binding=" + binding + "; fix=anchor=bin/fm-pr-lib.sh:2 sha256=" + security_digest + " action=retain-owner binding=" + binding,
+    text,
+    count=1,
+)
+report.write_text(text, encoding="utf-8")
+PY
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted cross-surface evidence substitution"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "cross-surface evidence substitution left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  python3 - "$report" "$dir/wt" <<'PY'
+import hashlib
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[2])
+paths = {
+    "Authority": "bin/fm-operational-input.sh",
+    "Security": "bin/fm-pr-check.sh",
+    "Path": "tests/fm-pr-check-security.test.sh",
+    "Failure": ".agents/skills/firstmate-pr-self-review/SKILL.md",
+    "Tests": "bin/fm-pr-create.sh",
+    "Documentation": "bin/fm-pr-lib.sh",
+    "Delivery": "bin/fm-pr-self-review-check.sh",
+}
+
+behaviors = {
+    "Authority": "non-authorizing",
+    "Security": "provenance-bound",
+    "Path": "path-safe",
+    "Failure": "fail-closed",
+    "Tests": "behavioral",
+    "Documentation": "contract-aligned",
+    "Delivery": "no-mistakes-owned",
+}
+actions = {
+    "Authority": "retain-owner",
+    "Security": "retain-boundary",
+    "Path": "retain-validation",
+    "Failure": "retain-refusal",
+    "Tests": "retain-regression",
+    "Documentation": "retain-contract",
+    "Delivery": "retain-no-mistakes",
+}
+def binding(surface, relative, digest):
+    return hashlib.sha256((surface.lower() + "|" + relative + ":2|" + digest + "|" + behaviors[surface] + "|" + actions[surface] + "\n").encode()).hexdigest()
+text = report.read_text(encoding="utf-8")
+for surface, relative in paths.items():
+    line = (root / relative).read_bytes().splitlines(keepends=True)[1]
+    digest = hashlib.sha256(line).hexdigest()
+    text = re.sub(
+        rf"(?m)^{surface}: reviewed; surface=[^;]+; files=[^;]+; evidence=[^;]+;",
+        f"{surface}: reviewed; surface={surface.lower()}; files={relative}; evidence={relative}:2 sha256={digest} hunk={relative}:2; consequence=anchor={relative}:2 sha256={digest} behavior={behaviors[surface]} binding={binding(surface, relative, digest)}; fix=anchor={relative}:2 sha256={digest} action={actions[surface]} binding={binding(surface, relative, digest)}",
+        text,
+        count=1,
+    )
+report.write_text(text, encoding="utf-8")
+PY
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted cross-category surface evidence"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "cross-category surface evidence left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  authority_digest=$(self_review_line_digest "$dir" bin/fm-pr-check.sh)
+  authority_line_hex=$(self_review_line_hex "$dir" bin/fm-pr-check.sh)
+  authority_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-check.sh)
+  authority_record=$(surface_review_single_record Authority authority bin/fm-pr-check.sh "$authority_digest" "$authority_line_hex" "$authority_change_digest")
+  python3 - "$report" "$authority_record" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+record = sys.argv[2]
+report.write_text(re.sub(r"(?m)^Authority: .*", record, report.read_text(encoding="utf-8"), count=1), encoding="utf-8")
+PY
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a same-side review of a modified hunk"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "same-side modified-hunk evidence left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  authority_digest=$(self_review_line_digest "$dir" bin/fm-pr-check.sh)
+  sed -i.bak "s#^Authority: .*#Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:2 sha256=$authority_digest hunk=bin/fm-pr-check.sh:2; consequence=anchor=bin/fm-pr-check.sh:2 sha256=$authority_digest behavior=non-authorizing binding=0000000000000000000000000000000000000000000000000000000000000000; fix=anchor=bin/fm-pr-check.sh:2 sha256=$authority_digest action=retain-owner binding=0000000000000000000000000000000000000000000000000000000000000000#" "$report"
+  rm -f "$report.bak"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted filler surface evidence"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "filler surface evidence left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  authority_digest=$(self_review_line_digest "$dir" bin/fm-pr-check.sh)
+  authority_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-check.sh)
+  bad_line_hex=00
+  bad_binding=$(surface_binding_digest authority bin/fm-pr-check.sh:2 "$authority_digest" "$authority_change_digest" "$bad_line_hex" non-authorizing retain-owner)
+  sed -i.bak "s#^Authority: .*#Authority: reviewed; surface=authority; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:2 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$bad_line_hex hunk=bin/fm-pr-check.sh:2; consequence=anchor=bin/fm-pr-check.sh:2 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$bad_line_hex behavior=non-authorizing binding=$bad_binding; fix=anchor=bin/fm-pr-check.sh:2 sha256=$authority_digest change-sha256=$authority_change_digest line-hex=$bad_line_hex action=retain-owner binding=$bad_binding#" "$report"
+  rm -f "$report.bak"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/108 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a surface claim with a false changed-line anchor"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "false changed-line anchor left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  sed -i.bak 's/^Authority: .*/Authority: reviewed; surface=authority; files=bin\/fm-pr-lib.sh; evidence=bin\/fm-pr-lib.sh:2 sha256=0000000000000000000000000000000000000000000000000000000000000000 hunk=bin\/fm-pr-lib.sh:2; consequence=anchor=bin\/fm-pr-lib.sh:2 sha256=0000000000000000000000000000000000000000000000000000000000000000 behavior=non-authorizing binding=0000000000000000000000000000000000000000000000000000000000000000; fix=anchor=bin\/fm-pr-lib.sh:2 sha256=0000000000000000000000000000000000000000000000000000000000000000 action=retain-owner binding=0000000000000000000000000000000000000000000000000000000000000000/' "$report"
+  rm -f "$report.bak"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/109 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted lexical evidence with a false line digest"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "false line digest left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  chmod 0600 "$report"
+  set +e
+  FM_TEST_GH_BASE=other run_check_entry "$dir" task-a https://github.com/o/r/pull/103 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a forge base different from the approved base"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "forge base mismatch left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  python3 - "$report" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = re.sub(r"behavior-sha256=[0-9a-f]{64}", "behavior-sha256=" + "0" * 64, text, count=1)
+path.write_text(text, encoding="utf-8")
+PY
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/103 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a forged surface behavior proof"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "forged surface behavior proof left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  python3 - "$report" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace("before-hex=", "before-hex=none", 1)
+path.write_text(text, encoding="utf-8")
+PY
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/103 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a false before/after behavior transition"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "false before/after transition left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/103 >/dev/null \
+    || fail "PR-ready path rejected a valid durable self-review report"
+  FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" "$SELF_REVIEW_CHECK" task-a no-mistakes >/dev/null \
+    || fail "shared self-review check rejected a valid durable self-review report"
+  fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
+    || fail "valid self-review report did not permit a valid PR poll"
+
+  rm -f "$dir/home/state/task-a.check.sh" "$dir/home/state/task-a.pr-poll" "$dir/home/state/task-a.pr-poll-registration"
+  rm "$dir/wt/bin/fm-pr-create.sh"
+  git -C "$dir/wt" add -u bin/fm-pr-create.sh
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm delete-surface
+  write_self_review_report "$dir/home" task-a
+  delivery_digest=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | sed -n '1p' | fm_pr_sha256_stream)
+  delivery_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-create.sh)
+  delivery_line_hex=$(git -C "$dir/wt" show "main:bin/fm-pr-create.sh" | awk 'NR == 1 { printf "%s", $0 }' | od -An -tx1 | tr -d ' \n')
+  delivery_record=$(surface_review_single_record_at_line Delivery delivery bin/fm-pr-create.sh 1 "$delivery_digest" "$delivery_line_hex" "$delivery_change_digest" old)
+  python3 - "$report" "$delivery_record" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+record = sys.argv[2]
+text = report.read_text(encoding="utf-8")
+report.write_text(re.sub(r"(?m)^Delivery: .*", record, text, count=1), encoding="utf-8")
+PY
+  rm -f "$report.bak"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/105 >/dev/null \
+    || fail "PR-ready path rejected a deleted changed-file evidence reference"
+
+  git -C "$dir/wt" branch fm/m1-001-provenance-validator main
+  sed -i.bak 's/Base ref: main/Base ref: fm\/m1-001-provenance-validator/' "$report"
+  rm -f "$report.bak"
+  sed -i.bak 's/^review_base_ref=main$/review_base_ref=fm\/m1-001-provenance-validator/' "$dir/home/state/task-a.meta"
+  rm -f "$dir/home/state/task-a.meta.bak"
+  FM_TEST_GH_BASE=fm/m1-001-provenance-validator \
+    run_check_entry "$dir" task-a https://github.com/o/r/pull/105 >/dev/null \
+    || fail "PR-ready path rejected a task-approved non-default base"
+
+  sed -i.bak 's/^review_base_ref=fm\/m1-001-provenance-validator$/review_base_ref=main/' "$dir/home/state/task-a.meta"
+  rm -f "$dir/home/state/task-a.meta.bak"
+  printf 'fixture\nrestored delivery surface\n' > "$dir/wt/bin/fm-pr-create.sh"
+  git -C "$dir/wt" add bin/fm-pr-create.sh
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm restore-delivery
+  printf '#!/usr/bin/env bash\nspaced evidence\n' > "$dir/wt/bin/fm-pr spaced.sh"
+  printf '%s\n' 'fixture' 'authority spaced-path evidence' > "$dir/wt/bin/fm-pr-check.sh"
+  printf '%s\n' 'fixture' 'security spaced-path evidence' > "$dir/wt/bin/fm-pr-lib.sh"
+  printf '%s\n' 'fixture' 'path spaced-path evidence' > "$dir/wt/bin/fm-pr-self-review-check.sh"
+  printf '%s\n' 'fixture' 'failure spaced-path evidence' > "$dir/wt/bin/fm-operational-input.sh"
+  printf '%s\n' 'fixture' 'tests spaced-path evidence' > "$dir/wt/tests/fm-pr-check-security.test.sh"
+  printf '%s\n' 'fixture' 'documentation spaced-path evidence' > "$dir/wt/.agents/skills/firstmate-pr-self-review/SKILL.md"
+  printf '%s\n' 'fixture' 'delivery spaced-path evidence' > "$dir/wt/bin/fm-pr-create.sh"
+  git -C "$dir/wt" add -- 'bin/fm-pr spaced.sh' bin tests .agents
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm spaced-path
+  write_self_review_report "$dir/home" task-a
+  spaced_path=$(fm_pr_review_path_encode 'bin/fm-pr spaced.sh')
+  python3 - "$report" "$spaced_path" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+spaced_path = sys.argv[2]
+text = report.read_text(encoding="utf-8")
+text = re.sub(
+    r"(?m)^Authority: .*",
+    lambda match: match.group(0).replace("files=bin/fm-pr-check.sh;", "files=bin/fm-pr-check.sh," + spaced_path + ";"),
+    text,
+    count=1,
+  )
+report.write_text(text, encoding="utf-8")
+PY
+  rm -f "$report.bak"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/110 >/dev/null \
+    || fail "PR-ready path rejected a changed file with spaces"
+  rm -f "$dir/home/state/task-a.check.sh" "$dir/home/state/task-a.pr-poll" "$dir/home/state/task-a.pr-poll-registration"
+
+  printf '#!/usr/bin/env bash\ncomma evidence\n' > "$dir/wt/bin/fm-pr,comma.sh"
+  printf '#!/usr/bin/env bash\nsemicolon evidence\n' > "$dir/wt/bin/fm-pr;semi.sh"
+  git -C "$dir/wt" add -- 'bin/fm-pr,comma.sh' 'bin/fm-pr;semi.sh'
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm delimiter-paths
+  printf '%s\n' 'fixture' 'authority delimiter evidence' > "$dir/wt/bin/fm-pr-check.sh"
+  printf '%s\n' 'fixture' 'security delimiter evidence' > "$dir/wt/bin/fm-pr-lib.sh"
+  printf '%s\n' 'fixture' 'path delimiter evidence' > "$dir/wt/bin/fm-pr-self-review-check.sh"
+  printf '%s\n' 'fixture' 'failure delimiter evidence' > "$dir/wt/bin/fm-operational-input.sh"
+  printf '%s\n' 'fixture' 'tests delimiter evidence' > "$dir/wt/tests/fm-pr-check-security.test.sh"
+  printf '%s\n' 'fixture' 'documentation delimiter evidence' > "$dir/wt/.agents/skills/firstmate-pr-self-review/SKILL.md"
+  printf '%s\n' 'fixture' 'delivery delimiter evidence' > "$dir/wt/bin/fm-pr-create.sh"
+  git -C "$dir/wt" add bin tests .agents
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm delimiter-surface-owners
+  write_self_review_report "$dir/home" task-a
+  spaced_path=$(fm_pr_review_path_encode 'bin/fm-pr spaced.sh')
+  comma_path=$(fm_pr_review_path_encode 'bin/fm-pr,comma.sh')
+  semi_path=$(fm_pr_review_path_encode 'bin/fm-pr;semi.sh')
+  python3 - "$report" "bin/fm-pr-check.sh,$spaced_path,$comma_path,$semi_path" "bin/fm-pr-lib.sh,$comma_path" "bin/fm-pr-self-review-check.sh,$semi_path" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+authority_files, security_files, path_files = sys.argv[2:5]
+text = report.read_text(encoding="utf-8")
+for surface, files in (("Authority", authority_files), ("Security", security_files), ("Path", path_files)):
+    text = re.sub(rf"(?m)^({surface}: .*?files=)[^;]+(; evidence=)", rf"\g<1>{files}\g<2>", text, count=1)
+report.write_text(text, encoding="utf-8")
+PY
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/111 >/dev/null \
+    || fail "PR-ready path rejected comma, semicolon, or space in encoded paths"
+  control_path=$'.agents/control\t\n'
+  printf '%s\n' 'control evidence' > "$dir/wt/$control_path"
+  git -C "$dir/wt" add -- "$control_path"
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm control-path
+  write_self_review_report "$dir/home" task-a
+  control_path=$(fm_pr_review_path_encode "$control_path")
+  control_surface_files="bin/fm-pr-check.sh,$spaced_path,$comma_path,$semi_path,$control_path"
+  python3 - "$report" "$control_surface_files" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+control_surface_files = sys.argv[2]
+text = report.read_text(encoding="utf-8")
+text = re.sub(
+    r"(?m)^(Authority: .*?files=)[^;]+(; evidence=)",
+    rf"\g<1>{control_surface_files}\g<2>",
+    text,
+    count=1,
+)
+report.write_text(text, encoding="utf-8")
+PY
+  rm -f "$report.bak"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/112 >/dev/null \
+    || fail "PR-ready path rejected a tab/newline filename"
+  write_self_review_report "$dir/home" task-a
+  rm -f "$dir/home/state/task-a.check.sh" "$dir/home/state/task-a.pr-poll" "$dir/home/state/task-a.pr-poll-registration"
+  printf 'uncommitted substrate change\n' >> "$dir/substrate/fixture.txt"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/106 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted dirty substrate evidence"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "dirty substrate evidence left a runnable poll"
+  pass "PR-ready path requires a private durable findings-first self-review"
+}
+
+test_pr_ready_tracks_production_surface_ownership() {
+  local dir report changed_paths changed_digest authority_record security_record path_record failure_record delivery_record tests_binding documentation_binding rc
+  dir=$(make_case production-surface-ownership)
+  git -C "$dir/wt" reset --hard -q main
+  mkdir -p "$dir/wt/bin/firstmate_factory"
+  printf '%s\n' 'fixture' 'brief production evidence' > "$dir/wt/bin/fm-brief.sh"
+  printf '%s\n' 'fixture' 'spawn production evidence' > "$dir/wt/bin/fm-spawn.sh"
+  printf '%s\n' 'fixture' 'failure production evidence' > "$dir/wt/bin/fm-operational-input.sh"
+  printf '%s\n' 'fixture' 'delivery production evidence' > "$dir/wt/bin/fm-pr-create.sh"
+  printf '%s\n' 'fixture' 'validator production evidence' > "$dir/wt/bin/firstmate_factory/validator.py"
+  git -C "$dir/wt" add bin
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm production-surface-ownership
+  write_task_meta "$dir"
+  report="$dir/home/data/task-a/pr-self-review.md"
+  changed_paths=bin/fm-brief.sh,bin/fm-spawn.sh,bin/fm-operational-input.sh,bin/fm-pr-create.sh,bin/firstmate_factory/validator.py
+  changed_digest=$(sed -n 's/^Changed files: //p' "$report")
+  authority_record=$(surface_review_single_record_at_line Authority authority bin/fm-brief.sh 2 "$(self_review_line_digest "$dir" bin/fm-brief.sh)" "$(self_review_line_hex "$dir" bin/fm-brief.sh)" "$(surface_change_digest_for_file "$dir" bin/fm-brief.sh)")
+  security_record=$(surface_review_single_record_at_line Security security bin/firstmate_factory/validator.py 2 "$(self_review_line_digest "$dir" bin/firstmate_factory/validator.py)" "$(self_review_line_hex "$dir" bin/firstmate_factory/validator.py)" "$(surface_change_digest_for_file "$dir" bin/firstmate_factory/validator.py)")
+  path_record=$(surface_review_single_record_at_line Path path bin/fm-spawn.sh 2 "$(self_review_line_digest "$dir" bin/fm-spawn.sh)" "$(self_review_line_hex "$dir" bin/fm-spawn.sh)" "$(surface_change_digest_for_file "$dir" bin/fm-spawn.sh)")
+  failure_record=$(surface_review_single_record_at_line Failure failure bin/fm-operational-input.sh 2 "$(self_review_line_digest "$dir" bin/fm-operational-input.sh)" "$(self_review_line_hex "$dir" bin/fm-operational-input.sh)" "$(surface_change_digest_for_file "$dir" bin/fm-operational-input.sh)")
+  delivery_record=$(surface_review_single_record_at_line Delivery delivery bin/fm-pr-create.sh 2 "$(self_review_line_digest "$dir" bin/fm-pr-create.sh)" "$(self_review_line_hex "$dir" bin/fm-pr-create.sh)" "$(surface_change_digest_for_file "$dir" bin/fm-pr-create.sh)")
+  tests_binding=$(printf '%s\n' "tests|unaffected|$changed_paths|$changed_digest|behavioral|retain-regression" | fm_pr_sha256_stream)
+  documentation_binding=$(printf '%s\n' "documentation|unaffected|$changed_paths|$changed_digest|contract-aligned|retain-contract" | fm_pr_sha256_stream)
+  python3 - "$report" "$changed_paths" "$authority_record" "$security_record" "$path_record" "$failure_record" "$delivery_record" "$tests_binding" "$documentation_binding" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+changed_paths, authority, security, path, failure, delivery, tests_binding, documentation_binding = sys.argv[2:]
+records = {
+    "Authority": authority,
+    "Security": security,
+    "Path": path,
+    "Failure": failure,
+    "Delivery": delivery,
+    "Tests": f"Tests: reviewed; surface=tests; scope=unaffected; files={changed_paths}; rationale=no applicable changed tests surface; binding={tests_binding}",
+    "Documentation": f"Documentation: reviewed; surface=documentation; scope=unaffected; files={changed_paths}; rationale=no applicable changed documentation surface; binding={documentation_binding}",
+}
+text = report.read_text(encoding="utf-8")
+for surface, record in records.items():
+    text = re.sub(rf"(?m)^{surface}: .*", record, text, count=1)
+report.write_text(text, encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/118 >/dev/null \
+    || fail "PR-ready path treated production changes as unrelated to every surface"
+  [ -e "$dir/home/state/task-a.check.sh" ] || fail "production surface ownership did not publish a runnable poll"
+  pass "PR-ready path derives applicability from production surface ownership"
+}
+
+test_pr_ready_rejects_unrelated_small_diff_surface_evidence() {
+  local dir report small_digest small_change_digest small_line_hex fixture_digest fixture_change_digest fixture_line_hex rc
+  dir=$(make_case small-surface-relevance)
+  git -C "$dir/wt" reset --hard -q main
+  printf '%s\n' 'changed authority' >> "$dir/wt/bin/fm-pr-check.sh"
+  printf '%s\n' 'changed fixture' >> "$dir/wt/fixture.txt"
+  git -C "$dir/wt" add -- bin/fm-pr-check.sh fixture.txt
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm small-surface
+  write_self_review_report "$dir/home" task-a
+  report="$dir/home/data/task-a/pr-self-review.md"
+  small_digest=$(self_review_line_digest "$dir" bin/fm-pr-check.sh)
+  small_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-check.sh)
+  small_line_hex=$(self_review_line_hex "$dir" bin/fm-pr-check.sh)
+  fixture_digest=$(self_review_line_digest "$dir" fixture.txt)
+  fixture_change_digest=$(surface_change_digest_for_file "$dir" fixture.txt)
+  fixture_line_hex=$(self_review_line_hex "$dir" fixture.txt)
+  python3 - "$report" "$small_digest" "$small_change_digest" "$small_line_hex" "$fixture_digest" "$fixture_change_digest" "$fixture_line_hex" <<'PY'
+import hashlib
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+small_digest, small_change_digest, small_line_hex = sys.argv[2:5]
+fixture_digest, fixture_change_digest, fixture_line_hex = sys.argv[5:8]
+behaviors = {
+    "Authority": "non-authorizing",
+    "Security": "provenance-bound",
+    "Path": "path-safe",
+    "Failure": "fail-closed",
+    "Tests": "behavioral",
+    "Documentation": "contract-aligned",
+    "Delivery": "no-mistakes-owned",
+}
+actions = {
+    "Authority": "retain-owner",
+    "Security": "retain-boundary",
+    "Path": "retain-validation",
+    "Failure": "retain-refusal",
+    "Tests": "retain-regression",
+    "Documentation": "retain-contract",
+    "Delivery": "retain-no-mistakes",
+}
+def record(surface, path, digest, change_digest, line_hex):
+    reference = path + ":2"
+    binding = hashlib.sha256((surface.lower() + "|" + reference + "|" + digest + "|" + change_digest + "|" + line_hex + "|" + behaviors[surface] + "|" + actions[surface] + "\n").encode()).hexdigest()
+    return f"{surface}: reviewed; surface={surface.lower()}; files={path}; evidence={reference} sha256={digest} change-sha256={change_digest} line-hex={line_hex} hunk={reference}; consequence=anchor={reference} sha256={digest} change-sha256={change_digest} line-hex={line_hex} behavior={behaviors[surface]} binding={binding}; fix=anchor={reference} sha256={digest} change-sha256={change_digest} line-hex={line_hex} action={actions[surface]} binding={binding}"
+text = report.read_text(encoding="utf-8")
+for surface in behaviors:
+    text = re.sub(rf"(?m)^{surface}: .*", record(surface, "bin/fm-pr-check.sh", small_digest, small_change_digest, small_line_hex), text, count=1)
+text = re.sub(r"(?m)^Authority: .*", record("Authority", "fixture.txt", fixture_digest, fixture_change_digest, fixture_line_hex), text, count=1)
+report.write_text(text, encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/113 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted unrelated evidence for a small diff"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "unrelated small-diff evidence left a runnable poll"
+  pass "PR-ready path binds small-diff evidence to applicable surfaces"
+}
+
+test_pr_ready_rejects_multiple_lines_from_one_hunk() {
+  local dir report second_digest second_line_hex change_digest rc
+  dir=$(make_case same-hunk-evidence)
+  git -C "$dir/wt" reset --hard -q main
+  printf '%s\n' 'first changed line' 'second changed line' >> "$dir/wt/bin/fm-pr-check.sh"
+  for fixture_file in \
+    bin/fm-pr-lib.sh bin/fm-pr-self-review-check.sh bin/fm-operational-input.sh \
+    tests/fm-pr-check-security.test.sh .agents/skills/firstmate-pr-self-review/SKILL.md \
+    bin/fm-pr-create.sh; do
+    printf '%s\n' 'changed surface' >> "$dir/wt/$fixture_file"
+  done
+  git -C "$dir/wt" add bin tests .agents
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm same-hunk
+  write_self_review_report "$dir/home" task-a
+  report="$dir/home/data/task-a/pr-self-review.md"
+  second_digest=$(printf '%s\n' 'second changed line' | fm_pr_sha256_stream)
+  second_line_hex=$(printf '%s' 'second changed line' | od -An -tx1 | tr -d ' \n')
+  change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-check.sh)
+  python3 - "$report" "$second_digest" "$second_line_hex" "$change_digest" <<'PY'
+import hashlib
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+digest, line_hex, change_digest = sys.argv[2:5]
+binding = hashlib.sha256(("security|bin/fm-pr-check.sh:3|" + digest + "|" + change_digest + "|" + line_hex + "|provenance-bound|retain-boundary\n").encode()).hexdigest()
+record = "Security: reviewed; surface=security; files=bin/fm-pr-check.sh; evidence=bin/fm-pr-check.sh:3 sha256=" + digest + " change-sha256=" + change_digest + " line-hex=" + line_hex + " hunk=bin/fm-pr-check.sh:3; consequence=anchor=bin/fm-pr-check.sh:3 sha256=" + digest + " change-sha256=" + change_digest + " line-hex=" + line_hex + " behavior=provenance-bound binding=" + binding + "; fix=anchor=bin/fm-pr-check.sh:3 sha256=" + digest + " change-sha256=" + change_digest + " line-hex=" + line_hex + " action=retain-boundary binding=" + binding
+report.write_text(re.sub(r"(?m)^Security: .*", record, report.read_text(encoding="utf-8"), count=1), encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/116 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted two evidence lines from one diff hunk"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "same-hunk evidence left a runnable poll"
+  pass "PR-ready path requires distinct diff hunks, not merely distinct line references"
+}
+
+test_pr_ready_requires_unaffected_scope_for_unrelated_surface_evidence() {
+  local dir report fixture_digest fixture_change_digest fixture_line_hex rc
+  dir=$(make_case unrelated-surface-evidence)
+  git -C "$dir/wt" reset --hard -q main
+  printf '%s\n' 'changed fixture' >> "$dir/wt/fixture.txt"
+  git -C "$dir/wt" add fixture.txt
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm unrelated-surface
+  write_self_review_report "$dir/home" task-a
+  report="$dir/home/data/task-a/pr-self-review.md"
+  fixture_digest=$(self_review_line_digest "$dir" fixture.txt)
+  fixture_change_digest=$(surface_change_digest_for_file "$dir" fixture.txt)
+  fixture_line_hex=$(self_review_line_hex "$dir" fixture.txt)
+  python3 - "$report" "$fixture_digest" "$fixture_change_digest" "$fixture_line_hex" <<'PY'
+import hashlib
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+digest, change_digest, line_hex = sys.argv[2:5]
+behaviors = {
+    "Authority": "non-authorizing",
+    "Security": "provenance-bound",
+    "Path": "path-safe",
+    "Failure": "fail-closed",
+    "Tests": "behavioral",
+    "Documentation": "contract-aligned",
+    "Delivery": "no-mistakes-owned",
+}
+actions = {
+    "Authority": "retain-owner",
+    "Security": "retain-boundary",
+    "Path": "retain-validation",
+    "Failure": "retain-refusal",
+    "Tests": "retain-regression",
+    "Documentation": "retain-contract",
+    "Delivery": "retain-no-mistakes",
+}
+changed_files = re.search(r"(?m)^Changed files: ([0-9a-f]{64})$", report.read_text(encoding="utf-8")).group(1)
+def binding(surface):
+    return hashlib.sha256((surface.lower() + "|fixture.txt:2|" + digest + "|" + change_digest + "|" + line_hex + "|" + behaviors[surface] + "|" + actions[surface] + "\n").encode()).hexdigest()
+def record(surface):
+    ref = "fixture.txt:2"
+    value = binding(surface)
+    return f"{surface}: reviewed; surface={surface.lower()}; files=fixture.txt; evidence={ref} sha256={digest} change-sha256={change_digest} line-hex={line_hex} hunk={ref}; consequence=anchor={ref} sha256={digest} change-sha256={change_digest} line-hex={line_hex} behavior={behaviors[surface]} binding={value}; fix=anchor={ref} sha256={digest} change-sha256={change_digest} line-hex={line_hex} action={actions[surface]} binding={value}"
+def unaffected(surface):
+    value = hashlib.sha256((surface.lower() + "|unaffected|fixture.txt|" + changed_files + "|" + behaviors[surface] + "|" + actions[surface] + "\n").encode()).hexdigest()
+    return f"{surface}: reviewed; surface={surface.lower()}; scope=unaffected; files=fixture.txt; rationale=no applicable changed {surface.lower()} surface; binding={value}"
+text = report.read_text(encoding="utf-8")
+for surface in behaviors:
+    text = re.sub(rf"(?m)^{surface}: .*", record(surface), text, count=1)
+report.write_text(text, encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/114 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted reused evidence for an unrelated one-file diff"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "reused unrelated evidence left a runnable poll"
+  python3 - "$report" <<'PY'
+import hashlib
+import pathlib
+import re
+
+report = pathlib.Path(__import__("sys").argv[1])
+text = report.read_text(encoding="utf-8")
+changed_files = re.search(r"(?m)^Changed files: ([0-9a-f]{64})$", text).group(1)
+behavior = "non-authorizing"
+action = "retain-owner"
+binding = hashlib.sha256(("authority|unaffected|bin/fm-pr-check.sh|" + changed_files + "|" + behavior + "|" + action + "\n").encode()).hexdigest()
+record = "Authority: reviewed; surface=authority; scope=unaffected; files=bin/fm-pr-check.sh; rationale=no applicable changed authority surface; binding=" + binding
+report.write_text(re.sub(r"(?m)^Authority: .*", record, text, count=1), encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/114 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted an unaffected file outside the target diff"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "unrelated unaffected evidence left a runnable poll"
+  fm_write_meta "$dir/home/state/task-a.meta" \
+    "window=firstmate:fm-task-a" "worktree=$dir/wt" 'project=x' \
+    'review_base_ref=main' "review_base_sha=$(git -C "$dir/wt" rev-parse main)" \
+    'kind=ship' 'mode=no-mistakes'
+  python3 - "$report" <<'PY'
+import hashlib
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+text = report.read_text(encoding="utf-8")
+changed_files = re.search(r"(?m)^Changed files: ([0-9a-f]{64})$", text).group(1)
+behaviors = {
+    "Authority": ("non-authorizing", "retain-owner"),
+    "Security": ("provenance-bound", "retain-boundary"),
+    "Path": ("path-safe", "retain-validation"),
+    "Failure": ("fail-closed", "retain-refusal"),
+    "Tests": ("behavioral", "retain-regression"),
+    "Documentation": ("contract-aligned", "retain-contract"),
+    "Delivery": ("no-mistakes-owned", "retain-no-mistakes"),
+}
+def record(surface):
+    behavior, action = behaviors[surface]
+    value = hashlib.sha256((surface.lower() + "|unaffected|fixture.txt|" + changed_files + "|" + behavior + "|" + action + "\n").encode()).hexdigest()
+    return f"{surface}: reviewed; surface={surface.lower()}; scope=unaffected; files=fixture.txt; rationale=no applicable changed {surface.lower()} surface; binding={value}"
+for surface in behaviors:
+    text = re.sub(rf"(?m)^{surface}: .*", record(surface), text, count=1)
+report.write_text(text, encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/115 >/dev/null \
+    || fail "PR-ready path rejected an explicit unaffected-surface rationale"
+  pass "PR-ready path requires explicit scope for unrelated surfaces"
+}
+
+test_local_landing_refuses_advanced_default_after_review() {
+  local dir fake_root base_head task_head advanced_head rc
+  dir="$TMP_ROOT/local-landing-stale-base"
+  fake_root="$dir/root"
+  mkdir -p "$dir/home/state" "$dir/home/data/local-stale" "$dir/substrate" "$fake_root/bin"
+  git init -q "$dir/project"
+  git -C "$dir/project" config user.name fmtest
+  git -C "$dir/project" config user.email fmtest@example.invalid
+  printf '%s\n' initial > "$dir/project/README.md"
+  git -C "$dir/project" add README.md
+  git -C "$dir/project" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm initial
+  git -C "$dir/project" branch -M main
+  base_head=$(git -C "$dir/project" rev-parse HEAD)
+  git -C "$dir/project" worktree add -q -b fm/local-stale "$dir/wt" main
+  printf '%s\n' task > "$dir/wt/task.txt"
+  git -C "$dir/wt" add task.txt
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm task
+  task_head=$(git -C "$dir/wt" rev-parse HEAD)
+  printf '%s\n' advanced > "$dir/project/advanced.txt"
+  git -C "$dir/project" add advanced.txt
+  git -C "$dir/project" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm advanced
+  advanced_head=$(git -C "$dir/project" rev-parse HEAD)
+  git -C "$dir/substrate" init -q
+  git -C "$dir/substrate" config user.name fmtest
+  git -C "$dir/substrate" config user.email fmtest@example.invalid
+  printf '%s\n' substrate > "$dir/substrate/README.md"
+  git -C "$dir/substrate" add README.md
+  git -C "$dir/substrate" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm substrate
+  printf '%s\n' "- Firstmate substrate root: \`$dir/substrate\`" \
+    "Target-project approved base: ref=main; sha=$base_head" > "$dir/home/data/local-stale/brief.md"
+  fm_write_meta "$dir/home/state/local-stale.meta" \
+    "window=firstmate:fm-local-stale" "worktree=$dir/wt" "project=$dir/project" \
+    'review_base_ref=main' "review_base_sha=$base_head" 'kind=ship' 'mode=local-only'
+  cat > "$fake_root/bin/fm-guard.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  cat > "$fake_root/bin/fm-pr-self-review-check.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fake_root/bin/fm-guard.sh" "$fake_root/bin/fm-pr-self-review-check.sh"
+  set +e
+  FM_ROOT_OVERRIDE="$fake_root" FM_HOME="$dir/home" "$ROOT/bin/fm-merge-local.sh" local-stale \
+    > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "local landing accepted a default branch advanced after review"
+  grep -q "advanced beyond the approved review base $base_head" "$dir/stderr" \
+    || fail "stale local landing refusal did not name the approved review base"
+  [ "$(git -C "$dir/project" rev-parse refs/heads/main)" = "$advanced_head" ] \
+    || fail "stale local landing changed the advanced default branch"
+  [ "$(git -C "$dir/project" rev-parse refs/heads/fm/local-stale)" = "$task_head" ] \
+    || fail "stale local landing changed the reviewed task branch"
+  pass "local-only landing refuses a moving default after the self-review snapshot"
+
+  git -C "$dir/wt" merge --no-edit -q main
+  report="$dir/home/data/local-stale/pr-self-review.md"
+  printf '%s\n' stale > "$report"
+  chmod 0600 "$report"
+  FM_ROOT_OVERRIDE="$fake_root" FM_HOME="$dir/home" "$ROOT/bin/fm-merge-local.sh" local-stale --reconcile \
+    > "$dir/reconcile.out" 2> "$dir/reconcile.err" \
+    || fail "local-only reconciliation did not update the approved base"
+  grep -q "reconciled local-stale to approved base main ($advanced_head)" "$dir/reconcile.out" \
+    || fail "local-only reconciliation did not report the new exact base"
+  grep -qxF "review_base_ref=main" "$dir/home/state/local-stale.meta" \
+    || fail "local-only reconciliation did not retain the approved base ref"
+  grep -qxF "review_base_sha=$advanced_head" "$dir/home/state/local-stale.meta" \
+    || fail "local-only reconciliation did not persist the approved base SHA"
+  grep -qxF "Target-project approved base: ref=main; sha=$advanced_head" "$dir/home/data/local-stale/brief.md" \
+    || fail "local-only reconciliation did not update the brief contract"
+  [ ! -e "$report" ] || fail "local-only reconciliation reused the stale self-review report"
+  pass "local-only reconciliation updates the base contract and invalidates stale review evidence"
+}
+
+test_pr_check_rejects_local_only_remote_delivery() {
+  local dir rc
+  dir=$(make_case local-only-pr-ready)
+  fm_write_meta "$dir/home/state/task-a.meta" \
+    'window=firstmate:fm-task-a' "worktree=$dir/wt" 'review_base_ref=main' \
+    "review_base_sha=$(git -C "$dir/wt" rev-parse main)" 'kind=ship' 'mode=local-only'
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/117 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "local-only task entered remote PR-ready delivery"
+  grep -qxF 'error: local-only tasks must use fm-merge-local.sh' "$dir/stderr" \
+    || fail "local-only remote-delivery refusal was not explicit"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "local-only refusal published a PR poll"
+  [ ! -s "$dir/gh.log" ] || fail "local-only refusal called the forge"
+  pass "local-only tasks cannot enter remote PR-ready delivery"
+}
+
+test_direct_pr_creation_requires_self_review() {
+  local dir rc report
+  dir=$(make_case direct-pr-create)
+  fm_write_meta "$dir/home/state/task-a.meta" \
+    'window=firstmate:fm-task-a' "worktree=$dir/wt" 'review_base_ref=main' \
+    "review_base_sha=$(git -C "$dir/wt" rev-parse main)" 'kind=ship' 'mode=direct-PR'
+  git -C "$dir/wt" checkout -q fm/task-a
+  report="$dir/home/data/task-a/pr-self-review.md"
+  rm -f "$report"
+  set +e
+  run_create_entry "$dir" task-a --title blocked > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "direct PR creation accepted a missing self-review report"
+  [ ! -s "$dir/gh-axi.log" ] || fail "direct PR creation called gh-axi after validation refusal"
+  write_self_review_report "$dir/home" task-a
+  run_create_entry "$dir" task-a --title accepted >/dev/null \
+    || fail "direct PR creation rejected a valid self-review report"
+  grep -qxF "pr create --repo o/r --head fm/task-a --base main --title accepted" "$dir/gh-axi.log" \
+    || fail "direct PR creation did not forward arguments after validation"
+  set +e
+  run_create_entry "$dir" task-a --base other --title rejected > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "direct PR creation accepted a base override"
+  set +e
+  run_create_entry "$dir" task-a --hostname forge.example --title rejected > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "direct PR creation accepted a hostname override"
+  set +e
+  run_create_entry "$dir" task-a --repo attacker/repo --title rejected > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "direct PR creation accepted a repository override"
+  [ "$(wc -l < "$dir/gh-axi.log" | tr -d '[:space:]')" = 1 ] \
+    || fail "direct PR creation invoked gh-axi after rejecting a repository override"
+  pass "direct PR creation enforces self-review before gh-axi"
 }
 
 # shellcheck disable=SC2016 # Literal rejected URL bytes are parser test data.
@@ -485,8 +1732,9 @@ test_invalid_entrypoints_have_zero_side_effects() {
 test_valid_recording_and_merge_derivation() {
   local dir expected sidecar count rc
   dir=$(make_case valid-recording)
+  git -C "$dir/wt" remote set-url origin https://github.com/my-org/repo_name.with-dots.git
   write_task_meta "$dir"
-  expected=0123456789abcdef0123456789abcdef01234567
+  expected=$(git -C "$dir/wt" rev-parse HEAD)
   FM_TEST_GH_HEAD=$expected run_check_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 \
     > "$dir/stdout" 2> "$dir/stderr" || fail "valid direct check failed"
 
@@ -544,9 +1792,13 @@ test_valid_recording_and_merge_derivation() {
 
   dir=$(make_case newline-head)
   write_task_meta "$dir"
+  set +e
   FM_TEST_GH_HEAD=$'0123456789abcdef0123456789abcdef01234567\nwindow=unexpected' \
-    run_check_entry "$dir" task-a https://github.com/o/r/pull/2 >/dev/null 2>/dev/null \
-    || fail "valid check with malformed remote head failed"
+    run_check_entry "$dir" task-a https://github.com/o/r/pull/2 >/dev/null 2>/dev/null
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "check accepted a malformed forge head"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "malformed forge head armed a poll"
   assert_no_grep 'pr_head=' "$dir/home/state/task-a.meta" "multiline PR head reached metadata"
   assert_no_grep 'window=unexpected' "$dir/home/state/task-a.meta" "newline metadata key was injected"
 
@@ -554,7 +1806,7 @@ test_valid_recording_and_merge_derivation() {
   write_task_meta "$dir" Task_A.1
   run_merge_entry "$dir" Task_A.1 https://github.com/o/r/pull/3 \
     > "$dir/stdout" 2> "$dir/stderr" \
-    || fail "safe lifecycle-compatible task ID could not use the PR merge flow"
+    || fail "safe lifecycle-compatible task ID could not use the PR merge flow: stderr=$(cat "$dir/stderr") stdout=$(cat "$dir/stdout")"
   fm_pr_poll_artifacts_valid "$dir/home/state" Task_A.1 "$POLL" \
     || fail "safe lifecycle-compatible task ID did not publish an authenticated poll"
   rm -rf "$dir/wt"
@@ -564,7 +1816,7 @@ exit 0
 SH
   chmod 0700 "$dir/fakebin/tmux"
   touch "$dir/home/state/.last-watcher-beat"
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_SUBSTRATE_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
     "$TEARDOWN" Task_A.1 --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
     || fail "safe lifecycle-compatible task ID could not be torn down"
   [ ! -e "$dir/home/state/Task_A.1.meta" ] \
@@ -575,8 +1827,10 @@ SH
     fm_write_meta "$dir/home/state/$id.meta" \
       "window=firstmate:fm-$id" \
       "endpoint_task_id=$id" \
-      "worktree=$dir/missing-worktree" \
+      "worktree=$dir/wt" \
       "project=$dir/project" \
+      'review_base_ref=main' \
+      "review_base_sha=$(git -C "$dir/wt" rev-parse main)" \
       'kind=ship' \
       'mode=local-only'
     cat > "$dir/fakebin/tmux" <<'SH'
@@ -587,7 +1841,7 @@ SH
     touch "$dir/home/state/.last-watcher-beat"
     mkdir "$dir/home/state/$id.check.sh"
     set +e
-    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" PATH="$dir/fakebin:$BASE_PATH" \
       "$TEARDOWN" "$id" --force > "$dir/unsafe-teardown.out" 2> "$dir/unsafe-teardown.err"
     rc=$?
     set -e
@@ -606,6 +1860,7 @@ SH
       || fail "path-safe legacy task ID could not use the PR merge flow"
     fm_pr_poll_artifacts_valid "$dir/home/state" "$id" "$POLL" \
       || fail "path-safe legacy task ID did not publish an authenticated poll"
+    rm -rf "$dir/wt"
     FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
       "$TEARDOWN" "$id" --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
       || fail "legacy path-safe task ID could not be torn down"
@@ -776,15 +2031,14 @@ sleep 0.3
 SH
     chmod +x "$dir/fakebin/cp"
 
-    FM_TEST_GH_HEAD=0123456789abcdef0123456789abcdef01234567 \
-      run_check_entry "$dir" task-a https://github.com/o/r/pull/1 > "$dir/direct.out" 2> "$dir/direct.err" &
+    run_check_entry "$dir" task-a https://github.com/o/r/pull/1 > "$dir/direct.out" 2> "$dir/direct.err" &
     direct_pid=$!
     i=0
-    while [ "$i" -lt 100 ] && ! find "$dir/home/state" -name '.fm-pr-poll-check.*' -print | grep . >/dev/null; do
+    while [ "$i" -lt 500 ] && ! find "$dir/home/state" -name '.fm-pr-poll-check.*' -print | grep . >/dev/null; do
       sleep 0.01
       i=$((i + 1))
     done
-    [ "$i" -lt 100 ] || fail "atomic publication did not reach staged check"
+    [ "$i" -lt 500 ] || fail "atomic publication did not reach staged check"
 
     set +e
     FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
@@ -1351,9 +2605,10 @@ EOF
   [ -z "$out" ] || fail "GitLab poll emitted for a sidecar whose project was swapped"
 
   # Arming is where a missing CLI can still be reported, so it refuses there.
+  git -C "$dir/wt" remote set-url origin https://gitlab.example/group/subgroup/project.git
   write_task_meta "$dir" task-b
   set +e
-  out=$(FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
+  out=$(FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/substrate" FM_HOME="$dir/home" \
     FM_TEST_GUARD_LOG="$dir/guard.log" PATH="$noglab" \
     "$PR_CHECK" task-b "$url" 2>&1)
   rc=$?
@@ -1375,12 +2630,13 @@ EOF
   # and the refusal below is the unreadable state rather than a missing tool.
   ln -sf "$REAL_JQ" "$dir/fakebin/jq"
   set +e
-  run_merge_entry "$dir" task-c "$url" >/dev/null 2> "$dir/merge-c.err"
+  FM_TEST_GLAB_HEAD=$(git -C "$dir/wt" rev-parse HEAD) \
+    FM_TEST_GLAB_MERGE_UNREADABLE=1 run_merge_entry "$dir" task-c "$url" >/dev/null 2> "$dir/merge-c.err"
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "merge wrapper merged a GitLab merge request it could not read"
   grep -qF 'could not read the GitLab merge request state before merging' "$dir/merge-c.err" \
-    || fail "merge wrapper refused for some reason other than the state it could not read"
+    || { cat "$dir/merge-c.err" >&2; fail "merge wrapper refused for some reason other than the state it could not read"; }
   [ ! -s "$dir/gh-axi.log" ] || fail "merge wrapper reached the GitHub CLI for a GitLab URL"
   grep -qF "mr view 7 -R https://gitlab.example/group/subgroup/project" "$dir/glab.log" \
     || fail "merge wrapper did not read the merge request through glab at its own instance"
@@ -2073,7 +3329,8 @@ test_retirement_queue_failure_and_receipt_tampering() {
 
   dir=$(make_case retirement-receipt-tamper)
   state="$dir/home/state"
-  write_poll_meta "$state" task-a https://github.com/o/r/pull/9
+  write_task_meta "$dir"
+  printf '%s\n' 'pr=https://github.com/o/r/pull/9' >> "$state/task-a.meta"
   seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/9
   fm_pr_poll_snapshot_capture "$state" task-a "$POLL" || fail "could not snapshot receipt tamper fixture"
   fm_pr_poll_retirement_publish "$state" task-a "$POLL" merged || fail "could not publish receipt tamper fixture"
@@ -2122,6 +3379,14 @@ test_gitlab_merged_poll_retires() {
 }
 
 test_parser_matrix
+test_pr_ready_requires_durable_self_review
+test_pr_ready_tracks_production_surface_ownership
+test_pr_ready_rejects_unrelated_small_diff_surface_evidence
+test_pr_ready_rejects_multiple_lines_from_one_hunk
+test_pr_ready_requires_unaffected_scope_for_unrelated_surface_evidence
+test_local_landing_refuses_advanced_default_after_review
+test_pr_check_rejects_local_only_remote_delivery
+test_direct_pr_creation_requires_self_review
 test_gitlab_merge_watch
 test_merged_poll_retires_once
 test_merged_poll_reregistration_after_notification_is_absorbed

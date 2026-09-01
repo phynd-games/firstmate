@@ -43,12 +43,20 @@ make_case() {
 }
 
 write_task_meta() {
-  local case_dir=$1
+  local case_dir=$1 base_ref base_sha
   shift
+  if git -C "$case_dir/wt" rev-parse --verify 'origin/main^{commit}' >/dev/null 2>&1; then
+    base_ref=origin/main
+  else
+    base_ref=main
+  fi
+  base_sha=$(git -C "$case_dir/wt" rev-parse --verify "$base_ref^{commit}")
   fm_write_meta "$case_dir/state/task-x1.meta" \
     "window=fm-task-x1" \
     "worktree=$case_dir/wt" \
     "project=$case_dir/project" \
+    "review_base_ref=$base_ref" \
+    "review_base_sha=$base_sha" \
     "$@"
 }
 
@@ -118,14 +126,21 @@ test_stale_recorded_pr_head_loses_to_fetched_pull_head() {
 }
 
 test_pr_meta_fetches_pull_head_without_recorded_sha() {
-  local case_dir out
+  local case_dir out base_sha
   case_dir=$(make_case pr-fetch)
   stale_and_pr_commits "$case_dir"
   git -C "$case_dir/wt" push -q origin "pr-head-tmp:refs/pull/9/head"
   write_task_meta "$case_dir" "pr=https://github.com/example/repo/pull/9"
 
   out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+  base_sha=$(git -C "$case_dir/wt" rev-parse 'origin/main^{commit}')
 
+  assert_contains "$out" "diff base: origin/main ($base_sha)" \
+    "pr-fetch: review evidence omitted exact base SHA"
+  assert_contains "$out" "diff head: $PR_SHA ($PR_SHA)" \
+    "pr-fetch: review evidence omitted exact fetched PR head SHA"
+  assert_contains "$out" "diff merge-base: $base_sha" \
+    "pr-fetch: review evidence omitted exact merge-base SHA"
   assert_contains "$out" '+pr-fixed' "pr-fetch: diff should use fetched PR head"
   assert_not_contains "$out" 'stale-local' "pr-fetch: diff must not use the stale local branch"
   assert_not_contains "$(cat "$case_dir/stderr")" 'warning: PR head unavailable' \

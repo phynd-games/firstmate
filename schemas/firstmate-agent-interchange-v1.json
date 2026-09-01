@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "firstmate.agent-interchange.v1",
+  "title": "Firstmate agent and subagent interchange inspection",
+  "description": "Deterministic structural inspection of a bounded Firstmate operational input. A valid inspection never grants authorization or verifies message provenance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["authorization_granted", "body_byte_count", "body_sha256", "kind", "provenance_evidence", "provenance_verified", "schema", "structurally_valid", "wire_version"],
+  "properties": {
+    "authorization_granted": {"const": false},
+    "body_byte_count": {"type": "integer", "minimum": 1, "maximum": 1048576},
+    "body_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "kind": {"enum": ["away-supervisor", "branch-adjudication", "branch-outcome", "from-firstmate", "launch-brief", "session-start", "turn-end-guard", "watcher"]},
+    "provenance_evidence": {"const": "body-sha256-only"},
+    "provenance_verified": {"const": false},
+    "schema": {"const": "firstmate.agent-interchange.v1"},
+    "structurally_valid": {"const": true},
+    "wire_version": {"const": "v1"}
+  }
+}

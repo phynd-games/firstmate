@@ -125,8 +125,9 @@
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from the primary project checkout.
-#   Before a fresh ship or scout worker starts, its clean task worktree fetches
-#   origin, resolves the current remote default branch, and resets to its tip.
+#   Before a fresh ship worker starts, its clean task worktree fetches and
+#   verifies the exact approved target base; scout workers use the remote
+#   default branch.
 #   An unreachable origin, unresolved default branch, or non-clean worktree
 #   refuses the spawn rather than risking a PR based on stale history.
 #   A slot whose only deviation is a stale submodule gitlink is refused by that
@@ -769,6 +770,11 @@ SPAWN_META_PUBLISH_STARTED=0
 SPAWN_FRESH_COMMIT_PENDING=0
 SPAWN_TASK_SET_LOCK=
 SPAWN_TASK_SET_LOCK_HELD=0
+SPAWN_FRESHEN_APPROVED_REF=
+SPAWN_ENDPOINT_ABORT_CLEANUP=0
+SPAWN_ENDPOINT_TARGET=
+SPAWN_ENDPOINT_PROJECTED=0
+SPAWN_ENDPOINT_WORKTREE=
 RELAUNCH_REPLACEMENT_PENDING=0
 RELAUNCH_REPLACEMENT_BUSY_GEN=
 RELAUNCH_REPLACEMENT_HARNESS=
@@ -847,6 +853,16 @@ spawn_abort_cleanup() {
   if [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" = 1 ]; then
     HERDR_PRESENTATION_ORDER_LOCK_HELD=0
     fm_lock_release "$HERDR_PRESENTATION_ORDER_LOCK" || true
+  fi
+  if [ "$SPAWN_ENDPOINT_ABORT_CLEANUP" = 1 ]; then
+    SPAWN_ENDPOINT_ABORT_CLEANUP=0
+    if [ "$SPAWN_ENDPOINT_PROJECTED" != 1 ] && [ -n "$SPAWN_ENDPOINT_TARGET" ]; then
+      fm_backend_kill "$BACKEND" "$SPAWN_ENDPOINT_TARGET" "${ZELLIJ_TAB_ID:-}" "${W:-}" 2>/dev/null || true
+    fi
+    if [ -n "$SPAWN_ENDPOINT_WORKTREE" ] && command -v treehouse >/dev/null 2>&1; then
+      ( cd "$PROJ_ABS" && treehouse return --force "$SPAWN_ENDPOINT_WORKTREE" ) >/dev/null 2>&1 || \
+        echo "warning: could not return worktree '$SPAWN_ENDPOINT_WORKTREE' after aborted spawn" >&2
+    fi
   fi
   if [ "$ORCA_ABORT_CLEANUP" = 1 ]; then
     ORCA_ABORT_CLEANUP=0
@@ -1900,6 +1916,30 @@ real_path_or_raw() {  # <path>
   fi
 }
 
+REVIEW_BASE_REF=
+REVIEW_BASE_SHA=
+if [ "$KIND" = ship ]; then
+  if [ "$RELAUNCH" -eq 1 ]; then
+    REVIEW_BASE=$(fm_pr_review_base_from_meta "$RELAUNCH_META") || {
+      echo "error: task $ID has no valid approved target base to preserve across relaunch" >&2
+      exit 1
+    }
+  elif REVIEW_BASE=$(fm_pr_review_base_from_brief "$BRIEF"); then
+    :
+  else
+    REVIEW_BASE_STATUS=$?
+    if [ "$REVIEW_BASE_STATUS" -eq 2 ]; then
+      echo "error: brief $BRIEF has no approved target base" >&2
+    else
+      echo "error: brief $BRIEF has an invalid or ambiguous approved target base" >&2
+    fi
+    exit 1
+  fi
+  IFS="$(printf '\t')" read -r REVIEW_BASE_REF REVIEW_BASE_SHA <<EOF
+$REVIEW_BASE
+EOF
+fi
+
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
 # a herdr spawn goes through the version-gated, workspace-per-HOME,
@@ -1967,29 +2007,40 @@ EOF
   printf '%s' "$lines" >&2
 }
 
-freshen_spawn_worktree_base() {  # <worktree>
-  local worktree=$1 default target expected actual status
-  if ! git -C "$worktree" fetch --quiet origin; then
-    echo "error: could not fetch origin for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
-    return 1
+freshen_spawn_worktree_base() {  # <worktree> [<approved-ref> <approved-sha>]
+  local worktree=$1 approved_ref=${2-} approved_sha=${3-} default target expected actual status
+  SPAWN_FRESHEN_APPROVED_REF=$approved_ref
+  if [ -n "$approved_ref" ]; then
+    expected=$approved_sha
+    target=$(fm_pr_review_base_resolve "$worktree" "$approved_ref" "$approved_sha") || {
+      echo "error: approved base '$approved_ref' does not resolve to its recorded SHA for pooled worktree '$worktree'" >&2
+      return 1
+    }
+    [ -n "$target" ] || return 1
+  else
+    if ! git -C "$worktree" fetch --quiet origin; then
+      echo "error: could not fetch origin for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+      return 1
+    fi
+    if ! git -C "$worktree" remote set-head origin --auto >/dev/null 2>&1; then
+      echo "error: could not resolve origin's current default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+      return 1
+    fi
+    default=$(default_branch "$worktree") || {
+      echo "error: could not determine origin's default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+      return 1
+    }
+    target="origin/$default"
+    if ! git -C "$worktree" fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default"; then
+      echo "error: could not fetch '$target' for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+      return 1
+    fi
+    expected=$(git -C "$worktree" rev-parse --verify --quiet "$target^{commit}" 2>/dev/null) || {
+      echo "error: '$target' is not a commit for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+      return 1
+    }
   fi
-  if ! git -C "$worktree" remote set-head origin --auto >/dev/null 2>&1; then
-    echo "error: could not resolve origin's current default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
-    return 1
-  fi
-  default=$(default_branch "$worktree") || {
-    echo "error: could not determine origin's default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
-    return 1
-  }
-  target="origin/$default"
-  if ! git -C "$worktree" fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default"; then
-    echo "error: could not fetch '$target' for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
-    return 1
-  fi
-  expected=$(git -C "$worktree" rev-parse --verify --quiet "$target^{commit}" 2>/dev/null) || {
-    echo "error: '$target' is not a commit for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
-    return 1
-  }
+  SPAWN_FRESHEN_APPROVED_REF=$target
   status=$(git -C "$worktree" -c core.quotePath=false status --porcelain) || {
     echo "error: could not inspect pooled worktree '$worktree' before refreshing its base" >&2
     return 1
@@ -2002,7 +2053,7 @@ freshen_spawn_worktree_base() {  # <worktree>
     fi
     return 1
   fi
-  if ! git -C "$worktree" reset --hard "$target" >/dev/null; then
+  if ! git -C "$worktree" reset --hard "$expected" >/dev/null; then
     echo "error: could not reset pooled worktree '$worktree' to '$target'; refusing to launch from a potentially stale base" >&2
     return 1
   fi
@@ -2155,6 +2206,8 @@ case "$BACKEND" in
     # stays $T (the name form), which is safe now that rename is disabled.
     WID=$(fm_backend_tmux_create_task "$SES" "$W" "$PROJ_ABS") || exit 1
     WT_TARGET="$WID"
+    SPAWN_ENDPOINT_ABORT_CLEANUP=1
+    SPAWN_ENDPOINT_TARGET=$T
     ;;
   herdr)
     # fm_backend_herdr_workspace_label resolves the target workspace from
@@ -2344,6 +2397,9 @@ EOF
       exit 1
     fi
     T="$HERDR_SES:$HERDR_PANE_ID"
+    SPAWN_ENDPOINT_ABORT_CLEANUP=1
+    SPAWN_ENDPOINT_TARGET=$T
+    SPAWN_ENDPOINT_PROJECTED=$HERDR_PROJECTED
     ;;
   zellij)
     ZELLIJ_SES=$(fm_backend_zellij_container_ensure) || exit 1
@@ -2356,6 +2412,8 @@ EOF
       exit 1
     fi
     T="$ZELLIJ_SES:$ZELLIJ_PANE_ID"
+    SPAWN_ENDPOINT_ABORT_CLEANUP=1
+    SPAWN_ENDPOINT_TARGET=$T
     ;;
   cmux)
     fm_backend_cmux_container_ensure || exit 1
@@ -2368,6 +2426,8 @@ EOF
       exit 1
     fi
     T="$CMUX_WORKSPACE_ID:$CMUX_SURFACE_ID"
+    SPAWN_ENDPOINT_ABORT_CLEANUP=1
+    SPAWN_ENDPOINT_TARGET=$T
     ;;
   orca)
     set +e
@@ -2395,6 +2455,9 @@ EOF
     T="$ORCA_TERMINAL"
     ;;
 esac
+fi
+if [ "$KIND" = secondmate ]; then
+  SPAWN_ENDPOINT_ABORT_CLEANUP=0
 fi
 if [ "$KIND" = secondmate ]; then
   FM_INHERITABLE_CONFIG=trace-context \
@@ -2565,10 +2628,31 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     exit 1
   fi
 
+  if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+    SPAWN_ENDPOINT_WORKTREE=$WT
+  fi
   validate_spawn_worktree "treehouse get" "$T"
 fi
+if [ "$KIND" = ship ]; then
+  if [ "$RELAUNCH" -eq 1 ]; then
+    RESOLVED_REVIEW_BASE=$(git -C "$WT" rev-parse --verify "$REVIEW_BASE_REF^{commit}" 2>/dev/null) || {
+      echo "error: task's approved target base is unavailable" >&2
+      exit 1
+    }
+    [ "$REVIEW_BASE_SHA" = "$RESOLVED_REVIEW_BASE" ] || {
+      echo "error: task's approved target base ref and SHA disagree" >&2
+      exit 1
+    }
+  fi
+fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
-  freshen_spawn_worktree_base "$WT" || exit 1
+  if ! freshen_spawn_worktree_base "$WT" "$REVIEW_BASE_REF" "$REVIEW_BASE_SHA"; then
+    exit 1
+  fi
+  if [ -n "$SPAWN_FRESHEN_APPROVED_REF" ]; then
+    REVIEW_BASE_REF=$SPAWN_FRESHEN_APPROVED_REF
+  fi
+  SPAWN_ENDPOINT_ABORT_CLEANUP=0
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
@@ -2944,7 +3028,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id herdr_terminal_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind review_base_ref review_base_sha mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id herdr_terminal_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2957,6 +3041,8 @@ preserve_relaunch_meta() {
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
   echo "kind=$KIND"
+  [ -z "$REVIEW_BASE_REF" ] || echo "review_base_ref=$REVIEW_BASE_REF"
+  [ -z "$REVIEW_BASE_SHA" ] || echo "review_base_sha=$REVIEW_BASE_SHA"
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
   echo "tasktmp=$TASK_TMP"

@@ -769,8 +769,23 @@ else
   # durable ledger records the plain answer without marker or corr bytes.
   RESOLVE_ANSWER_TEXT=$MESSAGE
   if [ "$MARK_FROM_FIRSTMATE" = 1 ] && [ -n "$FIRE_AND_FORGET_ID" ]; then
-    fm_message_mark_from_firstmate "$MESSAGE" MESSAGE
-    MESSAGE="${FM_FROMFIRST_MARK}delivery=${FIRE_AND_FORGET_ID} ${MESSAGE#"$FM_FROMFIRST_MARK"}"
+    if fm_message_from_firstmate "$MESSAGE"; then
+      FIRE_BODY=${MESSAGE#"$FM_FROMFIRST_MARK"}
+      case "$FIRE_BODY" in
+        "delivery=${FIRE_AND_FORGET_ID} "*) ;;
+        delivery=*)
+          echo "error: fire-and-forget delivery id does not match the existing carrier" >&2
+          exit 1
+          ;;
+        *) MESSAGE="${FM_FROMFIRST_MARK}delivery=${FIRE_AND_FORGET_ID} ${FIRE_BODY}" ;;
+      esac
+    else
+      MESSAGE="delivery=${FIRE_AND_FORGET_ID} $MESSAGE"
+      fm_message_mark_from_firstmate "$MESSAGE" MESSAGE || {
+        echo "error: fire-and-forget message could not be marked safely" >&2
+        exit 1
+      }
+    fi
     FM_SEND_IDEMPOTENT=1
   elif [ "$MARK_FROM_FIRSTMATE" = 1 ]; then
     # Reuse an existing correlation id for recovery resends; otherwise create a

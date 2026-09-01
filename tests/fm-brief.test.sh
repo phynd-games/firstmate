@@ -1,18 +1,8 @@
 #!/usr/bin/env bash
 # Behavior tests for bin/fm-brief.sh.
 #
-# Regression coverage for the heredoc-in-command-substitution parse bug (issues
-# #166, #958, #1069). Building a variable with `VAR=$(cat <<EOF ... EOF)` is
-# unsafe on Bash 3.2 (macOS /bin/bash): the lexer scans for the matching `)` of
-# the command substitution textually and tracks quote state through the heredoc
-# body, so a single apostrophe, unbalanced quote, or unbalanced paren anywhere
-# in that body breaks parsing of the *entire rest of the script* - `bash -n`
-# fails, not just the generated brief. The DOD and Herdr-section builders now
-# use `IFS= read -r -d '' VAR <<EOF || true` instead, which removes the `$(...)`
-# wrapper and eliminates the whole defect class regardless of future prose.
-# test_no_heredoc_in_command_substitution guards that structure directly.
-# Ambient `bash -n` here is Bash 5 and cannot see the bug, so the real
-# cross-version enforcement lives in the macos-stock-bash CI job.
+# Regression coverage for brief generation and parsing on the supported Bash
+# implementations, including the macOS stock-Bash compatibility lane.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -21,153 +11,18 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-brief)
 BRIEF_HOME="$TMP_ROOT/home"
 mkdir -p "$BRIEF_HOME/data"
+export FM_APPROVED_BASE_REF=main
+export FM_APPROVED_BASE_SHA=0000000000000000000000000000000000000000
 
-# The script itself must always parse under the ambient bash. That is Bash 5 in
-# CI and locally, where the issue #958/#1069 parser bug does not fire, so this
-# is a weak guard on its own; test_no_heredoc_in_command_substitution and the
-# macos-stock-bash CI job carry the real cross-version enforcement.
+# The script itself must always parse under the ambient bash.
+# The generated-brief behavior tests and the macos-stock-bash CI job carry the
+# cross-version enforcement.
 test_script_parses() {
   local out rc
   out=$(bash -n "$ROOT/bin/fm-brief.sh" 2>&1); rc=$?
   expect_code 0 "$rc" "bash -n bin/fm-brief.sh must parse cleanly (got: $out)"
   [ -z "$out" ] || fail "bash -n bin/fm-brief.sh emitted unexpected output: $out"
   pass "fm-brief.sh: bash -n succeeds"
-}
-
-# Structural class guard (issues #166, #958, #1069): never build a variable by
-# wrapping a heredoc in a command substitution (`VAR=$(cat <<EOF ... EOF)`).
-# That construct is what breaks Bash 3.2 parsing, and pinning one historical
-# apostrophe phrase (as the old test did) missed the #945 reintroduction. This
-# guards the *shape* directly against the whole file, so any future DOD or
-# section builder that reintroduces the class fails here regardless of prose.
-test_no_heredoc_in_command_substitution() {
-  local unsafe safe
-  unsafe="$TMP_ROOT/heredoc-in-substitution.sh"
-  safe="$TMP_ROOT/plain-heredoc.sh"
-  # shellcheck disable=SC2016 # Literal shell fixtures must remain unexpanded.
-  printf '%s\n' 'value=$(' '  cat <<EOF' 'body' 'EOF' ')' > "$unsafe"
-  # shellcheck disable=SC2016 # Literal shell fixtures must remain unexpanded.
-  printf '%s\n' 'cat <<EOF' '$(' '  cat <<INNER' 'INNER' ')' 'EOF' > "$safe"
-  if no_heredoc_in_command_substitution "$unsafe"; then
-    fail "structural guard accepted a multiline heredoc nested in a command substitution"
-  fi
-  no_heredoc_in_command_substitution "$safe" \
-    || fail "structural guard treated heredoc body prose as shell structure"
-  no_heredoc_in_command_substitution "$ROOT/bin/fm-brief.sh" \
-    || fail "fm-brief.sh wraps a heredoc in a command substitution (breaks Bash 3.2 parsing)"
-  pass "fm-brief.sh: no heredoc is nested inside a command substitution (Bash 3.2 parse-safe)"
-}
-
-no_heredoc_in_command_substitution() {
-  perl - "$1" <<'PERL'
-use strict;
-use warnings;
-
-my $path = shift;
-open my $source, '<', $path or die "$path: $!\n";
-my @frames;
-my @heredocs;
-my $quote = '';
-my $line_number = 0;
-
-while (my $line = <$source>) {
-  $line_number++;
-  if (@heredocs) {
-    my $candidate = $line;
-    $candidate =~ s/\r?\n\z//;
-    $candidate =~ s/^\t+// if $heredocs[0]{strip_tabs};
-    shift @heredocs if $candidate eq $heredocs[0]{delimiter};
-    next;
-  }
-
-  my $length = length $line;
-  for (my $i = 0; $i < $length; $i++) {
-    my $char = substr($line, $i, 1);
-    if ($quote eq "'") {
-      $quote = '' if $char eq "'";
-      next;
-    }
-    if ($char eq '\\') {
-      $i++;
-      next;
-    }
-    if ($quote eq '"' && $char eq '"') {
-      $quote = '';
-      next;
-    }
-    if ($char eq "'" && $quote eq '') {
-      $quote = "'";
-      next;
-    }
-    if ($char eq '"' && $quote eq '') {
-      $quote = '"';
-      next;
-    }
-    if ($char eq '#' && $quote eq '' && ($i == 0 || substr($line, $i - 1, 1) =~ /[\s;|&()]/)) {
-      last;
-    }
-    if ($char eq '$' && substr($line, $i + 1, 1) eq '(') {
-      push @frames, { depth => 1, quote => $quote };
-      $quote = '';
-      $i++;
-      next;
-    }
-    if (@frames && $quote eq '' && $char eq '(') {
-      $frames[-1]{depth}++;
-      next;
-    }
-    if (@frames && $quote eq '' && $char eq ')') {
-      $frames[-1]{depth}--;
-      if ($frames[-1]{depth} == 0) {
-        my $frame = pop @frames;
-        $quote = $frame->{quote};
-      }
-      next;
-    }
-    next unless $quote eq '' && $char eq '<' && substr($line, $i + 1, 1) eq '<';
-    if (@frames) {
-      print STDERR "$path:$line_number\n";
-      exit 1;
-    }
-
-    my $j = $i + 2;
-    my $strip_tabs = substr($line, $j, 1) eq '-';
-    $j++ if $strip_tabs;
-    $j++ while substr($line, $j, 1) =~ /[ \t]/;
-    my $delimiter = '';
-    my $delimiter_quote = '';
-    for (; $j < $length; $j++) {
-      my $token = substr($line, $j, 1);
-      if ($delimiter_quote) {
-        if ($token eq $delimiter_quote) {
-          $delimiter_quote = '';
-        } elsif ($token eq '\\' && $delimiter_quote eq '"') {
-          $j++;
-          $delimiter .= substr($line, $j, 1);
-        } else {
-          $delimiter .= $token;
-        }
-        next;
-      }
-      if ($token eq "'" || $token eq '"') {
-        $delimiter_quote = $token;
-        next;
-      }
-      if ($token eq '\\') {
-        $j++;
-        $delimiter .= substr($line, $j, 1);
-        next;
-      }
-      last if $token =~ /[\s;|&()<>]/;
-      $delimiter .= $token;
-    }
-    push @heredocs, { delimiter => $delimiter, strip_tabs => $strip_tabs };
-    $i = $j - 1;
-  }
-}
-
-exit 0;
-PERL
 }
 
 test_help_includes_entire_header() {
@@ -195,7 +50,7 @@ EOF
 # one of these DOD blocks, since a broken heredoc corrupts or empties the
 # generated brief content, not just the script's own syntax.
 test_ship_modes_generate_clean_briefs() {
-  local home id mode brief status
+  local home id mode brief status approved_base
   home="$TMP_ROOT/ship-home"
   write_registry "$home"
 
@@ -210,11 +65,73 @@ test_ship_modes_generate_clean_briefs() {
     grep -qx "Delivery contract: mode=$mode" "$brief" \
       || fail "$id: brief did not record its machine-readable delivery contract line"
     assert_grep "{TASK}" "$brief" "$id: brief missing the {TASK} placeholder"
+    approved_base="Target-project approved base: ref=$FM_APPROVED_BASE_REF; sha=$FM_APPROVED_BASE_SHA"
+    assert_grep "$approved_base" "$brief" "$id: brief missing exact approved-base metadata"
     assert_grep "mid-task \`working:\` line (including setup complete) is nonterminal" "$brief" \
       "$id: brief missing nonterminal working:/setup-complete gate protection"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
+}
+
+test_ship_requires_and_persists_approved_base() {
+  local home out status brief sha
+  home="$TMP_ROOT/approved-base-home"
+  mkdir -p "$home/data"
+  out=$(FM_HOME="$home" FM_APPROVED_BASE_REF= FM_APPROVED_BASE_SHA= \
+    "$ROOT/bin/fm-brief.sh" missing-base some-proj --mode local-only 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "ship scaffold accepted missing approved-base evidence"
+  assert_contains "$out" "ship briefs require --approved-base-ref and --approved-base-sha" \
+    "missing approved-base refusal did not explain the contract"
+  assert_absent "$home/data/missing-base/brief.md" \
+    "missing approved-base refusal still wrote a brief"
+
+  sha=0123456789abcdef0123456789abcdef01234567
+  FM_HOME="$home" FM_APPROVED_BASE_REF= FM_APPROVED_BASE_SHA= \
+    "$ROOT/bin/fm-brief.sh" recorded-base some-proj --mode local-only \
+    --approved-base-ref refs/heads/release/m1 --approved-base-sha "$sha" >/dev/null 2>&1 \
+    || fail "ship scaffold rejected a valid explicit approved base"
+  brief="$home/data/recorded-base/brief.md"
+  grep -qx "Target-project approved base: ref=refs/heads/release/m1; sha=$sha" "$brief" \
+    || fail "ship scaffold did not persist the explicit approved-base pair"
+  pass "fm-brief.sh: ship scaffolds require and persist the approved target base"
+}
+
+test_every_ship_mode_requires_findings_first_self_review() {
+  local home id mode brief substrate_sha review_line done_line
+  home="$TMP_ROOT/self-review-home"
+  mkdir -p "$home/data"
+  substrate_sha=$(git -C "$ROOT" rev-parse 'HEAD^{commit}')
+
+  for id_mode in "review-nomistakes:no-mistakes" "review-direct:direct-PR" "review-local:local-only"; do
+    id=${id_mode%%:*}
+    mode=${id_mode##*:}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1 \
+      || fail "$mode ship brief failed while wiring self-review"
+    brief="$home/data/$id/brief.md"
+    assert_grep "# Required PR self-review" "$brief" \
+      "$mode brief omitted required self-review section"
+    assert_grep "$ROOT/.agents/skills/firstmate-pr-self-review/SKILL.md" "$brief" \
+      "$mode brief omitted reusable self-review skill"
+    assert_grep "Write its findings-first durable report to exactly \`$home/data/$id/pr-self-review.md\`." "$brief" \
+      "$mode brief omitted task-specific durable report path"
+    assert_grep "Firstmate substrate root: \`$ROOT\`" "$brief" \
+      "$mode brief omitted substrate root"
+    assert_grep "Firstmate substrate launch SHA: \`$substrate_sha\`" "$brief" \
+      "$mode brief omitted exact substrate launch SHA"
+    assert_grep "Review the complete target-project diff and the separate Firstmate substrate diff with exact base/head evidence." "$brief" \
+      "$mode brief omitted dual exact-diff contract"
+    assert_grep "adds no reviewer, delivery, approval, or merge authority" "$brief" \
+      "$mode brief stacked authority beside selected delivery path"
+    assert_grep "modify nothing outside it except the status file, inbox acknowledgements, and exact durable self-review report path" "$brief" \
+      "$mode brief did not permit its exact private report path"
+    review_line=$(grep -n '^# Required PR self-review$' "$brief" | cut -d: -f1)
+    done_line=$(grep -n '^# Definition of done$' "$brief" | cut -d: -f1)
+    [ "$review_line" -lt "$done_line" ] \
+      || fail "$mode self-review requirement appeared after its readiness path"
+  done
+  pass "fm-brief.sh: every ship path requires dual-diff findings-first self-review without new authority"
 }
 
 # A ship task's delivery mode is firstmate's per-task decision, so a missing or
@@ -786,9 +703,10 @@ test_herdr_worker_interaction_contract_renders_resolved_paths() {
 }
 
 test_script_parses
-test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
+test_ship_requires_and_persists_approved_base
+test_every_ship_mode_requires_findings_first_self_review
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply

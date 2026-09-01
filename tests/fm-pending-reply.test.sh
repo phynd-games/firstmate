@@ -486,8 +486,11 @@ test_concurrent_resolution_closes_escalation_once() {
     "$corr" "$corr" > "$state/hibit.status"
   printf 'done [corr=%s]: concurrent delayed reply\n' "$corr" >> "$state/hibit.status"
 
+  # Bash 3.2 has no BASHPID, so backgrounded functions share $$ and cannot
+  # represent independent lock owners. Use real child shells with distinct PIDs.
   for _ in 1 2 3 4 5 6 7 8; do
-    fm_pending_reply_try_resolve "$state" "$corr" &
+    /bin/bash -c '. "$1"; fm_pending_reply_try_resolve "$2" "$3"' \
+      pending-reply-test "$ROOT/bin/fm-pending-reply-lib.sh" "$state" "$corr" &
   done
   wait
 
@@ -512,9 +515,13 @@ test_concurrent_escalation_yields_to_late_reply() {
   fm_pending_reply_set "$rec" recovery_turn_completed_epoch 4850
   printf 'done [corr=%s]: late concurrent reply\n' "$corr" > "$state/hibit.status"
 
+  # Exercise distinct processes on Bash 3.2, where backgrounded functions have
+  # no BASHPID and therefore share the parent shell's $$ lock identity.
   for _ in 1 2 3 4 5 6 7 8; do
-    fm_pending_reply_maybe_escalate "$state" "$corr" &
-    fm_pending_reply_try_resolve "$state" "$corr" &
+    /bin/bash -c '. "$1"; fm_pending_reply_maybe_escalate "$2" "$3"' \
+      pending-reply-test "$ROOT/bin/fm-pending-reply-lib.sh" "$state" "$corr" &
+    /bin/bash -c '. "$1"; fm_pending_reply_try_resolve "$2" "$3"' \
+      pending-reply-test "$ROOT/bin/fm-pending-reply-lib.sh" "$state" "$corr" &
   done
   wait
 
@@ -675,7 +682,7 @@ test_delivery_confirmation_fallback_reconciles() {
 
 test_delivery_confirmation_serializes_with_reconciliation() {
   (
-    local home state corr rec calls entered release confirm_pid reconcile_pid count i
+    local home state corr rec calls entered release hook confirm_pid reconcile_pid count i
     home=$(setup_parent delivery-confirm-reconcile-race)
     state="$home/state"
     # This fixture clock is intentionally scoped to the isolated subshell.
@@ -686,19 +693,24 @@ test_delivery_confirmation_serializes_with_reconciliation() {
     calls="$home/mark-delivered.calls"
     entered="$home/mark-delivered.entered"
     release="$home/mark-delivered.release"
-    fm_pending_reply_mark_delivered() {
-      local pending_state=$1 pending_corr=$2 epoch=$3 pending_rec phase
-      printf '%s\n' "$BASHPID" >> "$calls"
-      : > "$entered"
-      while [ ! -e "$release" ]; do /bin/sleep 0.01; done
-      pending_rec=$(fm_pending_reply_path "$pending_state" "$pending_corr")
-      fm_pending_reply_set "$pending_rec" delivered_epoch "$epoch" || return 1
-      phase=$(fm_pending_reply_get "$pending_rec" phase)
-      [ "$phase" != delivery_unknown ] \
-        || fm_pending_reply_set "$pending_rec" phase awaiting_report
-    }
-    fm_pending_reply_confirm_delivery "$state" "$corr" &
-    # The background PID is consumed within this isolated test subshell.
+    hook="$home/mark-delivered-hook.sh"
+    cat > "$hook" <<'SH'
+fm_pending_reply_mark_delivered() {
+  local pending_state=$1 pending_corr=$2 epoch=$3 pending_rec phase
+  printf '%s\n' "${BASHPID:-$$}" >> "$FM_TEST_CALLS"
+  : > "$FM_TEST_ENTERED"
+  while [ ! -e "$FM_TEST_RELEASE" ]; do /bin/sleep 0.01; done
+  pending_rec=$(fm_pending_reply_path "$pending_state" "$pending_corr")
+  fm_pending_reply_set "$pending_rec" delivered_epoch "$epoch" || return 1
+  phase=$(fm_pending_reply_get "$pending_rec" phase)
+  [ "$phase" != delivery_unknown ] \
+    || fm_pending_reply_set "$pending_rec" phase awaiting_report
+}
+SH
+    FM_TEST_CALLS="$calls" FM_TEST_ENTERED="$entered" FM_TEST_RELEASE="$release" \
+      /bin/bash -c '. "$1"; . "$2"; fm_pending_reply_confirm_delivery "$3" "$4"' \
+      pending-reply-test "$ROOT/bin/fm-pending-reply-lib.sh" "$hook" "$state" "$corr" &
+    # The child-process PID is consumed within this isolated test subshell.
     # shellcheck disable=SC2031
     confirm_pid=$!
     for i in $(seq 1 100); do
@@ -706,14 +718,18 @@ test_delivery_confirmation_serializes_with_reconciliation() {
       /bin/sleep 0.01
     done
     [ -e "$entered" ] || fail "delivery confirmation did not reach its commit boundary"
-    fm_pending_reply_reconcile_delivery "$state" "$corr" &
-    # The background PID is consumed within this isolated test subshell.
+    FM_TEST_CALLS="$calls" FM_TEST_ENTERED="$entered" FM_TEST_RELEASE="$release" \
+      /bin/bash -c '. "$1"; . "$2"; fm_pending_reply_reconcile_delivery "$3" "$4"' \
+      pending-reply-test "$ROOT/bin/fm-pending-reply-lib.sh" "$hook" "$state" "$corr" &
+    # The child-process PID is consumed within this isolated test subshell.
     # shellcheck disable=SC2031
     reconcile_pid=$!
     /bin/sleep 0.1
     : > "$release"
     wait "$confirm_pid" || fail "delivery confirmation should commit"
     wait "$reconcile_pid" || fail "reconciliation should observe committed delivery"
+    # The count is asserted inside this same isolated test subshell.
+    # shellcheck disable=SC2030
     count=$(wc -l < "$calls" | tr -d ' ')
     [ "$count" = 1 ] \
       || fail "confirmation and reconciliation raced through $count delivery commits"
@@ -1250,6 +1266,29 @@ test_failed_send_discards_undelivered_expectation() {
   pass "failed transport discards undelivered expectation only"
 }
 
+test_corr_embedding_respects_interchange_bound() {
+  local corr body allowed_length encoded inspection oversized
+  corr=0123456789abcdef
+  allowed_length=$((FM_OPERATIONAL_MAX_BODY_BYTES - 22))
+  body=$(python3 -c "import sys; sys.stdout.write('x' * $allowed_length)")
+  fm_pending_reply_embed_corr "$body" "$corr" encoded \
+    || fail "maximum schema-sized correlated instruction was rejected"
+  inspection=$(printf '%s' "$encoded" | "$ROOT/bin/fm-operational-input.sh" inspect) \
+    || fail "maximum schema-sized correlated instruction did not inspect"
+  INSPECTION="$inspection" LIMIT="$FM_OPERATIONAL_MAX_BODY_BYTES" python3 - <<'PY' \
+    || fail "correlated instruction inspection exceeded its schema bound"
+import json
+import os
+report = json.loads(os.environ["INSPECTION"])
+assert report["kind"] == "from-firstmate"
+assert report["body_byte_count"] == int(os.environ["LIMIT"])
+PY
+  oversized="${body}x"
+  ! fm_pending_reply_embed_corr "$oversized" "$corr" encoded \
+    || fail "correlation transform emitted an oversized secondmate instruction"
+  pass "correlation transform enforces the agent interchange body bound"
+}
+
 # --- run --------------------------------------------------------------------
 
 test_normal_correlated_reply_resolves_once
@@ -1272,6 +1311,7 @@ test_unrelated_and_stale_corr_cannot_resolve
 test_restart_preserves_expectation_and_parent_destination
 test_wrong_home_detected_not_acknowledged
 test_unmarked_captain_input_creates_no_expectation
+test_corr_embedding_respects_interchange_bound
 test_fm_send_marked_secondmate_creates_pending_and_embeds_corr
 test_document_pointer_resolves
 test_helper_report_resolves

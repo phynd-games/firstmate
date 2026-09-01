@@ -1,4 +1,4 @@
-"""Side-effect-free validation for Firstmate factory source and execution manifests."""
+"""Side-effect-free structural validation for offline Firstmate planning artifacts."""
 
 from .validator import (  # noqa: F401
     VALIDATOR_VERSION,
