@@ -91,7 +91,11 @@ MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
   exit 1
 }
 case "$MODE" in
-  no-mistakes|direct-PR|local-only) ;;
+  no-mistakes|direct-PR) ;;
+  local-only)
+    echo "error: local-only tasks must use fm-merge-local.sh" >&2
+    exit 1
+    ;;
   *) echo "error: PR-ready task metadata has an invalid delivery mode" >&2; exit 1 ;;
 esac
 [ "$(grep -c '^worktree=' "$META" || true)" = 1 ] || {
