@@ -1130,6 +1130,30 @@ herdr_supervisor_sweep() {
         || printf 'BOOTSTRAP_INFO: %s\n' "$(printf '%s' "$out" | tr '\n' ' ')"
       ;;
   esac
+
+  # Start the always-running monitor, idempotently. `ensure` alone only fixes
+  # supervision at session start; the monitor is what re-establishes it when the
+  # supervisor's host pane dies mid-session, which is the gap that previously left
+  # a home unsupervised until the next start. A live monitor makes this a no-op.
+  # Bounded like the ensure above so a sick Herdr cannot lengthen session start.
+  started=$SECONDS
+  out=$(fm_run_timed "$timeout" "$SCRIPT_DIR/fm-herdr-supervisor.sh" monitor --reason 'session start' 2>&1)
+  status=$?
+  elapsed=$((SECONDS - started))
+  if [ "$status" -eq 124 ]; then
+    printf 'HERDR_SUPERVISOR: monitor start timed out (timeout=%ss elapsed=%ss)\n' "$timeout" "$elapsed"
+    return 0
+  fi
+  if [ "$status" -ne 0 ]; then
+    printf 'HERDR_SUPERVISOR: %s\n' "$(printf '%s' "$out" | tr '\n' ' ')"
+    return 0
+  fi
+  case "$out" in
+    *'monitor started'*)
+      [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" != 1 ] \
+        || printf 'BOOTSTRAP_INFO: %s\n' "$(printf '%s' "$out" | tr '\n' ' ')"
+      ;;
+  esac
   return 0
 }
 

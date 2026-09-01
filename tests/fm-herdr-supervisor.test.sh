@@ -1223,8 +1223,11 @@ assert_present "$HOME21/state/.herdr-supervisor" \
   "abandoning an unknown arm retains the supervisor binding"
 assert_present "$HOME21/state/.herdr-supervisor-live" \
   "abandoning an unknown arm retains the supervisor liveness record"
-assert_grep 'abandoning child pid=' "$HOME21/state/.herdr-supervisor-alarm" \
-  "abandoning an unknown arm leaves a durable child diagnostic"
+if ! grep -q 'abandoning child pid=' "$HOME21/state/.herdr-supervisor-alarm" 2>/dev/null; then
+  printf -- '--- alarm ---\n' >&2; cat "$HOME21/state/.herdr-supervisor-alarm" >&2 2>/dev/null || printf '(absent)\n' >&2
+  printf -- '--- ledger ---\n' >&2; tr '\t' ' ' < "$HOME21/state/.herdr-supervisor.log" >&2 2>/dev/null || true
+  fail "abandoning an unknown arm leaves a durable child diagnostic"
+fi
 UNKNOWN_ARM_PID=$(cat "$HOME21/first-unknown-arm.pid" 2>/dev/null || true)
 stop_loop "$HOME21"
 if [ -n "$UNKNOWN_ARM_PID" ]; then
@@ -1232,5 +1235,106 @@ if [ -n "$UNKNOWN_ARM_PID" ]; then
   wait "$UNKNOWN_ARM_PID" 2>/dev/null || true
 fi
 pass "unknown arm children are abandoned without stopping supervisor recovery"
+
+# =============================================================================
+# The always-running monitor. `ensure` alone only repairs supervision at session
+# start; the monitor is what re-establishes it when the supervisor's host pane
+# dies mid-session. It runs OUTSIDE any Herdr pane, because hosting it in one
+# would reproduce the very failure it exists to catch.
+# =============================================================================
+HOMEM=$(new_home monitor)
+make_arm_stub "$HOMEM/arm.sh" ok
+fm_write_meta "$HOMEM/state/mon-task.meta" "window=firstmate:fm-mon-task"
+printf '%s\n' "$$" > "$HOMEM/state/.lock"
+
+out=$(run_supervisor "$HOMEM" "$FAKEBIN" monitor --reason test 2>&1)
+assert_contains "$out" "monitor started" "the monitor did not start"
+MON_PID=$(grep -m1 '^pid=' "$HOMEM/state/.herdr-supervisor-monitor" | sed 's/^pid=//')
+[ -n "$MON_PID" ] || fail "the monitor published no pid"
+kill -0 "$MON_PID" 2>/dev/null || fail "the recorded monitor process is not alive"
+pass "the monitor starts and publishes a live, identity-bound record"
+
+# Idempotent: a second start is a no-op and never doubles the loop.
+out=$(run_supervisor "$HOMEM" "$FAKEBIN" monitor --reason again 2>&1)
+assert_contains "$out" "monitor unchanged" "a second monitor start was not a no-op"
+[ "$(grep -m1 '^pid=' "$HOMEM/state/.herdr-supervisor-monitor" | sed 's/^pid=//')" = "$MON_PID" ] \
+  || fail "a second monitor start replaced the live monitor"
+pass "a repeated monitor start is idempotent and keeps one owner"
+
+# Recycled pid: identity, not the number, decides. A record whose identity no
+# longer matches must never read as a live monitor, and a second start must not
+# hang forever on the singleton lock trying to replace it.
+sed 's/^pid_identity=.*/pid_identity=not-the-real-identity/' \
+  "$HOMEM/state/.herdr-supervisor-monitor" > "$HOMEM/state/.herdr-supervisor-monitor.new"
+mv "$HOMEM/state/.herdr-supervisor-monitor.new" "$HOMEM/state/.herdr-supervisor-monitor"
+RECYCLE_START=$(date +%s)
+run_supervisor "$HOMEM" "$FAKEBIN" monitor --reason recycled >/dev/null 2>&1 || true
+RECYCLE_ELAPSED=$(( $(date +%s) - RECYCLE_START ))
+[ "$RECYCLE_ELAPSED" -lt 30 ] \
+  || fail "a start against an unverifiable monitor blocked for ${RECYCLE_ELAPSED}s instead of standing down"
+out=$(run_supervisor "$HOMEM" "$FAKEBIN" status 2>&1)
+assert_no_grep 'monitor unchanged' "$HOMEM/state/.herdr-supervisor-monitor" \
+  "the tampered record was rewritten as if healthy"
+pass "a monitor pid whose identity no longer matches is never accepted as live"
+
+# Anti-orphan: the monitor is bound to the exact session that started it and must
+# exit when that session is gone, so it can never outlive its home. Uses its OWN
+# home and its own freshly captured pid, so it cannot pass vacuously against a
+# process an earlier case already ended.
+HOMEO=$(new_home monitor-orphan)
+make_arm_stub "$HOMEO/arm.sh" ok
+fm_write_meta "$HOMEO/state/orphan-task.meta" "window=firstmate:fm-orphan-task"
+printf '%s\n' "$$" > "$HOMEO/state/.lock"
+out=$(run_supervisor "$HOMEO" "$FAKEBIN" monitor --reason orphan 2>&1)
+assert_contains "$out" "monitor started" "the orphan case could not start a monitor"
+ORPHAN_PID=$(grep -m1 '^pid=' "$HOMEO/state/.herdr-supervisor-monitor" | sed 's/^pid=//')
+[ -n "$ORPHAN_PID" ] || fail "the orphan case captured no monitor pid"
+kill -0 "$ORPHAN_PID" 2>/dev/null || fail "the orphan case monitor was not alive to begin with; the case would be vacuous"
+
+printf '%s\n' 999999 > "$HOMEO/state/.lock"
+monitor_gone() { ! kill -0 "$1" 2>/dev/null; }
+wait_for 30 monitor_gone "$ORPHAN_PID" \
+  || { kill -TERM "$ORPHAN_PID" 2>/dev/null || true; fail "the monitor outlived the home session that started it"; }
+pass "the monitor exits when its home session ends, so it cannot orphan"
+
+# Descriptor hygiene: bootstrap calls this inside a command substitution, so a
+# started monitor must retain nothing of its caller or session start would wedge.
+HOMED=$(new_home monitor-fds)
+make_arm_stub "$HOMED/arm.sh" ok
+fm_write_meta "$HOMED/state/fd-task.meta" "window=firstmate:fm-fd-task"
+printf '%s\n' "$$" > "$HOMED/state/.lock"
+FD_START=$(date +%s)
+FD_OUT=$(run_supervisor "$HOMED" "$FAKEBIN" monitor --reason fds 2>&1)
+FD_ELAPSED=$(( $(date +%s) - FD_START ))
+[ "$FD_ELAPSED" -lt 30 ] \
+  || fail "capturing a monitor start blocked for ${FD_ELAPSED}s; it retained a caller descriptor"
+assert_contains "$FD_OUT" "monitor started" "the monitor did not start under capture"
+pass "a captured monitor start returns promptly and holds no caller descriptor"
+
+# Zero AI in the runtime: the monitor must never invoke an agent binary.
+TRIP="$HOMED/tripwire"; mkdir -p "$TRIP"
+for agent in pi claude codex opencode cursor grok kimi muse; do
+  printf '#!/usr/bin/env bash\ntouch "%s/FIRED-%s"\nexit 1\n' "$HOMED" "$agent" > "$TRIP/$agent"
+  chmod +x "$TRIP/$agent"
+done
+PATH="$TRIP:$PATH" run_supervisor "$HOMED" "$FAKEBIN" monitor --reason tripwire >/dev/null 2>&1 || true
+sleep 2
+FIRED=$(find "$HOMED" -maxdepth 1 -name 'FIRED-*' -exec basename {} \; | tr '\n' ' ')
+if [ -n "$FIRED" ]; then
+  fail "the monitor invoked an AI agent binary: $FIRED"
+fi
+pass "the monitor runs with zero AI agents and zero model calls"
+# Leave no detached monitor behind: these are real processes, and a leaked one
+# interferes with every later timing-sensitive suite on this machine. Matching on
+# this suite's own TMP_ROOT catches monitors whose record was already replaced,
+# which a record-based sweep misses.
+stop_suite_monitors() {
+  local pid
+  for pid in $(ps -eo pid=,args= 2>/dev/null \
+    | awk -v root="$TMP_ROOT" 'index($0, root) && /monitor-run/ {print $1}'); do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+}
+stop_suite_monitors
 
 echo "all fm-herdr-supervisor tests passed"

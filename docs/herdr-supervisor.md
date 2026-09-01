@@ -122,20 +122,45 @@ Guaranteed while the Herdr server that hosts the supervisor stays up:
 - At most one active watcher-arm authority per home; a Herdr standby may preserve the handoff binding while another owner is active.
 - No wake is lost, because the watcher appends every reason to the durable queue before it exits.
 - No healthy claim from a stale beacon, a recycled pid, or an unknown Herdr pane.
+- Re-establishment does not wait for the next session start.
+  The monitor described below watches continuously and rebuilds a supervisor whose host pane died, so a mid-session pane loss no longer leaves the home unsupervised.
 
 Not guaranteed, and deliberately not promised:
 
 - **Recovery across a dead Herdr server or host.**
-  The supervisor's host pane dies with them.
-  Nothing inside Herdr can restart it, and no in-process fallback is offered, because one would be a second lifecycle authority.
+  The supervisor's host pane dies with them, and so does the monitor's ability to rebuild one until a server is running again.
   The gap is detected at the next `ensure`, which finds the socket changed or the pane gone, reports unhealthy, and establishes a new generation.
-  The external prerequisite is therefore a live Herdr server plus something that calls `ensure` again after it returns - normally session start.
+  The external prerequisite is therefore a live Herdr server; everything above that line is now covered by the monitor rather than by session start.
 - **Notification latency into a harness session this process does not own.**
   The supervisor restores continuity and durability, not delivery.
   For a home with no harness-native owner, the model sees a queued wake at its next drain, session start, or guard banner, not the instant it is queued.
   Closing that gap needs a loaded harness continuity owner; the supervisor is what keeps the fleet supervised until there is one.
 - **Zero-latency re-arm.**
   Lock verification, watcher startup, and bounded retry delays are deliberate safety work.
+
+## The always-running monitor
+
+`ensure` repairs supervision when something calls it, and for a long time the only caller was session start.
+That left a real hole: when the supervisor's host pane died mid-session, nothing rebuilt it, and the home stayed unsupervised until the next start.
+Observed in production - the recorded pane returned `pane_not_found`, the loop had died with it, and the binding record still named the dead generation.
+
+`bin/fm-herdr-supervisor.sh monitor` closes that hole.
+It is a deterministic loop containing no AI and making no model calls; its only action is to call `ensure` when the supervisor is unhealthy.
+It runs outside any Herdr pane, because hosting it in one would reproduce exactly the failure it exists to catch.
+Being a detached process is a specific captain-granted exception for this job alone; nothing else in the fleet may do it.
+
+- **Singleton per home.**
+  A second start is a no-op while a live monitor holds the lock.
+  If the lock is held but the recorded monitor cannot be verified, that is genuine ambiguity between two candidates: it escalates durably and stands down rather than blocking, because a detached process that blocks would hang silently.
+- **Bound to its home session, so it cannot orphan.**
+  It records the session-lock owner's pid and identity at start and exits the moment either stops matching.
+- **Bounded, and it never exits on failure.**
+  A failed `ensure` backs off proportionally to a cap and keeps watching, because a home whose supervisor cannot be rebuilt still needs something waiting for the moment it can be.
+- **Stands down** when away mode is active or a harness-native owner becomes provable, so a home never runs two continuity owners.
+- **Owns nothing else.**
+  It calls `ensure`. It never arms a watcher, acknowledges a wake, merges, tears down, or touches any other runtime.
+
+`bin/fm-bootstrap.sh` starts it idempotently on the locked path, under the same aggregate timeout as `ensure`, so a sick Herdr cannot lengthen session start.
 
 ## Configuration
 
@@ -157,6 +182,8 @@ All under `state/`, all private to the home.
 - `.herdr-supervisor-launch.sh` - the generated launcher the pane executes, mode 0700.
   It exists so the pane command can stay short; it is rewritten on every establish and removed on retire, and is never edited by hand.
 - `.herdr-supervisor-heartbeat` - the supervisor's liveness beacon, refreshed every pass and while the arm child is waiting.
+- `.herdr-supervisor-monitor`, `.herdr-supervisor-monitor.lock`, `.herdr-supervisor-monitor-heartbeat` - the monitor's own record, singleton lock, and beacon.
+  The record carries its pid, its `fm_pid_identity`, and the home session it is bound to, so a recycled pid can never read as a live monitor.
 - `.herdr-supervisor-pending-cleanup` - an exact session, socket, workspace, tab, and pane receipt retained across uncertain establish or retirement cleanup.
 - `.herdr-supervisor-quarantine.<generation>` - an exact old binding retained when the recorded Herdr server or pane identity can no longer be proven safe to close.
 - `.herdr-supervisor-quarantine.pending.<generation>` - an incomplete create receipt retained when bounded visibility reconciliation cannot prove that Herdr created nothing.

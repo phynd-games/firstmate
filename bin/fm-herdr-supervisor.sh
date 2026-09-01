@@ -102,6 +102,14 @@ RAPID_EPISODE="$STATE/.herdr-supervisor-rapid-episode"
 EMERGENCY="$STATE/.herdr-supervisor-emergency"
 BLOCKED="$STATE/.herdr-supervisor-blocked"
 LEDGER="$STATE/.herdr-supervisor.log"
+# The always-running monitor. It is the ONLY thing that re-establishes a
+# supervisor whose host pane died, which is the gap that left supervision down
+# until the next session start. It runs OUTSIDE any Herdr pane on purpose:
+# hosting it in a pane would reproduce the exact failure it exists to catch.
+# Being detached is a specific captain-granted exception for this job alone.
+MONITOR="$STATE/.herdr-supervisor-monitor"
+MONITOR_LOCK="$STATE/.herdr-supervisor-monitor.lock"
+MONITOR_HEARTBEAT="$STATE/.herdr-supervisor-monitor-heartbeat"
 SUPERVISION_CLAIM="$STATE/.supervision-claim.lock"
 ARM="$SCRIPT_DIR/fm-watch-arm.sh"
 
@@ -137,6 +145,9 @@ SUPERVISOR_LOCK_TRIES=${FM_HERDR_SUPERVISOR_LOCK_TRIES:-100}
 WATCH_QUEUE_LOCK_TRIES=${FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES:-100}
 LEDGER_MAX_BYTES=${FM_HERDR_SUPERVISOR_LEDGER_MAX_BYTES:-262144}
 LEDGER_KEEP_LINES=${FM_HERDR_SUPERVISOR_LEDGER_KEEP_LINES:-1000}
+MONITOR_INTERVAL=${FM_HERDR_SUPERVISOR_MONITOR_INTERVAL:-30}
+MONITOR_HEARTBEAT_GRACE=${FM_HERDR_SUPERVISOR_MONITOR_HEARTBEAT_GRACE:-120}
+MONITOR_BACKOFF_MAX=${FM_HERDR_SUPERVISOR_MONITOR_BACKOFF_MAX:-300}
 case "$WATCHER_STALE_GRACE" in
   ''|*[!0-9]*) WATCHER_STALE_GRACE=300 ;;
 esac
@@ -152,7 +163,8 @@ esac
 
 for _fm_hs_int in HEARTBEAT_GRACE READY_TIMEOUT RETRY_LIMIT RETRY_BASE RETRY_MAX \
   IDLE_INTERVAL RAPID_CYCLE_SECONDS RAPID_CYCLE_LIMIT RAPID_CYCLE_FLOOR \
-  UNKNOWN_ARM_TIMEOUT SUPERVISOR_LOCK_TRIES LEDGER_MAX_BYTES LEDGER_KEEP_LINES; do
+  UNKNOWN_ARM_TIMEOUT SUPERVISOR_LOCK_TRIES LEDGER_MAX_BYTES LEDGER_KEEP_LINES \
+  MONITOR_INTERVAL MONITOR_HEARTBEAT_GRACE MONITOR_BACKOFF_MAX; do
   case "${!_fm_hs_int}" in
     ''|*[!0-9]*) fail_msg="error: $_fm_hs_int must be a non-negative integer" ;;
     *) continue ;;
@@ -2172,17 +2184,217 @@ cmd_run() {
 
 # --- argument parsing ---------------------------------------------------------
 
+# --- the always-running monitor ----------------------------------------------
+
+monitor_field() {  # <key>
+  local key=$1 line
+  [ -f "$MONITOR" ] || return 1
+  line=$(grep -m1 "^$key=" "$MONITOR" 2>/dev/null) || return 1
+  printf '%s' "${line#*=}"
+}
+
+# A monitor is live only when its recorded process is alive, its identity still
+# matches so a recycled pid cannot pass, and its heartbeat is fresh. Same honesty
+# gate the supervisor itself uses.
+MONITOR_UNHEALTHY_REASON=
+monitor_healthy() {
+  local pid identity current age
+  MONITOR_UNHEALTHY_REASON=
+  [ -f "$MONITOR" ] || { MONITOR_UNHEALTHY_REASON="no monitor record"; return 1; }
+  [ "$(monitor_field fm_home || printf '')" = "$FM_HOME" ] \
+    || { MONITOR_UNHEALTHY_REASON="monitor record belongs to another home"; return 1; }
+  pid=$(monitor_field pid || printf '')
+  identity=$(monitor_field pid_identity || printf '')
+  fm_pid_alive "$pid" || { MONITOR_UNHEALTHY_REASON="recorded monitor process $pid is gone"; return 1; }
+  [ -n "$identity" ] || { MONITOR_UNHEALTHY_REASON="monitor record carries no process identity"; return 1; }
+  current=$(fm_pid_identity "$pid" 2>/dev/null || printf '')
+  [ "$current" = "$identity" ] \
+    || { MONITOR_UNHEALTHY_REASON="pid $pid was recycled and is not this monitor"; return 1; }
+  age=$(fm_path_age "$MONITOR_HEARTBEAT")
+  [ "$age" -lt "$MONITOR_HEARTBEAT_GRACE" ] \
+    || { MONITOR_UNHEALTHY_REASON="monitor heartbeat is ${age}s old (grace ${MONITOR_HEARTBEAT_GRACE}s)"; return 1; }
+  return 0
+}
+
+# The anti-orphan binding: the monitor lives exactly as long as the Firstmate home
+# session that started it. It records that session's pid and identity and exits the
+# moment either stops matching, so it can never outlive its home.
+session_owner_identity() {
+  local pid
+  pid=$(sed -n '1p' "$STATE/.lock" 2>/dev/null | tr -d '[:space:]')
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  fm_pid_alive "$pid" || return 1
+  printf '%s\t%s' "$pid" "$(fm_pid_identity "$pid" 2>/dev/null || printf '')"
+}
+
+cmd_monitor() {  # <reason>
+  local reason=$1 owner deadline
+  if ! supervisor_eligible; then
+    echo "herdr-supervisor: monitor not eligible - $HS_INELIGIBLE_REASON"
+    return 0
+  fi
+  if monitor_healthy; then
+    echo "herdr-supervisor: monitor unchanged pid=$(monitor_field pid)"
+    return 0
+  fi
+  owner=$(session_owner_identity) || {
+    echo "herdr-supervisor: monitor not started - no live session owns this home" >&2
+    return 1
+  }
+
+  # `ensure` is called from inside a command substitution on the session-start
+  # path, so a started monitor that retained ANY inherited descriptor would wedge
+  # bootstrap itself. Redirect all three standard descriptors and detach into a new
+  # session where available, so nothing of the caller survives into it.
+  if command -v setsid >/dev/null 2>&1; then
+    ( setsid env FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" \
+        FM_STATE_OVERRIDE="$STATE" FM_CONFIG_OVERRIDE="$CONFIG" \
+        bash "$SCRIPT_DIR/fm-herdr-supervisor.sh" monitor-run --owner "$owner" \
+        </dev/null >/dev/null 2>&1 & ) || true
+  else
+    ( env FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" \
+        FM_STATE_OVERRIDE="$STATE" FM_CONFIG_OVERRIDE="$CONFIG" \
+        bash "$SCRIPT_DIR/fm-herdr-supervisor.sh" monitor-run --owner "$owner" \
+        </dev/null >/dev/null 2>&1 & ) || true
+  fi
+
+  deadline=$(( $(date +%s) + 10 ))
+  while :; do
+    if monitor_healthy; then
+      ledger_append monitor-started "pid=$(monitor_field pid) $reason"
+      echo "herdr-supervisor: monitor started pid=$(monitor_field pid)"
+      return 0
+    fi
+    [ "$(date +%s)" -lt "$deadline" ] || break
+    sleep 0.3
+  done
+  escalate "the always-running monitor did not confirm within 10s (${MONITOR_UNHEALTHY_REASON:-no reason recorded})"
+  echo "herdr-supervisor: FAILED - the monitor did not confirm" >&2
+  return 1
+}
+
+monitor_stand_down() {  # <why>
+  ledger_append monitor-exit "$1"
+  rm -f "$MONITOR" "$MONITOR_HEARTBEAT" 2>/dev/null || true
+  fm_lock_release "$MONITOR_LOCK" || true
+}
+
+# shellcheck disable=SC2329 # Invoked indirectly by the signal traps below.
+monitor_signal() {
+  monitor_stand_down "terminated"
+  exit 0
+}
+
+# Sleep in bounded slices, re-checking the home binding between them. A single
+# long backoff sleep would let a monitor outlive its home by up to the cap, which
+# is exactly how the first version leaked detached processes in the test suite.
+# Returns non-zero when the monitor should stand down.
+monitor_sleep() {  # <seconds> <owner>
+  local remaining=$1 owner=$2 slice
+  while [ "$remaining" -gt 0 ]; do
+    slice=$remaining
+    [ "$slice" -le 5 ] || slice=5
+    sleep "$slice"
+    remaining=$((remaining - slice))
+    [ "$(session_owner_identity || printf '')" = "$owner" ] || return 1
+  done
+  return 0
+}
+
+cmd_monitor_run() {  # <owner-pid TAB owner-identity>
+  local owner=$1 self identity failures=0 delay out rc now_owner
+  self=${BASHPID:-$$}
+
+  # Singleton per home: a second monitor exits rather than doubling the loop.
+  # Singleton per home. A live peer means this start is simply unnecessary. If the
+  # lock is held but the recorded monitor cannot be verified, that is genuine
+  # ambiguity between two candidates - report it durably and stand down rather
+  # than block forever, which in a detached process would hang silently and leave
+  # the home with no working monitor and no diagnostic.
+  if ! fm_lock_try_acquire "$MONITOR_LOCK"; then
+    monitor_healthy && return 0
+    if ! fm_lock_acquire_bounded "$MONITOR_LOCK" "${FM_HERDR_SUPERVISOR_MONITOR_LOCK_TRIES:-50}"; then
+      escalate "another process holds the monitor singleton but its record cannot be verified (${MONITOR_UNHEALTHY_REASON:-unknown}); refusing to run a second monitor"
+      return 1
+    fi
+  fi
+  identity=$(fm_pid_identity "$self" 2>/dev/null || printf '')
+  [ -n "$identity" ] || { fm_lock_release "$MONITOR_LOCK"; return 1; }
+  {
+    printf 'version=1\n'
+    printf 'fm_home=%s\n' "$FM_HOME"
+    printf 'pid=%s\n' "$self"
+    printf 'pid_identity=%s\n' "$identity"
+    printf 'session=%s\n' "${owner%%	*}"
+    printf 'started_at=%s\n' "$(date +%s)"
+  } > "$MONITOR.tmp.$self"
+  if ! mv -f "$MONITOR.tmp.$self" "$MONITOR"; then
+    rm -f "$MONITOR.tmp.$self" 2>/dev/null || true
+    fm_lock_release "$MONITOR_LOCK"
+    return 1
+  fi
+  : > "$MONITOR_HEARTBEAT" 2>/dev/null || true
+  ledger_append monitor-loop-start "pid=$self"
+  trap monitor_signal HUP TERM INT
+
+  while :; do
+    now_owner=$(session_owner_identity || printf '')
+    if [ "$now_owner" != "$owner" ]; then
+      monitor_stand_down "home session ended or changed identity"
+      return 0
+    fi
+    if harness_owner_provable; then
+      monitor_stand_down "stood down: $HS_DEFER_REASON"
+      return 0
+    fi
+
+    : > "$MONITOR_HEARTBEAT" 2>/dev/null || true
+
+    if fm_supervision_needed "$STATE" && ! supervisor_healthy; then
+      out=$(cmd_ensure "monitor: ${HS_UNHEALTHY_REASON:-supervisor unhealthy}" 2>&1)
+      rc=$?
+      if [ "$rc" -eq 0 ]; then
+        failures=0
+        ledger_append monitor-reestablished "$(ledger_clean_field "$out")"
+      else
+        failures=$((failures + 1))
+        ledger_append monitor-ensure-failed "attempt=$failures $(ledger_clean_field "$out")"
+        # Bounded backoff, but the monitor NEVER exits on failure: a home whose
+        # supervisor cannot be re-established still needs something watching for
+        # the moment it can be.
+        delay=$((MONITOR_INTERVAL * failures))
+        [ "$delay" -le "$MONITOR_BACKOFF_MAX" ] || delay=$MONITOR_BACKOFF_MAX
+        if ! monitor_sleep "$delay" "$owner"; then
+          monitor_stand_down "home session ended or changed identity"
+          return 0
+        fi
+        continue
+      fi
+    fi
+    if ! monitor_sleep "$MONITOR_INTERVAL" "$owner"; then
+      monitor_stand_down "home session ended or changed identity"
+      return 0
+    fi
+  done
+}
+
 COMMAND=${1:-}
 [ "$#" -eq 0 ] || shift
 REASON="requested"
 VERBOSE=0
 GENERATION=
+OWNER=
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --reason)
       [ "$#" -gt 1 ] || { echo "error: --reason requires a value" >&2; exit 2; }
       REASON=$2
+      shift 2
+      ;;
+    --owner)
+      [ "$#" -gt 1 ] || { echo "error: --owner requires a value" >&2; exit 2; }
+      OWNER=$2
       shift 2
       ;;
     --generation)
@@ -2210,6 +2422,12 @@ case "$COMMAND" in
   ensure) cmd_ensure "$REASON" ;;
   status) cmd_status "$VERBOSE" ;;
   retire) cmd_retire "$REASON" ;;
+  monitor) cmd_monitor "$REASON" ;;
+  monitor-run)
+    [ -n "$OWNER" ] || { echo "error: monitor-run requires --owner" >&2; exit 2; }
+    herdr_load >/dev/null 2>&1 || true
+    cmd_monitor_run "$OWNER"
+    ;;
   run)
     case "$GENERATION" in
       ''|*[!A-Za-z0-9._-]*) echo "error: run requires a valid --generation" >&2; exit 2 ;;
