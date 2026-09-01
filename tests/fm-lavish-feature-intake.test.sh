@@ -619,12 +619,52 @@ test_record_resumes_after_release_failure() {
   pending=$home/state/retry-a1.lavish-intake-pending
   assert_contains "$(cat "$pending")" "phase=released" \
     "release failure did not persist the resumable completion phase"
+  assert_contains "$(cat "$home/state/retry-a1.lavish-intake-owner")" "phase=released" \
+    "release failure did not persist exact owner resolution"
   (cd "$home" && tasks-axi show retry-a1 --full) | grep -Fq 'state: queued' \
     || fail "release failure did not leave the task queued"
   rm -f "$home/state/procevent-inbox/$sid.1.handled"
   out=$(run_intake "$home" record retry-a1 --artifact "$artifact" --result "$result")
   assert_contains "$out" "recorded:" "resumed intake completion did not produce evidence"
+  assert_absent "$home/state/retry-a1.lavish-intake-owner" \
+    "completed intake left authoritative owner state behind"
   pass "Lavish intake: released completions resume without replaying answers"
+}
+
+test_pending_release_requires_durable_resolution() {
+  local home artifact sid result pending out rc
+  home=$(make_home pending-release-proof)
+  add_task "$home" pending-proof-a1
+  artifact=$home/intake.html
+  run_intake "$home" template pending-proof-a1 --output "$artifact" >/dev/null
+  run_intake "$home" start pending-proof-a1 --artifact "$artifact" >/dev/null
+  sid=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
+  fixture_for "$home" pending-proof-a1
+  run_process_event "$home" "$sid" >/dev/null
+  result=$home/state/procevent-inbox/$sid.1.result
+  pending=$home/state/pending-proof-a1.lavish-intake-pending
+  ln -s /dev/null "$home/state/procevent-inbox/$sid.1.handled"
+  set +e
+  run_intake "$home" record pending-proof-a1 --artifact "$artifact" --result "$result" >/dev/null 2>&1
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "setup release failure unexpectedly succeeded"
+  sed -i '' 's/^phase=released$/phase=held/' "$pending" \
+    "$home/state/pending-proof-a1.lavish-intake-owner"
+  (cd "$home" && tasks-axi unhold pending-proof-a1 >/dev/null)
+  set +e
+  out=$(run_intake "$home" record pending-proof-a1 --artifact "$artifact" --result "$result" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "an unrelated unhold satisfied pending intake release"
+  assert_contains "$out" "matching captain release evidence" \
+    "pending release proof refusal was unclear"
+  assert_contains "$(cat "$pending")" "phase=held" \
+    "unrelated unhold advanced pending intake completion"
+  assert_absent "$home/state/pending-proof-a1.lavish-intake" \
+    "unrelated unhold produced intake evidence"
+  pass "Lavish intake: pending completion requires durable captain resolution"
 }
 
 test_start_rejects_unrelated_captain_hold() {
@@ -705,5 +745,6 @@ test_start_rejects_unrelated_captain_hold
 test_extra_keyed_feedback_refused
 test_successful_captured_feedback_and_followup
 test_record_resumes_after_release_failure
+test_pending_release_requires_durable_resolution
 test_firstmate_self_work_gets_same_gate
 printf '# all fm-lavish-feature-intake tests passed\n'

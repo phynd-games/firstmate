@@ -834,8 +834,8 @@ cmd_start() {
 }
 
 cmd_record() {
-  local task=${1-} artifact='' result='' answer_rows result_identity sid seq receipt pending out owner_token pending_phase session_artifact_hash
-  local owner_route=0 show state hold_kind
+  local task=${1-} artifact='' result='' answer_rows answer_row result_identity sid seq receipt pending out owner_token pending_phase session_artifact_hash
+  local owner_route=0 show state hold_kind answer_key answer_rest answer label mode
   shift || true
   validate_task_id "$task"
   RECORD_LOCK_PATH=$(intake_lock_path "$task")
@@ -866,6 +866,8 @@ cmd_record() {
       || fail "intake evidence belongs to a different captured result"
     verify_receipt "$task" "$receipt" allow-unhandled >/dev/null \
       || fail "existing intake evidence is not retryable"
+    "$SCRIPT_DIR/fm-captain-hold.sh" intake-owner-retire "$task" \
+      || fail "could not clear completed intake ownership"
     printf 'recorded: %s\n' "$receipt"
     return 0
   fi
@@ -881,6 +883,18 @@ cmd_record() {
   result_identity=$(result_is_captured_feedback "$result" "$artifact" "$task")
   sid=${result_identity%%$'\t'*}
   seq=${result_identity#*$'\t'}
+  answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers --intake "$result") \
+    || fail "captured intake answer could not be parsed"
+  case "$answer_rows" in *$'\n'*) fail "captured intake contains multiple answers" ;; esac
+  answer_row=$answer_rows
+  answer_key=${answer_row%%$'\t'*}
+  answer_rest=${answer_row#*$'\t'}
+  answer=${answer_rest%%$'\t'*}
+  answer_rest=${answer_rest#*$'\t'}
+  label=${answer_rest%%$'\t'*}
+  mode=${answer_rest#*$'\t'}
+  [ "$answer_key" = "$task" ] && [ -n "$answer" ] && [ "$mode" = release ] \
+    || fail "captured intake answer is not an exact release"
   pending=$(pending_path "$task")
   if [ -e "$pending" ] || [ -L "$pending" ]; then
     pending_matches "$pending" "$task" "$artifact" "$result" "$sid" "$seq" \
@@ -911,6 +925,10 @@ cmd_record() {
       elif [ "$state" != done ] && [ -n "$hold_kind" ]; then
         fail "pending intake completion task $task carries another active hold"
       else
+        owner_token=$(meta_value "$pending" owner_token)
+        "$SCRIPT_DIR/fm-captain-hold.sh" intake-resolution "$task" "$owner_token" \
+          "the captured result $sid sequence $seq" "$answer" "$label" >/dev/null \
+          || fail "pending intake completion lacks matching captain release evidence"
         update_pending_phase "$pending" released
         pending_phase=released
       fi
@@ -918,13 +936,16 @@ cmd_record() {
     released)
       [ "$state" = done ] || [ -z "$hold_kind" ] \
         || fail "pending intake completion task $task carries another active hold"
+      owner_token=$(meta_value "$pending" owner_token)
+      "$SCRIPT_DIR/fm-captain-hold.sh" intake-resolution "$task" "$owner_token" \
+        "the captured result $sid sequence $seq" "$answer" "$label" >/dev/null \
+        || fail "pending intake completion lacks matching captain release evidence"
       ;;
     *) fail "pending intake completion has an unknown phase" ;;
   esac
   if [ "$owner_route" -eq 1 ]; then
     fm_lock_release "$RECORD_LOCK_PATH"
     RECORD_LOCK_HELD=0
-    answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers --intake "$result")
     out=$(printf '%s\n' "$answer_rows" \
       | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$task" --exact \
           --intake-owner "$owner_token" \
@@ -944,6 +965,8 @@ cmd_record() {
     verify_receipt "$task" "$receipt" >/dev/null \
       || fail "captured intake evidence could not be completed"
   fi
+  "$SCRIPT_DIR/fm-captain-hold.sh" intake-owner-retire "$task" \
+    || fail "could not clear completed intake ownership"
   rm -f -- "$(pending_path "$task")"
   printf 'recorded: %s\n' "$receipt"
 }
