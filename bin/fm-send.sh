@@ -46,6 +46,10 @@
 # ordinary record by the worker's acknowledgement move into handled/, with the
 # watcher re-ringing an unacknowledged message and escalating a stuck one. An
 # explicit fire-and-forget record is excluded from that ladder.
+# Because a recorded steer is NOT a taken-up steer, every ordinary local record
+# also registers a handoff obligation as it is written, and the caller may not
+# report the instruction dispatched until bin/fm-handoff-confirm.sh - the one
+# owner of that contract - proves both the acknowledgement and the start.
 # bin/fm-task-inbox-lib.sh owns the record format, the doorbell line, and the
 # re-ring ladder. The composer pre-check before the ring is ADVISORY only: when
 # the composer visibly holds pending text the ring is skipped with a notice and
@@ -887,6 +891,26 @@ else
       exit 1
     fi
     fm_lock_release "$INBOX_META_LOCK"
+    # Register the handoff obligation BEFORE the doorbell, so the baseline is
+    # the state the worker was in when the instruction was written rather than
+    # whatever it has already reacted to. A durable record is delivery to the
+    # INBOX; it is not proof the worker took the instruction up, and the
+    # obligation is what keeps that distinction from being lost - see
+    # bin/fm-handoff-confirm.sh, the one owner of the confirmation contract.
+    # This is the local plane only: a remote secondmate's acknowledgement lives
+    # in its own home, and its correlated reply (bin/fm-pending-reply-lib.sh)
+    # is that plane's confirmation path. An explicit fire-and-forget record is
+    # excluded by definition - it opts out of the acknowledgement ladder.
+    # Registration failure never fails the send: the steer IS recorded, and a
+    # send that exited nonzero here would invite a duplicate enqueue.
+    if [ -z "$FIRE_AND_FORGET_ID" ]; then
+      if "$SCRIPT_DIR/fm-handoff-confirm.sh" register \
+        --task "$INBOX_TASK_ID" --record "$INBOX_RECORD"; then
+        :
+      else
+        echo "warning: the steer was recorded at $INBOX_RECORD but its handoff obligation could not be registered; confirm the worker took it up before reporting it dispatched" >&2
+      fi
+    fi
     # Enqueue IS durable delivery to the task's record: mark the pending
     # expectation delivered now, without resolving it - only a correlated
     # parent report acknowledges the request.

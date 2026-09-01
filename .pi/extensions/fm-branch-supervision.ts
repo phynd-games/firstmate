@@ -140,6 +140,16 @@ const ADJUDICATION_OUTCOME_INSTRUCTION =
   "then send the deciding worker the exact decision through its keyed gate. " +
   "Escalate to the captain only if the packet shows a hard safety boundary, or if the ambiguity genuinely survives your own adjudication.";
 
+// The SAME outcome reported again is not news, it is evidence that nothing was
+// done about it the first time. Sending it to the captain twice spends their
+// attention on supervision's own failure to act, so a repeat is routed to MAIN
+// to handle itself. The store keeps every repeat either way.
+const REPEATED_OUTCOME_INSTRUCTION =
+  "This is a REPEATED supervision outcome delivered automatically by the supervision branch. " +
+  "It was not typed by the captain, and the captain has already been told this once. " +
+  "Do NOT relay it again. Act on it yourself: read the task's current state, decide what is blocking it, and drive it forward. " +
+  "Escalate only if acting on it reveals something genuinely new that the captain must see.";
+
 const CAPTAIN_OUTCOME_INSTRUCTION =
   "This is a supervision outcome delivered automatically by the supervision branch. " +
   "It was not typed by the captain and it is not your own earlier output. " +
@@ -592,6 +602,15 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  function repeatedOutcomeInput(task: string, summary: string, repeat: number): string {
+    const body = `${REPEATED_OUTCOME_INSTRUCTION}\n\nThis outcome has now been reported ${repeat} times in a row.\n\n${task}: ${summary}`;
+    try {
+      return encodeFirstmateOperationalInput("branch-adjudication", body);
+    } catch {
+      return body;
+    }
+  }
+
   function captainOutcomeInput(task: string, summary: string): string {
     const body = `${CAPTAIN_OUTCOME_INSTRUCTION}\n\n${task}: ${summary}`;
     try {
@@ -608,14 +627,21 @@ export default function (pi: ExtensionAPI) {
     verdict: Verdict,
     summary: string,
     silent: boolean,
+    repeat = 0,
   ): boolean {
     if (!actingAsOwner(expectedGeneration)) return false;
     if (verdict === "captain" || verdict === "adjudicate") {
+      // A repeated captain outcome is delivered to MAIN to act on, never to the
+      // captain a second time. It still opens exactly one turn - the work has
+      // to go somewhere - but that turn is main's own, like an adjudication.
+      const repeated = verdict === "captain" && repeat >= 2;
       const message = {
         customType: "fm-branch-merge",
-        content: verdict === "adjudicate"
-          ? adjudicationOutcomeInput(task, summary)
-          : captainOutcomeInput(task, summary),
+        content: repeated
+          ? repeatedOutcomeInput(task, summary, repeat)
+          : verdict === "adjudicate"
+            ? adjudicationOutcomeInput(task, summary)
+            : captainOutcomeInput(task, summary),
         display: false,
       };
       pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
@@ -685,15 +711,20 @@ export default function (pi: ExtensionAPI) {
             isError: true,
           };
         }
-        if (!mergeIntoMain(toolGeneration, appended.stdout, task, verdict, summary, silent)) {
+        // The store answers with "<seq>" or "<seq> repeat=<n>"; the repeat
+        // count is how it tells the caller this outcome has already been said.
+        const [appendedSeq, ...appendedFlags] = appended.stdout.split(/\s+/);
+        const repeatFlag = appendedFlags.find((flag) => flag.startsWith("repeat="));
+        const repeat = repeatFlag ? Number.parseInt(repeatFlag.slice("repeat=".length), 10) : 0;
+        if (!mergeIntoMain(toolGeneration, appendedSeq, task, verdict, summary, silent, Number.isFinite(repeat) ? repeat : 0)) {
           return {
-            content: [{ type: "text", text: `recorded seq ${appended.stdout}, but merge refused after supervision replacement or lock loss` }],
+            content: [{ type: "text", text: `recorded seq ${appendedSeq}, but merge refused after supervision replacement or lock loss` }],
             details: undefined,
             isError: true,
           };
         }
         return {
-          content: [{ type: "text", text: `recorded seq ${appended.stdout} and merged [${verdict}] into main` }],
+          content: [{ type: "text", text: `recorded seq ${appendedSeq} and merged [${verdict}] into main` }],
           details: undefined,
         };
       },

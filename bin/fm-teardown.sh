@@ -2822,8 +2822,11 @@ rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.reconcile-nudged"
 # The steering inbox (bin/fm-task-inbox-lib.sh) is runtime state for the
 # retired endpoint; teardown only runs after landing is confirmed, so any
-# leftover unhandled steer here is moot rather than unlanded work.
-rm -rf "$STATE/$ID.inbox"
+# leftover unhandled steer here is moot rather than unlanded work. Its handoff
+# obligations (bin/fm-handoff-confirm.sh) go with it for the same reason: an
+# obligation names a record in that inbox, so keeping it past teardown would
+# leave open supervision work pointing at an instruction nobody can act on.
+rm -rf "$STATE/$ID.inbox" "$STATE/$ID.handoff"
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
