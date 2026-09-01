@@ -15,7 +15,7 @@ SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-pool-base-freshen)
 
 write_exempt_brief() {
-  local home=$1 id=$2 body=${3:-"brief for $id"} reason="configuration: pooled spawn behavior test fixture"
+  local home=$1 id=$2 body=${3:-"brief for $id"} reason="configuration: exercise pooled spawn behavior through a test fixture with no product behavior change"
   printf '%s\nLavish intake contract: not-applicable\nLavish intake reason: %s\n' "$body" "$reason" > "$home/data/$id/brief.md"
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-lavish-intake.sh" exempt "$id" --reason "$reason" >/dev/null
 }

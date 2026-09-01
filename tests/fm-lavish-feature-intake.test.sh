@@ -272,7 +272,8 @@ test_ambiguous_classification_refuses_dispatch() {
 # Exemptions require a concrete reason and remain verifiable; blank reasons and
 # malformed not-applicable brief contracts never pass.
 test_explicit_exemptions_require_reason() {
-  local home out rc brief
+  local home out rc brief entry id reason
+  local -a invalid_reasons
   home=$(make_home exemptions)
   set +e
   out=$(run_intake "$home" exempt exemption-a1 --reason '' 2>&1)
@@ -286,6 +287,20 @@ test_explicit_exemptions_require_reason() {
   set -e
   [ "$rc" -ne 0 ] || fail "generic exemption bypass was accepted"
   assert_contains "$out" "must use" "generic exemption refusal was unclear"
+  invalid_reasons=(
+    'exemption-invalid-bug-fix|bug-fix: fix'
+    'exemption-invalid-configuration|configuration: no'
+    'exemption-invalid-documentation|documentation: update thing here now'
+  )
+  for entry in "${invalid_reasons[@]}"; do
+    id=${entry%%|*}
+    reason=${entry#*|}
+    set +e
+    out=$(run_intake "$home" exempt "$id" --reason "$reason" 2>&1)
+    rc=$?
+    set -e
+    [ "$rc" -ne 0 ] || fail "generic exemption scope was accepted: $reason"
+  done
   run_intake "$home" exempt exemption-a1 --reason 'documentation: update the intake exemption coverage' >/dev/null
   assert_contains "$(run_intake "$home" verify exemption-a1)" "not-applicable" \
     "valid exemption did not verify"

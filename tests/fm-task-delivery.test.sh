@@ -49,11 +49,11 @@ write_brief() {  # <home> <id> [<recorded-mode>]
   } > "$home/data/$id/brief.md"
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
     "$ROOT/bin/fm-lavish-intake.sh" exempt "$id" \
-      --reason 'delivery contract behavior test fixture' >/dev/null
+      --reason 'configuration: exercise delivery contract through a test fixture with no product behavior change' >/dev/null
   cat >> "$home/data/$id/brief.md" <<EOF
 Lavish intake contract: not-applicable
 Lavish intake evidence: $home/state/$id.lavish-intake
-Lavish intake reason: delivery contract behavior test fixture
+Lavish intake reason: configuration: exercise delivery contract through a test fixture with no product behavior change
 EOF
 }
 

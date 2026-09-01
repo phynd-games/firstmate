@@ -139,17 +139,26 @@ artifact_fields_present() {
 }
 
 validate_exemption_reason() {
-  local reason=$1 detail
+  local reason=$1 detail normalized word_count
   validate_one_line "exemption reason" "$reason"
   case "$reason" in
     bug-fix:*|dependency:*|configuration:*|documentation:*|"behavior-preserving refactor":*) ;;
     *) fail "exemption reason must use bug-fix, dependency, configuration, documentation, or behavior-preserving refactor" ;;
   esac
   detail=${reason#*:}
-  printf '%s' "$detail" | grep -Eq '[^[:space:]]' \
-    || fail "exemption reason must include a bounded scope after its classification"
-  case "${detail//[[:space:]]/}" in
-    skip|none|na|not-applicable|notapplicable) fail "exemption reason must name a bounded scope, not a generic bypass" ;;
+  normalized=$(printf '%s' "$detail" | tr '[:upper:]' '[:lower:]')
+  word_count=$(printf '%s\n' "$detail" | awk '{print NF}')
+  [ "$word_count" -ge 4 ] \
+    || fail "exemption reason must name a concrete target and action"
+  [ "${#detail}" -ge 24 ] \
+    || fail "exemption reason must name a bounded scope with sufficient detail"
+  printf '%s' "$normalized" | grep -Eiq '(^|[[:space:];,])(add|adjust|align|configure|correct|cover|disable|document|enable|exercise|fix|limit|migrate|pin|preserve|record|refactor|remove|replace|test|update|use|validate)($|[[:space:];,.])' \
+    || fail "exemption reason must name a concrete action"
+  printf '%s' "$normalized" | grep -Eiq '(^|[[:space:];,])(thing|stuff|something|whatever|misc|various|item|area)($|[[:space:];,.])' \
+    && fail "exemption reason must name a concrete target"
+  case "${normalized//[[:space:]]/}" in
+    skip|none|na|n/a|not-applicable|notapplicable|todo|tbd|placeholder|nothing|something|whatever|misc|various) \
+      fail "exemption reason must name a bounded scope, not a generic bypass" ;;
   esac
 }
 
@@ -346,6 +355,7 @@ START_LOCK_PATH=
 START_LOCK_HELD=0
 START_HOLD_MARKER_CREATED=0
 START_OWNER_TOKEN=
+START_REQUEST_OWNER_TOKEN=
 START_HOLD_REASON=
 START_HOLD_CREATED=0
 START_BINDING_CREATED=0
@@ -381,6 +391,17 @@ start_marker_matches() {
   [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
   [ "$(meta_value "$marker" task_id)" = "$START_TASK" ] \
     && [ "$(meta_value "$marker" owner_token)" = "$START_OWNER_TOKEN" ]
+}
+
+start_marker_attempt_matches() {
+  local marker owner_token
+  marker=$(intake_hold_path "$START_TASK")
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  [ "$(meta_value "$marker" task_id)" = "$START_TASK" ] \
+    && [ "$(meta_value "$marker" hold_reason)" = "$START_HOLD_REASON" ] || return 1
+  owner_token=$(meta_value "$marker" owner_token)
+  [ "$owner_token" = "$START_OWNER_TOKEN" ] \
+    || [ "$owner_token" = "$START_REQUEST_OWNER_TOKEN" ]
 }
 
 intake_hold_matches() {
@@ -470,8 +491,7 @@ start_cleanup() {
   if [ -n "$START_SID" ] && [ "$START_SOURCE_PREEXISTING" -eq 0 ]; then
     "$SCRIPT_DIR/fm-procevent-lavish.sh" retire "$START_ARTIFACT" >/dev/null 2>&1 || true
   fi
-  if [ "$START_HOLD_CREATED" -eq 1 ] && start_marker_matches \
-    && start_task_has_owned_captain_hold; then
+  if [ "$START_HOLD_CREATED" -eq 1 ] && start_task_has_owned_captain_hold; then
     if [ "$START_LOCK_HELD" -eq 1 ]; then
       fm_lock_release "$START_LOCK_PATH" || true
       START_LOCK_HELD=0
@@ -479,7 +499,7 @@ start_cleanup() {
     "$SCRIPT_DIR/fm-captain-hold.sh" release "$START_TASK" \
       --intake-owner "$START_OWNER_TOKEN" >/dev/null 2>&1 || true
   fi
-  if [ "$START_HOLD_MARKER_CREATED" -eq 1 ] && start_marker_matches \
+  if [ "$START_HOLD_MARKER_CREATED" -eq 1 ] && start_marker_attempt_matches \
     && ! start_task_has_owned_captain_hold; then
     rm -f -- "$(intake_hold_path "$START_TASK")"
   fi
@@ -603,6 +623,7 @@ cmd_start() {
   validate_one_line reason "$reason"
   START_TASK=$task
   START_OWNER_TOKEN="${BASHPID:-$$}.$RANDOM"
+  START_REQUEST_OWNER_TOKEN=$START_OWNER_TOKEN
   START_HOLD_REASON="$reason"
   START_ARTIFACT=
   START_SID=
