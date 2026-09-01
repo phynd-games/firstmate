@@ -267,7 +267,8 @@ const fail = (message) => {
 
 try {
   if (scripts.length === 0) fail('artifact has no executable intake script');
-  const elements = Object.fromEntries(fields.map((field) => [field, { value: `value for ${field}` }]));
+  const sentinels = Object.fromEntries(fields.map((field) => [field, `sentinel-${field}-value`]));
+  const elements = Object.fromEntries(fields.map((field) => [field, { value: sentinels[field] }]));
   const submit = { disabled: false };
   const status = { textContent: '' };
   const listeners = {};
@@ -311,8 +312,11 @@ try {
   if (!data || data.question !== task || data.answer !== 'submitted' || data.close !== 'release' || data.submitted !== true) {
     fail('artifact queued feedback does not match the intake contract');
   }
-  if (!data.intake || fields.some((field) => typeof data.intake[field] !== 'string' || data.intake[field].trim() === '')) {
+  if (!data.intake) {
     fail('artifact queued feedback is missing required intake fields');
+  }
+  if (fields.some((field) => data.intake[field] !== sentinels[field])) {
+    fail('artifact queued feedback does not reflect submitted field values');
   }
   if (submit.disabled !== true) fail('artifact submit control remains enabled after queueing');
   listeners.submit(event);
@@ -402,7 +406,7 @@ validate_intake_payload() {
 }
 
 result_is_captured_feedback() {
-  local result=$1 artifact=$2 task=$3 sid seq adapter inbox parent answer_rows found=0 key answer label close payload session_source sequence_floor
+  local result=$1 artifact=$2 task=$3 retired=${4-} sid seq adapter inbox parent answer_rows found=0 key answer label close payload session_source sequence_floor marker
   result=$(real_file "$result") || fail "captured result is not a regular file: $result"
   artifact=$(real_file "$artifact") || fail "artifact is not a regular file: $artifact"
   inbox=$(real_dir "$STATE/procevent-inbox") \
@@ -432,10 +436,23 @@ result_is_captured_feedback() {
     [ "$seq" -gt "$sequence_floor" ] \
       || fail "captured result predates the active intake session"
   fi
-  [ "$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$sid" 2>/dev/null || true)" = "$task" ] \
-    || fail "Lavish source is not bound to task $task"
-  answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers --intake "$result") \
-    || fail "captured feedback could not be read"
+  if [ "$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$sid" 2>/dev/null || true)" != "$task" ]; then
+    [ "$retired" = allow-retired ] || fail "Lavish source is not bound to task $task"
+    marker="$STATE/procevent/$sid.intake"
+    [ -f "$marker" ] && [ ! -L "$marker" ] \
+      && [ "$(meta_value "$marker" task_id)" = "$task" ] \
+      && [ "$(meta_value "$marker" source_id)" = "$sid" ] \
+      || fail "retired Lavish source is not durably owned by task $task"
+    [ ! -e "$STATE/procevent/$sid.source" ] && [ ! -L "$STATE/procevent/$sid.source" ] \
+      || fail "retired Lavish source is still registered"
+  fi
+  if [ "$retired" = allow-retired ]; then
+    answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers --intake --allow-retired "$result") \
+      || fail "captured feedback could not be read"
+  else
+    answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers --intake "$result") \
+      || fail "captured feedback could not be read"
+  fi
   while IFS=$'\t' read -r key answer label close; do
     [ -n "${key:-}" ] || continue
     [ "$key" = "$task" ] || fail "captured feedback contains an answer for another task"
@@ -450,6 +467,15 @@ EOF
     || fail "captured feedback lacks the intake submission payload"
   validate_intake_payload "$payload" "$task"
   printf '%s\t%s\n' "$sid" "$seq"
+}
+
+retire_record_source() {
+  local task=$1 sid=$2 registration
+  registration="$STATE/procevent/$sid.source"
+  if [ -e "$registration" ] || [ -L "$registration" ]; then
+    "$SCRIPT_DIR/fm-procevent.sh" retire "$sid" --expect-intake-task "$task" >/dev/null \
+      || fail "could not retire completed intake source $sid"
+  fi
 }
 
 write_receipt() {
@@ -898,6 +924,7 @@ cmd_start() {
     esac
     START_OWNER_TOKEN=$canonical_owner
     START_HOLD_CREATED=1
+    START_HOLD_REASON="${START_HOLD_REASON} [intake-owner=$START_OWNER_TOKEN]"
     write_start_marker
     fm_lock_acquire_wait "$START_LOCK_PATH" || fail "could not relock intake task $task"
     START_LOCK_HELD=1
@@ -991,6 +1018,7 @@ cmd_record() {
       || fail "intake evidence belongs to a different captured result"
     verify_receipt "$task" "$receipt" allow-unhandled >/dev/null \
       || fail "existing intake evidence is not retryable"
+    retire_record_source "$task" "$(require_unique_meta "$receipt" source_id)"
     "$SCRIPT_DIR/fm-captain-hold.sh" intake-owner-retire "$task" \
       || fail "could not clear completed intake ownership"
     printf 'recorded: %s\n' "$receipt"
@@ -1090,6 +1118,7 @@ cmd_record() {
     verify_receipt "$task" "$receipt" >/dev/null \
       || fail "captured intake evidence could not be completed"
   fi
+  retire_record_source "$task" "$sid"
   "$SCRIPT_DIR/fm-captain-hold.sh" intake-owner-retire "$task" \
     || fail "could not clear completed intake ownership"
   rm -f -- "$(pending_path "$task")"
@@ -1181,7 +1210,7 @@ verify_receipt() {
       && [ ! -L "$STATE/procevent-inbox/$sid.$seq.handled" ] \
       || fail "captured intake result is not durably acknowledged"
   fi
-  result_is_captured_feedback "$result" "$artifact" "$task" >/dev/null
+  result_is_captured_feedback "$result" "$artifact" "$task" allow-retired >/dev/null
   [ "$(require_unique_meta "$receipt" feedback)" = captured ] \
     || fail "significant evidence has wrong feedback marker"
   printf 'status=submitted\nevidence=%s\n' "$receipt"

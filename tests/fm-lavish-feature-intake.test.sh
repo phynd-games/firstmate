@@ -105,8 +105,9 @@ session:
   file: $home/intake.html
   status: feedback
   session_ended: true
-prompts[2]{uid,prompt,selector,tag,text}:
+prompts[1]{uid,prompt,selector,tag,text}:
   "1","Feature intake submitted\\n\\nContext data:\\n{\\n  \\"question\\": \\"$task\\",\\n  \\"answer\\": \\"submitted\\",\\n  \\"close\\": \\"release\\",\\n  \\"submitted\\": true,\\n  \\"intake\\": { \\"product_goal\\": \\"goal\\" }\\n}","form",choice,"Feature intake submitted"
+prompts[1]{uid,prompt,selector,tag,text}:
   "2","Other answer\\n\\nContext data:\\n{\\n  \\"question\\": \\"other-task\\",\\n  \\"answer\\": \\"submitted\\",\\n  \\"close\\": \\"release\\",\\n  \\"submitted\\": true\\n}","form",choice,"Other answer"
 EOF
     return
@@ -202,6 +203,31 @@ PY
   assert_contains "$out" "executable intake" \
     "dead intake markers did not fail semantic validation"
   pass "Lavish intake: required categories and static artifacts are enforced"
+}
+
+test_artifact_must_read_submitted_fields() {
+  local home artifact out rc
+  home=$(make_home hardcoded-fields)
+  add_task "$home" hardcoded-a1
+  artifact=$home/intake.html
+  run_intake "$home" template hardcoded-a1 --output "$artifact" >/dev/null
+  python3 - "$artifact" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+text = text.replace('form.elements[field].value.trim()', '"hardcoded intake value"')
+path.write_text(text)
+PY
+  set +e
+  out=$(run_intake "$home" start hardcoded-a1 --artifact "$artifact" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "artifact with hardcoded intake values was accepted"
+  assert_contains "$out" "does not reflect submitted field values" \
+    "hardcoded intake values did not fail semantic validation"
+  pass "Lavish intake: submission handlers must read each field"
 }
 
 test_template_submit_is_single_use() {
@@ -813,6 +839,7 @@ test_firstmate_self_work_gets_same_gate() {
 }
 
 test_required_categories_and_static_refusal
+test_artifact_must_read_submitted_fields
 test_template_submit_is_single_use
 test_start_rejects_closed_task
 test_artifact_task_mismatch_refused

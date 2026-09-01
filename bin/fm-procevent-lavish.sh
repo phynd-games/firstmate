@@ -451,10 +451,11 @@ cmd_silent() {
 # `<origin>-decision-<key>` identities pre-collapse decks still carry; the
 # security property is the slug SHAPE, which is unchanged.
 cmd_answers() {
-  local file='' source expected='' session_source session_file intake_marker marker_task intake_registration=0 result_intake_marker intake=0 intake_binding=0
+  local file='' source expected='' session_source session_file intake_marker marker_task intake_registration=0 result_intake_marker intake=0 intake_binding=0 allow_retired=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --intake) intake=1 ;;
+      --allow-retired) allow_retired=1 ;;
       *) [ -z "$file" ] || usage; file=$1 ;;
     esac
     shift
@@ -470,10 +471,20 @@ cmd_answers() {
     if "$SCRIPT_DIR/fm-captain-hold.sh" binding-intake "$source" >/dev/null 2>&1; then
       intake_binding=1
     fi
-    if [ "$intake" -eq 1 ] && [ "$intake_binding" -ne 1 ]; then
+    if [ "$intake" -eq 1 ] && [ "$intake_binding" -ne 1 ] && [ "$allow_retired" -ne 1 ]; then
       die "Lavish result is not bound to an intake source"
     fi
-    if [ "$intake_binding" -eq 1 ] \
+    if [ "$intake" -eq 1 ] && [ "$allow_retired" -eq 1 ] && [ "$intake_binding" -ne 1 ]; then
+      [ -f "$intake_marker" ] && [ ! -L "$intake_marker" ] \
+        || die "retired Lavish result has no intake provenance marker"
+      [ ! -e "$intake_registration" ] && [ ! -L "$intake_registration" ] \
+        || die "retired Lavish result is still registered"
+      expected=$(sed -n 's/^task_id=//p' "$intake_marker" | head -1)
+      [ -n "$expected" ] || die "retired Lavish result has no intake task"
+    fi
+    if [ "$intake" -eq 1 ] && [ "$allow_retired" -eq 1 ] && [ "$intake_binding" -ne 1 ]; then
+      :
+    elif [ "$intake_binding" -eq 1 ] \
       || { [ -f "$intake_registration" ] && [ ! -L "$intake_registration" ] \
       && grep -qx 'intake=1' "$intake_registration"; } \
       || [ -e "$intake_marker" ] || [ -L "$intake_marker" ] \
@@ -514,24 +525,34 @@ cmd_answers() {
     my ($path, $expected, $intake) = @ARGV;
     my $strict = defined($expected) && length($expected) && $expected ne "(any)";
     open my $fh, "<", $path or exit 1;
-    my (@fields, $want, @rows);
+    my (@blocks, $block);
     while (my $line = <$fh>) {
-      if (!@fields) {
-        next unless $line =~ /^prompts\[(\d+)\]\{([^}]*)\}:\s*$/;
-        ($want, @fields) = ($1, split /,/, $2);
+      if ($line =~ /^(?:prompts|feedback)\[(\d+)\]\{([^}]*)\}:\s*$/) {
+        $block = { want => $1, fields => [split /,/, $2], rows => [] };
+        push @blocks, $block;
         next;
       }
-      last unless $line =~ /^\s/;
-      last if @rows >= $want;
+      next unless $block && $line =~ /^\s/;
       chomp $line;
-      push @rows, $line;
+      push @{$block->{rows}}, $line;
     }
     close $fh;
+    my @rows;
+    if ($intake) {
+      for my $candidate (@blocks) {
+        push @rows, map { { line => $_, fields => $candidate->{fields} } } @{$candidate->{rows}};
+      }
+    } elsif (@blocks) {
+      @rows = map { { line => $_, fields => $blocks[0]{fields} } } @{$blocks[0]{rows}};
+      splice @rows, $blocks[0]{want} if @rows > $blocks[0]{want};
+    }
     my %seen;
     my %raw_seen;
     my $matched = 0;
     my @out;
-    for my $row (@rows) {
+    for my $entry (@rows) {
+      my $row = $entry->{line};
+      my $fields = $entry->{fields};
       $row =~ s/^\s+//;
       my @vals;
       while (length $row) {
@@ -546,16 +567,24 @@ cmd_answers() {
         last unless $row =~ s/^,//;
       }
       my %f;
-      $f{$fields[$_]} = $vals[$_] for 0 .. $#fields;
+      $f{$fields->[$_]} = $vals[$_] for 0 .. $#{$fields};
       next unless defined $f{tag} && $f{tag} eq "choice";
       my $prompt = $f{prompt};
+      if ($intake && $strict) {
+        die "captured result contains a malformed keyed answer\n"
+          unless defined $prompt && $prompt =~ /Context data:\s*(\{.*\})/s;
+      }
       next unless defined $prompt && $prompt =~ /Context data:\s*(\{.*\})/s;
       my $ctx = $1;
       my $data = eval { decode_json($ctx) };
+      die "captured result contains malformed keyed answer\n"
+        if $intake && $strict && ref($data) ne "HASH";
       next unless ref($data) eq "HASH";
       my $key = $data->{question};
       my $answer = $data->{answer};
-      if ($intake && $strict && defined($key) && !ref($key) && $key eq $expected) {
+      if ($intake && $strict) {
+        die "captured result contains an answer for another task\n"
+          unless defined($key) && !ref($key) && $key eq $expected;
         $raw_seen{$key}++;
         die "captured result contains more than one raw keyed answer\n" if $raw_seen{$key} > 1;
       }
