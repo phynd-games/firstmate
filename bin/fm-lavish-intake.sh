@@ -604,7 +604,7 @@ EOF
 }
 
 cmd_start() {
-  local task=${1-} artifact='' reason='' sid mapping tmp task_show state hold_kind sequence_floor hold_output canonical_owner
+  local task=${1-} artifact='' reason='' sid mapping tmp task_show state hold_kind sequence_floor artifact_hash hold_output canonical_owner
   local existing_binding source_path
   shift || true
   validate_task_id "$task"
@@ -651,6 +651,7 @@ cmd_start() {
   artifact=$(real_file "$artifact") || fail "artifact is not a regular file: $artifact"
   START_ARTIFACT=$artifact
   artifact_fields_present "$artifact" "$task"
+  artifact_hash=$(sha256_file "$artifact")
   command -v lavish-axi >/dev/null 2>&1 || fail "lavish-axi is not installed"
   task_show=$(cd "$FM_HOME" && tasks-axi show "$task" --full 2>/dev/null || true)
   [ -n "$task_show" ] || fail "task $task is not present in the active backlog"
@@ -708,6 +709,7 @@ cmd_start() {
   {
     printf 'task_id=%s\n' "$task"
     printf 'artifact=%s\n' "$artifact"
+    printf 'artifact_sha256=%s\n' "$artifact_hash"
     printf 'source_id=%s\n' "$sid"
     printf 'sequence_floor=%s\n' "$sequence_floor"
   } > "$tmp"
@@ -729,7 +731,7 @@ cmd_start() {
 }
 
 cmd_record() {
-  local task=${1-} artifact='' result='' answer_rows result_identity sid seq receipt pending out owner_token pending_phase
+  local task=${1-} artifact='' result='' answer_rows result_identity sid seq receipt pending out owner_token pending_phase session_artifact_hash
   local owner_route=0 show state hold_kind
   shift || true
   validate_task_id "$task"
@@ -768,6 +770,11 @@ cmd_record() {
     || fail "no Lavish intake session is recorded for task $task"
   [ "$(meta_value "$(session_path "$task")" artifact)" = "$artifact" ] \
     || fail "artifact does not match recorded intake session"
+  session_artifact_hash=$(meta_value "$(session_path "$task")" artifact_sha256)
+  [ -n "$session_artifact_hash" ] \
+    || fail "intake session has no artifact hash"
+  [ "$session_artifact_hash" = "$(sha256_file "$artifact")" ] \
+    || fail "artifact changed after the intake session started"
   result_identity=$(result_is_captured_feedback "$result" "$artifact" "$task")
   sid=${result_identity%%$'\t'*}
   seq=${result_identity#*$'\t'}

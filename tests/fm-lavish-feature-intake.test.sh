@@ -492,6 +492,32 @@ test_arm_failure_rolls_back_only_new_state() {
   pass "Lavish intake: failed process-event arm rolls back partial setup"
 }
 
+test_artifact_replacement_refused() {
+  local home artifact sid result out rc
+  home=$(make_home artifact-replacement)
+  add_task "$home" artifact-replacement-a1
+  artifact=$home/intake.html
+  run_intake "$home" template artifact-replacement-a1 --output "$artifact" >/dev/null
+  run_intake "$home" start artifact-replacement-a1 --artifact "$artifact" >/dev/null
+  printf '\nreplacement bytes\n' >> "$artifact"
+  sid=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
+  fixture_for "$home" artifact-replacement-a1
+  run_process_event "$home" "$sid" >/dev/null
+  result=$home/state/procevent-inbox/$sid.1.result
+  set +e
+  out=$(run_intake "$home" record artifact-replacement-a1 --artifact "$artifact" --result "$result" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "replaced intake artifact was accepted"
+  assert_contains "$out" "artifact changed" "artifact replacement refusal was unclear"
+  assert_absent "$home/state/artifact-replacement-a1.lavish-intake" \
+    "replaced intake artifact produced evidence"
+  (cd "$home" && tasks-axi show artifact-replacement-a1 --full) | grep -Fq 'hold_kind: captain' \
+    || fail "replaced intake artifact released the task"
+  pass "Lavish intake: recording rejects an artifact changed after start"
+}
+
 # The full capture path uses the existing Lavish adapter and captain-hold keyed
 # answer intake, then binds hashes and acknowledgement into durable evidence.
 test_successful_captured_feedback_and_followup() {
@@ -625,6 +651,7 @@ test_intake_flag_rejects_exemption
 test_contractless_compatibility_requires_existing_endpoint
 test_start_failure_rolls_back_only_new_state
 test_arm_failure_rolls_back_only_new_state
+test_artifact_replacement_refused
 test_start_rejects_unrelated_captain_hold
 test_extra_keyed_feedback_refused
 test_successful_captured_feedback_and_followup
