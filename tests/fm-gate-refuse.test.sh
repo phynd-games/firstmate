@@ -97,6 +97,48 @@ run_guard_lib() {
   ) 2>&1
 }
 
+# The tracked gate configuration is machine-consumed by no-mistakes, so assert its
+# MEANING through a normalized model rather than by matching bytes in the file.
+# The header above has always promised this check; it was never actually wired up.
+test_tracked_gate_config_declares_its_contract() {
+  local out
+  out=$(python3 - "$ROOT/.no-mistakes.yaml" <<'PY'
+import re, sys
+lines = open(sys.argv[1]).read().split("\n")
+model = {}
+stack = [(-1, model)]
+for raw in lines:
+    if not raw.strip() or raw.lstrip().startswith("#"):
+        continue
+    indent = len(raw) - len(raw.lstrip())
+    m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$", raw.strip())
+    if not m:
+        continue
+    key, val = m.group(1), m.group(2).strip()
+    while stack and stack[-1][0] >= indent:
+        stack.pop()
+    parent = stack[-1][1]
+    if val in ("", "|"):
+        parent[key] = {}
+        stack.append((indent, parent[key]))
+    else:
+        parent[key] = val
+print("disable_project_settings=%s" % model.get("disable_project_settings"))
+print("auto_fix.review=%s" % model.get("auto_fix", {}).get("review"))
+print("commands.lint=%s" % model.get("commands", {}).get("lint"))
+PY
+  ) || fail "the tracked .no-mistakes.yaml could not be parsed into a model"
+
+  assert_contains "$out" 'disable_project_settings=true' \
+    "the tracked gate config no longer neutralizes project instructions for gate agents"
+  assert_contains "$out" 'auto_fix.review=5' \
+    "the tracked gate config no longer declares the bounded review auto-fix budget"
+  assert_contains "$out" "commands.lint='bin/fm-lint.sh'" \
+    "the tracked gate config no longer pins lint to the repository's own owner"
+  pass "the tracked gate configuration declares its contract as a parsed model"
+}
+
+test_tracked_gate_config_declares_its_contract
 test_helper_env_marker_refuses() {
   local out rc
   out=$(run_guard_lib "$NORMAL_CWD" set); rc=$?

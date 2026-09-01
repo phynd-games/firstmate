@@ -37,6 +37,19 @@ document:
 commands:
   lint: 'bin/fm-lint.sh'
 
+# Bounded automation budget for the Review step. With this unset the default is
+# `auto_fix.review: 0`, which parks every blocking or ask-user review finding for
+# a human decision; any value above zero lets the pipeline fix and re-review
+# automatically for that many rounds. Five is a budget, not authority: exhausting
+# it never permits approving, skipping, or bypassing a step, weakening a test, or
+# abandoning a clear in-scope correction, and it is not itself a reason to ask the
+# captain. After the budget elapses, firstmate applies
+# `.agents/skills/ask-user-authority/SKILL.md` exactly as before and keeps
+# pushing clear fixes forward; only that skill's criteria decide what the captain
+# actually owns.
+auto_fix:
+  review: 5
+
 # Publish each run's test evidence to the orphan no-mistakes/evidence branch linked from the PR.
 # The evidence is not committed to the feature or default branch.
 test:
