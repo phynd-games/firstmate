@@ -110,8 +110,21 @@ make_scratch_project() {  # <dir>
   git -C "$dir" remote add origin "file://$dir.origin.git"
 }
 
+write_exempt_brief() {
+  local home=$1 id=$2
+  FM_GATE_REFUSE_BYPASS=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
+    "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes \
+    --not-applicable \
+    'configuration: target=Herdr workspace fixture; action=exercise isolated spawn placement' \
+    >/dev/null
+}
+
 PROJ1="$TMP_ROOT/scratch-project-1"; make_scratch_project "$PROJ1"
 PROJ2="$TMP_ROOT/scratch-project-2"; make_scratch_project "$PROJ2"
+write_exempt_brief "$PRIMARY_HOME" cm1
+write_exempt_brief "$PRIMARY_HOME" e2esm1
+write_exempt_brief "$SM_HOME" cm2
 
 # --- 1. primary-shaped home: a crewmate spawns into the "firstmate" space ---
 

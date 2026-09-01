@@ -142,6 +142,16 @@ spawn_from_launcher() {
   return 0
 }
 
+write_exempt_brief() {
+  local home=$1 id=$2
+  FM_GATE_REFUSE_BYPASS=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
+    "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes \
+    --not-applicable \
+    'configuration: target=Herdr launcher fixture; action=exercise isolated workspace placement' \
+    >/dev/null
+}
+
 record_worktree() {  # <meta>
   local wt
   wt=$(grep '^worktree=' "$1" 2>/dev/null | cut -d= -f2-)
@@ -175,6 +185,13 @@ printf 'off\n' > "$SM2_HOME/config/herdr-presentation-spaces"
 printf '# scratch secondmate home AGENTS.md placeholder\n' > "$SM2_HOME/AGENTS.md"
 printf '%s\n' "$SM2_ID" > "$SM2_HOME/.fm-secondmate-home"
 printf 'trivial e2e secondmate charter: nothing to do.\n' > "$SM2_HOME/data/charter.md"
+
+for id in uniqA uniqB dupC dupD staleF smE presU presD; do
+  write_exempt_brief "$PRIMARY_HOME" "$id"
+  write_exempt_brief "$SM_HOME" "$id"
+  write_exempt_brief "$PRES_HOME" "$id"
+done
+write_exempt_brief "$PRIMARY_HOME" "$SM2_ID"
 
 # A third primary-shaped home that keeps presentation spaces ON through the
 # historical empty opt-in file, so the default-on migration is exercised against

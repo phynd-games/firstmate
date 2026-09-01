@@ -357,11 +357,35 @@ cmd_classify() {
 # produce, and the published poll delivers the final feedback of a `Send & End`
 # review marked with session_ended and returns only empty ended sessions after
 # it. Anything else - including an unreadable result - keeps the source armed.
+lavish_intake_result() {
+  local file=$1 source registration
+  source=$(fm_procevent_result_source_id "$file" 2>/dev/null || true)
+  [ -n "$source" ] || return 1
+  registration="$STATE/procevent/$source.source"
+  [ -f "$registration" ] && [ ! -L "$registration" ] || return 1
+  grep -qx 'intake=1' "$registration"
+}
+
 cmd_terminal() {
-  local file=${1-}
+  local file=${1-} classification content_rc
   [ -n "$file" ] || usage
   [ -f "$file" ] || die "result file does not exist: $file"
-  case "$(cmd_classify "$file")" in
+  classification=$(cmd_classify "$file")
+  if lavish_intake_result "$file"; then
+    case "$classification" in
+      feedback) return 1 ;;
+      ended)
+        result_has_queued_content "$file"
+        content_rc=$?
+        if [ "$content_rc" -eq 0 ] || [ "$content_rc" -eq 2 ]; then
+          return 1
+        fi
+        ;;
+      missing) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+  case "$classification" in
     ended|missing) return 0 ;;
   esac
   case "$(session_field "$file" session_ended)" in

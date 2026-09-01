@@ -2833,6 +2833,17 @@ if [ -e "$INTAKE_SESSION" ] || [ -L "$INTAKE_SESSION" ]; then
       || { echo "error: could not retire Lavish intake source $INTAKE_SOURCE; preserving task records" >&2; exit 1; }
     rm -f "$INTAKE_MARKER"
   fi
+  INTAKE_SESSION_CREATED=$(sed -n 's/^lavish_session_created=//p' "$INTAKE_SESSION" | head -1)
+  case "$INTAKE_SESSION_CREATED" in
+    1)
+      command -v lavish-axi >/dev/null 2>&1 \
+        || { echo "error: lavish-axi is unavailable for intake session cleanup; preserving task records" >&2; exit 1; }
+      lavish-axi end "$INTAKE_ARTIFACT" >/dev/null \
+        || { echo "error: could not end the Lavish intake session for $ID; preserving task records" >&2; exit 1; }
+      ;;
+    0|'') ;;
+    *) echo "error: Lavish intake session ownership is invalid for $ID; preserving task records" >&2; exit 1 ;;
+  esac
 fi
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.

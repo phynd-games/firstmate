@@ -794,6 +794,14 @@ cmd_start() {
   existing_binding=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$sid" 2>/dev/null || true)
   [ -z "$existing_binding" ] \
     || fail "Lavish source is already bound to task $existing_binding"
+  if lavish_session_active "$artifact"; then
+    START_LAVISH_SESSION_CREATED=0
+  else
+    case "$?" in
+      1) START_LAVISH_SESSION_CREATED=1 ;;
+      *) fail "cannot safely determine whether the Lavish session already exists" ;;
+    esac
+  fi
   "$SCRIPT_DIR/fm-captain-hold.sh" bind "$sid" "$task" --intake >/dev/null \
     || fail "could not bind Lavish source to task $task"
   START_BINDING_CREATED=1
@@ -807,20 +815,13 @@ cmd_start() {
     printf 'artifact_sha256=%s\n' "$artifact_hash"
     printf 'source_id=%s\n' "$sid"
     printf 'sequence_floor=%s\n' "$sequence_floor"
+    printf 'lavish_session_created=%s\n' "$START_LAVISH_SESSION_CREATED"
   } > "$tmp"
   chmod 0600 "$tmp"
   mv -f -- "$tmp" "$mapping"
   START_SESSION_TMP=
   START_SESSION_CREATED=1
   write_source_marker
-  if lavish_session_active "$artifact"; then
-    START_LAVISH_SESSION_CREATED=0
-  else
-    case "$?" in
-      1) START_LAVISH_SESSION_CREATED=1 ;;
-      *) fail "cannot safely determine whether the Lavish session already exists" ;;
-    esac
-  fi
   if lavish-axi "$artifact"; then
     :
   else

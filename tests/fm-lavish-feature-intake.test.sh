@@ -430,6 +430,7 @@ test_malformed_captured_feedback_refused() {
   [ "$rc" -ne 0 ] || fail "text containing intake words was accepted without structured data"
   assert_contains "$out" "complete submitted intake payload" "malformed intake refusal was unclear"
   assert_absent "$home/state/malformed-a1.lavish-intake" "malformed feedback produced intake evidence"
+  assert_present "$home/state/procevent/$sid.source" "malformed terminal feedback retired the intake source"
   pass "Lavish intake: malformed Context data cannot satisfy the evidence boundary"
 }
 
