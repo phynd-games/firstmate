@@ -271,6 +271,7 @@ snapshot_local_file_safe() {  # <path>
     [ -n "$SNAPSHOT_FILE_REASON" ] || SNAPSHOT_FILE_REASON='could not read the record'
     return 1
   }
+  # shellcheck disable=SC2034 # Set for callers that read it after the resolve.
   SNAPSHOT_REAL=$1
   return 0
 }
@@ -1290,6 +1291,7 @@ case "$FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME" in ''|*[!0-9]*) FM_SNAPSHOT_SECON
 
 # GNU stat treats -f as a filesystem-report command, so a BSD-first fallback can
 # pollute arithmetic input before failing. Select the platform syntax once.
+# shellcheck disable=SC2034 # Probed once and read by the stat helpers below.
 SNAPSHOT_STAT_STYLE=descriptor
 file_mtime_epoch() {
   local info
@@ -1332,6 +1334,7 @@ registry_secondmates_json() {
       '{present:true,available:false,complete:false,reason:$reason,provenance:"registered-table",path:$path,freshness:{status:"unavailable",observed_at:$observed},records:[],input_truncated:false,records_truncated:false,reasons:[$reason],lines_in_window:0,records_in_window:0}'
     return 0
   fi
+  # shellcheck disable=SC2034 # Bound by the read loop and consumed by the registry builder.
   reg_info=$(snapshot_record_info "$reg") || {
     jq -n --arg path "$reg" --arg observed "$SNAPSHOT_NOW" \
       --arg reason "registered secondmate table is unreadable" \
@@ -1971,6 +1974,7 @@ scout_report_lines() {
 }
 
 collector_stamp() {
+  # shellcheck disable=SC2034 # Bound by the read loop and consumed per home below.
   local local_stamp registry registry_status home_specs live_inputs='' meta meta_text
   local meta_reason id backend target kind state_result agent_result rc
   local roots_json

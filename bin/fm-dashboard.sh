@@ -66,6 +66,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+# shellcheck disable=SC2034 # Root resolved for parity with the other evidence roots.
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 
 DASH_SCHEMA=fm-dashboard.v1
@@ -601,10 +602,12 @@ collect_supervision() {  # -> JSON object on stdout
   fi
   away=false
   marker="$STATE/.afk"
+  # shellcheck disable=SC2015 # The || branch is the intended fallback, not an else.
   secure_record "$marker" stat 1 "$TMP/away" "$TMP/away.meta" && away=true \
     || { [ "$DASH_REASON" = 'not present' ] || note_degraded 'away marker' "$marker" "$DASH_REASON"; }
   recovery=false
   marker="$STATE/.watcher-down"
+  # shellcheck disable=SC2015 # The || branch is the intended fallback, not an else.
   secure_record "$marker" stat 1 "$TMP/recovery" "$TMP/recovery.meta" && recovery=true \
     || { [ "$DASH_REASON" = 'not present' ] || note_degraded 'recovery marker' "$marker" "$DASH_REASON"; }
   jq -n \
@@ -713,6 +716,7 @@ collect_reports() {  # <snapshot-file> -> JSON object on stdout
   ' "$1" > "$list"
   discovered=$(wc -l < "$list" | tr -d '[:space:]')
   total=$((discovered + overflow))
+  # shellcheck disable=SC2034 # Bound by the read loop and consumed by the record builder.
   while IFS=$'\t' read -r id path linked; do
     [ -n "$id" ] || continue
     if [ "$kept" -ge "$FM_DASHBOARD_REPORTS" ]; then
