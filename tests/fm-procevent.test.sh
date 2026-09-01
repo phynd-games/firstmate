@@ -952,8 +952,12 @@ pe_register "$HA" lavish shared-src -- "$BLOCKER" "$TRIG2" "shared" >/dev/null
 pe_register "$HB" lavish shared-src -- "$BLOCKER" "$TRIG2" "shared" >/dev/null
 pe "$HA" reconcile >/dev/null
 sleep 0.5
-out=$(pe "$HB" start shared-src)
-assert_contains "$out" "already owned" "a second home cannot own a source another home already owns"
+set +e
+out=$(pe "$HB" start shared-src 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "a second home reported success for a source another home owns"
+assert_contains "$out" "already owned by another home" "a cross-home ownership conflict was not reported"
 [ -z "$(wake_payloads "$HB")" ] || fail "the losing home published an event"
 pass "one owner per canonical source across homes"
 

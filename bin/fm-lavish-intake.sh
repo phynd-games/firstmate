@@ -81,6 +81,7 @@ real_file() {
 
 real_dir() {
   local path=$1 real
+  [ -d "$path" ] && [ ! -L "$path" ] || return 1
   real=$(perl -MCwd=realpath -e '$p = realpath($ARGV[0]); defined($p) or exit 1; print "$p\n"' "$path" 2>/dev/null) || return 1
   [ -d "$real" ] && [ ! -L "$real" ] || return 1
   printf '%s\n' "$real"
@@ -102,6 +103,7 @@ intake_hold_path() { printf '%s/%s.lavish-intake-hold\n' "$STATE" "$1"; }
 pending_path() { printf '%s/%s.lavish-intake-pending\n' "$STATE" "$1"; }
 intake_lock_path() { printf '%s/.captain-task-%s.lock\n' "$STATE" "$1"; }
 intake_source_path() { printf '%s/procevent/%s.intake\n' "$STATE" "$1"; }
+intake_source_lock_path() { printf '%s/.lavish-intake-source-%s.lock\n' "$STATE" "$1"; }
 
 meta_value() {
   local file=$1 key=$2
@@ -157,7 +159,7 @@ validate_intake_payload() {
 }
 
 result_is_captured_feedback() {
-  local result=$1 artifact=$2 task=$3 sid seq adapter inbox parent answer_rows found=0 key answer label close payload session_source
+  local result=$1 artifact=$2 task=$3 sid seq adapter inbox parent answer_rows found=0 key answer label close payload session_source sequence_floor
   result=$(real_file "$result") || fail "captured result is not a regular file: $result"
   artifact=$(real_file "$artifact") || fail "artifact is not a regular file: $artifact"
   inbox=$(real_dir "$STATE/procevent-inbox") \
@@ -181,6 +183,12 @@ result_is_captured_feedback() {
   session_source=$(meta_value "$(session_path "$task")" source_id)
   [ -n "$session_source" ] && [ "$sid" = "$session_source" ] \
     || fail "captured result source does not match the active intake session"
+  sequence_floor=$(meta_value "$(session_path "$task")" sequence_floor)
+  if [ -n "$sequence_floor" ]; then
+    case "$sequence_floor" in ''|*[!0-9]*) fail "intake session sequence floor is invalid" ;; esac
+    [ "$seq" -gt "$sequence_floor" ] \
+      || fail "captured result predates the active intake session"
+  fi
   [ "$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$sid" 2>/dev/null || true)" = "$task" ] \
     || fail "Lavish source is not bound to task $task"
   answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers "$result") \
@@ -266,6 +274,19 @@ pending_matches() {
     && [ -n "$(meta_value "$pending" owner_token)" ]
 }
 
+captured_sequence_floor() {
+  local sid=$1 inbox candidate candidate_seq floor=0
+  inbox="$STATE/procevent-inbox"
+  [ -d "$inbox" ] && [ ! -L "$inbox" ] || { printf '0\n'; return 0; }
+  for candidate in "$inbox/$sid".*.result; do
+    [ -e "$candidate" ] || [ -L "$candidate" ] || continue
+    candidate_seq=$(fm_procevent_result_sequence "$candidate")
+    case "$candidate_seq" in ''|*[!0-9]*) continue ;; esac
+    [ "$candidate_seq" -gt "$floor" ] && floor=$candidate_seq
+  done
+  printf '%s\n' "$floor"
+}
+
 legacy_task_is_in_flight() {
   local task=$1 meta="$STATE/$1.meta"
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
@@ -295,6 +316,8 @@ START_BINDING_CREATED=0
 START_SESSION_CREATED=0
 START_SOURCE_PREEXISTING=0
 START_SOURCE_MARKER_CREATED=0
+START_SOURCE_LOCK_PATH=
+START_SOURCE_LOCK_HELD=0
 START_OK=0
 
 RECORD_LOCK_PATH=
@@ -303,6 +326,15 @@ record_cleanup() {
   if [ "$RECORD_LOCK_HELD" -eq 1 ]; then
     fm_lock_release "$RECORD_LOCK_PATH" || true
     RECORD_LOCK_HELD=0
+  fi
+}
+
+EXEMPT_LOCK_PATH=
+EXEMPT_LOCK_HELD=0
+exempt_cleanup() {
+  if [ "$EXEMPT_LOCK_HELD" -eq 1 ]; then
+    fm_lock_release "$EXEMPT_LOCK_PATH" || true
+    EXEMPT_LOCK_HELD=0
   fi
 }
 
@@ -389,6 +421,10 @@ write_source_marker() {
 start_cleanup() {
   local status=$?
   if [ "$START_OK" -eq 1 ]; then
+    if [ "$START_SOURCE_LOCK_HELD" -eq 1 ]; then
+      fm_lock_release "$START_SOURCE_LOCK_PATH" || true
+      START_SOURCE_LOCK_HELD=0
+    fi
     if [ "$START_LOCK_HELD" -eq 1 ]; then
       fm_lock_release "$START_LOCK_PATH" || true
       START_LOCK_HELD=0
@@ -424,6 +460,10 @@ start_cleanup() {
   if [ "$START_LOCK_HELD" -eq 1 ]; then
     fm_lock_release "$START_LOCK_PATH" || true
     START_LOCK_HELD=0
+  fi
+  if [ "$START_SOURCE_LOCK_HELD" -eq 1 ]; then
+    fm_lock_release "$START_SOURCE_LOCK_PATH" || true
+    START_SOURCE_LOCK_HELD=0
   fi
   return "$status"
 }
@@ -511,7 +551,7 @@ EOF
 }
 
 cmd_start() {
-  local task=${1-} artifact='' reason='' sid mapping tmp task_show state hold_kind hold_reason
+  local task=${1-} artifact='' reason='' sid mapping tmp task_show state hold_kind hold_reason sequence_floor
   local existing_binding source_path
   shift || true
   validate_task_id "$task"
@@ -598,6 +638,9 @@ cmd_start() {
   sid=$("$SCRIPT_DIR/fm-procevent-lavish.sh" source-id "$artifact") \
     || fail "could not derive the Lavish source id"
   START_SID=$sid
+  START_SOURCE_LOCK_PATH=$(intake_source_lock_path "$sid")
+  fm_lock_acquire_wait "$START_SOURCE_LOCK_PATH" || fail "could not lock Lavish source setup: $sid"
+  START_SOURCE_LOCK_HELD=1
   source_path="$STATE/procevent/$sid.source"
   if [ -e "$source_path" ] || [ -L "$source_path" ]; then
     START_SOURCE_PREEXISTING=1
@@ -612,6 +655,7 @@ cmd_start() {
       || fail "could not bind Lavish source to task $task"
     START_BINDING_CREATED=1
   fi
+  sequence_floor=$(captured_sequence_floor "$sid")
   mapping=$(session_path "$task")
   tmp=$(mktemp "$STATE/.lavish-intake-session.XXXXXX") || fail "cannot stage intake session"
   START_SESSION_TMP=$tmp
@@ -619,6 +663,7 @@ cmd_start() {
     printf 'task_id=%s\n' "$task"
     printf 'artifact=%s\n' "$artifact"
     printf 'source_id=%s\n' "$sid"
+    printf 'sequence_floor=%s\n' "$sequence_floor"
   } > "$tmp"
   chmod 0600 "$tmp"
   mv -f -- "$tmp" "$mapping"
@@ -655,6 +700,19 @@ cmd_record() {
   [ -n "$result" ] || fail "record requires --result <captured-result>"
   artifact=$(real_file "$artifact") || fail "artifact is not a regular file: $artifact"
   artifact_fields_present "$artifact"
+  result=$(real_file "$result") || fail "captured result is not a regular file: $result"
+  receipt=$(receipt_path "$task")
+  if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+    [ -f "$receipt" ] && [ ! -L "$receipt" ] || fail "intake evidence is unsafe: $receipt"
+    [ "$(require_unique_meta "$receipt" artifact)" = "$artifact" ] \
+      || fail "intake evidence belongs to a different artifact"
+    [ "$(require_unique_meta "$receipt" result)" = "$result" ] \
+      || fail "intake evidence belongs to a different captured result"
+    verify_receipt "$task" "$receipt" allow-unhandled >/dev/null \
+      || fail "existing intake evidence is not retryable"
+    printf 'recorded: %s\n' "$receipt"
+    return 0
+  fi
   [ -f "$(session_path "$task")" ] && [ ! -L "$(session_path "$task")" ] \
     || fail "no Lavish intake session is recorded for task $task"
   [ "$(meta_value "$(session_path "$task")" artifact)" = "$artifact" ] \
@@ -662,16 +720,7 @@ cmd_record() {
   result_identity=$(result_is_captured_feedback "$result" "$artifact" "$task")
   sid=${result_identity%%$'\t'*}
   seq=${result_identity#*$'\t'}
-  result=$(real_file "$result")
-  receipt=$(receipt_path "$task")
-  if [ -e "$receipt" ] || [ -L "$receipt" ]; then
-    receipt_existing=1
-    [ -f "$receipt" ] && [ ! -L "$receipt" ] || fail "intake evidence is unsafe: $receipt"
-    [ "$(require_unique_meta "$receipt" result)" = "$result" ] \
-      || fail "intake evidence belongs to a different captured result"
-    verify_receipt "$task" "$receipt" allow-unhandled >/dev/null \
-      || fail "existing intake evidence is not retryable"
-  fi
+  receipt_existing=0
   if [ "$receipt_existing" -eq 0 ]; then
     pending=$(pending_path "$task")
     if [ -e "$pending" ] || [ -L "$pending" ]; then
@@ -743,9 +792,13 @@ cmd_record() {
 }
 
 cmd_exempt() {
-  local task=${1-} reason='' artifact
+  local task=${1-} reason='' artifact receipt tmp
   shift || true
   validate_task_id "$task"
+  EXEMPT_LOCK_PATH=$(intake_lock_path "$task")
+  fm_lock_acquire_wait "$EXEMPT_LOCK_PATH" || fail "could not lock intake task $task"
+  EXEMPT_LOCK_HELD=1
+  trap exempt_cleanup EXIT
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --reason) [ "$#" -ge 2 ] || fail "--reason requires text"; reason=$2; shift 2 ;;
@@ -756,13 +809,23 @@ cmd_exempt() {
   done
   validate_one_line reason "$reason"
   artifact="$STATE/$task.lavish-intake-classification"
-  [ ! -e "$artifact" ] && [ ! -L "$artifact" ] \
-    || fail "not-applicable classification marker already exists for task $task"
-  [ ! -e "$(receipt_path "$task")" ] && [ ! -L "$(receipt_path "$task")" ] \
-    || fail "intake evidence already exists for task $task"
+  receipt=$(receipt_path "$task")
   mkdir -p "$STATE"
-  printf 'not-applicable classification for %s\nreason=%s\n' "$task" "$reason" > "$artifact"
-  chmod 0600 "$artifact"
+  if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+    [ -f "$receipt" ] && [ ! -L "$receipt" ] \
+      || fail "intake evidence is unsafe: $receipt"
+    fail "intake evidence already exists for task $task"
+  fi
+  if [ -e "$artifact" ] || [ -L "$artifact" ]; then
+    [ -f "$artifact" ] && [ ! -L "$artifact" ] || fail "not-applicable classification marker is unsafe"
+    [ "$(meta_value "$artifact" reason)" = "$reason" ] \
+      || fail "existing exemption reason differs for task $task"
+  else
+    tmp=$(mktemp "$STATE/.lavish-intake-classification.XXXXXX") || fail "cannot stage exemption classification"
+    printf 'not-applicable classification for %s\nreason=%s\n' "$task" "$reason" > "$tmp"
+    chmod 0600 "$tmp"
+    mv -f -- "$tmp" "$artifact"
+  fi
   write_receipt "$task" not-applicable "$artifact" "" "$reason"
 }
 
@@ -808,6 +871,7 @@ verify_receipt() {
   [ "$(fm_procevent_result_sequence "$result")" = "$seq" ] || fail "result sequence changed"
   if [ "$allow_unhandled" != allow-unhandled ]; then
     [ -f "$STATE/procevent-inbox/$sid.$seq.handled" ] \
+      && [ ! -L "$STATE/procevent-inbox/$sid.$seq.handled" ] \
       || fail "captured intake result is not durably acknowledged"
   fi
   result_is_captured_feedback "$result" "$artifact" "$task" >/dev/null
