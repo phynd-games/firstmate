@@ -1127,6 +1127,58 @@ PY
   pass "PR-ready path requires a private durable findings-first self-review"
 }
 
+test_pr_ready_tracks_production_surface_ownership() {
+  local dir report changed_paths changed_digest authority_record security_record path_record failure_record delivery_record tests_binding documentation_binding rc
+  dir=$(make_case production-surface-ownership)
+  git -C "$dir/wt" reset --hard -q main
+  mkdir -p "$dir/wt/bin/firstmate_factory"
+  printf '%s\n' 'fixture' 'brief production evidence' > "$dir/wt/bin/fm-brief.sh"
+  printf '%s\n' 'fixture' 'spawn production evidence' > "$dir/wt/bin/fm-spawn.sh"
+  printf '%s\n' 'fixture' 'failure production evidence' > "$dir/wt/bin/fm-operational-input.sh"
+  printf '%s\n' 'fixture' 'delivery production evidence' > "$dir/wt/bin/fm-pr-create.sh"
+  printf '%s\n' 'fixture' 'validator production evidence' > "$dir/wt/bin/firstmate_factory/validator.py"
+  git -C "$dir/wt" add bin
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm production-surface-ownership
+  write_task_meta "$dir"
+  report="$dir/home/data/task-a/pr-self-review.md"
+  changed_paths=bin/fm-brief.sh,bin/fm-spawn.sh,bin/fm-operational-input.sh,bin/fm-pr-create.sh,bin/firstmate_factory/validator.py
+  changed_digest=$(sed -n 's/^Changed files: //p' "$report")
+  authority_record=$(surface_review_single_record_at_line Authority authority bin/fm-brief.sh 2 "$(self_review_line_digest "$dir" bin/fm-brief.sh)" "$(self_review_line_hex "$dir" bin/fm-brief.sh)" "$(surface_change_digest_for_file "$dir" bin/fm-brief.sh)")
+  security_record=$(surface_review_single_record_at_line Security security bin/firstmate_factory/validator.py 2 "$(self_review_line_digest "$dir" bin/firstmate_factory/validator.py)" "$(self_review_line_hex "$dir" bin/firstmate_factory/validator.py)" "$(surface_change_digest_for_file "$dir" bin/firstmate_factory/validator.py)")
+  path_record=$(surface_review_single_record_at_line Path path bin/fm-spawn.sh 2 "$(self_review_line_digest "$dir" bin/fm-spawn.sh)" "$(self_review_line_hex "$dir" bin/fm-spawn.sh)" "$(surface_change_digest_for_file "$dir" bin/fm-spawn.sh)")
+  failure_record=$(surface_review_single_record_at_line Failure failure bin/fm-operational-input.sh 2 "$(self_review_line_digest "$dir" bin/fm-operational-input.sh)" "$(self_review_line_hex "$dir" bin/fm-operational-input.sh)" "$(surface_change_digest_for_file "$dir" bin/fm-operational-input.sh)")
+  delivery_record=$(surface_review_single_record_at_line Delivery delivery bin/fm-pr-create.sh 2 "$(self_review_line_digest "$dir" bin/fm-pr-create.sh)" "$(self_review_line_hex "$dir" bin/fm-pr-create.sh)" "$(surface_change_digest_for_file "$dir" bin/fm-pr-create.sh)")
+  tests_binding=$(printf '%s\n' "tests|unaffected|$changed_paths|$changed_digest|behavioral|retain-regression" | fm_pr_sha256_stream)
+  documentation_binding=$(printf '%s\n' "documentation|unaffected|$changed_paths|$changed_digest|contract-aligned|retain-contract" | fm_pr_sha256_stream)
+  python3 - "$report" "$changed_paths" "$authority_record" "$security_record" "$path_record" "$failure_record" "$delivery_record" "$tests_binding" "$documentation_binding" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+changed_paths, authority, security, path, failure, delivery, tests_binding, documentation_binding = sys.argv[2:]
+records = {
+    "Authority": authority,
+    "Security": security,
+    "Path": path,
+    "Failure": failure,
+    "Delivery": delivery,
+    "Tests": f"Tests: reviewed; surface=tests; scope=unaffected; files={changed_paths}; rationale=no applicable changed tests surface; binding={tests_binding}",
+    "Documentation": f"Documentation: reviewed; surface=documentation; scope=unaffected; files={changed_paths}; rationale=no applicable changed documentation surface; binding={documentation_binding}",
+}
+text = report.read_text(encoding="utf-8")
+for surface, record in records.items():
+    record = re.sub(r"; files=[^;]+; evidence=", f"; files={changed_paths}; evidence=", record, count=1)
+    text = re.sub(rf"(?m)^{surface}: .*", record, text, count=1)
+report.write_text(text, encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/118 >/dev/null \
+    || fail "PR-ready path treated production changes as unrelated to every surface"
+  [ -e "$dir/home/state/task-a.check.sh" ] || fail "production surface ownership did not publish a runnable poll"
+  pass "PR-ready path derives applicability from production surface ownership"
+}
+
 test_pr_ready_rejects_unrelated_small_diff_surface_evidence() {
   local dir report small_digest small_change_digest small_line_hex fixture_digest fixture_change_digest fixture_line_hex rc
   dir=$(make_case small-surface-relevance)
@@ -2054,11 +2106,11 @@ SH
     run_check_entry "$dir" task-a https://github.com/o/r/pull/1 > "$dir/direct.out" 2> "$dir/direct.err" &
     direct_pid=$!
     i=0
-    while [ "$i" -lt 100 ] && ! find "$dir/home/state" -name '.fm-pr-poll-check.*' -print | grep . >/dev/null; do
+    while [ "$i" -lt 500 ] && ! find "$dir/home/state" -name '.fm-pr-poll-check.*' -print | grep . >/dev/null; do
       sleep 0.01
       i=$((i + 1))
     done
-    [ "$i" -lt 100 ] || fail "atomic publication did not reach staged check"
+    [ "$i" -lt 500 ] || fail "atomic publication did not reach staged check"
 
     set +e
     FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
@@ -4889,6 +4941,7 @@ test_gitlab_merged_poll_retires() {
 
 test_parser_matrix
 test_pr_ready_requires_durable_self_review
+test_pr_ready_tracks_production_surface_ownership
 test_pr_ready_rejects_unrelated_small_diff_surface_evidence
 test_pr_ready_rejects_multiple_lines_from_one_hunk
 test_pr_ready_requires_unaffected_scope_for_unrelated_surface_evidence

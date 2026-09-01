@@ -792,17 +792,56 @@ $actual_changed_paths
 EOF
     return 1
   }
+  fm_pr_review_surface_owner_path_valid() {
+    local review_surface=$1 review_file=$2
+    case "$review_surface" in
+      authority)
+        case "$review_file" in
+          AGENTS.md|.agents/skills/*|bin/*|schemas/*) return 0 ;;
+        esac
+        ;;
+      security)
+        case "$review_file" in
+          .agents/skills/*|bin/*|schemas/*) return 0 ;;
+        esac
+        ;;
+      path)
+        case "$review_file" in
+          bin/*|schemas/*) return 0 ;;
+        esac
+        ;;
+      failure)
+        case "$review_file" in
+          bin/*|schemas/*) return 0 ;;
+        esac
+        ;;
+      tests)
+        case "$review_file" in
+          bin/fm-test*.sh|tests/*) return 0 ;;
+        esac
+        ;;
+      documentation)
+        case "$review_file" in
+          AGENTS.md|.agents/skills/*|CONTRIBUTING.md|README*|docs/*) return 0 ;;
+        esac
+        ;;
+      delivery)
+        case "$review_file" in
+          AGENTS.md|.github/workflows/*|bin/*) return 0 ;;
+        esac
+        ;;
+    esac
+    return 1
+  }
   fm_pr_review_surface_has_relevant_changed_path() {
     local review_surface=$1 changed_path relevant=0
     while IFS= read -r changed_path || [ -n "$changed_path" ]; do
       fm_pr_review_path_syntax_valid "$changed_path" || return 1
       changed_path=$FM_PR_REVIEW_PATH
-      case "$review_surface:$changed_path" in
-        authority:bin/fm-pr-check.sh|security:bin/fm-pr-lib.sh|path:bin/fm-pr-self-review-check.sh|failure:bin/fm-operational-input.sh|tests:tests/fm-pr-check-security.test.sh|documentation:.agents/skills/firstmate-pr-self-review/SKILL.md|delivery:bin/fm-pr-create.sh)
-          relevant=1
-          break
-          ;;
-      esac
+      if fm_pr_review_surface_owner_path_valid "$review_surface" "$changed_path"; then
+        relevant=1
+        break
+      fi
     done <<EOF
 $actual_changed_paths
 EOF
@@ -811,10 +850,7 @@ EOF
   fm_pr_review_surface_path_valid() {
     local review_surface=$1 review_file=$2
     fm_pr_review_surface_has_relevant_changed_path "$review_surface" || return 1
-    case "$review_surface:$review_file" in
-      authority:bin/fm-pr-check.sh|security:bin/fm-pr-lib.sh|path:bin/fm-pr-self-review-check.sh|failure:bin/fm-operational-input.sh|tests:tests/fm-pr-check-security.test.sh|documentation:.agents/skills/firstmate-pr-self-review/SKILL.md|delivery:bin/fm-pr-create.sh) return 0 ;;
-    esac
-    return 1
+    fm_pr_review_surface_owner_path_valid "$review_surface" "$review_file"
   }
   fm_pr_review_hunk_id() {
     local review_file=$1 review_line=$2 side=${3:-new} encoded_file
