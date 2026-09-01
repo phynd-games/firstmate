@@ -267,6 +267,41 @@ PY
   [ "$rc" -ne 0 ] || fail "form markup inside an RCDATA textarea was accepted"
   assert_contains "$out" "no keyed intake question" \
     "textarea RCDATA form markup was treated as an active DOM form"
+  candidate=$home/rcdata-self-closing-form.html
+  python3 - "$artifact" "$candidate" <<'PY'
+from pathlib import Path
+import sys
+
+source, output = sys.argv[1:]
+html = Path(source).read_text()
+start = html.index('<form id="feature-intake"')
+end = html.index('</form>', start) + len('</form>')
+form = html[start:end].replace('></textarea>', '/>').replace('></button>', '/>')
+Path(output).write_text(html[:start] + '<textarea/>' + form + '</textarea>' + html[end:])
+PY
+  set +e
+  out=$(run_intake "$home" start feature-a1 --artifact "$candidate" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "form markup after a self-closing RCDATA textarea was accepted"
+  assert_contains "$out" "no keyed intake question" \
+    "self-closing textarea RCDATA form markup was treated as an active DOM form"
+  candidate=$home/extra-active-form.html
+  python3 - "$artifact" "$candidate" <<'PY'
+from pathlib import Path
+import sys
+
+source, output = sys.argv[1:]
+html = Path(source).read_text()
+Path(output).write_text(html.replace('</body>', '<form id="other-active-form"></form></body>'))
+PY
+  set +e
+  out=$(run_intake "$home" start feature-a1 --artifact "$candidate" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "an artifact with multiple active forms was accepted"
+  assert_contains "$out" "exactly one active form" \
+    "multiple active form refusal was unclear"
   candidate=$home/script-before-form.html
   python3 - "$artifact" "$candidate" <<'PY'
 from pathlib import Path
@@ -797,6 +832,38 @@ test_start_end_failure_preserves_ownership_state() {
   pass "Lavish intake: failed session cleanup preserves retryable ownership"
 }
 
+test_start_marker_rewrite_failure_cleans_provisional_marker() {
+  local home artifact out rc marker
+  home=$(make_home marker-rewrite)
+  add_task "$home" marker-rewrite-a1
+  artifact=$home/intake.html
+  marker=$home/state/marker-rewrite-a1.lavish-intake-hold
+  run_intake "$home" template marker-rewrite-a1 --output "$artifact" >/dev/null
+  cat > "$home/fakebin/mv" <<'SH'
+#!/usr/bin/env bash
+dest=${!#}
+count_file="${FM_FAIL_MARKER_PATH}.count"
+if [ "$dest" = "$FM_FAIL_MARKER_PATH" ]; then
+  count=$(cat "$count_file" 2>/dev/null || printf '0')
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$count_file"
+  [ "$count" -ne 2 ] || exit 1
+fi
+exec "$FM_REAL_MV" "$@"
+SH
+  chmod +x "$home/fakebin/mv"
+  set +e
+  out=$(FM_REAL_MV="$(command -v mv)" FM_FAIL_MARKER_PATH="$marker" \
+    run_intake "$home" start marker-rewrite-a1 --artifact "$artifact" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "marker rewrite failure unexpectedly succeeded"
+  [ "$(cd "$home" && tasks-axi show marker-rewrite-a1 --full | sed -n 's/^  state: //p')" = queued ] \
+    || fail "marker rewrite failure left the task held"
+  assert_absent "$marker" "marker rewrite failure left a provisional ownership marker"
+  pass "Lavish intake: provisional marker failures clean up owned holds"
+}
+
 test_arm_failure_rolls_back_only_new_state() {
   local home artifact artifact_real out rc sid
   home=$(make_home arm-rollback)
@@ -1124,6 +1191,7 @@ test_verified_exemption_revalidates_reason
 test_contractless_compatibility_requires_existing_endpoint
 test_start_failure_rolls_back_only_new_state
 test_start_end_failure_preserves_ownership_state
+test_start_marker_rewrite_failure_cleans_provisional_marker
 test_arm_failure_rolls_back_only_new_state
 test_ordinary_rearm_refuses_stale_intake_ownership
 test_artifact_replacement_refused

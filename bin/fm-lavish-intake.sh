@@ -311,7 +311,12 @@ class IntakeParser(HTMLParser):
             self.events.append({"kind": "element", "tag": tag, "attrs": attrs})
 
     def handle_startendtag(self, tag, raw):
+        tag = tag.lower()
         self.handle_starttag(tag, raw)
+        if tag in self.CDATA_CONTENT_ELEMENTS or (self.scripting and tag == "noscript"):
+            self.set_cdata_mode(tag, escapable=False)
+        elif tag in self.RCDATA_CONTENT_ELEMENTS:
+            self.set_cdata_mode(tag, escapable=True)
 
     def handle_endtag(self, tag):
         tag = tag.lower()
@@ -368,11 +373,14 @@ if parser.error:
 if parser.root_count != 1 or not parser.root_valid:
     print("artifact is not a Lavish intake v1 surface", file=sys.stderr)
     raise SystemExit(1)
-if parser.inert or parser.script is not None or parser.form is not None:
+if parser.inert or parser.script is not None or parser.form is not None or parser.cdata_elem is not None:
     print("artifact has an incomplete active DOM", file=sys.stderr)
     raise SystemExit(1)
 identified = [form for form in parser.forms if form["attrs"].get("id") == "feature-intake"]
-if len(identified) != 1 or identified[0]["attrs"].get("data-lavish-question") != task:
+if len(parser.forms) > 1:
+    print("artifact must contain exactly one active form", file=sys.stderr)
+    raise SystemExit(1)
+if len(parser.forms) != 1 or len(identified) != 1 or identified[0]["attrs"].get("data-lavish-question") != task:
     print("artifact has no keyed intake question", file=sys.stderr)
     raise SystemExit(1)
 form = identified[0]
@@ -806,6 +814,7 @@ START_HOLD_MARKER_CREATED=0
 START_OWNER_TOKEN=
 START_REQUEST_OWNER_TOKEN=
 START_HOLD_REASON=
+START_PROVISIONAL_HOLD_REASON=
 START_HOLD_CREATED=0
 START_BINDING_CREATED=0
 START_SESSION_CREATED=0
@@ -852,6 +861,15 @@ start_marker_attempt_matches() {
   owner_token=$(meta_value "$marker" owner_token)
   [ "$owner_token" = "$START_OWNER_TOKEN" ] \
     || [ "$owner_token" = "$START_REQUEST_OWNER_TOKEN" ]
+}
+
+start_marker_provisional_matches() {
+  local marker
+  marker=$(intake_hold_path "$START_TASK")
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  [ "$(meta_value "$marker" task_id)" = "$START_TASK" ] \
+    && [ "$(meta_value "$marker" owner_token)" = "$START_REQUEST_OWNER_TOKEN" ] \
+    && [ "$(meta_value "$marker" hold_reason)" = "$START_PROVISIONAL_HOLD_REASON" ]
 }
 
 intake_hold_matches() {
@@ -960,9 +978,10 @@ start_cleanup() {
     "$SCRIPT_DIR/fm-captain-hold.sh" release "$START_TASK" \
       --intake-owner "$START_OWNER_TOKEN" >/dev/null 2>&1 || true
   fi
-  if [ "$START_HOLD_MARKER_CREATED" -eq 1 ] && start_marker_attempt_matches \
-    && ! start_task_has_owned_captain_hold; then
-    rm -f -- "$(intake_hold_path "$START_TASK")"
+  if [ "$START_HOLD_MARKER_CREATED" -eq 1 ] && ! start_task_has_owned_captain_hold; then
+    if start_marker_attempt_matches || start_marker_provisional_matches; then
+      rm -f -- "$(intake_hold_path "$START_TASK")"
+    fi
   fi
   if [ "$START_LOCK_HELD" -eq 1 ]; then
     fm_lock_release "$START_LOCK_PATH" || true
@@ -1138,6 +1157,7 @@ cmd_start() {
   elif [ "$state" != done ] && [ -n "$hold_kind" ] && [ "$hold_kind" != - ]; then
     fail "task $task already carries a non-captain hold"
   else
+    START_PROVISIONAL_HOLD_REASON=$START_HOLD_REASON
     write_start_marker
     fm_lock_release "$START_LOCK_PATH"
     START_LOCK_HELD=0
