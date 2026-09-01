@@ -71,7 +71,8 @@ Put the whole adjudication packet in the summary, in the order the skill require
 the accepted contract, the exact finding verbatim, the authoritative evidence, the
 counterevidence, the options, the consequences of each, the smallest compliant
 alternative, and your recommendation.
-Use it when the automatic review budget is exhausted too: running out of rounds is
+Use it when the finding's MATERIALITY is what you cannot settle, and when the
+automatic review budget is exhausted: running out of rounds is
 a budget event, never a reason to loop, approve, or escalate.
 
 Report verdict captain only for what a human must see:
@@ -97,7 +98,9 @@ You never:
 Ordinary teardown of a confirmed-landed task, steering, lifecycle control, PR checks, and backlog status moves are yours, under the task's lease.
 Deciding a validation finding is also yours whenever the `ask-user-authority` skill says it is: load that skill before deciding any finding, apply its criteria, and for a routine in-scope finding send the worker the exact decision through the existing keyed gate rather than reporting verdict captain.
 That skill is the single owner of which findings you may decide; a reviewer's `ask-user` label, a high risk rating, a rising round count, an implementation-level conflict, or a recurring theme are none of them reasons to escalate on their own.
-Not every finding deserves a fix either: a clear false positive, a contradiction with a finding already accepted this run, an unsupported requirement, or a fix that would violate accepted behaviour may be declined outright, with the evidence named.
+Classify every finding by material consequence before you dispose of it: correctness, security, lifecycle, provenance, behavioural contract, and test integrity are the material classes, and a substantiated finding in any of them is fixed however small the reviewer called it.
+Not every finding deserves a fix either: a clear false positive, a duplicate, a contradiction with a finding already accepted this run, an unsupported requirement, a fix that would worsen accepted behaviour, or a genuinely immaterial nit may be declined outright, with the evidence named.
+Record each dismissal against its own finding with that evidence; never dispose of a round as a batch, and never write a blanket summary such as "accept none" in place of saying what is being fixed and what is being dismissed and why.
 When you are genuinely torn and the finding is not a hard safety boundary, report verdict adjudicate rather than guessing or escalating.
 You still never answer the gate yourself - the worker drives its own validation run - and the merge, destructive, irreversible, and security-sensitive boundaries above are unchanged.
 While away mode is active you receive no wakes at all; the away daemon owns supervision then.

@@ -165,3 +165,84 @@ test_adjudication_advisor_contract() {
 }
 
 test_adjudication_advisor_contract
+
+# The failure this guards is specific: a material defect gets waved through as a
+# nit, and the round is reported with a blanket phrase that reads as a verdict
+# while carrying no classification. These assert the corrected contract on the
+# two generated interfaces that actually carry it - the emitted branch prompt and
+# the generated worker brief - plus the named policy owner.
+test_material_classification_governs_disposition() {
+  local prompt skill grounds class home ship
+  prompt="$TMP_ROOT/branch-prompt-material.txt"
+  skill="$ROOT/.agents/skills/ask-user-authority/SKILL.md"
+  "$ROOT/bin/fm-branch-prompt.sh" > "$prompt"
+
+  # 1. Classification happens BEFORE disposition, and the material classes are
+  #    named rather than left to taste.
+  assert_grep 'Classify every finding by material consequence before you dispose of it' "$prompt" \
+    "the emitted prompt does not require classifying a finding before disposing of it"
+  for class in correctness security lifecycle provenance "behavioural contract" "test integrity"; do
+    assert_grep "$class" "$prompt" \
+      "the emitted prompt no longer names $class as a material class"
+  done
+  assert_grep 'is fixed however small the reviewer called it' "$prompt" \
+    "the emitted prompt lets a reviewer's severity label decide whether a material finding is fixed"
+
+  # 2. A dismissal is per finding, with evidence, and a blanket round-level
+  #    phrase is explicitly not a disposition.
+  assert_grep 'Record each dismissal against its own finding with that evidence' "$prompt" \
+    "the emitted prompt does not require per-finding recorded dismissal evidence"
+  assert_grep 'never write a blanket summary such as "accept none"' "$prompt" \
+    "the emitted prompt still permits a blanket accept-none round summary"
+  assert_grep 'what is being fixed and what is being dismissed and why' "$prompt" \
+    "the emitted prompt does not require a fixed-versus-dismissed disposition summary"
+
+  # 3. Uncertain materiality adjudicates rather than defaulting to the cheap
+  #    disposition, which is exactly how a real defect gets labelled a nit.
+  assert_grep "Use it when the finding's MATERIALITY is what you cannot settle" "$prompt" \
+    "the emitted prompt does not route uncertain materiality to adjudication"
+
+  # 4. STRUCTURAL, not phrasing: no material class may appear as a ground for
+  #    dismissal, and the nit ground must be conditioned on the finding falling
+  #    in none of them. Without that conjunction the nit ground is an open door.
+  grounds="$TMP_ROOT/dismissal-grounds.txt"
+  awk '/^7\. Dismiss an immaterial finding/{on=1} on&&/^   - /{print} on&&/^8\./{exit}' \
+    "$skill" > "$grounds"
+  [ -s "$grounds" ] || fail "the policy owner no longer lists explicit grounds for dismissal"
+  for class in correctness security lifecycle provenance "behavioral contract" "test integrity"; do
+    if grep -qi -- "$class" "$grounds"; then
+      fail "the policy owner lists the material class '$class' as a ground for dismissal"
+    fi
+  done
+  assert_grep 'the consequence falls in none of the material classes' "$skill" \
+    "the policy owner's nit ground is no longer conditioned on the finding being immaterial"
+  assert_grep 'the effort the fix costs, or how late in the run it arrived' "$skill" \
+    "the policy owner lets cost or timing decide materiality"
+
+  # 5. approve is CONTINUE, not acceptance, and it is gated on the material
+  #    findings actually being fixed first.
+  assert_grep 'means CONTINUE THE PIPELINE despite the findings that remain open' "$skill" \
+    "the policy owner no longer defines approve as continuing despite open findings"
+  assert_grep 'It does not mean the implementation change is accepted' "$skill" \
+    "the policy owner no longer denies that approve accepts the implementation change"
+  assert_grep 'Every finding you classified as material has been fixed' "$skill" \
+    "the policy owner permits approving while a material finding is unfixed"
+  assert_grep 'A failed smell test is not a reason to approve anyway' "$skill" \
+    "the policy owner lets a failed smell test be noted and approved past"
+  assert_grep 'round budget, which this repository sets to five' "$skill" \
+    "the policy owner no longer adjudicates at the configured five-round budget"
+
+  # 6. The worker types the gate response, so the brief it is given must not let
+  #    it approve past open findings on its own.
+  home="$TMP_ROOT/material-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" material-worker sample --mode no-mistakes >/dev/null 2>&1
+  ship="$home/data/material-worker/brief.md"
+  assert_grep "Approving a review step while findings are still open is firstmate's disposition, not yours" "$ship" \
+    "the generated worker brief lets the worker approve past open findings itself"
+
+  pass "material findings are classified and fixed, dismissals are recorded per finding with evidence, and approve means continue rather than accept"
+}
+
+test_material_classification_governs_disposition
