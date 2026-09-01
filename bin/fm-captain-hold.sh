@@ -178,6 +178,15 @@ validate_slug() {  # <label> <value>
   esac
 }
 
+intake_owner_matches_reason() {  # <hold-reason> <owner-token>
+  local reason=$1 owner=$2 embedded
+  case "$reason" in
+    *' intake-owner-token='*) embedded=${reason##* intake-owner-token=} ;;
+    *) return 1 ;;
+  esac
+  [ "$embedded" = "$owner" ]
+}
+
 validate_one_line() {  # <label> <value>
   local label=$1 value=$2
   [ -n "$value" ] || fail "$label must not be empty"
@@ -394,7 +403,10 @@ command_hold() {
       --repo) shift; repo=${1:-} ;;
       --origin) shift; origin=${1:-} ;;
       --until) shift; until=${1:-} ;;
-      --intake-owner) shift; intake_owner=${1:-} ;;
+      --intake-owner)
+        [ "$#" -ge 2 ] || fail "--intake-owner requires a value"
+        shift; intake_owner=$1
+        ;;
       *) usage >&2; exit 2 ;;
     esac
     shift
@@ -592,7 +604,10 @@ command_release() {
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --intake-owner) shift; intake_owner=${1:-} ;;
+      --intake-owner)
+        [ "$#" -ge 2 ] || fail "--intake-owner requires a value"
+        shift; intake_owner=$1
+        ;;
       *) usage >&2; exit 2 ;;
     esac
     shift
@@ -611,10 +626,8 @@ command_release() {
   [ "$state" != done ] || fail "task $id is already closed"
   [ "$hold_kind" = captain ] || fail "task $id is not held for the captain"
   if [ -n "$intake_owner" ]; then
-    case "$(show_field "$show" hold_reason)" in
-      *" intake-owner-$intake_owner") ;;
-      *) fail "task $id is not held by this intake owner" ;;
-    esac
+    intake_owner_matches_reason "$(show_field "$show" hold_reason)" "$intake_owner" \
+      || fail "task $id is not held by this intake owner"
   fi
   tasks_axi unhold "$id" >/dev/null || fail "could not release captain-held task $id"
   printf 'released: %s\n' "$id"
@@ -719,7 +732,10 @@ command_answers() {
       --source) shift; source=${1:-} ;;
       --any-origin) origin=$BINDING_ANY ;;
       --exact) exact=1 ;;
-      --intake-owner) shift; intake_owner=${1:-} ;;
+      --intake-owner)
+        [ "$#" -ge 2 ] || fail "--intake-owner requires a value"
+        shift; intake_owner=$1
+        ;;
       --*) usage >&2; exit 2 ;;
       *)
         [ -z "$origin" ] || { usage >&2; exit 2; }
@@ -812,14 +828,11 @@ command_answers() {
         skipped=$((skipped + 1))
         continue
       }
-      case "$(show_field "$show" hold_reason)" in
-        *" intake-owner-$intake_owner") ;;
-        *)
-          printf 'skipped: %s (intake captain-hold ownership is no longer proven)\n' "$id"
-          skipped=$((skipped + 1))
-          continue
-          ;;
-      esac
+      intake_owner_matches_reason "$(show_field "$show" hold_reason)" "$intake_owner" || {
+        printf 'skipped: %s (intake captain-hold ownership is no longer proven)\n' "$id"
+        skipped=$((skipped + 1))
+        continue
+      }
     fi
     body=$(show_field "$show" body)
     recorded_digest=$(recorded_decision_digest "$body" || true)

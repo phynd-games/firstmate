@@ -373,7 +373,7 @@ cmd_start_public() {
 }
 
 cmd_start() {
-  local id=${1-} adapter out rc claimed bound_rc published_capture=0 handled_capture=0 self_announcing=0
+  local id=${1-} adapter out rc claimed bound_rc claim_home published_capture=0 handled_capture=0 self_announcing=0
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
   require_runner_group
   fm_procevent_source_lock_acquire "$id" || die "cannot lock source: $id"
@@ -398,7 +398,13 @@ cmd_start() {
   fm_procevent_source_lock_release "$id"
   case "$claimed" in
     0) ;;
-    2) printf 'already owned: %s\n' "$id"; exit 0 ;;
+    2)
+      claim_home=${FM_PROCEVENT_CLAIM_HOME:-}
+      [ -n "$claim_home" ] && [ "$claim_home" = "$FM_HOME" ] \
+        || die "source is already owned by another home: ${claim_home:-unknown}"
+      printf 'already owned: %s\n' "$id"
+      exit 0
+      ;;
     *) die "cannot claim source: $id" ;;
   esac
   CLAIM_ID=$id

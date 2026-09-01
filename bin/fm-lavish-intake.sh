@@ -99,6 +99,7 @@ sha256_file() {
 receipt_path() { printf '%s/%s.lavish-intake\n' "$STATE" "$1"; }
 session_path() { printf '%s/%s.lavish-intake-session\n' "$STATE" "$1"; }
 intake_hold_path() { printf '%s/%s.lavish-intake-hold\n' "$STATE" "$1"; }
+pending_path() { printf '%s/%s.lavish-intake-pending\n' "$STATE" "$1"; }
 intake_lock_path() { printf '%s/.captain-task-%s.lock\n' "$STATE" "$1"; }
 intake_source_path() { printf '%s/procevent/%s.intake\n' "$STATE" "$1"; }
 
@@ -236,6 +237,35 @@ write_receipt() {
   printf 'evidence: %s\n' "$dest"
 }
 
+write_pending() {
+  local task=$1 artifact=$2 result=$3 sid=$4 seq=$5 owner_token=$6 dest tmp
+  dest=$(pending_path "$task")
+  tmp=$(mktemp "$STATE/.lavish-intake-pending.XXXXXX") || fail "cannot stage pending intake completion"
+  {
+    printf 'version=1\n'
+    printf 'task_id=%s\n' "$task"
+    printf 'artifact=%s\n' "$artifact"
+    printf 'result=%s\n' "$result"
+    printf 'source_id=%s\n' "$sid"
+    printf 'sequence=%s\n' "$seq"
+    printf 'owner_token=%s\n' "$owner_token"
+  } > "$tmp"
+  chmod 0600 "$tmp"
+  mv -f -- "$tmp" "$dest"
+}
+
+pending_matches() {
+  local pending=$1 task=$2 artifact=$3 result=$4 sid=$5 seq=$6
+  [ -f "$pending" ] && [ ! -L "$pending" ] || return 1
+  [ "$(meta_value "$pending" version)" = 1 ] \
+    && [ "$(meta_value "$pending" task_id)" = "$task" ] \
+    && [ "$(meta_value "$pending" artifact)" = "$artifact" ] \
+    && [ "$(meta_value "$pending" result)" = "$result" ] \
+    && [ "$(meta_value "$pending" source_id)" = "$sid" ] \
+    && [ "$(meta_value "$pending" sequence)" = "$seq" ] \
+    && [ -n "$(meta_value "$pending" owner_token)" ]
+}
+
 legacy_task_is_in_flight() {
   local task=$1 meta="$STATE/$1.meta"
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
@@ -266,6 +296,15 @@ START_SESSION_CREATED=0
 START_SOURCE_PREEXISTING=0
 START_SOURCE_MARKER_CREATED=0
 START_OK=0
+
+RECORD_LOCK_PATH=
+RECORD_LOCK_HELD=0
+record_cleanup() {
+  if [ "$RECORD_LOCK_HELD" -eq 1 ]; then
+    fm_lock_release "$RECORD_LOCK_PATH" || true
+    RECORD_LOCK_HELD=0
+  fi
+}
 
 start_marker_matches() {
   local marker
@@ -491,7 +530,7 @@ cmd_start() {
   validate_one_line reason "$reason"
   START_TASK=$task
   START_OWNER_TOKEN="${BASHPID:-$$}.$RANDOM"
-  START_HOLD_REASON="$reason intake-owner-$START_OWNER_TOKEN"
+  START_HOLD_REASON="$reason intake-owner-token=$START_OWNER_TOKEN"
   START_ARTIFACT=
   START_SID=
   START_SESSION_TMP=
@@ -594,9 +633,14 @@ cmd_start() {
 }
 
 cmd_record() {
-  local task=${1-} artifact='' result='' answer_rows result_identity sid seq receipt out owner_token receipt_existing=0
+  local task=${1-} artifact='' result='' answer_rows result_identity sid seq receipt pending out owner_token
+  local receipt_existing=0 pending_existing=0 owner_route=0 show state hold_kind
   shift || true
   validate_task_id "$task"
+  RECORD_LOCK_PATH=$(intake_lock_path "$task")
+  fm_lock_acquire_wait "$RECORD_LOCK_PATH" || fail "could not lock intake task $task"
+  RECORD_LOCK_HELD=1
+  trap record_cleanup EXIT
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --artifact) [ "$#" -ge 2 ] || fail "--artifact requires a path"; artifact=$2; shift 2 ;;
@@ -629,22 +673,61 @@ cmd_record() {
       || fail "existing intake evidence is not retryable"
   fi
   if [ "$receipt_existing" -eq 0 ]; then
-    intake_hold_matches "$task" \
-      || fail "intake captain-hold ownership is no longer proven"
-    owner_token=$(meta_value "$(intake_hold_path "$task")" owner_token)
+    pending=$(pending_path "$task")
+    if [ -e "$pending" ] || [ -L "$pending" ]; then
+      pending_matches "$pending" "$task" "$artifact" "$result" "$sid" "$seq" \
+        || fail "pending intake completion belongs to a different captured result"
+      pending_existing=1
+    else
+      intake_hold_matches "$task" \
+        || fail "intake captain-hold ownership is no longer proven"
+      owner_token=$(meta_value "$(intake_hold_path "$task")" owner_token)
+      write_pending "$task" "$artifact" "$result" "$sid" "$seq" "$owner_token"
+      owner_route=1
+    fi
+    if [ "$pending_existing" -eq 1 ]; then
+      show=$(cd "$FM_HOME" && tasks-axi show "$task" --full 2>/dev/null || true)
+      [ -n "$show" ] || fail "pending intake completion task $task is absent"
+      state=$(printf '%s\n' "$show" | sed -n 's/^  state: //p' | head -1)
+      hold_kind=$(printf '%s\n' "$show" | sed -n 's/^  hold_kind: //p' | head -1)
+      case "$hold_kind" in
+        ''|null|\"null\"|-|\"-\") hold_kind= ;;
+      esac
+      if [ "$state" != done ] && [ "$hold_kind" = captain ]; then
+        intake_hold_matches "$task" \
+          || fail "intake captain-hold ownership is no longer proven"
+        owner_token=$(meta_value "$pending" owner_token)
+        owner_route=1
+      elif [ "$state" != done ] && [ -n "$hold_kind" ]; then
+        fail "pending intake completion task $task carries another active hold"
+      fi
+    fi
+    fm_lock_release "$RECORD_LOCK_PATH"
+    RECORD_LOCK_HELD=0
     answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers "$result")
-    out=$(printf '%s\n' "$answer_rows" \
-      | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$task" --exact \
-          --intake-owner "$owner_token" \
-          --source "the captured result $sid sequence $seq" 2>&1) \
-      || fail "captured intake could not release held task: $out"
+    if [ "$owner_route" -eq 1 ]; then
+      out=$(printf '%s\n' "$answer_rows" \
+        | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$task" --exact \
+            --intake-owner "$owner_token" \
+            --source "the captured result $sid sequence $seq" 2>&1) \
+        || fail "captured intake could not release held task: $out"
+    else
+      out=$(printf '%s\n' "$answer_rows" \
+        | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$task" --exact \
+            --source "the captured result $sid sequence $seq" 2>&1) \
+        || fail "captured intake retry could not settle held task: $out"
+    fi
   else
+    fm_lock_release "$RECORD_LOCK_PATH"
+    RECORD_LOCK_HELD=0
     answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers "$result")
     out=$(printf '%s\n' "$answer_rows" \
       | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$task" --exact \
           --source "the captured result $sid sequence $seq" 2>&1) \
       || fail "captured intake retry could not settle held task: $out"
   fi
+  fm_lock_acquire_wait "$RECORD_LOCK_PATH" || fail "could not relock intake task $task"
+  RECORD_LOCK_HELD=1
   printf '%s\n' "$out" | grep -Eq 'closed:|answered:' \
     || fail "captured intake did not close through captain-hold: $out"
   "$SCRIPT_DIR/fm-procevent.sh" handled "$sid" "$seq" >/dev/null \
@@ -655,6 +738,7 @@ cmd_record() {
     verify_receipt "$task" "$receipt" >/dev/null \
       || fail "captured intake evidence could not be completed"
   fi
+  rm -f -- "$(pending_path "$task")"
   printf 'recorded: %s\n' "$receipt"
 }
 

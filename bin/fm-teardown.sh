@@ -2809,12 +2809,6 @@ fi
 remove_grok_turnend_auth "$STATE" "$ID" || exit 1
 remove_kimi_turnend_auth "$STATE" "$ID" || exit 1
 fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
-# Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
-# Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
-[ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
-remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
-retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
-status_retire_presentation_task "$STATE" "$ID" || exit 1
 INTAKE_SOURCE=
 INTAKE_ARTIFACT=
 INTAKE_SESSION="$STATE/$ID.lavish-intake-session"
@@ -2838,6 +2832,12 @@ if [ -e "$INTAKE_SESSION" ] || [ -L "$INTAKE_SESSION" ]; then
     || { echo "error: could not unbind Lavish intake source $INTAKE_SOURCE; preserving task records" >&2; exit 1; }
   rm -f "$STATE/procevent/$INTAKE_SOURCE.intake"
 fi
+# Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
+# Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
+[ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
+remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
+retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
+status_retire_presentation_task "$STATE" "$ID" || exit 1
 rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
@@ -2846,7 +2846,8 @@ rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.control-relaunch.brief-prior" "$STATE/$ID.control-relaunch.note" \
   "$STATE/$ID.reconcile-nudged" \
   "$STATE/$ID.lavish-intake" "$STATE/$ID.lavish-intake-session" \
-  "$STATE/$ID.lavish-intake-classification" "$STATE/$ID.lavish-intake-hold"
+  "$STATE/$ID.lavish-intake-classification" "$STATE/$ID.lavish-intake-hold" \
+  "$STATE/$ID.lavish-intake-pending"
 # The steering inbox (bin/fm-task-inbox-lib.sh) is runtime state for the
 # retired endpoint; teardown only runs after landing is confirmed, so any
 # leftover unhandled steer here is moot rather than unlanded work.
