@@ -216,8 +216,8 @@ PY
   rc=$?
   set -e
   [ "$rc" -eq 1 ] || fail "overflow task count should exit 1, got $rc"
-  json_assert "$report" "r['valid'] is False and r['graph']['declared_task_count'] is None" "overflow task count should normalize invalid numbers"
-  error_codes_include "$report" schema.type
+  json_assert "$report" "r['valid'] is False and r['errors']" "overflow task count should reject nonfinite numbers"
+  error_codes_include "$report" json.non-finite-number
   python3 - "$report" <<'PY'
 import json
 import pathlib
@@ -379,17 +379,18 @@ test_malformed_manifest_fixtures() {
 }
 
 test_malformed_json_limits() {
-  local oversized="$TMP_ROOT/oversized-integer.json" deep="$TMP_ROOT/deep-json.json" invalid_utf8="$TMP_ROOT/invalid-utf8.json" nonstandard="$TMP_ROOT/nonstandard.json" report rc
-  python3 - "$oversized" "$deep" "$nonstandard" <<'PY'
+  local oversized="$TMP_ROOT/oversized-integer.json" deep="$TMP_ROOT/deep-json.json" invalid_utf8="$TMP_ROOT/invalid-utf8.json" nonstandard="$TMP_ROOT/nonstandard.json" overflow="$TMP_ROOT/overflow-number.json" report rc
+  python3 - "$oversized" "$deep" "$nonstandard" "$overflow" <<'PY'
 import pathlib
 import sys
 
 pathlib.Path(sys.argv[1]).write_bytes(b'{"value":' + b'9' * 5000 + b'}')
 pathlib.Path(sys.argv[2]).write_bytes(b'[' * 2000 + b']' * 2000)
 pathlib.Path(sys.argv[3]).write_bytes(b'{"value":NaN}')
+pathlib.Path(sys.argv[4]).write_bytes(b'{"value":1e400}')
 PY
   printf '\377\376\375' >"$invalid_utf8"
-  for fixture in "$oversized" "$deep" "$invalid_utf8" "$nonstandard"; do
+  for fixture in "$oversized" "$deep" "$invalid_utf8" "$nonstandard" "$overflow"; do
     report="$fixture.report"
     set +e
     "$CLI" validate-source --source "$fixture" --expected-sha256 "$(sha256_file "$fixture")" >"$report"
@@ -401,6 +402,7 @@ PY
   error_codes_include "$oversized.report" json.parse-limit
   error_codes_include "$invalid_utf8.report" json.utf8
   error_codes_include "$nonstandard.report" json.non-standard-constant
+  error_codes_include "$overflow.report" json.non-finite-number
   python3 - "$nonstandard.report" <<'PY'
 import json
 import pathlib
@@ -412,7 +414,7 @@ assert decoded["valid"] is False
 json.dumps(decoded, allow_nan=False)
 assert decoded["errors"][0]["code"] == "json.non-standard-constant"
 PY
-  pass "oversized integers, deep JSON, constants, and invalid UTF-8 reject deterministically"
+  pass "oversized integers, deep JSON, nonfinite numbers, and invalid UTF-8 reject deterministically"
 }
 
 write_long_chain_manifest() {

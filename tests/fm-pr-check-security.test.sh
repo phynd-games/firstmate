@@ -1168,7 +1168,6 @@ records = {
 }
 text = report.read_text(encoding="utf-8")
 for surface, record in records.items():
-    record = re.sub(r"; files=[^;]+; evidence=", f"; files={changed_paths}; evidence=", record, count=1)
     text = re.sub(rf"(?m)^{surface}: .*", record, text, count=1)
 report.write_text(text, encoding="utf-8")
 PY

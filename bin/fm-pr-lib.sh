@@ -797,17 +797,17 @@ EOF
     case "$review_surface" in
       authority)
         case "$review_file" in
-          AGENTS.md|.agents/skills/*|bin/*|schemas/*) return 0 ;;
+          AGENTS.md|.agents/skills/*|bin/fm-brief.sh|bin/fm-spawn.sh|bin/fm-promote.sh|bin/fm-pr-check.sh|bin/fm-merge-local.sh|bin/fm-pr-create.sh|bin/fm-pr-merge.sh|schemas/*) return 0 ;;
         esac
         ;;
       security)
         case "$review_file" in
-          .agents/skills/*|bin/*|schemas/*) return 0 ;;
+          .agents/skills/*|bin/fm-pr-lib.sh|bin/fm-pr-self-review-check.sh|bin/fm-operational-input.sh|bin/fm-send.sh|bin/fm-message*.sh|bin/fm-remote-*.sh|bin/firstmate_factory/*|schemas/*) return 0 ;;
         esac
         ;;
       path)
         case "$review_file" in
-          bin/*|schemas/*) return 0 ;;
+          bin/fm-pr-lib.sh|bin/fm-review-diff.sh|bin/fm-spawn.sh|bin/fm-pr-check.sh|bin/fm-pr-create.sh|bin/fm-pr-self-review-check.sh|bin/fm-merge-local.sh|bin/fm-operational-input.sh|bin/fm-send.sh|schemas/*) return 0 ;;
         esac
         ;;
       failure)
@@ -827,7 +827,7 @@ EOF
         ;;
       delivery)
         case "$review_file" in
-          AGENTS.md|.github/workflows/*|bin/*) return 0 ;;
+          AGENTS.md|.github/workflows/*|bin/fm-brief.sh|bin/fm-spawn.sh|bin/fm-promote.sh|bin/fm-pr-check.sh|bin/fm-pr-create.sh|bin/fm-pr-merge.sh|bin/fm-merge-local.sh) return 0 ;;
         esac
         ;;
     esac
@@ -1021,6 +1021,11 @@ EOF
     surface_files=${line#*files=}
     surface_files=${surface_files%%; evidence=*}
     surface_files=${surface_files%%; rationale=*}
+    while IFS= read -r surface_file || [ -n "$surface_file" ]; do
+      fm_pr_review_path_syntax_valid "$surface_file" || return 1
+      surface_file=$FM_PR_REVIEW_PATH
+      fm_pr_changed_path_valid "$surface_file" || return 1
+    done < <(printf '%s\n' "$surface_files" | tr ',' '\n')
     surface_evidence=${line#*; evidence=}
     surface_evidence=${surface_evidence%%; consequence=*}
     evidence_ref=${surface_evidence%% sha256=*}

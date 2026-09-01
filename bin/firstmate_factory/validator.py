@@ -154,6 +154,19 @@ def _contains_lone_surrogate(value: Any) -> bool:
     return False
 
 
+def _contains_nonfinite_number(value: Any) -> bool:
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, float) and not math.isfinite(current):
+            return True
+        if isinstance(current, dict):
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+    return False
+
+
 def _parse_json(data: bytes, errors: Errors) -> Any | None:
     try:
         text = data.decode("utf-8")
@@ -183,6 +196,9 @@ def _parse_json(data: bytes, errors: Errors) -> Any | None:
     except RecursionError:
         errors.add("json.depth", "$", "JSON nesting exceeds supported depth")
     else:
+        if _contains_nonfinite_number(parsed):
+            errors.add("json.non-finite-number", "$", "input contains a non-finite number")
+            return None
         if _contains_lone_surrogate(parsed):
             errors.add("json.unicode", "$", "input contains a lone surrogate code point")
             return None
