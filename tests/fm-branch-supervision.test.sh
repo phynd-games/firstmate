@@ -144,6 +144,90 @@ test_outcome_startup_replay_preserves_silence() {
   pass "startup replay skips silent outcomes and preserves visible and legacy rows"
 }
 
+# --- deterministic routine-note coalescing -------------------------------------
+# The note-render gate (fm-branch-outcome.sh) decides whether a routine merge
+# note carries new information. Duplicate stale/turn-ended/status wakes about a
+# task main already owns produce an unchanged novelty signature and coalesce;
+# a new failure, decision, terminal result, PR/CI change, or validation-loop
+# stop renders again. The durable store append path is untouched by the gate.
+test_routine_note_coalescing() {
+  local home out ev
+  home="$TMP_ROOT/note-coalesce-home"
+  mkdir -p "$home/state"
+  gate() { FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-render --task "$1"; }
+
+  printf 'working: implementing\n' > "$home/state/task-c.status"
+  [ "$(gate task-c)" = render ] || fail "the first routine note for a task did not render"
+  # Duplicate stale/turn-ended/status handling with no state change: coalesced.
+  [ "$(gate task-c)" != render ] || fail "an unchanged task rendered a duplicate routine note"
+  printf 'working: still implementing\n' >> "$home/state/task-c.status"
+  [ "$(gate task-c)" != render ] \
+    || fail "a routine working: append (not a failure/decision/terminal change) re-rendered"
+  # A new failure is new information.
+  printf 'failed: build broke\n' >> "$home/state/task-c.status"
+  [ "$(gate task-c)" = render ] || fail "a new failure did not render"
+  [ "$(gate task-c)" != render ] || fail "the same failure rendered twice"
+  # A new decision is new information.
+  printf 'needs-decision [key=q]: pick A or B\n' >> "$home/state/task-c.status"
+  [ "$(gate task-c)" = render ] || fail "a new decision did not render"
+  # A PR/CI identity change is new information.
+  printf 'window=x\npr=https://x/pull/1\npr_head=abc\n' > "$home/state/task-c.meta"
+  [ "$(gate task-c)" = render ] || fail "a PR/CI change did not render"
+  [ "$(gate task-c)" != render ] || fail "an unchanged PR rendered twice"
+  # A recorded validation-loop stop is new information (folded through the
+  # real limits library, never a hand-written journal).
+  ev="$home/ev"
+  # shellcheck source=bin/fm-validation-loop-lib.sh
+  . "$ROOT/bin/fm-validation-loop-lib.sh"
+  printf 'run:\n  id: "01RUN"\n  branch: fm/x\n  status: running\n  head: "abc1234"\n  findings: none\n' > "$ev"
+  FM_VLOOP_NOW=1000 FM_VLOOP_MAX_FIX_ROUNDS=1 fm_vloop_observe "$home/state" task-c "$ev" || fail "vloop fold failed"
+  printf 'run:\n  id: "01RUN"\n  branch: fm/x\n  status: fixing\n  head: "abc1234"\n  findings: none\n' > "$ev"
+  FM_VLOOP_NOW=1010 FM_VLOOP_MAX_FIX_ROUNDS=1 fm_vloop_observe "$home/state" task-c "$ev" || fail "vloop fold failed"
+  printf 'run:\n  id: "01RUN"\n  branch: fm/x\n  status: running\n  head: "abc1234"\n  findings: none\n' > "$ev"
+  FM_VLOOP_NOW=1020 FM_VLOOP_MAX_FIX_ROUNDS=1 fm_vloop_observe "$home/state" task-c "$ev" || fail "vloop fold failed"
+  printf 'run:\n  id: "01RUN"\n  branch: fm/x\n  status: fixing\n  head: "abc1234"\n  findings: none\n' > "$ev"
+  FM_VLOOP_NOW=1030 FM_VLOOP_MAX_FIX_ROUNDS=1 fm_vloop_observe "$home/state" task-c "$ev" || fail "vloop fold failed"
+  [ "$(gate task-c)" = render ] || fail "a recorded validation-loop stop did not render"
+  # Fleet-wide notes keep their own silent contract; unsafe ids never coalesce.
+  [ "$(gate fleet)" = render ] || fail "a fleet note was coalesced by the per-task gate"
+  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-render --task '../evil')" = render ] \
+    || fail "an unsanitizable task id was coalesced"
+  [ ! -e "$home/state/.branch-note-sig-../evil" ] || fail "an unsanitizable id wrote a marker"
+  # The gate never touches the durable store or its cursor.
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task task-c --verdict routine --summary 'still validating' >/dev/null || fail "append after gating failed"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" unread)
+  assert_contains "$out" "still validating" "a coalesce-era append was lost from the durable store"
+  pass "routine-note coalescing: duplicates coalesce; failures, decisions, PR/CI changes, and loop stops render"
+}
+
+test_note_signature_read_failures_render_and_line_boundaries() {
+  local home
+  home="$TMP_ROOT/note-signature-failures"
+  mkdir -p "$home/state"
+  gate() { FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-render --task "$1"; }
+
+  printf 'failed: a\nfailed: b\n' > "$home/state/task-lines.status"
+  [ "$(gate task-lines)" = render ] || fail "the first line-boundary signature did not render"
+  printf 'failed: afailed: b\n' > "$home/state/task-lines.status"
+  [ "$(gate task-lines)" = render ] || fail "distinct status line boundaries were coalesced"
+
+  printf 'failed: initial\n' > "$home/state/task-read.status"
+  [ "$(gate task-read)" = render ] || fail "the first readable status did not render"
+  rm -f "$home/state/task-read.status"
+  mkdir "$home/state/task-read.status"
+  [ "$(gate task-read)" = render ] || fail "an unreadable status source was coalesced"
+  printf 'failed: initial\n' > "$home/state/task-empty.status"
+  [ "$(gate task-empty)" = render ] || fail "the first status for the empty-file case did not render"
+  : > "$home/state/task-empty.status"
+  [ "$(gate task-empty)" = render ] || fail "an empty required status was coalesced"
+  printf 'failed: corrupt journal\n' > "$home/state/task-corrupt.status"
+  [ "$(gate task-corrupt)" = render ] || fail "the initial corrupt-journal state did not render"
+  printf 'version=1\nstop_reason=\n' > "$home/state/task-corrupt.validation-loop"
+  [ "$(gate task-corrupt)" = render ] || fail "a corrupt journal was coalesced"
+  pass "note signature: read failures render and status line boundaries remain distinct"
+}
+
 # --- lease contract -----------------------------------------------------------
 
 test_lease_exclusivity_release_stale_and_sweep() {
@@ -539,6 +623,8 @@ test_branch_cannot_force_teardown_or_directly_relaunch() {
 test_branch_prompt_is_byte_stable_and_above_cache_floor
 test_outcome_store_is_append_only_with_cursor_reads
 test_outcome_startup_replay_preserves_silence
+test_routine_note_coalescing
+test_note_signature_read_failures_render_and_line_boundaries
 test_lease_exclusivity_release_stale_and_sweep
 test_mutating_scripts_refuse_the_other_actors_lease
 test_main_owned_actions_refuse_the_branch_actor

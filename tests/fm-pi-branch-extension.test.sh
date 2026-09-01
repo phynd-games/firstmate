@@ -501,6 +501,7 @@ const pi = {
     renderers.set(customType, renderer);
   },
   sendMessage(message, options) {
+    if (globalThis.__fmSendMessageError) throw new Error(globalThis.__fmSendMessageError);
     sentToMain.push({ message, options: options ?? {} });
   },
   sendUserMessage(content, options) {
@@ -569,9 +570,10 @@ test_branch_dispatch_two_stage_filter_and_prefix_contract() {
 const prelude = process.env.DRIVER_PRELUDE;
 await eval(`(async () => { ${prelude}; globalThis.__t = { pi, fire, dispatch, settle, outcomeScript, sentToMain, mainUserMessages, mainTools, renderers, home, realRoot }; })()`);
 const { pi, fire, dispatch, settle, outcomeScript, sentToMain, mainUserMessages, mainTools, renderers, home, realRoot } = globalThis.__t;
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 writeFileSync(`${home}/state/.lock`, `${process.ppid}\n`);
+fire("session_start", {}, {});
 
 // 1. An accepted wake reaches the branch session, never main.
 const offer = dispatch("signal: task-9 done: PR https://example.com/pr/9 checks green");
@@ -623,6 +625,7 @@ console.log(`CACHE_KEY=${rewriteA.prompt_cache_key}`);
 // turn; routine while main is busy defers to after the captain's next prompt;
 // captain-relevant appends and triggers exactly one turn. Store rows are
 // written BEFORE the merge note and marked read after it.
+writeFileSync(`${home}/state/task-9.status`, "working: validating\n");
 const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
 const r1 = await report.execute("call-1", { task: "task-9", verdict: "routine", summary: "worker healthy, no action needed", wake: "signal: working" }, undefined, undefined, {});
 if (r1.isError) throw new Error(`routine report failed: ${JSON.stringify(r1)}`);
@@ -768,6 +771,59 @@ const listedText = listed.content[0].text;
 if (listedText.split("\n").length !== 2 || !listedText.includes("checks green")) {
   throw new Error(`fm_branch_outcomes did not read the store: ${listedText}`);
 }
+// 6. Deterministic routine-note coalescing: a routine note whose task's
+// novelty signature is unchanged since the last rendered note is delivered
+// silently (display: false) instead of rendering another duplicate at the
+// captain's tail, while a genuinely new outcome (a new failure) renders
+// again. Store rows, cursor advancement, and captain-verdict escalation were
+// all asserted unchanged above.
+if (sentToMain[1].message.display !== false) {
+  throw new Error(`a duplicate routine note must be coalesced: display=${sentToMain[1].message.display}`);
+}
+await report.execute("call-5", { task: "task-9", verdict: "routine", summary: "no change again" }, undefined, undefined, {});
+if (sentToMain[3].message.display !== false) {
+  throw new Error(`a repeated no-change routine note must stay coalesced: display=${sentToMain[3].message.display}`);
+}
+writeFileSync(`${home}/state/task-9.status`, "failed: build broke\n");
+await report.execute("call-6", { task: "task-9", verdict: "routine", summary: "worker failed its build" }, undefined, undefined, {});
+if (sentToMain[4].message.display !== true) {
+  throw new Error(`a genuinely new outcome must render: display=${sentToMain[4].message.display}`);
+}
+globalThis.__fmSendMessageError = "synthetic send failure";
+const failedDelivery = await report.execute("call-delivery-fail", { task: "task-delivery", verdict: "routine", summary: "delivery should retry" }, undefined, undefined, {});
+if (!failedDelivery.isError) throw new Error("failed routine delivery must be reported as an error");
+if (!existsSync(`${home}/state/.branch-note-sig-task-delivery`)) throw new Error("the decision marker was not durable before delivery");
+if (!outcomeScript(["unread"]).includes("delivery should retry")) throw new Error("the failed delivery lost its durable outcome row");
+globalThis.__fmSendMessageError = undefined;
+const retriedDelivery = await report.execute("call-delivery-retry", { task: "task-delivery", verdict: "routine", summary: "delivery should retry" }, undefined, undefined, {});
+if (retriedDelivery.isError) throw new Error(`routine delivery retry failed: ${JSON.stringify(retriedDelivery)}`);
+if (sentToMain[5].message.display !== false) throw new Error("a retry after the bounded delivery crash rendered a duplicate routine note");
+writeFileSync(`${home}/state/task-captain.status`, "failed: captain outcome\n");
+const captainBefore = sentToMain.length;
+const captainReport = await report.execute("call-captain-send", { task: "task-captain", verdict: "captain", summary: "captain delivery remains actionable" }, undefined, undefined, {});
+if (captainReport.isError) throw new Error(`captain outcome failed: ${JSON.stringify(captainReport)}`);
+if (sentToMain.length !== captainBefore + 1) throw new Error("captain outcome was not delivered");
+if (sentToMain[captainBefore].message.content.includes("FM_BRANCH_DELIVERY_ID:")) throw new Error("captain outcome exposed obsolete delivery identity state");
+const captainAgain = await report.execute("call-captain-replay", { task: "task-captain", verdict: "captain", summary: "captain delivery was reworded" }, undefined, undefined, {});
+if (captainAgain.isError || sentToMain.length !== captainBefore + 2) throw new Error("captain escalation was suppressed by routine coalescing state");
+const captainRoutine = await report.execute("call-captain-routine", { task: "task-captain", verdict: "routine", summary: "captain outcome has no new change" }, undefined, undefined, {});
+if (captainRoutine.isError || sentToMain[sentToMain.length - 1].message.display !== false) {
+  throw new Error("captain delivery did not refresh the routine coalescing marker");
+}
+mkdirSync(`${home}/state/task-captain-marker-fail.status`);
+const captainMarkerFailureBefore = sentToMain.length;
+const markerRefreshFailure = await report.execute("call-captain-marker-refresh-fail", { task: "task-captain-marker-fail", verdict: "captain", summary: "marker refresh should be retryable" }, undefined, undefined, {});
+if (!markerRefreshFailure.isError || !markerRefreshFailure.content[0].text.includes("routine note marker refresh failed")) {
+  throw new Error("a captain marker refresh failure was not returned as a typed retryable error");
+}
+if (sentToMain.length !== captainMarkerFailureBefore) {
+  throw new Error("captain marker refresh failure delivered an outcome before the marker was durable");
+}
+globalThis.__fmSendMessageError = "synthetic captain send failure";
+const failedCaptainDelivery = await report.execute("call-captain-delivery-fail", { task: "task-captain-fail", verdict: "captain", summary: "captain delivery should remain durable" }, undefined, undefined, {});
+if (!failedCaptainDelivery.isError) throw new Error("failed captain delivery must be reported as an error");
+if (!outcomeScript(["unread"]).includes("captain delivery should remain durable")) throw new Error("the failed captain delivery lost its durable outcome row");
+globalThis.__fmSendMessageError = undefined;
 if (!renderers.has("fm-branch-merge")) throw new Error("merge-note renderer missing");
 const assertRenderedNote = (note, glyph) => {
   const fgCalls = [];

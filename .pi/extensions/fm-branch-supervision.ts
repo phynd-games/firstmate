@@ -163,7 +163,9 @@ const CAPTAIN_OUTCOME_INSTRUCTION =
 type MirrorItem = { tag: "captain" | "main"; text: string };
 type MirrorCursor = { file: string; index: number };
 type Verdict = "routine" | "adjudicate" | "captain";
+type MergeResult = { ok: true } | { ok: false; reason: string };
 type LockOwnership = "owned" | "other" | "missing";
+type MainSessionContext = { model?: { provider: string; id: string } };
 
 const scriptEnv = {
   ...process.env,
@@ -458,7 +460,7 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  function rememberMainModel(ctx?: { model?: { provider: string; id: string } }): void {
+  function rememberMainModel(ctx?: MainSessionContext): void {
     if (ctx?.model) mainModel = { provider: ctx.model.provider, id: ctx.model.id };
   }
 
@@ -607,17 +609,9 @@ export default function (pi: ExtensionAPI) {
   }
 
   // Append-only merge into main. The store row is already durable when this
-  // runs; the note is a cache of it at main's tail. Delivery modes per the
-  // design: routine+idle appends now with no turn, routine+busy appends after
-  // the captain's next prompt, captain-relevant triggers exactly one turn
-  // (queued as a follow-up while main is busy) - that follow-up turn is
-  // itself the captain-visible outcome, so the captain-facing note is
-  // delivered silently (display: false) rather than printed or rendered a
-  // second time; routine notes stay rendered except an explicitly silent
-  // no-change heartbeat. The read cursor advances once the note is handed to
-  // Pi; a crash inside Pi's
-  // own delivery window leaves the outcome durable in the store, where
-  // main's fm_branch_outcomes tool still reads it on demand.
+  // runs; the note is a cache of it at main's tail. Routine notes use the
+  // deterministic note-render gate, while captain outcomes always trigger a
+  // follow-up turn.
   //
   // Pi keeps only `content` when it converts a custom message for the model:
   // customType, display, and details never reach the provider. A captain note
@@ -662,6 +656,18 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  function sendToMain(
+    message: Parameters<ExtensionAPI["sendMessage"]>[0],
+    options: Parameters<ExtensionAPI["sendMessage"]>[1],
+  ): boolean {
+    try {
+      pi.sendMessage(message, options);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function mergeIntoMain(
     expectedGeneration: number,
     seq: string,
@@ -670,12 +676,19 @@ export default function (pi: ExtensionAPI) {
     summary: string,
     silent: boolean,
     repeat = 0,
-  ): boolean {
-    if (!actingAsOwner(expectedGeneration)) return false;
+  ): MergeResult {
+    if (!actingAsOwner(expectedGeneration)) {
+      return { ok: false, reason: "merge refused after supervision replacement or lock loss" };
+    }
     if (verdict === "captain" || verdict === "adjudicate") {
-      // A repeated captain outcome is delivered to MAIN to act on, never to the
-      // captain a second time. It still opens exactly one turn - the work has
-      // to go somewhere - but that turn is main's own, like an adjudication.
+      // Commit task marker before visible or follow-up delivery. A failure
+      // leaves durable outcome unread and sends nothing, preventing retries
+      // from repeating captain-visible delivery.
+      const refreshed = runOutcomeScript(["note-render", "--task", task, "--strict"]);
+      if (!refreshed.ok) {
+        return { ok: false, reason: `outcome marker refresh failed: ${refreshed.detail}` };
+      }
+      // Repeated captain outcome goes to MAIN to act on, never captain again.
       const repeated = verdict === "captain" && repeat >= 2;
       const message = {
         customType: "fm-branch-merge",
@@ -686,20 +699,35 @@ export default function (pi: ExtensionAPI) {
             : captainOutcomeInput(task, summary),
         display: false,
       };
-      pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
+      if (!sendToMain(message, { triggerTurn: true, deliverAs: "followUp" })) {
+        return { ok: false, reason: "delivery failed after durable append; outcome remains unread" };
+      }
     } else {
-      const message = { customType: "fm-branch-merge", content: `${MERGE_NOTE_BOAT} ${task}: ${summary}`, display: !(task === "fleet" && silent) };
-      if (mainStreaming) {
-        pi.sendMessage(message, { deliverAs: "nextTurn" });
-      } else {
-        pi.sendMessage(message, {});
+      // The note gate owns routine duplicate coalescing and fails toward
+      // rendering when it cannot answer.
+      let display = !(task === "fleet" && silent);
+      if (display && task !== "fleet") {
+        const gate = runOutcomeScript(["note-render", "--task", task]);
+        if (gate.ok && gate.stdout.startsWith("coalesce")) display = false;
+      }
+      const message = {
+        customType: "fm-branch-merge",
+        content: `${MERGE_NOTE_BOAT} ${task}: ${summary}`,
+        display,
+      };
+      if (!sendToMain(message, mainStreaming ? { deliverAs: "nextTurn" } : {})) {
+        return { ok: false, reason: "delivery failed after durable append; outcome remains unread" };
       }
     }
     if (/^[0-9]+$/.test(seq)) {
-      if (!actingAsOwner(expectedGeneration)) return false;
-      return runOutcomeScript(["mark-read", "--through", seq]).ok;
+      if (!actingAsOwner(expectedGeneration)) {
+        return { ok: false, reason: "merge refused after supervision replacement or lock loss" };
+      }
+      if (!runOutcomeScript(["mark-read", "--through", seq]).ok) {
+        return { ok: false, reason: "delivery succeeded, but the durable outcome cursor could not advance" };
+      }
     }
-    return true;
+    return { ok: true };
   }
 
   function createReportTool(toolGeneration: number): ToolDefinition {
@@ -707,7 +735,7 @@ export default function (pi: ExtensionAPI) {
       name: "fm_branch_report",
       label: "Report supervision outcome",
       description:
-        "Record the outcome of one handled fleet event: write it durably to the outcome store, then merge an append-only note into the captain-facing main conversation. verdict captain surfaces it to the captain in one turn; verdict adjudicate wakes MAIN to decide an ambiguous but non-captain-owned finding itself and is never shown to the captain; routine notes render unless silent marks a no-change heartbeat.",
+        "Record one handled fleet outcome durably, then merge one note into main. captain surfaces it in one turn; adjudicate wakes MAIN for non-captain-owned ambiguity; routine notes render unless silent heartbeat or deterministic duplicate coalescing applies.",
       parameters: Type.Object({
         task: Type.String({ description: "The task id the event belongs to (or 'fleet' for fleet-wide events)" }),
         verdict: Type.Union([Type.Literal("routine"), Type.Literal("adjudicate"), Type.Literal("captain")], {
@@ -754,14 +782,22 @@ export default function (pi: ExtensionAPI) {
             isError: true,
           };
         }
-        // The store answers with "<seq>" or "<seq> repeat=<n>"; the repeat
-        // count is how it tells the caller this outcome has already been said.
+        // Store answers with "<seq>" or "<seq> repeat=<n>".
         const [appendedSeq, ...appendedFlags] = appended.stdout.split(/\s+/);
         const repeatFlag = appendedFlags.find((flag) => flag.startsWith("repeat="));
         const repeat = repeatFlag ? Number.parseInt(repeatFlag.slice("repeat=".length), 10) : 0;
-        if (!mergeIntoMain(toolGeneration, appendedSeq, task, verdict, summary, silent, Number.isFinite(repeat) ? repeat : 0)) {
+        const merged = mergeIntoMain(
+          toolGeneration,
+          appendedSeq,
+          task,
+          verdict,
+          summary,
+          silent,
+          Number.isFinite(repeat) ? repeat : 0,
+        );
+        if (!merged.ok) {
           return {
-            content: [{ type: "text", text: `recorded seq ${appendedSeq}, but merge refused after supervision replacement or lock loss` }],
+            content: [{ type: "text", text: `recorded seq ${appendedSeq}, but ${merged.reason}` }],
             details: undefined,
             isError: true,
           };

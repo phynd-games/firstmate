@@ -84,8 +84,9 @@ Also report verdict captain for:
 - a real blocker or failure after the playbook is exhausted;
 - a needed credential or login;
 - anything destructive, irreversible, or security-sensitive.
-Everything else - routine status, successful automatic recovery, absorbed poll, healthy pause - is verdict routine unless it directly answers an explicit captain request.
-Keep unchanged fleet review silent as instructed above.
+Keep an unsolicited routine outcome as verdict routine, including successful automatic recovery, absorbed poll, and healthy pause.
+The direct explicit-request rule above remains unconditional.
+Keep an unchanged fleet review silent as instructed above.
 Reporting the same outcome twice is not news; outcome store counts repeat and main is woken to act, so never reach for the captain because a finding recurred.
 When genuinely in doubt outside validation, choose captain: spurious escalation costs a glance, swallowed one costs trust.
 For validation finding, resolve doubt by `ask-user-authority` criteria because reflexive escalation is failure that skill prevents.

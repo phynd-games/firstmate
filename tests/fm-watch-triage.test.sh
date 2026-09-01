@@ -675,6 +675,25 @@ test_signal_crew_provably_working_classifier() {
   pass "signal_crew_provably_working: benign only when every referenced crew is provably working"
 }
 
+test_signal_classification_reuses_one_probe() (
+  local dir state probe reason
+  dir=$(make_case signal-classification-cache); state="$dir/state"; probe="$dir/probes"
+  STATE="$state"
+  crew_absorb_class() {
+    printf 'x' >> "$probe"
+    printf 'limit'
+  }
+  signal_collect_limit_reason "$state/task.status"
+  reason=$FM_SIGNAL_LIMIT_REASON
+  ! signal_crew_provably_working "$state/task.status" \
+    || fail "a cached limit classification was treated as working"
+  [ "$reason" = "automatic continuation limit reached" ] \
+    || fail "the cached limit reason was not retained: $reason"
+  [ "$(wc -c < "$probe" | tr -d ' ')" = 1 ] \
+    || fail "the no-verb signal classification probed crew state more than once"
+  pass "signal classification: no-verb triage reuses one crew-state probe"
+)
+
 test_secondmate_status_signal_never_absorbed_classifier() {
   local dir fakebin state
   dir=$(make_case secondmate-signal-classify); fakebin="$dir/fakebin"; state="$dir/state"
@@ -3824,6 +3843,7 @@ test_empty_write_prune_widens_the_probe
 test_empty_write_prune_from_the_environment_widens_the_probe
 test_worktree_write_probe_is_wall_clock_bounded
 test_signal_crew_provably_working_classifier
+test_signal_classification_reuses_one_probe
 test_secondmate_status_signal_never_absorbed_classifier
 test_provably_working_signal_absorbed
 test_turn_ended_provably_working_absorbed

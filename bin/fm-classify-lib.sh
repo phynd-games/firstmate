@@ -31,7 +31,11 @@
 # (crew_absorb_class and its working/paused wrappers) is NOT a pure status-file
 # read: it reuses bin/fm-crew-state.sh, which may make a bounded no-mistakes call,
 # to decide whether a crew that just stopped its turn or went stale is working,
-# deliberately paused, or neither. Callers run it ONLY on no-verb signal handling
+# deliberately paused, limit-stopped, or neither - and it folds the run evidence
+# that read exports into the durable validation-loop journal
+# (bin/fm-validation-loop-lib.sh owns that contract), so the deterministic
+# continuation bounds accumulate exactly where the absorb decision is made.
+# Callers run it ONLY on no-verb signal handling
 # and first sighting of a stale hash, never on every wake, so the per-wake triage
 # stays cheap. status_open_decisions_incremental (see "incremental (cursor-backed)
 # open-decisions fold" below) also writes: it persists a per-status-file byte
@@ -63,6 +67,12 @@ case $- in *u*) _fm_classify_nounset=on ;; *) _fm_classify_nounset=off ;; esac
 . "$_FM_CLASSIFY_LIB_DIR/fm-timeout-lib.sh"
 [ "$_fm_classify_nounset" = on ] || set +u
 unset _fm_classify_nounset
+
+# The deterministic validation-loop continuation bounds consumed by
+# crew_absorb_class below (journal fold, continue/stop verdict, thresholds).
+# bin/fm-validation-loop-lib.sh is the one owner of that contract.
+# shellcheck source=bin/fm-validation-loop-lib.sh
+. "$_FM_CLASSIFY_LIB_DIR/fm-validation-loop-lib.sh"
 
 # Captain-relevant status verbs. A status line carrying any of these is work
 # firstmate must see. Lines without these verbs are no-verb signals: the watcher
@@ -1586,6 +1596,41 @@ status_span_has_actionable() {  # <status-file> <start-offset>
   status_span_first_actionable_record "$1" "${2:-0}" > /dev/null
 }
 
+FM_SIGNAL_CLASSIFICATION=''
+FM_SIGNAL_CLASSIFICATION_ARGS=''
+FM_SIGNAL_CLASSIFICATION_REUSE=0
+
+signal_classification_clear() {
+  FM_SIGNAL_CLASSIFICATION=''
+  FM_SIGNAL_CLASSIFICATION_ARGS=''
+  FM_SIGNAL_CLASSIFICATION_REUSE=0
+}
+
+signal_classify_tasks() {  # <file> ...
+  local f base task seen='' class reason
+  FM_SIGNAL_CLASSIFICATION=''
+  FM_SIGNAL_CLASSIFICATION_ARGS="$*"
+  FM_SIGNAL_LIMIT_REASON=''
+  for f in "$@"; do
+    base=${f##*/}
+    case "$base" in
+      *.status) task=${base%.status} ;;
+      *.turn-ended) task=${base%.turn-ended} ;;
+      *) continue ;;
+    esac
+    [ -n "$task" ] || continue
+    case " $seen " in *" $task "*) continue ;; esac
+    seen="$seen $task"
+    class=$(crew_absorb_class "$task")
+    FM_SIGNAL_CLASSIFICATION="$FM_SIGNAL_CLASSIFICATION $task=$class"
+    if [ "$class" = limit ] && [ -z "$FM_SIGNAL_LIMIT_REASON" ]; then
+      reason=$(fm_vloop_reason "${STATE:-${FM_STATE_OVERRIDE:-}}" "$task" 2>/dev/null || true)
+      FM_SIGNAL_LIMIT_REASON=${reason:-automatic continuation limit reached}
+    fi
+  done
+  [ -n "$seen" ]
+}
+
 # Classify WHY an idle/stale crew MIGHT be safely absorbed instead of surfaced,
 # from bin/fm-crew-state.sh's one authoritative current-state line
 # ("state: <s> · source: <src> · <detail>"). Prints exactly one token:
@@ -1594,24 +1639,63 @@ status_span_has_actionable() {  # <status-file> <start-offset>
 #             (e.g. waiting on CI);
 #   paused  - the crew's authoritative current state is a declared external-wait
 #             pause (paused:), which is EXPECTED to idle;
+#   limit   - the crew LOOKS working, but the deterministic validation-loop
+#             bounds (bin/fm-validation-loop-lib.sh) stopped automatic
+#             continuation: the loop is repetitive, no longer advancing, or its
+#             pipeline evidence has gone stale. The wake must surface with the
+#             recorded reason; re-absorbing it as working would hide the
+#             threshold breach as routine progress.
 #   none    - neither, so the wake must surface (a stopped/finished/parked/failed/
 #             torn-down/unknown crew, or an unreadable verdict).
-# One fm-crew-state.sh read serves BOTH absorb reasons at once. Reading the state
+# One fm-crew-state.sh read serves the absorb reasons at once. Reading the state
 # authoritatively (not the status log) is what keeps run-step precedence: a crew
 # that appended paused: but then STARTED a run reports working, never paused.
-# NOT a pure read: fm-crew-state.sh may make a bounded no-mistakes call, so callers
-# run it only on no-verb signal and first-sighting stale paths, never every wake.
-# FM_CREW_STATE_BIN lets tests stub the verdict.
+# NOT a pure read: fm-crew-state.sh may make a bounded no-mistakes call, and this
+# is also where the crew's exported run evidence is folded into the durable
+# validation-loop journal (the library's third documented write exception), so
+# callers run it only on no-verb signal and first-sighting stale paths, never
+# every wake. FM_CREW_STATE_BIN lets tests stub the verdict; the stub receives
+# FM_CREW_STATE_EVIDENCE_FILE exactly like the real reader.
 crew_absorb_class() {  # <id>
-  local id=$1 line state src
+  local id=$1 line state src statedir evfile worktree observe_rc
   [ -n "$id" ] || { printf 'none'; return; }
-  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  statedir=${STATE:-${FM_STATE_OVERRIDE:-}}
+  worktree=''
+  if [ -n "$statedir" ] && [ -f "$statedir/$id.meta" ]; then
+    worktree=$(grep '^worktree=' "$statedir/$id.meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  fi
+  evfile=''
+  if [ -n "$statedir" ] && [ -d "$statedir" ]; then
+    evfile="$statedir/.vloop-evidence-$id.$$"
+    rm -f "$evfile" 2>/dev/null || evfile=''
+  fi
+  if [ -n "$evfile" ]; then
+    line=$(FM_CREW_STATE_EVIDENCE_FILE="$evfile" "$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+    # Fold whatever evidence the read exported before judging it: gate and fix
+    # observations count toward the loop bounds regardless of the verdict this
+    # call ends up printing. An absent export folds nothing.
+    fm_vloop_observe "$statedir" "$id" "$evfile" "$worktree"
+    observe_rc=$?
+    rm -f "$evfile" 2>/dev/null || true
+    [ "$observe_rc" -eq 0 ] || { printf 'none'; return; }
+  else
+    line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  fi
   case "$line" in state:*) ;; *) printf 'none'; return ;; esac
   state=${line#state: }; state=${state%% *}
   if [ "$state" = paused ]; then printf 'paused'; return; fi
   if [ "$state" = working ]; then
     src=${line#*source: }; src=${src%% *}
-    case "$src" in run-step|pane) printf 'working'; return ;; esac
+    case "$src" in
+      run-step|pane)
+        if [ -n "$statedir" ]; then
+          case "$(fm_vloop_verdict "$statedir" "$id")" in
+            stop*) printf 'limit'; return ;;
+          esac
+        fi
+        printf 'working'; return
+        ;;
+    esac
   fi
   printf 'none'
 }
@@ -1739,7 +1823,13 @@ crew_worktree_written_since() {  # <id> <state> <anchor-file>
 # more current, not less deliverable. Scoped to .status files - a mate's bare
 # turn-ended ping still uses the ordinary provably-working absorb.
 signal_crew_provably_working() {  # <file> ...
-  local f base dir task seen=""
+  local f base dir task seen="" class entry reuse=0
+  if [ "$FM_SIGNAL_CLASSIFICATION_REUSE" = 1 ] && [ "$FM_SIGNAL_CLASSIFICATION_ARGS" = "$*" ]; then
+    reuse=1
+  else
+    signal_classification_clear
+    FM_SIGNAL_LIMIT_REASON=''
+  fi
   for f in "$@"; do
     base=${f##*/}
     dir=${f%/*}
@@ -1753,16 +1843,51 @@ signal_crew_provably_working() {  # <file> ...
     case "$base" in
       *.status)
         if [ "$(grep '^kind=' "$dir/$task.meta" 2>/dev/null | tail -1 | cut -d= -f2-)" = secondmate ]; then
+          signal_classification_clear
           return 1
         fi
         ;;
     esac
     case " $seen " in *" $task "*) continue ;; esac
     seen="$seen $task"
-    crew_is_provably_working "$task" || return 1
+    if [ "$reuse" = 1 ]; then
+      class=''
+      for entry in $FM_SIGNAL_CLASSIFICATION; do
+        case "$entry" in
+          "$task="*) class=${entry#*=}; break ;;
+        esac
+      done
+      [ -n "$class" ] || {
+        signal_classification_clear
+        return 1
+      }
+    else
+      class=$(crew_absorb_class "$task")
+    fi
+    if [ "$class" = limit ]; then
+      if [ -z "$FM_SIGNAL_LIMIT_REASON" ]; then
+        FM_SIGNAL_LIMIT_REASON=$(fm_vloop_reason "${STATE:-${FM_STATE_OVERRIDE:-}}" "$task" 2>/dev/null || true)
+        [ -n "$FM_SIGNAL_LIMIT_REASON" ] || FM_SIGNAL_LIMIT_REASON="automatic continuation limit reached"
+      fi
+    fi
+    if [ "$class" != working ]; then
+      signal_classification_clear
+      return 1
+    fi
   done
-  [ -n "$seen" ] || return 1
+  if [ -z "$seen" ]; then
+    signal_classification_clear
+    return 1
+  fi
+  signal_classification_clear
   return 0
+}
+
+signal_collect_limit_reason() {  # <file> ...
+  signal_classify_tasks "$@"
+  local rc=$?
+  FM_SIGNAL_CLASSIFICATION_REUSE=1
+  return "$rc"
 }
 
 # 0 (terminal/actionable) if a stale window's last status line is

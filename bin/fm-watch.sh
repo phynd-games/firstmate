@@ -56,6 +56,13 @@
 #                          for human inspection only - never an automatic
 #                          interrupt, signal, or restart of the worker or its
 #                          tool process.
+#   stale: <window> (validation loop limit: ...)
+#                          the deterministic validation-loop bounds
+#                          (bin/fm-validation-loop-lib.sh) stopped absorbing a
+#                          crew that still reads as working: repetitive fix
+#                          rounds or findings, a stalled run, or stale pipeline
+#                          evidence. The worker, branch, and run are untouched;
+#                          recovery is same-copy only via stuck-crewmate-recovery
 #   stale: <window> (unread firstmate instruction: ...)
 #                          the steering-inbox ladder spent its delivery-attempt
 #                          budget on an idle pane without an acknowledgement
@@ -904,7 +911,7 @@ clear_pause_tracking() {  # <window-key>
   local key=$1
   clear_pause_state "$key"
   clear_write_tracking "$key"
-  rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
+  rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.stale-limit-$key" "$STATE/.wedge-escalations-$key"
 }
 
 # Reconcile a declared pause or captain-held status with authoritative crew state.
@@ -967,10 +974,11 @@ pause_state_class() {  # <window> <task>
   printf '%s' "$class"
 }
 
-surface_nonterminal_stale() {  # <window> <hash>
+surface_nonterminal_stale() {  # <window> <hash> [reason]
   local win=$1 h=$2 key task last
+  local reason=${3:-"stale: $win"}
   key=$(window_key "$win")
-  fm_wake_append stale "$win" "stale: $win" || exit 1
+  fm_wake_append stale "$win" "$reason" || exit 1
   printf '%s' "$h" > "$STATE/.stale-$key"
   rm -f "$STATE/.stale-since-$key"
   clear_write_tracking "$key"
@@ -983,7 +991,38 @@ surface_nonterminal_stale() {  # <window> <hash>
   else
     rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
   fi
-  wake "stale: $win"
+  wake "$reason"
+}
+
+validation_limit_after_output() {
+  local output_status=$1
+  [ "$output_status" -eq 0 ] || return 1
+  printf '%s' "$FM_VALIDATION_LIMIT_HASH" > "$FM_VALIDATION_LIMIT_MARKER"
+}
+
+surface_validation_limit() {  # <window> <hash> <task>
+  local win=$1 h=$2 task=$3 reason verdict key
+  reason=$(fm_vloop_reason "$STATE" "$task")
+  if [ -z "$reason" ]; then
+    verdict=$(fm_vloop_verdict "$STATE" "$task" 2>/dev/null || true)
+    case "$verdict" in
+      stop\ *) reason=${verdict#stop } ;;
+    esac
+  fi
+  [ -n "$reason" ] || reason="automatic continuation limit reached"
+  key=$(window_key "$win")
+  FM_VALIDATION_LIMIT_HASH=$h
+  FM_VALIDATION_LIMIT_MARKER="$STATE/.stale-limit-$key"
+  FM_WAKE_POST_OUTPUT_ACTION=validation_limit_after_output
+  surface_nonterminal_stale "$win" "$h" \
+    "stale: $win (validation loop limit: $reason - automatic continuation stopped deterministically; branch and run custody preserved; inspect and recover in the same copy via stuck-crewmate-recovery, never a duplicate worker or a skipped check)" || return 1
+}
+
+validation_loop_stopped() {
+  case "$(fm_vloop_verdict "$STATE" "$1")" in
+    stop\ *) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # Check and heartbeat cadence must survive actionable exits and restarts: the
@@ -1668,18 +1707,42 @@ EOF
     # task's turn-ends forever. Absorb stays evidence-driven: with neither proof the
     # wake surfaces exactly as before.
     # Actionable -> enqueue, advance .seen-* markers, exit. Benign (a no-verb wake
-    # whose crew is still executing) in always-on mode -> advance the markers so it
-    # will not re-fire, log, and keep blocking without enqueuing. Both evidence
-    # checks are costly (a bounded no-mistakes call, then a pane capture), so the ||
-    # ordering evaluates them ONLY for a non-afk signal with no captain-relevant
-    # status span, and the capture only once the authoritative verdict comes up short.
-    FM_SIGNAL_SURFACE_ENDPOINTS=''
+    # whose crew IS provably working) in always-on mode -> advance the markers so it
+    # will not re-fire, log, and keep blocking without enqueuing. The validation-loop
+    # classification runs before status short-circuiting so a limit reason is retained
+    # when a batch also contains a captain verb.
+    signal_actionable=0
+    signal_classification_clear
+    signal_limit_reason=''
+    # Preserve span endpoints for durable seen/surfaced commits regardless of
+    # whether validation-loop classification later forces the wake to surface.
     # shellcheck disable=SC2086  # $files is a space-separated status-path list (ids carry no spaces)
     signal_files_actionable $files
-    signal_actionable=$?
-    # shellcheck disable=SC2086  # same space-separated status-path list
-    if afk_present || [ "$signal_actionable" -eq 0 ] \
-      || { ! signal_crew_provably_working $files && ! signal_turnend_panes_churned $files; }; then
+    signal_span_actionable=$?
+    if afk_present; then
+      signal_actionable=1
+    else
+      # Classify validation before short-circuiting on a captain verb so a
+      # mixed batch retains its deterministic stop reason.
+      # shellcheck disable=SC2086
+      signal_collect_limit_reason $files >/dev/null 2>&1 || true
+      signal_limit_reason=$FM_SIGNAL_LIMIT_REASON
+      if [ "$signal_span_actionable" -eq 0 ] || [ -n "$signal_limit_reason" ]; then
+        signal_actionable=1
+      # shellcheck disable=SC2086
+      elif signal_crew_provably_working $files; then
+        signal_actionable=0
+      # shellcheck disable=SC2086
+      elif signal_turnend_panes_churned $files; then
+        signal_actionable=0
+      else
+        signal_actionable=1
+      fi
+    fi
+    if [ -n "$signal_limit_reason" ]; then
+      reason="$reason (validation loop limit: $signal_limit_reason)"
+    fi
+    if [ "$signal_actionable" -eq 1 ]; then
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
         fm_wake_append signal "$(basename "$f")" "$reason" || exit 1
@@ -1771,6 +1834,7 @@ EOF
     cf="$STATE/.count-$key"
     sf="$STATE/.stale-$key"
     ssf="$STATE/.stale-since-$key"
+    lsf="$STATE/.stale-limit-$key"
     ewf="$STATE/.wedge-escalations-$key"
     pf="$STATE/.paused-$key"   # flag: this key's stale is using the bounded pause cadence
     prev=$(cat "$hf" 2>/dev/null || true)
@@ -1797,6 +1861,10 @@ EOF
             fm_wake_append stale "$w" "stale: $w" || exit 1
             printf '%s' "$h" > "$sf"
             wake "stale: $w"
+          fi
+        elif validation_loop_stopped "$task"; then
+          if [ "$(cat "$lsf" 2>/dev/null || true)" != "$h" ]; then
+            surface_validation_limit "$w" "$h" "$task" || exit 1
           fi
         elif stale_is_terminal "$w" "$STATE"; then
           # The log's last line is captain-relevant - but that alone is not
@@ -1870,6 +1938,7 @@ EOF
               paused)
                 handle_paused_stale "$w" "$task" "$h"
                 ;;
+              limit) surface_validation_limit "$w" "$h" "$task" || exit 1 ;;
               *)
                 surface_nonterminal_stale "$w" "$h"
                 ;;
