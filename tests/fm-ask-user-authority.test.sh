@@ -76,3 +76,92 @@ test_branch_prompt_finding_authority() {
 }
 
 test_branch_prompt_finding_authority
+
+# Not every finding deserves a fix, and not every uncertain one belongs to the
+# captain. These pin the three outcomes through the interfaces that actually carry
+# them: the emitted branch prompt, and the real outcome store.
+test_finding_exceptions_and_adjudication() {
+  local prompt store seq out
+  prompt="$TMP_ROOT/branch-prompt-adj.txt"
+  "$ROOT/bin/fm-branch-prompt.sh" > "$prompt"
+
+  # 1. A clear in-scope finding is still simply fixed.
+  assert_grep 'send the worker the exact decision through the existing keyed gate rather than reporting verdict captain' "$prompt" \
+    "the emitted prompt no longer tells the branch to decide and steer a clear finding"
+
+  # 2. A valid exception may be declined outright, with evidence.
+  assert_grep 'a clear false positive' "$prompt" \
+    "the emitted prompt does not permit declining a clear false positive"
+  assert_grep 'may be declined outright, with the evidence named' "$prompt" \
+    "the emitted prompt does not require evidence when declining a finding"
+
+  # 3. Reviewer oscillation: a finding contradicting one already accepted this run
+  #    is a reason to decline, not to fix blindly and thrash.
+  assert_grep 'a contradiction with a finding already accepted this run' "$prompt" \
+    "the emitted prompt does not treat reviewer contradiction as a valid exception"
+
+  # 4. Genuine uncertainty is adjudicated inside the fleet, and never shown to the
+  #    captain, with the full packet required.
+  assert_grep 'report verdict adjudicate rather than guessing or escalating' "$prompt" \
+    "the emitted prompt does not route genuine uncertainty to adjudication"
+  assert_grep 'the smallest compliant' "$prompt" \
+    "the emitted prompt does not require the smallest compliant alternative in the packet"
+  assert_grep 'never reaches the captain' "$prompt" \
+    "the emitted prompt does not keep adjudication away from the captain"
+
+  # 5. Budget exhaustion adjudicates rather than looping, approving, or escalating.
+  assert_grep 'a budget event, never a reason to loop, approve, or escalate' "$prompt" \
+    "the emitted prompt lets review-budget exhaustion force an outcome by itself"
+
+  # 6. Hard boundaries still reach the captain.
+  assert_grep 'anything destructive, irreversible, or security-sensitive' "$prompt" \
+    "the emitted prompt lost the destructive and security captain boundary"
+
+  # The outcome store must actually carry the new verdict as a first-class,
+  # non-captain outcome - asserted against the real script, not its help text.
+  store="$TMP_ROOT/adj-store"
+  mkdir -p "$store"
+  seq=$(FM_STATE_OVERRIDE="$store" "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task sample --verdict adjudicate --summary 'packet: contract, finding, evidence, options' 2>&1) \
+    || fail "the outcome store rejected the adjudicate verdict"
+  case "$seq" in
+    ''|*[!0-9]*) fail "appending an adjudicate outcome returned no sequence: $seq" ;;
+  esac
+  out=$(FM_STATE_OVERRIDE="$store" "$ROOT/bin/fm-branch-outcome.sh" unread 2>&1)
+  assert_contains "$out" '"verdict":"adjudicate"' \
+    "an adjudicate outcome does not read back from the store as its own verdict"
+  assert_not_contains "$out" '"verdict":"captain"' \
+    "an adjudicate outcome was recorded as a captain escalation"
+  pass "clear fixes, valid exceptions, oscillation, adjudication, and captain-only boundaries are each carried"
+}
+
+test_finding_exceptions_and_adjudication
+
+# ask-user-authority is the NAMED single owner of this policy - the branch prompt
+# and AGENTS.md both reference it rather than restating it - so its contract is
+# the thing to check here. The risk being guarded is concrete: an advisor chain
+# that hardcodes a vendor or model silently bypasses quota-aware dispatch and
+# breaks the moment that model is unavailable or out of budget.
+test_adjudication_advisor_contract() {
+  local skill
+  skill="$ROOT/.agents/skills/ask-user-authority/SKILL.md"
+
+  assert_grep 'Use the current heavyweight MAIN model first' "$skill" \
+    "the policy owner no longer prefers MAIN before dispatching a separate scout"
+  assert_grep 'only if MAIN remains uncertain' "$skill" \
+    "the policy owner no longer gates the scout fallback on MAIN remaining uncertain"
+  assert_grep 'existing quota-aware dispatch rather than a hardcoded vendor or model' "$skill" \
+    "the policy owner no longer requires quota-aware selection for the advisor"
+  assert_grep 'READ-ONLY' "$skill" \
+    "the policy owner no longer states that the advisor has no authority"
+  assert_grep 'Firstmate owns the call' "$skill" \
+    "the policy owner no longer keeps the decision with firstmate"
+
+  # No vendor or model identifier may be hardcoded into the advisor chain.
+  if grep -qiE '\b(opus|sonnet|haiku|gpt-?[0-9]|claude-[a-z0-9]|gemini|grok-[0-9]|o[0-9]-(mini|preview))\b' "$skill"; then
+    fail "the policy owner hardcodes a vendor or model instead of using quota-aware dispatch"
+  fi
+  pass "the adjudication advisor is read-only, quota-selected, and never a hardcoded model"
+}
+
+test_adjudication_advisor_contract
