@@ -360,6 +360,23 @@ SH
   pass "the send boundary registers the obligation and prints the confirm command it owes"
 }
 
+# --- 11. the supervision branch is told the same rule ------------------------
+# The branch steers workers too, and it is the actor that reports outcomes, so
+# the rule has to reach it through the interface it actually receives.
+test_branch_prompt_carries_the_handoff_rule() {
+  local prompt
+  prompt="$TMP_ROOT/branch-prompt-handoff.txt"
+  "$ROOT/bin/fm-branch-prompt.sh" > "$prompt"
+  assert_grep 'A recorded steer is not a taken-up steer' "$prompt" \
+    "the emitted branch prompt lets a recorded steer count as a delivered one"
+  assert_grep 'an unchanged parked run is a failed handoff, not a reason to send it twice' "$prompt" \
+    "the emitted branch prompt does not name the acknowledged-but-idle failure"
+  assert_grep 'never reach for the captain because a finding recurred' "$prompt" \
+    "the emitted branch prompt still lets a repeated finding go to the captain"
+  pass "the emitted branch prompt carries the confirmed-handoff rule and the repeat rule"
+}
+
+test_branch_prompt_carries_the_handoff_rule
 test_queued_but_unread_is_not_delivery
 test_acknowledged_without_starting_is_refused
 test_wrong_message_bytes_are_refused
