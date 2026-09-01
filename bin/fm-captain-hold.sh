@@ -916,7 +916,7 @@ command_intake_resolution() {
   validate_slug intake-owner "$owner"
   validate_one_line source "$source"
   validate_one_line answer "$answer"
-  validate_one_line label "$label"
+  [ -z "$label" ] || validate_one_line label "$label"
   digest=$(sha256_text "$(keyed_decision_text "$source" "$id" "$answer" "$label")")
   intake_owner_record_matches "$id" "$owner" \
     || return 1
@@ -925,7 +925,7 @@ command_intake_resolution() {
   show=$(task_show "$id") || return 1
   state=$(show_field "$show" state)
   hold_kind=$(show_field_value "$show" hold_kind)
-  [ "$state" != done ] && [ -z "$hold_kind" ] || return 1
+  [ "$state" = done ] || [ -z "$hold_kind" ] || return 1
   body=$(show_field "$show" body)
   body_has_resolution_record "$body" || return 1
   [ "$(recorded_resolution_mode "$body" || true)" = released ] || return 1
