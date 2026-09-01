@@ -363,3 +363,133 @@ test_competing_version_named_session_is_seen_as_live
 test_e2e_version_named_session_claims_the_home
 test_e2e_daemon_parented_session_claims_the_home
 test_e2e_daemon_parented_version_named_session_keeps_its_lock
+
+# --- process identity is a refinement of the pid check, not a precondition ----
+#
+# fm_pid_identity answers from /proc when it is readable and otherwise from
+# `ps -p <pid> -o lstart= -o command=`. A host that has neither - a stripped
+# container, a busybox ps, a restricted PATH - can never identify any process.
+# When the lock REQUIRED an identity there, fm_lock_prepare_owner failed every
+# time, fm_lock_try_create returned 1 every time, and fm_lock_acquire_wait
+# retried forever: the lock never returned at all. That is a silent wedge, not a
+# refusal, and it takes every other lock in the home down with it.
+
+# make_identity_fixture <dir> <identity-available: yes|no>
+# A home plus a ps that reports a harness for the ancestry walk and either
+# answers or refuses the identity query.
+make_identity_fixture() {
+  local dir=$1 identity=$2 fakebin="$1/fakebin"
+  mkdir -p "$dir/state" "$fakebin"
+  git init -q "$dir"
+  git -C "$dir" commit -q --allow-empty -m init
+  : > "$dir/AGENTS.md"
+  if [ "$identity" = yes ]; then
+    cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "$*" in
+  *"lstart="*) exec /bin/ps "$@" ;;
+  *"comm="*) printf '%s\n' /usr/local/bin/claude; exit 0 ;;
+  *"args="*) printf '%s\n' claude; exit 0 ;;
+  *"ppid="*) exec /bin/ps "$@" ;;
+esac
+exit 1
+SH
+  else
+    cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "$*" in
+  *"lstart="*) exit 1 ;;
+  *"comm="*) printf '%s\n' /usr/local/bin/claude; exit 0 ;;
+  *"args="*) printf '%s\n' claude; exit 0 ;;
+  *"ppid="*) exec /bin/ps "$@" ;;
+esac
+exit 1
+SH
+  fi
+  chmod +x "$fakebin/ps"
+}
+
+# run_lock_bounded <dir> <tag>
+# Run the real fm-lock.sh and REFUSE to wait forever for it. The bound is the
+# assertion: a lock that cannot decide is the defect being guarded, and an
+# unbounded wait here would hang this suite exactly the way it hung a session.
+run_lock_bounded() {
+  local dir=$1 tag=$2 child waited
+  rm -f "$dir/$tag.rc" "$dir/$tag.out"
+  (
+    FM_HOME="$dir" FM_ROOT_OVERRIDE="$dir" PATH="$dir/fakebin:$PATH" \
+      "$ROOT/bin/fm-lock.sh" > "$dir/$tag.out" 2>&1
+    printf '%s\n' "$?" > "$dir/$tag.rc"
+  ) &
+  child=$!
+  waited=0
+  while [ "$waited" -lt 300 ] && [ ! -s "$dir/$tag.rc" ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if [ ! -s "$dir/$tag.rc" ]; then
+    kill -TERM "$child" 2>/dev/null || true
+    wait "$child" 2>/dev/null || true
+    fail "session lock never returned ($tag): it spun instead of deciding"
+  fi
+  wait "$child" 2>/dev/null || true
+}
+
+test_lock_decides_without_process_identity() {
+  local dir="$TMP_ROOT/lock-no-identity"
+  make_identity_fixture "$dir" no
+
+  run_lock_bounded "$dir" first
+  [ "$(tr -d '[:space:]' < "$dir/first.rc")" = 0 ] \
+    || fail "a host that cannot identify a process was refused the helm: $(cat "$dir/first.out")"
+  assert_contains "$(cat "$dir/first.out")" "lock acquired" \
+    "the lock did not report acquisition on a host without process identity"
+  [ -s "$dir/state/.lock" ] || fail "no session lock was written"
+  assert_absent "$dir/state/.lock-pid-identity" \
+    "an identity was recorded on a host that cannot produce one"
+
+  # Re-entry must not wedge either: the same owner asking again still decides.
+  run_lock_bounded "$dir" second
+  [ "$(tr -d '[:space:]' < "$dir/second.rc")" = 0 ] \
+    || fail "re-entrant acquisition was refused without an identity: $(cat "$dir/second.out")"
+
+  pass "a host without process identity still takes the helm instead of spinning"
+}
+
+test_lock_identity_is_recorded_repaired_and_enforced() {
+  local dir="$TMP_ROOT/lock-identity" recorded
+  make_identity_fixture "$dir" yes
+
+  run_lock_bounded "$dir" first
+  [ "$(tr -d '[:space:]' < "$dir/first.rc")" = 0 ] \
+    || fail "acquisition failed where identity is available: $(cat "$dir/first.out")"
+  [ -s "$dir/state/.lock-pid-identity" ] \
+    || fail "no process identity was recorded where the host can produce one"
+  recorded=$(cat "$dir/state/.lock-pid-identity")
+
+  # A lock taken before an identity was obtainable must GAIN one on re-entry.
+  # The Pi watch extension refuses to claim supervision for a lock with no
+  # recorded identity, so leaving that gap open keeps the watcher from ever
+  # arming while every other check reports the lock healthy.
+  rm -f "$dir/state/.lock-pid-identity"
+  run_lock_bounded "$dir" repair
+  [ "$(tr -d '[:space:]' < "$dir/repair.rc")" = 0 ] \
+    || fail "re-entrant acquisition failed instead of repairing the identity: $(cat "$dir/repair.out")"
+  [ "$(cat "$dir/state/.lock-pid-identity" 2>/dev/null)" = "$recorded" ] \
+    || fail "re-entrant acquisition did not republish the missing process identity"
+
+  # PROVEN reuse still refuses. This is the case the identity exists for.
+  printf '%s\n' "a-different-process-entirely" > "$dir/state/.lock-pid-identity"
+  run_lock_bounded "$dir" reused
+  [ "$(tr -d '[:space:]' < "$dir/reused.rc")" = 1 ] \
+    || fail "a changed process identity was accepted as the same lock holder"
+  assert_contains "$(cat "$dir/reused.out")" "process identity changed" \
+    "the refusal did not name the changed process identity"
+
+  pass "process identity is recorded, repaired on re-entry, and still refuses a reused pid"
+}
+
+test_lock_decides_without_process_identity
+test_lock_identity_is_recorded_repaired_and_enforced

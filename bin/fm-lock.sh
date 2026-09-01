@@ -96,6 +96,14 @@ if [ -f "$LOCK" ] && [ ! -L "$LOCK" ]; then
       echo "error: session-lock process identity changed; operate read-only until resolved" >&2
       exit 1
     fi
+    # Re-publish on re-entry so a lock taken before an identity was obtainable
+    # gains one. The Pi watch extension refuses to claim continuity for a lock
+    # with no recorded identity, so leaving this gap open would keep supervision
+    # from ever arming while every other check reported the lock healthy.
+    if ! publish_lock_identity; then
+      echo "error: cannot publish session-lock process identity; operate read-only until resolved" >&2
+      exit 1
+    fi
     echo "lock acquired: harness pid $me"
     exit 0
   fi
