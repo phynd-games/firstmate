@@ -925,7 +925,7 @@ command_intake_resolution() {
   show=$(task_show "$id") || return 1
   state=$(show_field "$show" state)
   hold_kind=$(show_field_value "$show" hold_kind)
-  [ "$state" = done ] || [ -z "$hold_kind" ] || return 1
+  [ -z "$hold_kind" ] || return 1
   body=$(show_field "$show" body)
   body_has_resolution_record "$body" || return 1
   [ "$(recorded_resolution_mode "$body" || true)" = released ] || return 1

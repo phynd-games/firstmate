@@ -125,6 +125,23 @@ cmd_source_id() {
   fi
 }
 
+lavish_intake_ownership_present() {
+  local id=$1 path source
+  for path in "$STATE/procevent/$id.intake" "$STATE/procevent/$id.source"; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    [ -L "$path" ] && return 0
+    [ "${path##*.}" = intake ] && return 0
+    grep -qx 'intake=1' "$path" && return 0
+  done
+  for path in "$STATE"/*.lavish-intake-session; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    [ -L "$path" ] && return 0
+    source=$(sed -n 's/^source_id=//p' "$path" | head -1)
+    [ "$source" = "$id" ] && return 0
+  done
+  "$SCRIPT_DIR/fm-captain-hold.sh" binding-intake "$id" >/dev/null 2>&1
+}
+
 cmd_arm() {
   local artifact=${1-} id real intake=0
   [ -n "$artifact" ] || usage
@@ -140,6 +157,9 @@ cmd_arm() {
   id=$(cmd_source_id "$artifact") || exit 1
   real=$(perl -MCwd=realpath -e '$p = realpath($ARGV[0]); defined($p) or exit 1; print "$p\n"' "$artifact" 2>/dev/null) \
     || die "cannot resolve the artifact path: $artifact"
+  if [ "$intake" -eq 0 ] && lavish_intake_ownership_present "$id"; then
+    die "cannot ordinary-arm Lavish source while intake ownership remains: $id"
+  fi
   # This adapter's own listener command, which runs the plain blocking form with
   # no --timeout-ms so completion is a server event, and absorbs only the exact
   # transient interruption. Registering raw poll output is what let that

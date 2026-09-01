@@ -319,7 +319,10 @@ fm_procevent_capture() {
   fm_procevent_source_id_valid "$id" || return 1
   fm_procevent_adapter_valid "$adapter" || return 1
   inbox=$(fm_procevent_inbox_dir "$state")
+  [ -L "$inbox" ] && return 1
+  [ -e "$inbox" ] && [ ! -d "$inbox" ] && return 1
   (umask 077; mkdir -p "$inbox") || return 1
+  [ -d "$inbox" ] && [ ! -L "$inbox" ] || return 1
   seq=1
   while [ -e "$inbox/$id.$seq.result" ]; do seq=$((seq + 1)); done
   dest="$inbox/$id.$seq.result"

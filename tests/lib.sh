@@ -226,6 +226,22 @@ fm_git_worktree() {
   git -C "$repo" worktree add --quiet -b "$branch" "$worktree"
 }
 
+fm_write_exempt_brief() {
+  local home id state data config
+  home=$1
+  id=$2
+  state=${3:-$home/state}
+  data=${4:-$home/data}
+  config=${5:-$home/config}
+  mkdir -p "$data/$id" "$state" "$config"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$state" \
+    FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
+    "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes \
+    --not-applicable \
+    'configuration: target=spawn backend fixture; action=exercise isolated harness lifecycle' \
+    >/dev/null
+}
+
 # --- state/<id>.meta writers ------------------------------------------------
 
 # fm_write_meta <file> <key=val> ...: write the given key=val lines to a meta

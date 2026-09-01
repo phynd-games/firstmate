@@ -539,6 +539,33 @@ test_arm_failure_rolls_back_only_new_state() {
   pass "Lavish intake: failed process-event arm rolls back partial setup"
 }
 
+test_ordinary_rearm_refuses_stale_intake_ownership() {
+  local home artifact out rc sid
+  home=$(make_home stale-rearm)
+  add_task "$home" stale-rearm-a1
+  artifact=$home/intake.html
+  run_intake "$home" template stale-rearm-a1 --output "$artifact" >/dev/null
+  run_intake "$home" start stale-rearm-a1 --artifact "$artifact" >/dev/null
+  sid=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
+  PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$home/state" FM_PROCEVENT_CLAIM_ROOT="$home/claims" \
+    "$ROOT/bin/fm-procevent-lavish.sh" retire "$artifact" \
+    --expect-intake-task stale-rearm-a1 >/dev/null
+  set +e
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$home/state" FM_PROCEVENT_CLAIM_ROOT="$home/claims" \
+    "$ROOT/bin/fm-procevent-lavish.sh" arm "$artifact" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "ordinary re-arm ignored stale intake ownership"
+  assert_contains "$out" "intake ownership remains" \
+    "stale intake re-arm refusal was unclear"
+  assert_absent "$home/state/procevent/$sid.source" \
+    "stale intake re-arm registered an ordinary source"
+  pass "Lavish intake: stale typed ownership blocks ordinary re-arm"
+}
+
 test_artifact_replacement_refused() {
   local home artifact sid result out rc
   home=$(make_home artifact-replacement)
@@ -666,6 +693,18 @@ test_pending_release_requires_durable_resolution() {
     "unrelated unhold advanced pending intake completion"
   assert_absent "$home/state/pending-proof-a1.lavish-intake" \
     "unrelated unhold produced intake evidence"
+  (cd "$home" && tasks-axi hold pending-proof-a1 --kind captain \
+    --reason 'newer captain decision' >/dev/null)
+  (cd "$home" && tasks-axi done pending-proof-a1 >/dev/null)
+  set +e
+  out=$(run_intake "$home" record pending-proof-a1 --artifact "$artifact" --result "$result" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a newer captain hold satisfied pending intake release"
+  assert_contains "$out" "matching captain release evidence" \
+    "newer captain hold refusal was unclear"
+  assert_absent "$home/state/pending-proof-a1.lavish-intake" \
+    "newer captain hold produced intake evidence"
   pass "Lavish intake: pending completion requires durable captain resolution"
 }
 
@@ -742,6 +781,7 @@ test_intake_flag_rejects_exemption
 test_contractless_compatibility_requires_existing_endpoint
 test_start_failure_rolls_back_only_new_state
 test_arm_failure_rolls_back_only_new_state
+test_ordinary_rearm_refuses_stale_intake_ownership
 test_artifact_replacement_refused
 test_start_rejects_unrelated_captain_hold
 test_extra_keyed_feedback_refused
