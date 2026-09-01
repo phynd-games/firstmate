@@ -463,12 +463,43 @@ mint_generation() {
 
 # --- durable alarm and escalation ---------------------------------------------
 
-alarm_write() {  # <reason>
-  local reason=$1 tmp="$ALARM.tmp.${BASHPID:-$$}"
+# Alarms carry a PRIORITY, because the alarm file is a single slot and the loop
+# writes to it at very different levels of importance. The per-cycle "arm identity
+# is still unknown" progress note fires repeatedly; the abandonment note fires
+# once and is the one an operator actually needs. Last-writer-wins loses exactly
+# the message worth keeping, so a lower-priority alarm never displaces a
+# higher-priority one while that episode is open. Every write still lands in the
+# append-only history and the ledger, so nothing is lost, only ordered.
+ALARM_PRIORITY_ABANDON=30
+ALARM_PRIORITY_DEFAULT=20
+ALARM_PRIORITY_PROGRESS=10
+
+alarm_current_priority() {
+  local value
+  [ -f "$ALARM" ] || { printf '0'; return 0; }
+  value=$(sed -n 's/^priority=//p' "$ALARM" 2>/dev/null | head -n 1)
+  case "$value" in
+    ''|*[!0-9]*) printf '%s' "$ALARM_PRIORITY_DEFAULT" ;;
+    *) printf '%s' "$value" ;;
+  esac
+}
+
+alarm_write() {  # <reason> [priority]
+  local reason=$1 priority=${2:-$ALARM_PRIORITY_DEFAULT} tmp="$ALARM.tmp.${BASHPID:-$$}" current
+  case "$priority" in ''|*[!0-9]*) priority=$ALARM_PRIORITY_DEFAULT ;; esac
+  current=$(alarm_current_priority)
+  if [ "$priority" -lt "$current" ]; then
+    # Keep the more important standing alarm, but still record this one durably.
+    printf 'at=%s\nhome=%s\npriority=%s\nsuperseded_by_priority=%s\nreason=%s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$FM_HOME" "$priority" "$current" \
+      "$(ledger_clean_field "$reason")" >> "$ALARM_HISTORY" 2>/dev/null || return 1
+    return 0
+  fi
   {
     printf 'at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'home=%s\n' "$FM_HOME"
     printf 'generation=%s\n' "$(record_get generation || printf none)"
+    printf 'priority=%s\n' "$priority"
     printf 'reason=%s\n' "$(ledger_clean_field "$reason")"
   } > "$tmp" 2>/dev/null || {
     rm -f "$tmp" 2>/dev/null || true
@@ -514,9 +545,9 @@ rapid_alarm_write() {  # <reason>
 
 # escalate: one durable diagnostic plus one durable wake, using the queue that
 # already exists. It never prompts a harness session this process does not own.
-escalate() {  # <reason>
-  local reason=$1 status=0 alarm_status=0 queue_status=0
-  alarm_write "$reason" || { alarm_status=1; status=1; }
+escalate() {  # <reason> [priority]
+  local reason=$1 priority=${2:-} status=0 alarm_status=0 queue_status=0
+  alarm_write "$reason" "$priority" || { alarm_status=1; status=1; }
   ledger_append escalated "$reason"
   FM_WAKE_APPEND_LOCK_TRIES=100 FM_RECOVERY_MARKER_LOCK_TRIES=100 fm_wake_append check herdr-supervisor \
     "check: herdr-supervisor - $reason" 2>/dev/null \
@@ -1671,7 +1702,7 @@ loop_abandon_unresolved_arm() {
   identity=${LOOP_ARM_IDENTITY:-unknown}
   arm_out=${LOOP_ARM_OUT:-}
   reason="the arm identity remained unknown after $UNKNOWN_ARM_RETRY_LIMIT bounded termination attempts; abandoning child pid=$pid identity=$identity while retaining generation=$LOOP_GENERATION"
-  escalate "$reason"
+  escalate "$reason" "$ALARM_PRIORITY_ABANDON"
   ledger_append arm-abandoned "pid=$pid identity=$identity"
   herdr_blocked_clear || true
   LOOP_ARM_PID=
@@ -2086,7 +2117,7 @@ cmd_run() {
       arm_match=$?
     else
       arm_match=2
-      escalate "the foreground watcher arm process identity became unknown or changed; retaining the child without signaling a recycled pid"
+      escalate "the foreground watcher arm process identity became unknown or changed; retaining the child without signaling a recycled pid" "$ALARM_PRIORITY_PROGRESS"
     fi
     if [ "$arm_match" -eq 2 ]; then
       if ! loop_stop_arm; then

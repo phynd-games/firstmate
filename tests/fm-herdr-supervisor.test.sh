@@ -1225,6 +1225,8 @@ assert_present "$HOME21/state/.herdr-supervisor-live" \
   "abandoning an unknown arm retains the supervisor liveness record"
 if ! grep -q 'abandoning child pid=' "$HOME21/state/.herdr-supervisor-alarm" 2>/dev/null; then
   printf -- '--- alarm ---\n' >&2; cat "$HOME21/state/.herdr-supervisor-alarm" >&2 2>/dev/null || printf '(absent)\n' >&2
+  printf -- '--- alarm history (every write, in order) ---\n' >&2
+  grep -n 'reason=' "$HOME21/state/.herdr-supervisor-alarm-history" >&2 2>/dev/null || printf '(absent)\n' >&2
   printf -- '--- ledger ---\n' >&2; tr '\t' ' ' < "$HOME21/state/.herdr-supervisor.log" >&2 2>/dev/null || true
   fail "abandoning an unknown arm leaves a durable child diagnostic"
 fi
@@ -1336,5 +1338,49 @@ stop_suite_monitors() {
   done
 }
 stop_suite_monitors
+
+# =============================================================================
+# The alarm file is a single slot written at very different levels of importance.
+# The per-cycle "arm identity is still unknown" note fires repeatedly; the
+# abandonment note fires once and is the one an operator needs. Last-writer-wins
+# buried the abandonment behind a later progress note, so the most important
+# diagnostic was the one that got lost.
+#
+# Deterministic on purpose: it drives the ordering rule directly, with no arms,
+# no processes and no timing, because the failure it pins was only ever visible
+# through a flaky real-process case.
+# =============================================================================
+HOMEA=$(new_home alarm-priority)
+ALARM_OUT="$HOMEA/priority.out"
+FM_HOME="$HOMEA" FM_STATE_OVERRIDE="$HOMEA/state" FM_CONFIG_OVERRIDE="$HOMEA/config" \
+FM_SUP_SCRIPT="$ROOT/bin/fm-herdr-supervisor.sh" FM_SUP_STATE="$HOMEA/state" bash -c '
+set -u
+set --
+. "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+r() { sed -n "s/^reason=//p" "$FM_SUP_STATE/.herdr-supervisor-alarm" 2>/dev/null; }
+alarm_write "progress one" "$ALARM_PRIORITY_PROGRESS" >/dev/null 2>&1
+printf "after-low=%s\n" "$(r)"
+alarm_write "abandoning child pid=123" "$ALARM_PRIORITY_ABANDON" >/dev/null 2>&1
+printf "after-high=%s\n" "$(r)"
+alarm_write "progress two" "$ALARM_PRIORITY_PROGRESS" >/dev/null 2>&1
+printf "after-low2=%s\n" "$(r)"
+alarm_write "abandoning child pid=456" "$ALARM_PRIORITY_ABANDON" >/dev/null 2>&1
+printf "after-high2=%s\n" "$(r)"
+' > "$ALARM_OUT" 2>&1
+
+assert_grep 'after-low=progress one' "$ALARM_OUT" \
+  "an alarm is not written when nothing more important is standing"
+assert_grep 'after-high=abandoning child pid=123' "$ALARM_OUT" \
+  "a terminal abandonment alarm does not replace a lesser standing alarm"
+assert_grep 'after-low2=abandoning child pid=123' "$ALARM_OUT" \
+  "a later progress note buried the terminal abandonment alarm"
+assert_grep 'after-high2=abandoning child pid=456' "$ALARM_OUT" \
+  "the latest abandonment alarm does not win over an earlier one of equal priority"
+
+# Nothing is discarded: a superseded write still lands in the append-only history,
+# so suppression orders the single slot without losing evidence.
+assert_grep 'progress two' "$HOMEA/state/.herdr-supervisor-alarm-history" \
+  "a superseded alarm was dropped instead of recorded in the history"
+pass "the latest highest-priority alarm wins and superseded ones stay in the history"
 
 echo "all fm-herdr-supervisor tests passed"
