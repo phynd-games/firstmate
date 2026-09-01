@@ -775,10 +775,12 @@ cmd_retire() {
   if [ -n "$expected_task" ]; then
     registration=$(source_file "$id")
     marker="$STATE/procevent/$id.intake"
-    [ -f "$registration" ] && [ ! -L "$registration" ] \
-      && [ "$(awk -F= '$1 == "adapter" { print $2; exit }' "$registration")" = lavish ] \
-      && [ "$(awk -F= '$1 == "intake" { print $2; exit }' "$registration")" = 1 ] \
-      || { fm_procevent_source_lock_release "$id"; die "current source registration is not an intake source for task $expected_task"; }
+    if [ -e "$registration" ] || [ -L "$registration" ]; then
+      [ -f "$registration" ] && [ ! -L "$registration" ] \
+        && [ "$(awk -F= '$1 == "adapter" { print $2; exit }' "$registration")" = lavish ] \
+        && [ "$(awk -F= '$1 == "intake" { print $2; exit }' "$registration")" = 1 ] \
+        || { fm_procevent_source_lock_release "$id"; die "current source registration is not an intake source for task $expected_task"; }
+    fi
     [ -f "$marker" ] && [ ! -L "$marker" ] \
       && [ "$(awk -F= '$1 == "task_id" { print substr($0, length($1) + 2); exit }' "$marker")" = "$expected_task" ] \
       && [ "$(awk -F= '$1 == "source_id" { print substr($0, length($1) + 2); exit }' "$marker")" = "$id" ] \

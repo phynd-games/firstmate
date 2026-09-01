@@ -593,6 +593,14 @@ LAVISH_RESULT=$(first_result "$HLT" "$lavish_id" || true)
 assert_grep 'ship it' "$LAVISH_RESULT" "automatic retirement retains the human's final feedback"
 out=$(PATH="$LAVISH_BIN:$PATH" FM_HOME="$HLT" "$ROOT/bin/fm-procevent-lavish.sh" retire "$REVIEW_ART")
 assert_contains "$out" "retired: $lavish_id" "explicit adapter retirement stays supported after automatic retirement"
+terminal_task=terminal-intake-task
+FM_HOME="$HLT" "$ROOT/bin/fm-captain-hold.sh" bind "$lavish_id" "$terminal_task" --intake >/dev/null
+printf 'task_id=%s\nsource_id=%s\n' "$terminal_task" "$lavish_id" > "$HLT/state/procevent/$lavish_id.intake"
+out=$(PATH="$LAVISH_BIN:$PATH" FM_HOME="$HLT" "$ROOT/bin/fm-procevent.sh" retire "$lavish_id" --expect-intake-task "$terminal_task")
+assert_contains "$out" "retired: $lavish_id" "intake retirement remains idempotent after terminal source retirement"
+assert_present "$HLT/state/procevent/$lavish_id.intake" "terminal intake retirement preserves its teardown ownership marker"
+assert_absent "$HLT/state/decision-bindings/$lavish_id.origin" "terminal intake retirement left its binding"
+rm -f "$HLT/state/procevent/$lavish_id.intake"
 pass "one Send & End yields exactly one captured result, automatic retirement, and no recurring poll"
 
 # --- end-user-aligned regression: an empty board close is not news ------------

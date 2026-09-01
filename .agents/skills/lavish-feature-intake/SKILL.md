@@ -21,10 +21,10 @@ The only exemptions are bounded bug fixes, dependency or configuration updates, 
 An exact follow-up keeps its accepted intake only while goal, users, use cases, scope, constraints, and acceptance criteria remain materially unchanged.
 A bug report that expands behavior, changes product intent, or leaves classification uncertain is significant.
 
-Record an exemption with `bin/fm-lavish-intake.sh exempt <task-id> --reason '<class>: <bounded scope>'`.
+Record an exemption with `bin/fm-lavish-intake.sh exempt <task-id> --reason '<class>: target=<specific subject>; action=<specific change>'`.
 The class must be one of `bug-fix`, `dependency`, `configuration`, `documentation`, or `behavior-preserving refactor`, and the scope must be concrete rather than a generic bypass.
-The scope must start with a concrete action and name at least two specific target terms with sufficient detail, such as `documentation: update setup section for intake command; no behavior change`.
-Do not use vague targets such as "the broken code", "this project", "various work", or "skip" in an exemption reason.
+The scope must name at least two specific target terms and an action of at least two words, such as `documentation: target=setup section; action=update intake command instructions`.
+Do not use vague or placeholder targets such as "the broken code", "this project", "foo", "bar", "stuff", "now", "safely", "various work", or "skip" in an exemption reason.
 Never infer not-applicable from a missing artifact, a small diff, a file path, or a familiar task name.
 
 ## Required intake

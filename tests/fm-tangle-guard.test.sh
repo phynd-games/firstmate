@@ -178,7 +178,7 @@ run_spawn() {
   local home=$1 id=$2 proj=$3 pane=$4 fakebin=$5
   mkdir -p "$home/data/$id"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$proj" --scout \
-    --not-applicable "configuration: exercise tangle guard through a test fixture with no product behavior change" >/dev/null
+    --not-applicable "configuration: target=tangle guard fixture; action=exercise test behavior without product change" >/dev/null
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
@@ -258,7 +258,7 @@ run_spawn_record() {
   local home=$1 id=$2 proj=$3 pane=$4 fakebin=$5 rec=$6
   mkdir -p "$home/data/$id"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$proj" --scout \
-    --not-applicable "configuration: exercise tangle guard through a test fixture with no product behavior change" >/dev/null
+    --not-applicable "configuration: target=tangle guard fixture; action=exercise test behavior without product change" >/dev/null
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \

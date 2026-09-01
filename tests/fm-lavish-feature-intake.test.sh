@@ -292,6 +292,7 @@ test_explicit_exemptions_require_reason() {
     'exemption-invalid-vague-bug-fix|bug-fix: fix the broken code in this project'
     'exemption-invalid-configuration|configuration: no'
     'exemption-invalid-documentation|documentation: update thing here now'
+    'exemption-invalid-placeholders|configuration: target=foo bar; action=update now safely'
   )
   for entry in "${invalid_reasons[@]}"; do
     id=${entry%%|*}
@@ -302,15 +303,15 @@ test_explicit_exemptions_require_reason() {
     set -e
     [ "$rc" -ne 0 ] || fail "generic exemption scope was accepted: $reason"
   done
-  run_intake "$home" exempt exemption-a1 --reason 'documentation: update the intake exemption coverage' >/dev/null
+  run_intake "$home" exempt exemption-a1 --reason 'documentation: target=intake exemption coverage; action=update coverage instructions' >/dev/null
   assert_contains "$(run_intake "$home" verify exemption-a1)" "not-applicable" \
     "valid exemption did not verify"
   run_brief "$home" exemption-a1 firstmate --mode no-mistakes \
-    --not-applicable 'documentation: update the intake exemption coverage' >/dev/null 2>&1 && \
+    --not-applicable 'documentation: target=intake exemption coverage; action=update coverage instructions' >/dev/null 2>&1 && \
     fail "brief overwrote existing exemption evidence"
 
   run_brief "$home" exemption-b2 firstmate --mode no-mistakes \
-    --not-applicable 'dependency: pin test dependency: no behavior change' >/dev/null
+    --not-applicable 'dependency: target=test dependency; action=pin dependency version without behavior change' >/dev/null
   brief=$home/data/exemption-b2/brief.md
   [ "$(run_intake "$home" check-brief exemption-b2 "$brief" | sed -n 's/^status=//p')" = not-applicable ] \
     || fail "valid exemption brief did not preserve its classification"
@@ -321,7 +322,7 @@ import sys
 path = Path(sys.argv[1])
 text = path.read_text()
 text = text.replace(
-    "Lavish intake reason: dependency: pin test dependency: no behavior change",
+    "Lavish intake reason: dependency: target=test dependency; action=pin dependency version without behavior change",
     "Lavish intake reason: altered exemption reason",
 )
 path.write_text(text)
@@ -344,7 +345,7 @@ test_exemption_rejects_active_intake() {
   run_intake "$home" start active-a1 --artifact "$artifact" >/dev/null
   set +e
   out=$(run_intake "$home" exempt active-a1 \
-    --reason 'documentation: update active intake setup instructions' 2>&1)
+    --reason 'documentation: target=active intake setup; action=update setup instructions' 2>&1)
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "active intake accepted a not-applicable exemption"
@@ -438,7 +439,7 @@ test_intake_flag_rejects_exemption() {
   local home receipt out rc
   home=$(make_home intake-classification)
   add_task "$home" classification-a1
-  run_intake "$home" exempt classification-a1 --reason 'documentation: update the classification test' >/dev/null
+  run_intake "$home" exempt classification-a1 --reason 'documentation: target=classification test; action=update test coverage' >/dev/null
   receipt=$home/state/classification-a1.lavish-intake
   set +e
   out=$(run_brief "$home" classification-a1 firstmate --mode no-mistakes --intake "$receipt" 2>&1)

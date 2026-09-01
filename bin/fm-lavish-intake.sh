@@ -5,7 +5,7 @@
 #   fm-lavish-intake.sh template <task-id> --output <artifact.html>
 #   fm-lavish-intake.sh start <task-id> --artifact <artifact.html> [--reason <text>]
 #   fm-lavish-intake.sh record <task-id> --artifact <artifact.html> --result <result>
-#   fm-lavish-intake.sh exempt <task-id> --reason '<class>: <bounded scope>'
+#   fm-lavish-intake.sh exempt <task-id> --reason '<class>: target=<subject>; action=<change>'
 #   fm-lavish-intake.sh verify <task-id> [--evidence <receipt>]
 #   fm-lavish-intake.sh check-brief <task-id> <brief.md>
 #
@@ -102,6 +102,16 @@ sha256_file() {
   fi
 }
 
+sha256_text() {
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | awk '{print $1}'
+  else
+    fail "shasum or sha256sum is required"
+  fi
+}
+
 lavish_session_state_path() {
   printf '%s/state.json\n' "${LAVISH_AXI_STATE_DIR:-$HOME/.lavish-axi}"
 }
@@ -113,7 +123,7 @@ lavish_session_active() {
   [ -d "$state_dir" ] || return 1
   [ ! -L "$state_dir" ] || return 2
   [ -f "$state_file" ] && [ ! -L "$state_file" ] || return 1
-  session_key=$(sha256_file "$artifact" | cut -c1-16)
+  session_key=$(sha256_text "$artifact" | cut -c1-16)
   perl -MJSON::PP -e '
     my ($key) = @ARGV;
     local $/;
@@ -191,7 +201,7 @@ artifact_fields_present() {
 }
 
 validate_exemption_reason() {
-  local reason=$1 detail normalized first_word action target word_count meaningful_count
+  local reason=$1 detail normalized target action action_detail first_word target_words action_words meaningful_count
   validate_one_line "exemption reason" "$reason"
   case "$reason" in
     bug-fix:*|dependency:*|configuration:*|documentation:*|"behavior-preserving refactor":*) ;;
@@ -199,22 +209,31 @@ validate_exemption_reason() {
   esac
   detail=${reason#*:}
   detail=$(printf '%s' "$detail" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
-  normalized=$(printf '%s' "$detail" | tr '[:upper:]' '[:lower:]')
-  word_count=$(printf '%s\n' "$detail" | awk '{print NF}')
-  [ "$word_count" -ge 4 ] \
-    || fail "exemption reason must name a concrete target and action"
-  [ "${#detail}" -ge 24 ] \
+  if [[ "$detail" =~ ^target=([^;]+)\;[[:space:]]+action=([^;]+)$ ]]; then
+    target=${BASH_REMATCH[1]}
+    action_detail=${BASH_REMATCH[2]}
+  else
+    fail "exemption reason must use target=<specific subject>; action=<specific change>"
+  fi
+  target=$(printf '%s' "$target" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
+  action_detail=$(printf '%s' "$action_detail" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
+  [ -n "$target" ] && [ -n "$action_detail" ] \
+    || fail "exemption reason must name a bounded target and action"
+  [ "${#target}" -ge 8 ] && [ "${#action_detail}" -ge 8 ] \
     || fail "exemption reason must name a bounded scope with sufficient detail"
-  first_word=$(printf '%s\n' "$detail" | awk '{print $1}')
+  target_words=$(printf '%s\n' "$target" | awk '{print NF}')
+  action_words=$(printf '%s\n' "$action_detail" | awk '{print NF}')
+  [ "$target_words" -ge 2 ] && [ "$action_words" -ge 2 ] \
+    || fail "exemption reason must name a concrete target and action"
+  first_word=$(printf '%s\n' "$action_detail" | awk '{print $1}')
   action=$(printf '%s' "$first_word" | tr '[:upper:]' '[:lower:]')
   case "$action" in
     add|adjust|align|configure|correct|cover|disable|document|enable|exercise|fix|limit|migrate|pin|preserve|record|refactor|remove|replace|test|update|use|validate) ;;
     *) fail "exemption reason must start with a concrete action" ;;
   esac
-  target=${detail#"$first_word"}
   meaningful_count=$(printf '%s\n' "$target" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '\n' | awk '
     BEGIN {
-      split("a an all any and area broken change code every fix here in item misc no none of on or problem project same something stuff task that the thing this to update various whatever work", words)
+      split("a an all any and area bar broken change code every fix foo here in item misc no none now of on problem project safely same something stuff task that the thing this to update various whatever work", words)
       for (i in words) ignored[words[i]]=1
     }
     !ignored[$0] { count++ }
@@ -222,7 +241,8 @@ validate_exemption_reason() {
   ')
   [ "$meaningful_count" -ge 2 ] \
     || fail "exemption reason must name a concrete target"
-  printf '%s' "$normalized" | grep -Eiq '(^|[[:space:];,])(thing|stuff|something|whatever|misc|various|item|area)($|[[:space:];,.])' \
+  normalized=$(printf '%s %s' "$target" "$action_detail" | tr '[:upper:]' '[:lower:]')
+  printf '%s' "$normalized" | grep -Eiq '(^|[[:space:];,])(foo|bar|code|project|stuff|now|safely|thing|something|whatever|misc|various|item|area)($|[[:space:];,.])' \
     && fail "exemption reason must name a concrete target"
   case "${normalized//[[:space:]]/}" in
     skip|none|na|n/a|not-applicable|notapplicable|todo|tbd|placeholder|nothing|something|whatever|misc|various) \

@@ -45,9 +45,9 @@
 # report rather than a merge, and a charter is not a delivery contract.
 # --intake and --not-applicable are mutually exclusive. A new ship or scout
 # brief without either carries a required gate and cannot be dispatched.
-# --not-applicable requires a reason in the form <class>: <bounded scope> with
-# a named target and action, such as "documentation: update setup section for
-# intake command; no behavior change",
+# --not-applicable requires a reason in the form <class>: target=<subject>;
+# action=<change>, such as "documentation: target=setup section; action=update
+# intake command instructions",
 # where the class is bug-fix, dependency, configuration, documentation, or
 # behavior-preserving refactor.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is

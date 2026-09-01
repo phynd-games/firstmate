@@ -52,7 +52,7 @@ git -C "$LAB/projects/comms" commit -qm 'fixture: initialize cmux Claude compose
 
 STATUS="$LAB/state/$TASK.status"
 FM_HOME="$LAB" "$ROOT/bin/fm-brief.sh" "$TASK" comms --scout \
-  --not-applicable "configuration: exercise the live cmux composer probe with no product implementation" \
+  --not-applicable "configuration: target=live cmux composer probe; action=exercise composer behavior without product implementation" \
   || fail "could not scaffold the Claude probe brief"
 python3 - "$LAB/data/$TASK/brief.md" "$STATUS" <<'PY'
 from pathlib import Path
