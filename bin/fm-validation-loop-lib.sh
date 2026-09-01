@@ -193,6 +193,19 @@ _fm_vloop_toon_tables_valid() {  # <evidence-content>
     function valid_header(value) {
       return value ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*\[[0-9]+\]\{[^{}]+\}:[[:space:]]*$/
     }
+    function csv_width(value, i, c, width, in_quotes) {
+      width = 1
+      in_quotes = 0
+      for (i = 1; i <= length(value); i++) {
+        c = substr(value, i, 1)
+        if (c == "\\" && in_quotes) { i++; continue }
+        if (c == "\"") {
+          if (in_quotes && substr(value, i + 1, 1) == "\"") i++
+          else in_quotes = !in_quotes
+        } else if (c == "," && !in_quotes) width++
+      }
+      return in_quotes ? -1 : width
+    }
     /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*\[[0-9]+\]/ {
       close_table()
       if (!valid_header($0)) { invalid = 1; next }
@@ -214,17 +227,48 @@ _fm_vloop_toon_tables_valid() {  # <evidence-content>
         if (field_values[i] == "" || seen_fields[field_values[i]]) invalid = 1
         seen_fields[field_values[i]] = 1
       }
+      if (table_name == "findings" && (field_count != 6 || field_values[1] != "id" || field_values[2] != "severity" || field_values[3] != "file" || field_values[4] != "line" || field_values[5] != "action" || field_values[6] != "description")) invalid = 1
       in_table = 1
       row_count = 0
       next
     }
     in_table && $0 ~ /^[[:space:]]+[^[:space:]].*$/ {
+      row = $0
+      sub(/^[[:space:]]+/, "", row)
       row_count++
+      if (csv_width(row) != field_count) invalid = 1
       next
     }
     in_table { close_table() }
     END {
       close_table()
+      exit invalid
+    }
+  '
+}
+
+_fm_vloop_findings_valid() {  # <evidence-content>
+  printf '%s\n' "$1" | awk '
+    function valid_table(value) {
+      return value ~ /^[[:space:]]*findings\[[0-9]+\]\{[^{}]+\}:[[:space:]]*$/
+    }
+    /^[[:space:]]*findings:/ {
+      scalar_count++
+      value = $0
+      sub(/^[^:]*:/, "", value)
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      if (value != "none") invalid = 1
+      next
+    }
+    /^[[:space:]]*findings\[/ {
+      table_count++
+      if (!valid_table($0)) invalid = 1
+      next
+    }
+    /^[[:space:]]*findings([^[:alnum:]_]|$)/ { invalid = 1 }
+    END {
+      if (scalar_count > 1 || table_count > 1 || scalar_count + table_count > 1) invalid = 1
       exit invalid
     }
   '
@@ -512,6 +556,7 @@ fm_vloop_evidence_valid() {  # <content>
   outcome=$(fm_nm_strip_quotes "$(fm_nm_field "$content" outcome)")
   _fm_vloop_status_valid "$status" || return 1
   _fm_vloop_outcome_valid "$status" "$outcome" || return 1
+  _fm_vloop_findings_valid "$content" || return 1
   _fm_vloop_toon_tables_valid "$content" || return 1
   return 0
 }

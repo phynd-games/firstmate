@@ -260,6 +260,13 @@ EOF
     'validation evidence malformed or incomplete for task malformed-outcome' ] \
     || fail "incomplete TOON table evidence did not stop with a recovery reason"
   ev_running "$ev" 01RUN running pending
+  printf 'findings: garbage\n' >> "$ev"
+  if fm_vloop_observe "$state" malformed-outcome "$ev"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 2 ] || fail "an invalid findings scalar was accepted"
+  [ "$(fm_vloop_reason "$state" malformed-outcome)" = \
+    'validation evidence malformed or incomplete for task malformed-outcome' ] \
+    || fail "an invalid findings scalar did not stop with a recovery reason"
+  ev_running "$ev" 01RUN running pending
   printf 'status: bogus\n' >> "$ev"
   if fm_vloop_observe "$state" malformed-outcome "$ev"; then rc=0; else rc=$?; fi
   [ "$rc" -eq 2 ] || fail "duplicate scalar evidence fields were accepted"
