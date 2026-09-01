@@ -441,7 +441,7 @@ The task is complete only when committed on your branch \`fm/$ID\`. Do NOT push,
 Keep your branch a clean fast-forward from the approved target base recorded in task metadata; do not rebase onto a moving default branch.
 Before reporting readiness, run \`$FM_ROOT/bin/fm-pr-self-review-check.sh $ID local-only\`; stop if it refuses.
 When it is implemented and committed, append \`done: ready in branch fm/$ID\` to the status file and stop.
-If local \`main\` advances before landing, reconcile the branch with that exact current base and repeat the approved-base self-review; do not silently rebase or reuse the old report.
+If local \`main\` advances before landing, reconcile the branch with that exact current base, then run \`$FM_ROOT/bin/fm-merge-local.sh $ID --reconcile\` to update the approved-base record and invalidate the old report; complete a new approved-base self-review before retrying the landing command. Do not silently rebase or reuse the old report.
 The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
 EOF
     ;;

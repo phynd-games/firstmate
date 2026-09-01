@@ -275,8 +275,8 @@ surface_review_record() {
   }
   behavior_digest=$(surface_behavior_digest "$surface" "$file:2" "$file:2" old "$old_digest" "$old_hex" "$file:2" new "$new_digest" "$new_hex" "$change_digest" "$behavior" "$action") || return 1
   binding=$(surface_transition_binding_digest "$surface" "$file:2" "$new_digest" "$change_digest" "$new_hex" "$file:2" old "$old_digest" "$old_hex" "$file:2" new "$new_digest" "$new_hex" "$behavior_digest") || return 1
-  printf '%s: reviewed; surface=%s; files=%s; evidence=%s:2 sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 behavior-sha256=%s; consequence=anchor=%s:2 side=old sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 behavior-sha256=%s binding=%s; fix=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 behavior-sha256=%s binding=%s\n' \
-    "$label" "$surface" "$file" "$file" "$new_digest" "$change_digest" "$new_hex" "$file" "$behavior_digest" "$file" "$old_digest" "$change_digest" "$old_hex" "$file" "$behavior_digest" "$binding" "$file" "$new_digest" "$change_digest" "$new_hex" "$file" "$behavior_digest" "$binding"
+  printf '%s: reviewed; surface=%s; files=%s; evidence=%s:2 sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s:2 behavior-sha256=%s; consequence=anchor=%s:2 side=old sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s:2 behavior-sha256=%s binding=%s; fix=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s:2 behavior-sha256=%s binding=%s\n' \
+    "$label" "$surface" "$file" "$file" "$new_digest" "$change_digest" "$new_hex" "$old_hex" "$new_hex" "$file" "$behavior_digest" "$file" "$old_digest" "$change_digest" "$old_hex" "$old_hex" "$new_hex" "$file" "$behavior_digest" "$binding" "$file" "$new_digest" "$change_digest" "$new_hex" "$old_hex" "$new_hex" "$file" "$behavior_digest" "$binding"
 }
 
 surface_review_single_record() {
@@ -292,8 +292,8 @@ surface_review_single_record() {
   esac
   behavior_digest=$(surface_behavior_digest "$surface" "$file:2" "$file:2" new "$digest" "$line_hex" "$file:2" new "$digest" "$line_hex" "$change_digest" "$behavior" "$action") || return 1
   binding=$(surface_transition_binding_digest "$surface" "$file:2" "$digest" "$change_digest" "$line_hex" "$file:2" new "$digest" "$line_hex" "$file:2" new "$digest" "$line_hex" "$behavior_digest") || return 1
-  printf '%s: reviewed; surface=%s; files=%s; evidence=%s:2 sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 behavior-sha256=%s; consequence=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 behavior-sha256=%s binding=%s; fix=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s hunk=%s:2 behavior-sha256=%s binding=%s\n' \
-    "$label" "$surface" "$file" "$file" "$digest" "$change_digest" "$line_hex" "$file" "$behavior_digest" "$file" "$digest" "$change_digest" "$line_hex" "$file" "$behavior_digest" "$binding" "$file" "$digest" "$change_digest" "$line_hex" "$file" "$behavior_digest" "$binding"
+  printf '%s: reviewed; surface=%s; files=%s; evidence=%s:2 sha256=%s change-sha256=%s line-hex=%s before-hex=none after-hex=%s hunk=%s:2 behavior-sha256=%s; consequence=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s before-hex=none after-hex=%s hunk=%s:2 behavior-sha256=%s binding=%s; fix=anchor=%s:2 side=new sha256=%s change-sha256=%s line-hex=%s before-hex=none after-hex=%s hunk=%s:2 behavior-sha256=%s binding=%s\n' \
+    "$label" "$surface" "$file" "$file" "$digest" "$change_digest" "$line_hex" "$line_hex" "$file" "$behavior_digest" "$file" "$digest" "$change_digest" "$line_hex" "$line_hex" "$file" "$behavior_digest" "$binding" "$file" "$digest" "$change_digest" "$line_hex" "$line_hex" "$file" "$behavior_digest" "$binding"
 }
 
 surface_review_single_record_at_line() {
@@ -310,8 +310,15 @@ surface_review_single_record_at_line() {
   reference="$file:$line"
   behavior_digest=$(surface_behavior_digest "$surface" "$reference" "$reference" "$side" "$digest" "$line_hex" "$reference" "$side" "$digest" "$line_hex" "$change_digest" "$behavior" "$action") || return 1
   binding=$(surface_transition_binding_digest "$surface" "$reference" "$digest" "$change_digest" "$line_hex" "$reference" "$side" "$digest" "$line_hex" "$reference" "$side" "$digest" "$line_hex" "$behavior_digest") || return 1
-  printf '%s: reviewed; surface=%s; files=%s; evidence=%s sha256=%s change-sha256=%s line-hex=%s hunk=%s behavior-sha256=%s; consequence=anchor=%s side=%s sha256=%s change-sha256=%s line-hex=%s hunk=%s behavior-sha256=%s binding=%s; fix=anchor=%s side=%s sha256=%s change-sha256=%s line-hex=%s hunk=%s behavior-sha256=%s binding=%s\n' \
-    "$label" "$surface" "$file" "$reference" "$digest" "$change_digest" "$line_hex" "$reference" "$behavior_digest" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$reference" "$behavior_digest" "$binding" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$reference" "$behavior_digest" "$binding"
+  if [ "$side" = old ]; then
+    before_hex=$line_hex
+    after_hex=none
+  else
+    before_hex=none
+    after_hex=$line_hex
+  fi
+  printf '%s: reviewed; surface=%s; files=%s; evidence=%s sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s behavior-sha256=%s; consequence=anchor=%s side=%s sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s behavior-sha256=%s binding=%s; fix=anchor=%s side=%s sha256=%s change-sha256=%s line-hex=%s before-hex=%s after-hex=%s hunk=%s behavior-sha256=%s binding=%s\n' \
+    "$label" "$surface" "$file" "$reference" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$behavior_digest" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$behavior_digest" "$binding" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$behavior_digest" "$binding"
 }
 
 write_self_review_report() {
@@ -924,6 +931,23 @@ PY
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "forged surface behavior proof left a runnable poll"
 
   write_self_review_report "$dir/home" task-a
+  python3 - "$report" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace("before-hex=", "before-hex=none", 1)
+path.write_text(text, encoding="utf-8")
+PY
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/103 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted a false before/after behavior transition"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "false before/after transition left a runnable poll"
+
+  write_self_review_report "$dir/home" task-a
   run_check_entry "$dir" task-a https://github.com/o/r/pull/103 >/dev/null \
     || fail "PR-ready path rejected a valid durable self-review report"
   FM_ROOT_OVERRIDE="$dir/root" FM_SUBSTRATE_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" "$SELF_REVIEW_CHECK" task-a no-mistakes >/dev/null \
@@ -1366,7 +1390,8 @@ test_local_landing_refuses_advanced_default_after_review() {
   printf '%s\n' substrate > "$dir/substrate/README.md"
   git -C "$dir/substrate" add README.md
   git -C "$dir/substrate" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm substrate
-  printf '%s\n' "- Firstmate substrate root: \`$dir/substrate\`" > "$dir/home/data/local-stale/brief.md"
+  printf '%s\n' "- Firstmate substrate root: \`$dir/substrate\`" \
+    "Target-project approved base: ref=main; sha=$base_head" > "$dir/home/data/local-stale/brief.md"
   fm_write_meta "$dir/home/state/local-stale.meta" \
     "window=firstmate:fm-local-stale" "worktree=$dir/wt" "project=$dir/project" \
     'review_base_ref=main' "review_base_sha=$base_head" 'kind=ship' 'mode=local-only'
@@ -1392,6 +1417,24 @@ SH
   [ "$(git -C "$dir/project" rev-parse refs/heads/fm/local-stale)" = "$task_head" ] \
     || fail "stale local landing changed the reviewed task branch"
   pass "local-only landing refuses a moving default after the self-review snapshot"
+
+  git -C "$dir/wt" merge --no-edit -q main
+  report="$dir/home/data/local-stale/pr-self-review.md"
+  printf '%s\n' stale > "$report"
+  chmod 0600 "$report"
+  FM_ROOT_OVERRIDE="$fake_root" FM_HOME="$dir/home" "$ROOT/bin/fm-merge-local.sh" local-stale --reconcile \
+    > "$dir/reconcile.out" 2> "$dir/reconcile.err" \
+    || fail "local-only reconciliation did not update the approved base"
+  grep -q "reconciled local-stale to approved base main ($advanced_head)" "$dir/reconcile.out" \
+    || fail "local-only reconciliation did not report the new exact base"
+  grep -qxF "review_base_ref=main" "$dir/home/state/local-stale.meta" \
+    || fail "local-only reconciliation did not retain the approved base ref"
+  grep -qxF "review_base_sha=$advanced_head" "$dir/home/state/local-stale.meta" \
+    || fail "local-only reconciliation did not persist the approved base SHA"
+  grep -qxF "Target-project approved base: ref=main; sha=$advanced_head" "$dir/home/data/local-stale/brief.md" \
+    || fail "local-only reconciliation did not update the brief contract"
+  [ ! -e "$report" ] || fail "local-only reconciliation reused the stale self-review report"
+  pass "local-only reconciliation updates the base contract and invalidates stale review evidence"
 }
 
 test_direct_pr_creation_requires_self_review() {
