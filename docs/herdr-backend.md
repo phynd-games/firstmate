@@ -33,6 +33,11 @@ The required CI lane uses the pinned installers in `bin/fm-install-herdr.sh` and
 Those script headers own release assets, checksums, download bounds, and post-install gates.
 Real harness credential tests remain opt-in rather than part of default CI.
 
+## Watcher continuity
+
+A Herdr home can host its watcher continuity owner in a Herdr-tracked pane instead of in the primary harness process, which is what keeps supervision alive when the harness never loaded an owner of its own.
+`bin/fm-herdr-supervisor.sh` owns it and [`herdr-supervisor.md`](herdr-supervisor.md) owns its contract, including the one boundary it refuses to promise: a dead Herdr server takes the supervisor's host pane with it.
+
 ## Watching and task containers
 
 The ordinary topology puts one task tab per endpoint in the exact workspace of the Firstmate or secondmate that launches it.
@@ -286,14 +291,15 @@ There is still one watcher process; the event reader is a bounded child of that 
 
 ## Away-mode supervisor support
 
-The away daemon supports tmux and Herdr supervisor panes only.
+The away daemon's active terminal lifecycle supports Herdr supervisor panes only.
+Legacy tmux terminal records remain cleanup-compatible, but new tmux launches are refused rather than applying a detached transport.
 It refuses Zellij, Orca, and cmux as supervisor backends rather than applying the wrong transport.
 For Herdr, target existence, native state, capture, composer state, and verified submit all route through the shared backend dispatcher and the explicit named-session CLI owner.
 The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-alarm.md).
 
 Harnesses with native tracked background execution can run the daemon in their terminal.
 Pi has no such mechanism.
-`bin/fm-afk-launch.sh` therefore creates a dedicated unfocused Herdr workspace, runs the daemon there with an explicit supervisor target and backend, records the exact daemon pane, and closes only that pane on stop.
+`bin/fm-afk-launch.sh` therefore creates a dedicated unfocused Herdr workspace, runs the daemon there with an explicit supervisor target and backend, records the exact daemon pane, and closes only that pane on stop. Active away-mode launch is Herdr-only; legacy tmux terminal records remain readable for exact reconciliation but cannot launch a new daemon.
 It never splits the captain's active tab and never uses shell `&`.
 Recovery reconciles only the recorded exact id.
 
@@ -321,7 +327,7 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - A Firstmate outside Herdr cannot resolve a launcher workspace, so a colliding home label refuses new spawns until the collision is cleared.
 - Ghost and placeholder recognition uses ANSI de-emphasis when available; an unstyled glyph row carrying trailing non-idle text fails safely to `unknown`.
 - Mid-session secondmate agent-process liveness is not implemented.
-- Only tmux and Herdr can host the away-mode supervisor terminal.
+- Herdr is the only active away-mode supervisor terminal backend.
 
 ## Regression entry points
 

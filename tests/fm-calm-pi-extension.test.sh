@@ -672,12 +672,7 @@ test_rendering_and_session_lifecycle() {
   fixture="$TMP_ROOT/renderer"
   mkdir -p "$fixture/home" "$fixture/lib" "$fixture/node_modules/@earendil-works"
   cp "$EXT" "$fixture/fm-calm.ts"
-  cp "$ASSISTANT_LAYOUT" "$fixture/lib/fm-calm-assistant-layout.ts"
-  cp "$OPERATIONAL_USER_LAYOUT" "$fixture/lib/fm-calm-operational-user-layout.ts"
-  cp "$VISIBILITY" "$fixture/lib/fm-calm-visibility.ts"
-  cp "$WORKING_SHIP" "$fixture/lib/fm-calm-working-ship.ts"
-  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$fixture/lib/fm-operational-input.ts"
-  cp "$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts" "$fixture/lib/fm-branch-dispatch.ts"
+  fm_test_install_pi_extension_lib "$fixture/lib"
   cp "$WATCH_EXT" "$fixture/fm-primary-pi-watch.ts"
   ln -s "$PI_PACKAGE_DIR" "$fixture/node_modules/@earendil-works/pi-coding-agent"
   ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/node_modules/@earendil-works/pi-tui"
@@ -925,9 +920,14 @@ delete stockWatchTool.renderCall;
 delete stockWatchTool.renderResult;
 delete stockWatchTool.renderShell;
 const watchArgs = {};
+// A real arm failure carries the child's captured output after a newline
+// (fm-primary-pi-watch.ts builds "watcher: FAILED - ...\n<combined>"), so the
+// fidelity probe must be multi-line: a renderer that colours the joined block
+// once instead of once per line only diverges from stock past the first line.
+const watchMessage = "watcher: FAILED - Pi extension arm child found an external healthy watcher instead of owning wake delivery\nwatcher: healthy - beacon 3s old\nwatcher: lock held by pid 4242";
 const watchResult = {
-  content: [{ type: "text", text: "watcher: started Pi extension arm child 1" }],
-  details: { ok: true, message: "watcher: started Pi extension arm child 1" },
+  content: [{ type: "text", text: watchMessage }],
+  details: { ok: false, message: watchMessage },
   isError: false,
 };
 const watchBaseline = new ToolExecutionComponent(
@@ -3116,24 +3116,30 @@ test_interactive_terminal_e2e() {
   boat_resume_snapshot="$TMP_ROOT/boat-resume.txt"
   restarted_snapshot="$TMP_ROOT/restarted.txt"
   resumed_restored_snapshot="$TMP_ROOT/resumed-restored.txt"
-  mkdir -p "$project/.pi/extensions/lib" "$project/bin" "$project/state" "$config" "$home/config"
+  # $home/state must exist: fm-sessionstart-run.sh checks it through
+  # fm_primary_scope_matches and, when it is missing, exits 0 having printed
+  # nothing - so the extension injects no session-start message at all and the
+  # provenance assertion at the end of this test has nothing to find.
+  mkdir -p "$project/.pi/extensions/lib" "$project/bin" "$project/state" "$config" "$home/config" "$home/state"
   fm_git_init_commit "$project"
   : > "$project/AGENTS.md"
   cp "$EXT" "$project/.pi/extensions/fm-calm.ts"
-  cp "$ASSISTANT_LAYOUT" "$project/.pi/extensions/lib/fm-calm-assistant-layout.ts"
-  cp "$OPERATIONAL_USER_LAYOUT" "$project/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
-  cp "$VISIBILITY" "$project/.pi/extensions/lib/fm-calm-visibility.ts"
-  cp "$WORKING_SHIP" "$project/.pi/extensions/lib/fm-calm-working-ship.ts"
-  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$project/.pi/extensions/lib/fm-operational-input.ts"
-  cp "$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts" "$project/.pi/extensions/lib/fm-branch-dispatch.ts"
+  fm_test_install_pi_extension_lib "$project/.pi/extensions/lib"
   cp "$WATCH_EXT" "$project/.pi/extensions/fm-primary-pi-watch.ts"
   cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$project/.pi/extensions/fm-primary-turnend-guard.ts"
+  # fm-sessionstart-run.sh sources these two libraries; without them it writes
+  # its errors to stderr, prints NOTHING on stdout, and still exits 0, so the
+  # extension silently injects no session-start message and the provenance
+  # assertion below has nothing to read.
   cp \
     "$ROOT/bin/fm-sessionstart-run.sh" \
     "$ROOT/bin/fm-sessionstart-nudge.sh" \
     "$ROOT/bin/fm-primary-scope-lib.sh" \
     "$ROOT/bin/fm-gate-refuse-lib.sh" \
     "$ROOT/bin/fm-operational-input.sh" \
+    "$ROOT/bin/fm-session-lock-lib.sh" \
+    "$ROOT/bin/fm-hook-host-lib.sh" \
+    "$ROOT/bin/fm-cursor-lib.sh" \
     "$project/bin/"
   # The real digest is out of scope here: this lab is about how Calm RENDERS the
   # session-open message and whether it keeps its operational provenance, not

@@ -37,3 +37,212 @@ test_primary_and_secondmate_instruction_generation() {
 }
 
 test_primary_and_secondmate_instruction_generation
+
+# The supervision branch previously declared EVERY ask-user finding captain-owned,
+# so routine in-scope findings were reflexively escalated instead of decided. These
+# assert the emitted branch prompt - the actual generated interface the branch agent
+# receives - carries the corrected contract.
+test_branch_prompt_finding_authority() {
+  local prompt
+  prompt="$TMP_ROOT/branch-prompt.txt"
+  "$ROOT/bin/fm-branch-prompt.sh" > "$prompt"
+
+  # 1. A routine in-scope finding is decided by firstmate and steered through the
+  #    existing keyed gate, not turned into a captain-facing outcome.
+  assert_grep 'send the worker the exact decision through the existing keyed gate rather than reporting verdict captain' "$prompt" \
+    "emitted branch prompt does not tell the branch to decide a routine finding itself"
+  assert_grep 'load that skill before deciding any finding' "$prompt" \
+    "emitted branch prompt does not require loading the canonical authority skill"
+  assert_no_grep 'including every ask-user finding from a validation gate' "$prompt" \
+    "emitted branch prompt still declares every ask-user finding captain-owned"
+
+  # 2. Round count, risk rating, the reviewer label, implementation conflict, and a
+  #    recurring theme are each explicitly insufficient to escalate on their own.
+  assert_grep 'a rising round count' "$prompt" \
+    "emitted branch prompt does not rule out escalating on round count alone"
+  assert_grep 'recurring theme are none of them reasons to escalate on their own' "$prompt" \
+    "emitted branch prompt does not rule out escalating on a recurring theme alone"
+
+  # 3. The stronger boundaries survive: genuine expansion and security ambiguity,
+  #    merge, and destructive choices still reach the captain.
+  assert_grep 'anything destructive, irreversible, or security-sensitive' "$prompt" \
+    "emitted branch prompt lost the destructive/security captain boundary"
+  assert_grep 'merge a PR, approve a validation step, or exercise any captain authority' "$prompt" \
+    "emitted branch prompt lost the merge and captain-authority prohibition"
+  assert_grep 'You still never answer the gate yourself' "$prompt" \
+    "emitted branch prompt lets the branch answer the validation gate directly"
+
+  pass "the emitted branch prompt decides routine findings and still escalates genuine captain calls"
+}
+
+test_branch_prompt_finding_authority
+
+# Not every finding deserves a fix, and not every uncertain one belongs to the
+# captain. These pin the three outcomes through the interfaces that actually carry
+# them: the emitted branch prompt, and the real outcome store.
+test_finding_exceptions_and_adjudication() {
+  local prompt store seq out
+  prompt="$TMP_ROOT/branch-prompt-adj.txt"
+  "$ROOT/bin/fm-branch-prompt.sh" > "$prompt"
+
+  # 1. A clear in-scope finding is still simply fixed.
+  assert_grep 'send the worker the exact decision through the existing keyed gate rather than reporting verdict captain' "$prompt" \
+    "the emitted prompt no longer tells the branch to decide and steer a clear finding"
+
+  # 2. A valid exception may be declined outright, with evidence.
+  assert_grep 'a clear false positive' "$prompt" \
+    "the emitted prompt does not permit declining a clear false positive"
+  assert_grep 'may be declined outright, with the evidence named' "$prompt" \
+    "the emitted prompt does not require evidence when declining a finding"
+
+  # 3. Reviewer oscillation: a finding contradicting one already accepted this run
+  #    is a reason to decline, not to fix blindly and thrash.
+  assert_grep 'a contradiction with a finding already accepted this run' "$prompt" \
+    "the emitted prompt does not treat reviewer contradiction as a valid exception"
+
+  # 4. Genuine uncertainty is adjudicated inside the fleet, and never shown to the
+  #    captain, with the full packet required.
+  assert_grep 'report verdict adjudicate rather than guessing or escalating' "$prompt" \
+    "the emitted prompt does not route genuine uncertainty to adjudication"
+  assert_grep 'the smallest compliant' "$prompt" \
+    "the emitted prompt does not require the smallest compliant alternative in the packet"
+  assert_grep 'never reaches the captain' "$prompt" \
+    "the emitted prompt does not keep adjudication away from the captain"
+
+  # 5. Budget exhaustion adjudicates rather than looping, approving, or escalating.
+  assert_grep 'a budget event, never a reason to loop, approve, or escalate' "$prompt" \
+    "the emitted prompt lets review-budget exhaustion force an outcome by itself"
+
+  # 6. Hard boundaries still reach the captain.
+  assert_grep 'anything destructive, irreversible, or security-sensitive' "$prompt" \
+    "the emitted prompt lost the destructive and security captain boundary"
+
+  # The outcome store must actually carry the new verdict as a first-class,
+  # non-captain outcome - asserted against the real script, not its help text.
+  store="$TMP_ROOT/adj-store"
+  mkdir -p "$store"
+  seq=$(FM_STATE_OVERRIDE="$store" "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task sample --verdict adjudicate --summary 'packet: contract, finding, evidence, options' 2>&1) \
+    || fail "the outcome store rejected the adjudicate verdict"
+  case "$seq" in
+    ''|*[!0-9]*) fail "appending an adjudicate outcome returned no sequence: $seq" ;;
+  esac
+  out=$(FM_STATE_OVERRIDE="$store" "$ROOT/bin/fm-branch-outcome.sh" unread 2>&1)
+  assert_contains "$out" '"verdict":"adjudicate"' \
+    "an adjudicate outcome does not read back from the store as its own verdict"
+  assert_not_contains "$out" '"verdict":"captain"' \
+    "an adjudicate outcome was recorded as a captain escalation"
+  pass "clear fixes, valid exceptions, oscillation, adjudication, and captain-only boundaries are each carried"
+}
+
+test_finding_exceptions_and_adjudication
+
+# ask-user-authority is the NAMED single owner of this policy - the branch prompt
+# and AGENTS.md both reference it rather than restating it - so its contract is
+# the thing to check here. The risk being guarded is concrete: an advisor chain
+# that hardcodes a vendor or model silently bypasses quota-aware dispatch and
+# breaks the moment that model is unavailable or out of budget.
+test_adjudication_advisor_contract() {
+  local skill
+  skill="$ROOT/.agents/skills/ask-user-authority/SKILL.md"
+
+  assert_grep 'Use the current heavyweight MAIN model first' "$skill" \
+    "the policy owner no longer prefers MAIN before dispatching a separate scout"
+  assert_grep 'only if MAIN remains uncertain' "$skill" \
+    "the policy owner no longer gates the scout fallback on MAIN remaining uncertain"
+  assert_grep 'existing quota-aware dispatch rather than a hardcoded vendor or model' "$skill" \
+    "the policy owner no longer requires quota-aware selection for the advisor"
+  assert_grep 'READ-ONLY' "$skill" \
+    "the policy owner no longer states that the advisor has no authority"
+  assert_grep 'Firstmate owns the call' "$skill" \
+    "the policy owner no longer keeps the decision with firstmate"
+
+  # No vendor or model identifier may be hardcoded into the advisor chain.
+  if grep -qiE '\b(opus|sonnet|haiku|gpt-?[0-9]|claude-[a-z0-9]|gemini|grok-[0-9]|o[0-9]-(mini|preview))\b' "$skill"; then
+    fail "the policy owner hardcodes a vendor or model instead of using quota-aware dispatch"
+  fi
+  pass "the adjudication advisor is read-only, quota-selected, and never a hardcoded model"
+}
+
+test_adjudication_advisor_contract
+
+# The failure this guards is specific: a material defect gets waved through as a
+# nit, and the round is reported with a blanket phrase that reads as a verdict
+# while carrying no classification. These assert the corrected contract on the
+# two generated interfaces that actually carry it - the emitted branch prompt and
+# the generated worker brief - plus the named policy owner.
+test_material_classification_governs_disposition() {
+  local prompt skill grounds class home ship
+  prompt="$TMP_ROOT/branch-prompt-material.txt"
+  skill="$ROOT/.agents/skills/ask-user-authority/SKILL.md"
+  "$ROOT/bin/fm-branch-prompt.sh" > "$prompt"
+
+  # 1. Classification happens BEFORE disposition, and the material classes are
+  #    named rather than left to taste.
+  assert_grep 'Classify every finding by material consequence before you dispose of it' "$prompt" \
+    "the emitted prompt does not require classifying a finding before disposing of it"
+  for class in correctness security lifecycle provenance "behavioural contract" "test integrity"; do
+    assert_grep "$class" "$prompt" \
+      "the emitted prompt no longer names $class as a material class"
+  done
+  assert_grep 'is fixed however small the reviewer called it' "$prompt" \
+    "the emitted prompt lets a reviewer's severity label decide whether a material finding is fixed"
+
+  # 2. A dismissal is per finding, with evidence, and a blanket round-level
+  #    phrase is explicitly not a disposition.
+  assert_grep 'Record each dismissal against its own finding with that evidence' "$prompt" \
+    "the emitted prompt does not require per-finding recorded dismissal evidence"
+  assert_grep 'never write a blanket summary such as "accept none"' "$prompt" \
+    "the emitted prompt still permits a blanket accept-none round summary"
+  assert_grep 'what is being fixed and what is being dismissed and why' "$prompt" \
+    "the emitted prompt does not require a fixed-versus-dismissed disposition summary"
+
+  # 3. Uncertain materiality adjudicates rather than defaulting to the cheap
+  #    disposition, which is exactly how a real defect gets labelled a nit.
+  assert_grep "Use it when the finding's MATERIALITY is what you cannot settle" "$prompt" \
+    "the emitted prompt does not route uncertain materiality to adjudication"
+
+  # 4. STRUCTURAL, not phrasing: no material class may appear as a ground for
+  #    dismissal, and the nit ground must be conditioned on the finding falling
+  #    in none of them. Without that conjunction the nit ground is an open door.
+  grounds="$TMP_ROOT/dismissal-grounds.txt"
+  awk '/^7\. Dismiss an immaterial finding/{on=1} on&&/^   - /{print} on&&/^8\./{exit}' \
+    "$skill" > "$grounds"
+  [ -s "$grounds" ] || fail "the policy owner no longer lists explicit grounds for dismissal"
+  for class in correctness security lifecycle provenance "behavioral contract" "test integrity"; do
+    if grep -qi -- "$class" "$grounds"; then
+      fail "the policy owner lists the material class '$class' as a ground for dismissal"
+    fi
+  done
+  assert_grep 'the consequence falls in none of the material classes' "$skill" \
+    "the policy owner's nit ground is no longer conditioned on the finding being immaterial"
+  assert_grep 'the effort the fix costs, or how late in the run it arrived' "$skill" \
+    "the policy owner lets cost or timing decide materiality"
+
+  # 5. approve is CONTINUE, not acceptance, and it is gated on the material
+  #    findings actually being fixed first.
+  assert_grep 'means CONTINUE THE PIPELINE despite the findings that remain open' "$skill" \
+    "the policy owner no longer defines approve as continuing despite open findings"
+  assert_grep 'It does not mean the implementation change is accepted' "$skill" \
+    "the policy owner no longer denies that approve accepts the implementation change"
+  assert_grep 'Every finding you classified as material has been fixed' "$skill" \
+    "the policy owner permits approving while a material finding is unfixed"
+  assert_grep 'A failed smell test is not a reason to approve anyway' "$skill" \
+    "the policy owner lets a failed smell test be noted and approved past"
+  assert_grep 'round budget, which this repository sets to five' "$skill" \
+    "the policy owner no longer adjudicates at the configured five-round budget"
+
+  # 6. The worker types the gate response, so the brief it is given must not let
+  #    it approve past open findings on its own.
+  home="$TMP_ROOT/material-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" material-worker sample --mode no-mistakes >/dev/null 2>&1
+  ship="$home/data/material-worker/brief.md"
+  assert_grep "Approving a review step while findings are still open is firstmate's disposition, not yours" "$ship" \
+    "the generated worker brief lets the worker approve past open findings itself"
+
+  pass "material findings are classified and fixed, dismissals are recorded per finding with evidence, and approve means continue rather than accept"
+}
+
+test_material_classification_governs_disposition

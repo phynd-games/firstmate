@@ -839,10 +839,10 @@ procevent_surface_after_output() {
 }
 
 procevent_surface_queued() {
-  local key reason
+  local key reason queue_lock_tries=${FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES:-100}
   PROCEVENT_SURFACED=
   [ -s "$FM_WAKE_QUEUE" ] || return 0
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  fm_lock_acquire_bounded "$FM_WAKE_QUEUE_LOCK" "$queue_lock_tries" || return 1
   while IFS= read -r key; do
     case "$key" in procevent:*) ;; *) continue ;; esac
     [ -e "$(procevent_surfaced_marker "$key")" ] && continue
@@ -1084,7 +1084,15 @@ if ! fm_lock_try_acquire "$WATCH_LOCK"; then
 fi
 WATCHER_RECOVERY_PENDING=0
 if [ -n "${FM_LOCK_RECOVERED_PID:-}" ]; then
-  WATCHER_RECOVERY_PENDING=1
+  if [ "${FM_WATCH_RESTART:-0}" = 1 ]; then
+    WATCHER_RECOVERY_PENDING=1
+  else
+    fm_recovery_marker_snapshot "$WATCHER_DOWNTIME_MARKER" || true
+    case "$FM_RECOVERY_MARKER_TOKEN" in
+      acked:*) ;;
+      *) WATCHER_RECOVERY_PENDING=1 ;;
+    esac
+  fi
 fi
 if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" != 1 ]; then
   if ! fm_recovery_marker_reopen_announced "$WATCHER_DOWNTIME_MARKER"; then
@@ -1171,6 +1179,12 @@ resurface_after_downtime() {
     fi
     [ "$FM_RECOVERY_MARKER_ACTION" = recover ] || return 0
   fi
+  if [ "$WATCHER_RECOVERY_PENDING" -eq 1 ]; then
+    fm_recovery_marker_snapshot "$WATCHER_DOWNTIME_MARKER" || true
+    if [[ "$FM_RECOVERY_MARKER_TOKEN" == acked:* ]] && [ ! -s "$FM_WAKE_QUEUE" ]; then
+      return 0
+    fi
+  fi
   wake "check: rearm-resurface"
 }
 
@@ -1212,7 +1226,10 @@ while :; do
   fi
   # Then deliver any queued-but-unsurfaced result, including one a runner
   # published while this watcher was between cycles.
-  procevent_surface_queued
+  procevent_surface_queued || {
+    echo "watcher: wake-queue lock could not be acquired within its bounded retry window" >&2
+    exit 1
+  }
 
   # A process-event result carries richer adapter-owned wake context than the
   # generic recovery reason, so give that owner first refusal.

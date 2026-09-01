@@ -18,6 +18,7 @@
 #                 "BOOTSTRAP_INFO: nudged fm-<id> with '<message>'",
 #                 "SECONDMATE_LIVENESS: secondmate <id>: skipped: <reason>|respawn failed after <cause>: <reason>",
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
+#                 "HERDR_SUPERVISOR: <why watcher continuity could not be hosted>",
 #                 "FMX: X mode on ..." or "FMX: X mode off ...".
 #          When a RUNNING local secondmate worktree is fast-forwarded to
 #          firstmate's own current default-branch commit, that update is a
@@ -78,18 +79,22 @@
 #          max(20, 5 + 3 * origin-backed project clone count). A timed-out
 #          refresh relays any completed fm-fleet-sync.sh output before the
 #          aggregate timeout skip line with timeout and elapsed seconds.
+#          Herdr watcher continuity bootstrap is bounded by
+#          FM_HERDR_SUPERVISOR_BOOTSTRAP_TIMEOUT (default 45s).
 #          Set FM_FLEET_PRUNE=0 to skip branch pruning during that refresh.
-#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the six MUTATING sweeps
+#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the seven MUTATING sweeps
 #          (PR-check migration, secondmate_sync, secondmate_liveness_sweep,
-#          secondmate_handoff_resume, x_mode_setup, fleet_sync) while still
+#          secondmate_handoff_resume, x_mode_setup, herdr_supervisor_sweep,
+#          fleet_sync) while still
 #          printing every read-only detect line
 #          above; the TANGLE line switches to advisory-only wording with no
 #          checkout command. Used by
 #          fm-session-start.sh's read-only path when another live session holds
 #          the fleet lock, so a second concurrent session never race-mutates
 #          PR-check artifacts, secondmate homes, pending handoff outboxes,
-#          X-mode artifacts, project clones, or repair instructions.
-#          Unset/0 (the default) runs all six sweeps - this flag is purely
+#          X-mode artifacts, watcher continuity, project clones, or repair
+#          instructions.
+#          Unset/0 (the default) runs all seven sweeps - this flag is purely
 #          additive.
 #          Set FM_BOOTSTRAP_NETWORK to split this run by whether a step talks to
 #          the network, so a session start can print its digest from local reads
@@ -156,12 +161,16 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-x-lib.sh"
 # shellcheck source=bin/fm-backend.sh disable=SC1091
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-session-lock-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-session-lock-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
 # fm-timing-lib.sh is inert unless FM_TIMING_LOG names a file, which only the
 # deferred network stage sets, so an ordinary bootstrap run records nothing.
 # shellcheck source=bin/fm-timing-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-timing-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 # Network-phase selection (see the header). An unrecognized value resolves to
 # `all` so a malformed override runs every step rather than silently dropping a
@@ -267,6 +276,14 @@ fleet_sync_bootstrap_timeout() {
   timeout=$((5 + (3 * count)))
   [ "$timeout" -ge 20 ] || timeout=20
   echo "$timeout"
+}
+
+herdr_supervisor_bootstrap_timeout() {
+  local timeout=${FM_HERDR_SUPERVISOR_BOOTSTRAP_TIMEOUT:-45}
+  case "$timeout" in
+    ''|*[!0-9]*|0) printf '45\n' ;;
+    *) printf '%s\n' "$timeout" ;;
+  esac
 }
 
 fleet_sync_relay_filtered_output() {
@@ -1067,6 +1084,79 @@ EOF
   echo "FMX: X mode on - relay poll armed via state/x-watch.check.sh; 30s watcher cadence in config/x-mode.env"
 }
 
+# herdr_supervisor_sweep: keep this home's Herdr-hosted watcher continuity owner
+# established whenever supervision is needed and nothing else provably owns it.
+#
+# This is the automatic half of the fix for the 2026-08-29 supervision lapse: a
+# home whose primary harness never loaded its continuity owner had NOBODY to
+# start the next watcher cycle, and no session-start check repaired it - the Pi
+# extension diagnostic only advises restarting Pi. bin/fm-herdr-supervisor.sh
+# owns every decision here (eligibility, deference to a provable owner,
+# idempotence, identity, and bounded retry); this sweep only calls it and
+# surfaces what it says.
+#
+# Local, never network. It runs only on the locked mutating path, alongside the
+# other local sweep, so a read-only session neither establishes nor disturbs a
+# supervisor. Silent on the ordinary outcomes - already healthy, deliberately
+# deferred, not eligible, nothing in flight - because a routine confirmation is
+# not a diagnostic.
+herdr_supervisor_sweep() {
+  local out status lock_pid lock_identity current_identity timeout started elapsed
+  # Runtime source path is selected from the active home at execution time.
+  # shellcheck disable=SC1091
+  . "$SCRIPT_DIR/fm-wake-lib.sh"
+  lock_pid=$(cat "$STATE/.lock" 2>/dev/null || true)
+  lock_identity=$(cat "$STATE/.lock-pid-identity" 2>/dev/null || true)
+  current_identity=$(fm_pid_identity "$lock_pid" 2>/dev/null || true)
+  [ -n "$lock_identity" ] && [ -n "$current_identity" ] \
+    && [ "$current_identity" = "$lock_identity" ] \
+    && fm_session_lock_owned_by_self "$STATE" || return 0
+  timeout=$(herdr_supervisor_bootstrap_timeout)
+  started=$SECONDS
+  out=$(fm_run_timed "$timeout" "$SCRIPT_DIR/fm-herdr-supervisor.sh" ensure --reason 'session start' 2>&1)
+  status=$?
+  elapsed=$((SECONDS - started))
+  if [ "$status" -eq 124 ]; then
+    printf 'HERDR_SUPERVISOR: ensure timed out (timeout=%ss elapsed=%ss)\n' "$timeout" "$elapsed"
+    return 0
+  fi
+  if [ "$status" -ne 0 ]; then
+    printf 'HERDR_SUPERVISOR: %s\n' "$(printf '%s' "$out" | tr '\n' ' ')"
+    return 0
+  fi
+  case "$out" in
+    *'herdr-supervisor: started'*)
+      [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" != 1 ] \
+        || printf 'BOOTSTRAP_INFO: %s\n' "$(printf '%s' "$out" | tr '\n' ' ')"
+      ;;
+  esac
+
+  # Start the always-running monitor, idempotently. `ensure` alone only fixes
+  # supervision at session start; the monitor is what re-establishes it when the
+  # supervisor's host pane dies mid-session, which is the gap that previously left
+  # a home unsupervised until the next start. A live monitor makes this a no-op.
+  # Bounded like the ensure above so a sick Herdr cannot lengthen session start.
+  started=$SECONDS
+  out=$(fm_run_timed "$timeout" "$SCRIPT_DIR/fm-herdr-supervisor.sh" monitor --reason 'session start' 2>&1)
+  status=$?
+  elapsed=$((SECONDS - started))
+  if [ "$status" -eq 124 ]; then
+    printf 'HERDR_SUPERVISOR: monitor start timed out (timeout=%ss elapsed=%ss)\n' "$timeout" "$elapsed"
+    return 0
+  fi
+  if [ "$status" -ne 0 ]; then
+    printf 'HERDR_SUPERVISOR: %s\n' "$(printf '%s' "$out" | tr '\n' ' ')"
+    return 0
+  fi
+  case "$out" in
+    *'monitor started'*)
+      [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" != 1 ] \
+        || printf 'BOOTSTRAP_INFO: %s\n' "$(printf '%s' "$out" | tr '\n' ' ')"
+      ;;
+  esac
+  return 0
+}
+
 crew_dispatch_validate() {
   local file err
   file="$CONFIG/crew-dispatch.json"
@@ -1334,6 +1424,10 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
   fi
   # x_mode_setup writes local Relay artifacts only and never leaves the machine.
   local_phase && x_mode_setup
+  # Watcher continuity for a Herdr home, also local and also never on the wire.
+  if local_phase && fm_session_lock_owned_by_self "$STATE"; then
+    herdr_supervisor_sweep
+  fi
   if [ -n "$fleet_sync_pid" ]; then
     wait "$fleet_sync_pid" || true
     cat "$fleet_sync_out"

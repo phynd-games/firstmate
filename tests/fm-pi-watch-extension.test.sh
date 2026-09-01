@@ -11,6 +11,8 @@ EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 # from a clean checkout with no tracked .opencode/package.json. The warning is
 # unrelated to plugin output, which the assertions intentionally require empty.
 export NODE_NO_WARNINGS=1
+export FM_TEST_LOCK_PID=$$
+export FM_TEST_LOCK_IDENTITY="$FM_TEST_OWNER_IDENTITY"
 
 # One owner for the readiness budget every unready-successor test below spends
 # on purpose. Both plugins start a successor arm through a login shell and
@@ -32,9 +34,7 @@ install_pi_watch_extension_fixture() {
     "$repo/node_modules/@earendil-works/pi-tui" \
     "$repo/node_modules/typebox"
   cp "$EXT" "$repo/.pi/extensions/fm-primary-pi-watch.ts"
-  cp "$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts" "$repo/.pi/extensions/lib/fm-branch-dispatch.ts"
-  cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$repo/.pi/extensions/lib/fm-calm-visibility.ts"
-  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$repo/.pi/extensions/lib/fm-operational-input.ts"
+  fm_test_install_pi_extension_lib "$repo/.pi/extensions/lib"
   mkdir -p "$repo/bin"
   cp "$ROOT/bin/fm-operational-input.sh" "$repo/bin/fm-operational-input.sh"
   chmod +x "$repo/bin/fm-operational-input.sh"
@@ -101,7 +101,8 @@ const pi = {
     prompt = message;
   },
 };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 if (!handler) {
@@ -175,7 +176,8 @@ const pi = {
   },
   sendUserMessage: async () => {},
 };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 if (!tool) throw new Error("Pi watch tool was not registered");
@@ -242,7 +244,8 @@ const pi = {
   },
   sendUserMessage: async () => {},
 };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 const initial = await tool.execute("tool-call-first", {}, undefined, undefined, {});
@@ -302,7 +305,8 @@ const pi = {
   },
   sendUserMessage: async () => {},
 };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-first", {}, undefined, undefined, {});
@@ -384,7 +388,8 @@ const pi = {
     await deliveryBlocked;
   },
 };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-continuity", {}, undefined, undefined, {});
@@ -502,7 +507,8 @@ async function runScenario(withAcceptor) {
   return { offers, mainPrompt, rows };
 }
 
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 writeFileSync(`${process.env.FM_HOME}/state/branch-offer.meta`, "project=/projects/approved\nwindow=fm-branch-offer\n");
 writeFileSync(`${process.env.FM_HOME}/state/.wake-queue`, "1\t1\tsignal\tbranch-offer.status\tsignal: branch-offer synthetic wake\n");
 const accepted = await runScenario(true);
@@ -594,7 +600,8 @@ const pi = {
   },
   sendUserMessage: async () => {},
 };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 writeFileSync(`${process.env.FM_HOME}/state/.wake-queue`, "1\t1\theartbeat\theartbeat\theartbeat\n");
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
@@ -676,7 +683,8 @@ const pi = {
     prompt = message;
   },
 };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 writeFileSync(
   `${process.env.FM_HOME}/state/.wake-queue`,
   "1\t1\theartbeat\theartbeat\theartbeat\n2\t2\tcheck\tx-inbox\tcheck: pending x mention\n",
@@ -774,7 +782,8 @@ const pi = {
     prompt = message;
   },
 };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 // A task-local row the branch would happily take sits in the same queue, so
 // only the check-kind TRIGGER itself can be what keeps this wake on main.
 writeFileSync(
@@ -862,7 +871,8 @@ const pi = {
     prompt = message;
   },
 };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-heartbeat-restoration-failure", {}, undefined, undefined, {});
@@ -935,7 +945,8 @@ const pi = {
     prompt = message;
   },
 };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await handler("", { ui: { notify() {} } });
@@ -999,7 +1010,8 @@ const pi = {
     prompt += message;
   },
 };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-handling-fail", {}, undefined, undefined, {});
@@ -1070,7 +1082,8 @@ const pi = {
       : 0;
   },
 };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-hung-successor", {}, undefined, undefined, {});
@@ -1144,7 +1157,8 @@ const pi = {
       : 0;
   },
 };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-unretired-successor", {}, undefined, undefined, {});
@@ -1228,7 +1242,8 @@ async function waitFor(predicate, message) {
   }
   throw new Error(message);
 }
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-late-close", {}, undefined, undefined, {});
@@ -1300,7 +1315,8 @@ const pi = {
     prompts += 1;
   },
 };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-empty", {}, undefined, undefined, {});
@@ -1331,6 +1347,7 @@ test_pi_established_empty_close_honors_retry_limit() {
   log="$TMP_ROOT/pi-established-empty-close.log"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
   install_pi_watch_extension_fixture "$repo"
+  cp "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-session-lock-lib.sh" "$repo/bin/"
   plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
@@ -1355,11 +1372,12 @@ const pi = {
     prompt += message;
   },
 };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-established-empty", {}, undefined, undefined, {});
-for (let i = 0; i < 250 && !prompt; i += 1) {
+for (let i = 0; i < 1000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -1367,6 +1385,8 @@ const rows = existsSync(process.env.FM_ARM_LOG)
   : [];
 if (rows.length !== 3) throw new Error(`retry limit launched ${rows.length} arm cycles: ${rows.join(" | ")}`);
 if (!prompt.includes("after 2 retries")) throw new Error(`retry exhaustion was not surfaced: ${prompt}`);
+const queue = readFileSync(`${process.env.FM_HOME}/state/.wake-queue`, "utf8");
+if (!queue.includes("\tcheck\tpi-watch-arm\t")) throw new Error(`retry exhaustion was not durably queued: ${queue}`);
 EOF
 )
   status=$?
@@ -1409,13 +1429,15 @@ const pi = {
   },
 };
 const lock = `${process.env.FM_HOME}/state/.lock`;
-writeFileSync(lock, `${process.pid}\n`);
+writeFileSync(lock, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${lock}-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-lock-close", {}, undefined, undefined, {});
 const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
 try {
   writeFileSync(lock, `${other.pid}\n`);
+  writeFileSync(`${lock}-pid-identity`, "foreign\n");
   writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
   for (let i = 0; i < 250 && !prompt.includes("no longer owns the lock"); i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1498,7 +1520,8 @@ try {
 }
 
 if (existsSync(process.env.FM_ARM_LOG)) throw new Error("watcher arm ran without lock ownership");
-writeFileSync(lock, `${process.pid}\n`);
+writeFileSync(lock, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${lock}-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const owned = await callArm();
 if (owned.details?.ok !== true || !owned.details.message.includes("started Pi extension arm child")) {
   throw new Error(`owned lock did not arm: ${JSON.stringify(owned.details)}`);
@@ -1603,14 +1626,15 @@ function liveArmPids() {
     .map((arm) => arm.pid);
 }
 
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 
 const startup = makePi();
 mod.default(startup.pi);
 await startup.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
 const first = await startup.getTool().execute("startup", {}, undefined, undefined, {});
-if (!first.details?.ok || !String(first.details.message).includes("started Pi extension arm child")) {
+if (!first.details?.ok || !String(first.details.message).includes("already owns an arm child")) {
   throw new Error(`startup arm failed: ${JSON.stringify(first.details)}`);
 }
 await waitFor(() => {
@@ -1791,7 +1815,8 @@ const pi = {
   },
   sendUserMessage: async () => {},
 };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-exit", {}, undefined, undefined, {});
@@ -1878,7 +1903,8 @@ const hooks = await mod.FmPrimaryWatchArm({
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1928,7 +1954,8 @@ const hooks = await mod.FmPrimaryWatchArm({
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1994,7 +2021,8 @@ if (existsSync(process.env.FM_ARM_LOG)) {
   console.error("watch arm ran without owning the session lock");
   process.exit(1);
 }
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 await hooks.event(event);
 for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -2039,7 +2067,8 @@ await mod.FmPrimaryWatchArm({
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const status = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
 await new Promise((resolve) => setTimeout(resolve, 120));
 if (status !== "not-primary") {
@@ -2115,7 +2144,8 @@ const hooks = await mod.FmPrimaryWatchArm({
   worktree: process.env.WORKTREE,
 });
 const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 await hooks.event(event);
 for (let i = 0; i < 250; i += 1) {
   const rows = existsSync(process.env.FM_ARM_LOG)
@@ -2202,7 +2232,8 @@ const hooks = await mod.FmPrimaryWatchArm({
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 for (let i = 0; i < 500; i += 1) {
   const rows = existsSync(process.env.FM_ARM_LOG)
@@ -2279,7 +2310,8 @@ const hooks = await mod.FmPrimaryWatchArm({
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 // Three unready successors each cost the full readiness budget, so wait well
 // past their sum. The wait ends as soon as the wake lands.
@@ -2355,7 +2387,8 @@ const hooks = await mod.FmPrimaryWatchArm({
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 for (let i = 0; i < 500 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -2441,7 +2474,8 @@ const hooks = await mod.FmPrimaryWatchArm({
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_READY_FILE),
@@ -2515,7 +2549,8 @@ const hooks = await mod.FmPrimaryWatchArm({
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 for (let i = 0; i < 250; i += 1) {
   const rows = existsSync(process.env.FM_ARM_LOG)
@@ -2571,7 +2606,8 @@ const hooks = await mod.FmPrimaryWatchArm({
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 for (let i = 0; i < 250 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -2627,7 +2663,8 @@ const hooks = await mod.FmPrimaryWatchArm({
   worktree: process.env.WORKTREE,
 });
 const lock = `${process.env.FM_HOME}/state/.lock`;
-writeFileSync(lock, `${process.pid}\n`);
+writeFileSync(lock, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${lock}-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 const eventPromise = hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -2635,6 +2672,7 @@ for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
 const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
 try {
   writeFileSync(lock, `${other.pid}\n`);
+  writeFileSync(`${lock}-pid-identity`, "foreign\n");
   writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
   await eventPromise;
   for (let i = 0; i < 250 && !prompt.includes("no longer owns the lock"); i += 1) {
@@ -2702,7 +2740,8 @@ const guardHooks = await guardMod.FmPrimaryTurnendGuard({
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 await guardHooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -2775,7 +2814,8 @@ const guardHooks = await guardMod.FmPrimaryTurnendGuard({
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/.lock-pid-identity`, `${process.env.FM_TEST_LOCK_IDENTITY}\n`);
 await guardHooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 for (let i = 0; i < 250 && !existsSync(process.env.FM_GUARD_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));

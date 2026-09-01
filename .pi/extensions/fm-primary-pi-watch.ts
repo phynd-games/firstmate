@@ -10,7 +10,7 @@
 // callbacks from a prior generation are no-ops against the active replacement.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
@@ -27,6 +27,7 @@ import {
   FIRSTMATE_CALM_PRESENTATION_EVENT,
 } from "./lib/fm-calm-visibility.ts";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.ts";
+import { processInstanceIdentity } from "./lib/fm-process-identity.ts";
 
 type ArmResult = {
   ok: boolean;
@@ -57,6 +58,7 @@ type SessionGeneration = {
   child: ChildProcess | null;
   retryTimer: ReturnType<typeof setTimeout> | null;
   retryFailures: number;
+  relinquished: boolean;
   restoring: boolean;
   seq: number;
 };
@@ -89,6 +91,7 @@ const state = process.env.FM_STATE_OVERRIDE || `${fmHome}/state`;
 const config = process.env.FM_CONFIG_OVERRIDE || `${fmHome}/config`;
 const armScript = `${fmRoot}/bin/fm-watch-arm.sh`;
 const marker = `${state}/.pi-watch-extension-loaded`;
+const blockedMarker = `${state}/.watch-arm-blocked`;
 const extensionVersion = `sha256:${createHash("sha256").update(readFileSync(extensionFile)).digest("hex")}`;
 const retryBaseMs = positiveInteger("FM_WATCH_REARM_RETRY_BASE_MS", 250);
 const retryMaxMs = positiveInteger("FM_WATCH_REARM_RETRY_MAX_MS", 4000);
@@ -101,6 +104,7 @@ const armReadyTimeoutMs = positiveInteger(
   process.platform === "win32" ? 35000 : 12000,
 );
 const armRetireTimeoutMs = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 1000);
+const failurePersistTimeoutMs = positiveInteger("FM_PI_FAILURE_PERSIST_TIMEOUT_MS", 5000);
 const repairOnlyHint = "call fm_watch_arm_pi again only after a later notification says the cycle is missing, failed, or unhealthy";
 const shuttingDownMessage = "watcher: not armed - Pi session is shutting down";
 
@@ -109,6 +113,7 @@ let activeGeneration: SessionGeneration | null = null;
 const armReadiness = new WeakMap<ChildProcess, Promise<boolean>>();
 const armClose = new WeakMap<ChildProcess, Promise<void>>();
 const armRecovery = new WeakMap<ChildProcess, { generation: string; watcherPid: string }>();
+let retirementBarrier: Promise<void> = Promise.resolve();
 
 function positiveInteger(name: string, fallback: number): number {
   const value = Number(process.env[name]);
@@ -148,10 +153,109 @@ function lockOwnership(): LockOwnership {
   return pidAlive(lockPid) ? "other" : "missing";
 }
 
-function markLoaded(): void {
-  if (lockOwnership() === "other") return;
+function watcherRestartContract(): Record<string, string> {
+  try {
+    const pid = readFileSync(`${state}/.watch.lock/pid`, "utf8").trim();
+    const identity = readFileSync(`${state}/.watch.lock/pid-identity`, "utf8").trim();
+    if (!/^[0-9]+$/.test(pid) || !identity) return {};
+    return {
+      FM_WATCH_RESTART_EXPECTED_PID: pid,
+      FM_WATCH_RESTART_EXPECTED_IDENTITY: identity,
+      FM_WATCH_RESTART_RECLAIM: "auto",
+    };
+  } catch {
+    return {};
+  }
+}
+
+let markerRetryTimer: ReturnType<typeof setTimeout> | undefined;
+
+function clearMarkerRetry(): void {
+  if (!markerRetryTimer) return;
+  clearTimeout(markerRetryTimer);
+  markerRetryTimer = undefined;
+}
+
+function retryMarkLoaded(): void {
+  if (markerRetryTimer) return;
+  const timer = setTimeout(() => {
+    markerRetryTimer = undefined;
+    markLoaded();
+  }, 250);
+  (timer as unknown as { unref?: () => void }).unref?.();
+  markerRetryTimer = timer;
+}
+
+function markLoaded(): boolean {
+  if (activeGeneration?.relinquished) {
+    clearMarkerRetry();
+    return false;
+  }
+  try {
+    lstatSync(blockedMarker);
+    return false;
+  } catch {
+  }
+  const ownership = lockOwnership();
+  if (ownership === "other") {
+    clearMarkerRetry();
+    return false;
+  }
+  if (ownership === "missing") {
+    retryMarkLoaded();
+    return false;
+  }
+  let lockPid = "";
+  try {
+    lockPid = readFileSync(`${state}/.lock`, "utf8").trim();
+  } catch {
+    retryMarkLoaded();
+    return false;
+  }
+  const lockIdentity = processInstanceIdentity(lockPid);
+  let recordedIdentity = "";
+  try {
+    recordedIdentity = readFileSync(`${state}/.lock-pid-identity`, "utf8").trim();
+  } catch {
+    retryMarkLoaded();
+    return false;
+  }
+  if (!lockIdentity || !recordedIdentity || lockIdentity !== recordedIdentity) {
+    retryMarkLoaded();
+    return false;
+  }
   mkdirSync(state, { recursive: true });
-  writeFileSync(marker, `${extensionVersion}\n${process.pid}\n`);
+  writeFileSync(marker, `${extensionVersion}\n${process.pid}\n${lockIdentity}\n`);
+  clearMarkerRetry();
+  return true;
+}
+
+function retainBlockedFailure(message: string): boolean {
+  const temporary = `${blockedMarker}.pi-${process.pid}-${Date.now()}`;
+  try {
+    if (lstatSync(blockedMarker).isSymbolicLink()) return false;
+  } catch {
+  }
+  try {
+    mkdirSync(state, { recursive: true });
+    writeFileSync(temporary, `at=${Date.now()}\nreason=${message}\n`);
+    chmodSync(temporary, 0o600);
+    renameSync(temporary, blockedMarker);
+    return true;
+  } catch {
+    try {
+      unlinkSync(temporary);
+    } catch {
+    }
+    return false;
+  }
+}
+
+function clearBlockedFailure(): void {
+  try {
+    unlinkSync(blockedMarker);
+  } catch {
+  }
 }
 
 function actionableLine(output: string): string {
@@ -197,6 +301,7 @@ function createGeneration(): SessionGeneration {
     child: null,
     retryTimer: null,
     retryFailures: 0,
+    relinquished: false,
     restoring: false,
     seq: 0,
   };
@@ -214,18 +319,26 @@ function stopGeneration(generation: SessionGeneration): void {
   generation.stopping = true;
   if (generation.retryTimer) clearTimeout(generation.retryTimer);
   generation.retryTimer = null;
-  if (generation.child) generation.child.kill("SIGTERM");
-  generation.child = null;
+  if (generation.child) {
+    generation.child.kill("SIGTERM");
+    const closed = armClose.get(generation.child);
+    if (closed) retirementBarrier = retirementBarrier.then(() => closed);
+  }
 }
 
 const cleanupOnProcessExit = () => {
+  clearMarkerRetry();
   if (activeGeneration) stopGeneration(activeGeneration);
 };
 process.once("exit", cleanupOnProcessExit);
 
 export default function (pi: ExtensionAPI) {
+  const previousGeneration = activeGeneration;
   let generation = createGeneration();
+  if (previousGeneration) stopGeneration(previousGeneration);
   activateGeneration(generation);
+  let replacementRequested = false;
+  let replacingGeneration = false;
 
   let calmPresentation: CalmPresentationState = {
     active: false,
@@ -339,6 +452,56 @@ export default function (pi: ExtensionAPI) {
   }
 
   function surfaceFailure(owner: SessionGeneration, message: string): void {
+    const emergency = `${state}/.watch-arm-emergency`;
+    const temporary = `${emergency}.pi-${process.pid}-${Date.now()}`;
+    let durableStatus = 1;
+    try {
+      durableStatus = spawnSync(
+        "bash",
+        ["-c", ". \"$FM_ROOT_OVERRIDE/bin/fm-wake-lib.sh\" && fm_wake_append check pi-watch-arm \"$1\"", "fm-pi-watch-failure", message],
+        {
+          cwd: fmRoot,
+          encoding: "utf8",
+          timeout: failurePersistTimeoutMs,
+          env: {
+            ...process.env,
+            FM_HOME: fmHome,
+            FM_ROOT_OVERRIDE: fmRoot,
+            FM_STATE_OVERRIDE: state,
+            FM_WAKE_APPEND_LOCK_TRIES: process.env.FM_WAKE_APPEND_LOCK_TRIES || "100",
+          },
+        },
+      ).status ?? 1;
+    } catch {
+    }
+    if (durableStatus !== 0) {
+      let previous = "";
+      try {
+        if (!lstatSync(emergency).isSymbolicLink()) previous = readFileSync(emergency, "utf8");
+      } catch {
+      }
+      try {
+        mkdirSync(state, { recursive: true });
+        writeFileSync(
+          temporary,
+          `${previous}${previous && !previous.endsWith("\n") ? "\n" : ""}at=${Date.now()}\nreason=${message}\n`,
+        );
+        chmodSync(temporary, 0o600);
+        renameSync(temporary, emergency);
+        durableStatus = 0;
+      } catch {
+        try {
+          unlinkSync(temporary);
+        } catch {
+        }
+      }
+    }
+    if (durableStatus !== 0 && !retainBlockedFailure(message)) {
+      try {
+        unlinkSync(marker);
+      } catch {
+      }
+    }
     void sendWake(owner, message).catch(() => {
       // Pi owns delivery errors; continuity restoration never waits on prompting.
     });
@@ -350,8 +513,7 @@ export default function (pi: ExtensionAPI) {
 
   function waitForRetry(attempt: number): Promise<void> {
     return new Promise((resolveRetry) => {
-      const timer = setTimeout(resolveRetry, retryDelay(attempt));
-      timer.unref();
+      setTimeout(resolveRetry, retryDelay(attempt));
     });
   }
 
@@ -383,6 +545,23 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
+  async function replaceStoppedGeneration(): Promise<void> {
+    if (!replacementRequested || !generation.stopping || replacingGeneration) return;
+    replacingGeneration = true;
+    const previous = generation;
+    try {
+      if (previous.child && !(await retireArm(previous.child))) return;
+      if (previous.child || !replacementRequested || generation !== previous) return;
+      replacementRequested = false;
+      generation = createGeneration();
+      activateGeneration(generation);
+      markLoaded();
+      armForLifecycle(generation, "session start");
+    } finally {
+      replacingGeneration = false;
+    }
+  }
+
   async function restoreAfterActionableClose(owner: SessionGeneration, predecessorArmPid: string): Promise<{
     failure: string;
     recovery?: { generation: string; watcherPid: string };
@@ -393,7 +572,11 @@ export default function (pi: ExtensionAPI) {
       const replacement = startArm(owner, predecessorArmPid);
       const successorChild = owner.child;
       if (replacement.ok && successorChild && await waitForReadiness(successorChild)) {
-        return { failure: "", recovery: armRecovery.get(successorChild) };
+        await new Promise<void>((resolveReady) => setImmediate(resolveReady));
+        if (owner.child === successorChild && successorChild.exitCode === null && successorChild.signalCode === null) {
+          return { failure: "", recovery: armRecovery.get(successorChild) };
+        }
+        failure = "watcher: FAILED - Pi extension successor watcher exited immediately after becoming ready";
       }
       if (replacement.ok) {
         failure = "watcher: FAILED - Pi extension could not verify a ready successor watcher";
@@ -415,15 +598,23 @@ export default function (pi: ExtensionAPI) {
   }
 
   function scheduleRetry(owner: SessionGeneration, message: string, predecessorArmPid: string): void {
-    if (!generationIsLive(owner) || owner.child || owner.retryTimer) return;
+    if (!generationIsLive(owner) || owner.relinquished || owner.child || owner.retryTimer) return;
     const ownership = lockOwnership();
-    if (ownership !== "owned") {
+    if (ownership === "other") {
       surfaceFailure(owner, `watcher: FAILED - Pi extension cannot restore continuity because this session no longer owns the lock\n${message}`);
       return;
     }
     owner.retryFailures += 1;
     if (owner.retryFailures > retryLimit) {
       surfaceFailure(owner, `watcher: FAILED - Pi extension could not restore watcher continuity after ${retryLimit} retries\n${message}`);
+      owner.relinquished = true;
+      clearMarkerRetry();
+      if (lockOwnership() === "owned") {
+        try {
+          unlinkSync(marker);
+        } catch {
+        }
+      }
       return;
     }
     const timer = setTimeout(() => {
@@ -431,15 +622,31 @@ export default function (pi: ExtensionAPI) {
       if (!generationIsLive(owner)) return;
       const result = startArm(owner, predecessorArmPid);
       if (!result.ok) {
-        surfaceFailure(owner, `watcher: FAILED - Pi extension could not launch a continuity retry\n${result.message}`);
+        if (lockOwnership() === "other") {
+          surfaceFailure(owner, `watcher: FAILED - Pi extension could not launch a continuity retry\n${result.message}`);
+        } else {
+          scheduleRetry(owner, result.message, predecessorArmPid);
+        }
       }
     }, retryDelay(owner.retryFailures));
-    timer.unref();
     owner.retryTimer = timer;
+  }
+
+  function armForLifecycle(owner: SessionGeneration, reason: string): void {
+    const result = startArm(owner);
+    if (result.ok || !generationIsLive(owner)) return;
+    if (lockOwnership() === "other") {
+      surfaceFailure(owner, `watcher: FAILED - Pi extension could not arm after ${reason}\n${result.message}`);
+      return;
+    }
+    scheduleRetry(owner, result.message, "");
   }
 
   function startArm(owner: SessionGeneration, predecessorArmPid = ""): ArmResult {
     if (!generationIsLive(owner)) return { ok: false, message: shuttingDownMessage };
+    if (owner.relinquished) {
+      return { ok: false, message: "watcher: deferred - Pi extension relinquished continuity ownership to the Herdr fallback" };
+    }
     const ownership = lockOwnership();
     if (ownership === "other") return { ok: false, message: "watcher: read-only - session lock is held by another firstmate session" };
     if (ownership === "missing") {
@@ -448,7 +655,9 @@ export default function (pi: ExtensionAPI) {
         message: "watcher: not armed - no live session holds the lock; run bin/fm-session-start.sh to reclaim it, then call fm_watch_arm_pi to re-arm",
       };
     }
-    markLoaded();
+    if (!markLoaded()) {
+      return { ok: false, message: "watcher: not armed - the session lock process identity is not verified" };
+    }
     if (owner.child) {
       return {
         ok: true,
@@ -468,7 +677,9 @@ export default function (pi: ExtensionAPI) {
       FM_ROOT_OVERRIDE: fmRoot,
       FM_CONFIG_OVERRIDE: config,
       FM_WATCH_ARM_SCRIPT: armScript,
+      FM_WATCH_ARM_CLAIM_REQUIRED: "1",
       FM_WATCH_PREDECESSOR_ARM_PID: predecessorArmPid,
+      ...watcherRestartContract(),
     };
     const armChild = spawn("bash", ["-lc", "config_dir=\"${FM_CONFIG_OVERRIDE:-$FM_HOME/config}\"; [ -f \"$config_dir/x-mode.env\" ] && . \"$config_dir/x-mode.env\"; exec \"$FM_WATCH_ARM_SCRIPT\" --restart"], {
       cwd: fmRoot,
@@ -500,6 +711,7 @@ export default function (pi: ExtensionAPI) {
       const recovery = combined.match(/^watcher: started pid=([0-9]+).* recovery-generation=([A-Za-z0-9._-]+)$/m);
       if (recovery) armRecovery.set(armChild, { watcherPid: recovery[1], generation: recovery[2] });
       if (/^watcher: (?:started|attached)\b/m.test(combined)) {
+        clearBlockedFailure();
         settleReadiness(true);
       }
     };
@@ -520,6 +732,10 @@ export default function (pi: ExtensionAPI) {
       resolveClosed();
       settleReadiness(false);
       releaseChild();
+      if (owner.stopping && replacementRequested) {
+        void replaceStoppedGeneration();
+        return;
+      }
       if (!generationIsLive(owner)) return;
       const classification = classifyClose(stdout, stderr, code, signal);
       const predecessor = String(armChild.pid ?? "");
@@ -551,6 +767,10 @@ export default function (pi: ExtensionAPI) {
       resolveClosed();
       settleReadiness(false);
       releaseChild();
+      if (owner.stopping && replacementRequested) {
+        void replaceStoppedGeneration();
+        return;
+      }
       if (!generationIsLive(owner)) return;
       if (owner.restoring) return;
       scheduleRetry(owner, `watcher: FAILED - Pi extension arm child ${id} failed: ${error.message}`, String(armChild.pid ?? ""));
@@ -561,12 +781,26 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
-  pi.on?.("session_start", () => {
-    if (generation.stopping) generation = createGeneration();
+  pi.on?.("session_start", async () => {
+    if (generation.stopping) {
+      replacementRequested = true;
+      await replaceStoppedGeneration();
+      return;
+    }
+    await retirementBarrier;
+    if (!generationIsLive(generation)) return;
     activateGeneration(generation);
     markLoaded();
+    armForLifecycle(generation, "session start");
+  });
+  pi.on?.("session_compact", () => {
+    armForLifecycle(generation, "session compaction");
+  });
+  pi.on?.("agent_settled", () => {
+    armForLifecycle(generation, "session idle");
   });
   pi.on?.("session_shutdown", () => {
+    clearMarkerRetry();
     stopGeneration(generation);
   });
 
@@ -599,16 +833,19 @@ export default function (pi: ExtensionAPI) {
     },
     renderResult: (result, _options, theme, context) => {
       if (calmHides("tool-result")) return new Container();
+      // Colour each line separately, the way Pi stock does: a joined multi-line
+      // string gets one closing reset for the whole block instead of one per line,
+      // which makes Calm-off rendering diverge from stock byte-for-byte.
       const output = result.content
         .filter((item) => item.type === "text")
         .map((item) => item.text)
         .join("\n");
       if (calmPresentation.stockExportRendering) {
-        return new Text(theme.fg("toolOutput", output), 0, 0);
+        return new Text(output.split("\n").map((line) => theme.fg("toolOutput", line)).join("\n"), 0, 0);
       }
       const state = context.state as WatchToolShellState;
       state.result = output
-        ? new Text(theme.fg("toolOutput", output), 0, 0)
+        ? new Text(output.split("\n").map((line) => theme.fg("toolOutput", line)).join("\n"), 0, 0)
         : new Container();
       refreshWatchToolShell(state, theme, context);
       return new Container();

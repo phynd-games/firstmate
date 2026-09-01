@@ -129,6 +129,27 @@ const MIRROR_MESSAGE_CAP = 4000;
 const MERGE_NOTE_BOAT = "⛵";
 // Carried inside the captain note's own text because that text is the only
 // part of a custom message Pi gives the model (see mergeIntoMain).
+// Ambiguity that is NOT captain-owned is adjudicated inside the fleet, not
+// relayed upward. This wakes MAIN - the heavier-weight model - to make the call
+// itself. It is deliberately NOT captain-facing: the captain sees a finding only
+// when it is a hard safety boundary, or when ambiguity survives adjudication.
+const ADJUDICATION_OUTCOME_INSTRUCTION =
+  "This is a supervision adjudication request delivered automatically by the supervision branch. " +
+  "It was not typed by the captain. Do NOT relay it to the captain. " +
+  "Load .agents/skills/ask-user-authority/SKILL.md and decide this finding yourself from the packet below, " +
+  "then send the deciding worker the exact decision through its keyed gate. " +
+  "Escalate to the captain only if the packet shows a hard safety boundary, or if the ambiguity genuinely survives your own adjudication.";
+
+// The SAME outcome reported again is not news, it is evidence that nothing was
+// done about it the first time. Sending it to the captain twice spends their
+// attention on supervision's own failure to act, so a repeat is routed to MAIN
+// to handle itself. The store keeps every repeat either way.
+const REPEATED_OUTCOME_INSTRUCTION =
+  "This is a REPEATED supervision outcome delivered automatically by the supervision branch. " +
+  "It was not typed by the captain, and the captain has already been told this once. " +
+  "Do NOT relay it again. Act on it yourself: read the task's current state, decide what is blocking it, and drive it forward. " +
+  "Escalate only if acting on it reveals something genuinely new that the captain must see.";
+
 const CAPTAIN_OUTCOME_INSTRUCTION =
   "This is a supervision outcome delivered automatically by the supervision branch. " +
   "It was not typed by the captain and it is not your own earlier output. " +
@@ -136,7 +157,7 @@ const CAPTAIN_OUTCOME_INSTRUCTION =
   "Do not restate or repeat any earlier answer.";
 type MirrorItem = { tag: "captain" | "main"; text: string };
 type MirrorCursor = { file: string; index: number };
-type Verdict = "routine" | "captain";
+type Verdict = "routine" | "adjudicate" | "captain";
 type LockOwnership = "owned" | "other" | "missing";
 
 const scriptEnv = {
@@ -572,6 +593,24 @@ export default function (pi: ExtensionAPI) {
   // delivered, carrying the same instruction as plain text, because an
   // untyped outcome main can still read beats an outcome the captain never
   // sees.
+  function adjudicationOutcomeInput(task: string, summary: string): string {
+    const body = `${ADJUDICATION_OUTCOME_INSTRUCTION}\n\n${task}: ${summary}`;
+    try {
+      return encodeFirstmateOperationalInput("branch-adjudication", body);
+    } catch {
+      return body;
+    }
+  }
+
+  function repeatedOutcomeInput(task: string, summary: string, repeat: number): string {
+    const body = `${REPEATED_OUTCOME_INSTRUCTION}\n\nThis outcome has now been reported ${repeat} times in a row.\n\n${task}: ${summary}`;
+    try {
+      return encodeFirstmateOperationalInput("branch-adjudication", body);
+    } catch {
+      return body;
+    }
+  }
+
   function captainOutcomeInput(task: string, summary: string): string {
     const body = `${CAPTAIN_OUTCOME_INSTRUCTION}\n\n${task}: ${summary}`;
     try {
@@ -588,12 +627,21 @@ export default function (pi: ExtensionAPI) {
     verdict: Verdict,
     summary: string,
     silent: boolean,
+    repeat = 0,
   ): boolean {
     if (!actingAsOwner(expectedGeneration)) return false;
-    if (verdict === "captain") {
+    if (verdict === "captain" || verdict === "adjudicate") {
+      // A repeated captain outcome is delivered to MAIN to act on, never to the
+      // captain a second time. It still opens exactly one turn - the work has
+      // to go somewhere - but that turn is main's own, like an adjudication.
+      const repeated = verdict === "captain" && repeat >= 2;
       const message = {
         customType: "fm-branch-merge",
-        content: captainOutcomeInput(task, summary),
+        content: repeated
+          ? repeatedOutcomeInput(task, summary, repeat)
+          : verdict === "adjudicate"
+            ? adjudicationOutcomeInput(task, summary)
+            : captainOutcomeInput(task, summary),
         display: false,
       };
       pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
@@ -617,10 +665,10 @@ export default function (pi: ExtensionAPI) {
       name: "fm_branch_report",
       label: "Report supervision outcome",
       description:
-        "Record the outcome of one handled fleet event: write it durably to the outcome store, then merge an append-only note into the captain-facing main conversation. verdict captain surfaces it to the captain in one turn; routine notes render unless silent marks a no-change heartbeat.",
+        "Record the outcome of one handled fleet event: write it durably to the outcome store, then merge an append-only note into the captain-facing main conversation. verdict captain surfaces it to the captain in one turn; verdict adjudicate wakes MAIN to decide an ambiguous but non-captain-owned finding itself and is never shown to the captain; routine notes render unless silent marks a no-change heartbeat.",
       parameters: Type.Object({
         task: Type.String({ description: "The task id the event belongs to (or 'fleet' for fleet-wide events)" }),
-        verdict: Type.Union([Type.Literal("routine"), Type.Literal("captain")], {
+        verdict: Type.Union([Type.Literal("routine"), Type.Literal("adjudicate"), Type.Literal("captain")], {
           description: "captain only for what a human must see; routine otherwise",
         }),
         summary: Type.String({
@@ -638,9 +686,9 @@ export default function (pi: ExtensionAPI) {
         const summary = String((params as { summary: unknown }).summary || "").trim();
         const wake = String((params as { wake?: unknown }).wake ?? "").trim();
         const silent = (params as { silent?: unknown }).silent === true;
-        if (!task || !summary || (verdictRaw !== "routine" && verdictRaw !== "captain") || (silent && (task !== "fleet" || verdictRaw !== "routine"))) {
+        if (!task || !summary || (verdictRaw !== "routine" && verdictRaw !== "adjudicate" && verdictRaw !== "captain") || (silent && (task !== "fleet" || verdictRaw !== "routine"))) {
           return {
-            content: [{ type: "text", text: "invalid report: task, verdict (routine|captain), and summary are required" }],
+            content: [{ type: "text", text: "invalid report: task, verdict (routine|adjudicate|captain), and summary are required" }],
             details: undefined,
             isError: true,
           };
@@ -663,15 +711,20 @@ export default function (pi: ExtensionAPI) {
             isError: true,
           };
         }
-        if (!mergeIntoMain(toolGeneration, appended.stdout, task, verdict, summary, silent)) {
+        // The store answers with "<seq>" or "<seq> repeat=<n>"; the repeat
+        // count is how it tells the caller this outcome has already been said.
+        const [appendedSeq, ...appendedFlags] = appended.stdout.split(/\s+/);
+        const repeatFlag = appendedFlags.find((flag) => flag.startsWith("repeat="));
+        const repeat = repeatFlag ? Number.parseInt(repeatFlag.slice("repeat=".length), 10) : 0;
+        if (!mergeIntoMain(toolGeneration, appendedSeq, task, verdict, summary, silent, Number.isFinite(repeat) ? repeat : 0)) {
           return {
-            content: [{ type: "text", text: `recorded seq ${appended.stdout}, but merge refused after supervision replacement or lock loss` }],
+            content: [{ type: "text", text: `recorded seq ${appendedSeq}, but merge refused after supervision replacement or lock loss` }],
             details: undefined,
             isError: true,
           };
         }
         return {
-          content: [{ type: "text", text: `recorded seq ${appended.stdout} and merged [${verdict}] into main` }],
+          content: [{ type: "text", text: `recorded seq ${appendedSeq} and merged [${verdict}] into main` }],
           details: undefined,
         };
       },
@@ -1368,7 +1421,13 @@ ${context.command}
         .map((item) => normalizeOutcomesToolOutput(item.text))
         .join("\n");
       const shellState = context.state as OutcomesToolShellState;
-      shellState.result = output ? new Text(theme.fg("toolOutput", output), 0, 0) : new Container();
+      // Colour each line separately, the way Pi stock does. Passing a joined
+      // multi-line string to theme.fg emits one closing reset for the whole block
+      // instead of one per line, which makes Calm-off rendering diverge from stock
+      // byte-for-byte on any multi-line output.
+      shellState.result = output
+        ? new Text(output.split("\n").map((line) => theme.fg("toolOutput", line)).join("\n"), 0, 0)
+        : new Container();
       refreshOutcomesToolShell(shellState, theme, context);
       return new Container();
     },

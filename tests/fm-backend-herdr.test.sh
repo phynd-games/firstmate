@@ -14,6 +14,8 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck source=tests/herdr-test-safety.sh
 . "$(dirname "${BASH_SOURCE[0]}")/herdr-test-safety.sh"
+# shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
+. "$ROOT/bin/fm-timeout-lib.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; exit 0; }
 
@@ -55,6 +57,16 @@ n=$next
 echo "$n" > "$COUNT_FILE"
 if [ -f "$RESP/$n.exit" ]; then
   exit "$(cat "$RESP/$n.exit")"
+fi
+if [ "${1:-}" = server ] && [ -n "${FM_HERDR_SERVER_DELAY:-}" ]; then
+  if [ -n "${FM_HERDR_SERVER_FD_PROBE:-}" ] && [ -e /dev/fd/9 ]; then
+    printf 'inherited\n' > "$FM_HERDR_SERVER_FD_PROBE"
+  fi
+  if [ -n "${FM_HERDR_SERVER_FD255_PROBE:-}" ]; then
+    printf 'inherited\n' >&255 2>/dev/null || true
+  fi
+  [ -z "${FM_HERDR_SERVER_PID_FILE:-}" ] || printf '%s\n' "$$" > "$FM_HERDR_SERVER_PID_FILE"
+  exec sleep "$FM_HERDR_SERVER_DELAY"
 fi
 [ -f "$RESP/$n.out" ] && cat "$RESP/$n.out"
 exit 0
@@ -522,6 +534,34 @@ test_container_ensure_starts_server_and_workspace() {
   assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp'$'\x1f''--label'$'\x1f''firstmate' \
     "container_ensure did not create the firstmate workspace with the given cwd"
   pass "fm_backend_herdr_container_ensure: version-gates, starts the server, ensures the firstmate workspace, echoes session:workspace_id + the seeded default tab id"
+}
+
+test_server_ensure_does_not_wait_for_a_long_lived_server_in_command_substitution() {
+  local dir log resp fb out server_pid status
+  dir="$TMP_ROOT/server-command-substitution"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"server":{"running":false}}\n' > "$resp/1.out"
+  printf '{"server":{"running":true}}\n' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  # shellcheck disable=SC2016 # the inner bash must expand its positional parameters.
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    FM_HERDR_SCRIPT_STATUS=1 FM_HERDR_SERVER_DELAY=30 FM_HERDR_SERVER_PID_FILE="$dir/server.pid" \
+    FM_HERDR_SERVER_FD_PROBE="$dir/fd-probe" \
+    FM_HERDR_SERVER_FD255_PROBE="$dir/fd-probe-255" \
+    fm_run_timed 5 bash -c '
+      exec 9>"$2/fd-probe"
+      exec 255>"$2/fd-probe-255"
+      . "$0/bin/backends/herdr.sh"
+      result=$(fm_backend_herdr_server_ensure fmtest)
+      printf "result=%s\n" "$result"
+    ' "$ROOT" _ "$dir")
+  status=$?
+  [ "$status" -eq 0 ] || fail "server_ensure command substitution exceeded the hard timeout (status $status)"
+  server_pid=$(cat "$dir/server.pid" 2>/dev/null || printf '')
+  [ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null || true
+  [ ! -s "$dir/fd-probe" ] || fail "server_ensure leaked an inherited descriptor into the long-lived server"
+  [ ! -s "$dir/fd-probe-255" ] || fail "server_ensure leaked fd 255 into the long-lived server"
+  assert_contains "$out" "result=" "server_ensure completed through command substitution"
+  pass "fm_backend_herdr_server_ensure: command substitutions return without inherited descriptors"
 }
 
 test_container_ensure_reuses_existing_workspace() {
@@ -4446,6 +4486,7 @@ test_workspace_ensure_refuses_an_ambiguous_label_with_no_launcher
 test_workspace_ensure_other_home_ignores_the_launcher_identity
 test_container_ensure_refuses_an_ambiguous_home_label
 test_container_ensure_starts_server_and_workspace
+test_server_ensure_does_not_wait_for_a_long_lived_server_in_command_substitution
 test_container_ensure_reuses_existing_workspace
 test_container_ensure_creates_with_no_focus_flag
 test_container_ensure_uses_secondmate_home_label

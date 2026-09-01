@@ -214,6 +214,7 @@ test_lock_single_winner_under_concurrency() {
         # Stay alive so the held lock names a live pid for the whole window;
         # otherwise a late contender could legitimately reclaim a dead-pid lock.
         sleep 1
+        :
       fi
     ' _ "$LIB" "$lockdir" "$marker" &
     pids="$pids $!"
@@ -264,6 +265,7 @@ test_lock_stale_steal_single_winner_under_concurrency() {
       if fm_lock_try_acquire "$2"; then
         printf "%s\n" "${BASHPID:-$$}" >> "$3"
         sleep 1
+        :
       fi
     ' _ "$LIB" "$lockdir" "$marker" &
     pids="$pids $!"
@@ -1033,8 +1035,8 @@ test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse() {
   state="$dir/state"
   proc_root="$dir/proc"
   pid=4242
-  identity_key=proc-starttime
-  [ "$(uname)" != Linux ] || identity_key=linux-starttime
+  identity_key='proc-starttime'
+  [ "$(uname)" != Linux ] || identity_key='linux-starttime'
   mkdir -p "$proc_root"
   printf 'btime 1784094040\n' > "$proc_root/stat"
   write_fake_proc_identity "$proc_root" "$pid" 987654
@@ -1100,6 +1102,27 @@ test_stale_watch_reclaim_publishes_before_clear() {
   pass "stale watcher reclaim publishes durable recovery evidence before clear"
 }
 
+test_stale_clear_preserves_a_successor_lock() {
+  local dir state lockdir out
+  dir=$(make_case stale-clear-successor)
+  state="$dir/state"
+  lockdir="$state/.watch.lock"
+  mkdir -p "$lockdir"
+  printf '99999999\n' > "$lockdir/pid"
+  printf 'stale-instance\n' > "$lockdir/pid-identity"
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2.steal" || exit 1
+    steal_owner=${FM_LOCK_OWNER_DIR:?}
+    fm_lock_remove_path "$2" || exit 2
+    fm_lock_try_create "$2" "$steal_owner" || exit 3
+    ! fm_recovery_transition "$3" clear-stale-lock "$2" downtime 99999999 stale-instance 1
+    printf "%s\n" "$(cat "$2/pid")"
+  ' _ "$LIB" "$lockdir" "$state/.watcher-down") || fail "stale clear unexpectedly removed a successor lock"
+  [ "$out" != "99999999" ] || fail "successor lock was replaced with the stale holder"
+  pass "stale clear revalidation preserves a successor lock"
+}
+
 test_msys_pid_identity_uses_proc() {
   local live identity
   case "$(uname)" in
@@ -1127,6 +1150,7 @@ test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
 test_msys_pid_identity_uses_proc
 test_stale_watch_lock_reclaimed
 test_stale_watch_reclaim_publishes_before_clear
+test_stale_clear_preserves_a_successor_lock
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings
 test_lock_single_winner_under_concurrency
@@ -1150,3 +1174,52 @@ test_arm_waits_for_peer_beacon_after_child_stands_down
 test_arm_fails_loud_when_no_fresh_watcher_confirmable
 test_cycle_exit_ledger_links_successor_and_stays_bounded
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified
+
+# A ZOMBIE passes kill -0 but can never act. On Linux its /proc cmdline is EMPTY,
+# so fm_pid_identity returned an ERROR instead of an answer, ownership validation
+# could neither confirm nor deny the owner, the watcher's cleanup could not persist
+# its recovery state, and the acknowledgement handshake that depends on that state
+# failed after it. That surfaced as portable-serial-4 failing only on Linux.
+#
+# Driven through a fake /proc (FM_PROC_ROOT_OVERRIDE) so the case is portable and
+# runs everywhere, not only where a real zombie can be manufactured.
+test_zombie_pid_is_dead_for_liveness_and_ownership() {
+  local dir proc pid rc identity
+  dir=$(make_case zombie-liveness)
+  proc="$dir/proc"
+  pid=$$
+  mkdir -p "$proc/$pid"
+
+  # Running: state S, real cmdline. Liveness must hold and identity must answer.
+  printf '%s (bash) S 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4242 0 0\n' "$pid" > "$proc/$pid/stat"
+  printf 'bash\0-x\0' > "$proc/$pid/cmdline"
+  FM_PROC_ROOT_OVERRIDE="$proc" bash -c '. "$1"; fm_pid_alive "$2"' _ "$LIB" "$pid" \
+    || fail "a running pid was reported dead through the fake /proc"
+  identity=$(FM_PROC_ROOT_OVERRIDE="$proc" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid") \
+    || fail "identity could not be read for a running pid"
+  [ -n "$identity" ] || fail "identity was empty for a running pid"
+
+  # Zombie: state Z with the EMPTY cmdline a real zombie has. kill -0 still
+  # succeeds because the pid is this live shell, which is exactly the trap.
+  printf '%s (bash) Z 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4242 0 0\n' "$pid" > "$proc/$pid/stat"
+  : > "$proc/$pid/cmdline"
+  rc=0
+  FM_PROC_ROOT_OVERRIDE="$proc" bash -c '. "$1"; fm_pid_alive "$2"' _ "$LIB" "$pid" || rc=$?
+  [ "$rc" -ne 0 ] || fail "a zombie pid was reported ALIVE; a reaped watcher can still look like a live lock owner"
+
+  # The empty cmdline is why identity used to error - that is the original cause,
+  # and liveness must now settle the question before identity is ever consulted.
+  rc=0
+  FM_PROC_ROOT_OVERRIDE="$proc" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "identity unexpectedly answered for an empty zombie cmdline"
+
+  # A process name containing ")" must not shift the state field.
+  printf '%s (weird)name) Z 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4242 0 0\n' "$pid" > "$proc/$pid/stat"
+  rc=0
+  FM_PROC_ROOT_OVERRIDE="$proc" bash -c '. "$1"; fm_pid_alive "$2"' _ "$LIB" "$pid" || rc=$?
+  [ "$rc" -ne 0 ] || fail "a zombie whose comm contains ')' was reported alive; the state field shifted"
+
+  pass "a zombie is dead for liveness, so ownership resolves instead of erroring"
+}
+
+test_zombie_pid_is_dead_for_liveness_and_ownership

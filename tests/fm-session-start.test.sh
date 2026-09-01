@@ -215,6 +215,12 @@ make_fake_ps_claude() {
 
 make_fake_ps_harness() {
   local fakebin=$1 harness=$2
+# A real ps answers the identity query bin/fm-lock.sh makes
+# (-o lstart= -o command=), and the session lock refuses to publish an identity
+# it cannot obtain. A stub that answers only comm=/args=/ppid= therefore leaves
+# the home with no recorded lock identity, which silently changes what several
+# of these tests are exercising. Delegating this one query to the real ps keeps
+# the stub faithful without inventing an identity format.
   cat > "$fakebin/ps" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -226,6 +232,7 @@ for argument in "$@"; do
   previous=$argument
 done
 case "$*" in
+  *"lstart="*) exec /bin/ps "$@" ;;
   *"comm="*)
     if [ -z "${FM_FAKE_HARNESS_PID:-}" ] || [ "$pid" = "$FM_FAKE_HARNESS_PID" ] \
       || [ "$pid" = "${FM_FAKE_LIVE_HOLDER_PID:-}" ]; then
@@ -267,6 +274,7 @@ for arg in "\$@"; do
   prev="\$arg"
 done
 case "\$*" in
+  *"lstart="*) exec /bin/ps "\$@" ;;
   *"comm="*)
     if [ "\$pid" = "$holder_pid" ]; then
       printf '/usr/local/bin/pi\n'
@@ -680,15 +688,17 @@ install_pi_watch_extension_fixture() {
 }
 
 write_pi_watch_loaded_marker() {
-  local home=$1 root=$2 pid=$3 version
+  local home=$1 root=$2 pid=$3 version identity
   version=$(hash_file_for_test "$root/.pi/extensions/fm-primary-pi-watch.ts")
-  printf '%s\n%s\n' "$version" "$pid" > "$home/state/.pi-watch-extension-loaded"
+  identity=$(fm_test_pid_identity "$pid") || return 1
+  printf '%s\n%s\n%s\n' "$version" "$pid" "$identity" > "$home/state/.pi-watch-extension-loaded"
 }
 
 write_pi_turnend_loaded_marker() {
-  local home=$1 root=$2 pid=$3 version
+  local home=$1 root=$2 pid=$3 version identity
   version=$(hash_file_for_test "$root/.pi/extensions/fm-primary-turnend-guard.ts")
-  printf '%s\n%s\n' "$version" "$pid" > "$home/state/.pi-turnend-extension-loaded"
+  identity=$(fm_test_pid_identity "$pid") || return 1
+  printf '%s\n%s\n%s\n' "$version" "$pid" "$identity" > "$home/state/.pi-turnend-extension-loaded"
 }
 
 write_pi_loaded_markers() {
@@ -879,6 +889,7 @@ for argument in "$@"; do
   previous=$argument
 done
 case "$*" in
+  *"lstart="*) exec /bin/ps "$@" ;;
   *"comm="*)
     if [ -f "$FM_FAKE_LOCK_STATE/harness-$pid" ]; then
       printf '%s\n' /usr/local/bin/claude
@@ -1929,6 +1940,7 @@ for argument in "$@"; do
   previous=$argument
 done
 case "$*" in
+  *"lstart="*) exec /bin/ps "$@" ;;
   *"comm="*)
     if [ "$pid" = "${FM_FAKE_HARNESS_PID:-}" ]; then printf '%s\n' /usr/local/bin/claude
     else printf '%s\n' /bin/bash; fi

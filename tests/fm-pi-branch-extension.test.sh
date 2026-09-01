@@ -654,15 +654,29 @@ if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[2].message.content))
 // is proven separately against the real SDK in fm-pi-branch-live-e2e.test.sh.
 writeFileSync(`${home}/state/delivered-captain-note`, sentToMain[2].message.content);
 writeFileSync(`${home}/state/delivered-routine-note`, sentToMain[0].message.content);
-if (sentToMain.filter((sent) => sent.options.triggerTurn).length !== 1) {
-  throw new Error("one captain outcome must open exactly one turn on main");
+// An adjudication wakes MAIN to decide the finding and is never shown to the
+// captain, so it takes the same unrendered follow-up turn a captain outcome
+// takes - but it must identify itself as its OWN kind. When it did not, the
+// encode call threw on an unregistered kind, the extension's catch delivered
+// the packet as ordinary text, and main could not tell an adjudication request
+// from anything else it had been sent.
+await report.execute("call-4", { task: "task-9", verdict: "adjudicate", summary: "contract: X; finding: Y; evidence: Z; recommendation: fix" }, undefined, undefined, {});
+if (sentToMain[3].options.triggerTurn !== true || sentToMain[3].options.deliverAs !== "followUp") {
+  throw new Error(`adjudication merge must trigger exactly one follow-up turn: ${JSON.stringify(sentToMain[3].options)}`);
+}
+if (sentToMain[3].message.display !== false) {
+  throw new Error(`adjudication note must never be printed or rendered: display=${sentToMain[3].message.display}`);
+}
+writeFileSync(`${home}/state/delivered-adjudication-note`, sentToMain[3].message.content);
+if (sentToMain.filter((sent) => sent.options.triggerTurn).length !== 2) {
+  throw new Error("the captain outcome and the adjudication must open exactly one turn each on main");
 }
 
 // The store (the owned durable contract) holds all three outcomes in order,
 // and each merged note advanced the read cursor.
 const rows = readFileSync(`${home}/state/branch-outcomes.jsonl`, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-if (rows.length !== 3) throw new Error(`expected 3 store rows, got ${rows.length}`);
-if (rows[0].verdict !== "routine" || rows[2].verdict !== "captain") throw new Error("store verdicts out of order");
+if (rows.length !== 4) throw new Error(`expected 4 store rows, got ${rows.length}`);
+if (rows[0].verdict !== "routine" || rows[2].verdict !== "captain" || rows[3].verdict !== "adjudicate") throw new Error("store verdicts out of order");
 if (rows[0].wake !== "signal: working") throw new Error("store lost the wake reason");
 if (outcomeScript(["unread"]) !== "") throw new Error("merged outcomes were not marked read");
 
@@ -781,6 +795,20 @@ EOF
     *"Relay only this outcome"*"Do not restate or repeat any earlier answer"*) ;;
     *) fail "captain outcome body never tells main to relay it instead of repeating: $body" ;;
   esac
+  # The adjudication packet must arrive as its OWN kind. Its encoder call is
+  # wrapped in a catch that falls back to plain text, so an unregistered kind
+  # degrades silently instead of failing - which is exactly why this asserts the
+  # delivered bytes through the protocol's own executable.
+  kind=$(./bin/fm-operational-input.sh kind < "$home/state/delivered-adjudication-note") \
+    || fail "adjudication packet reaches main as untyped text main cannot distinguish from any other note"
+  [ "$kind" = branch-adjudication ] \
+    || fail "adjudication delivered as kind '$kind', not branch-adjudication"
+  body=$(./bin/fm-operational-input.sh body < "$home/state/delivered-adjudication-note") \
+    || fail "adjudication envelope carries no readable body"
+  case "$body" in
+    *"contract: X; finding: Y; evidence: Z; recommendation: fix"*) ;;
+    *) fail "adjudication body lost the packet itself: $body" ;;
+  esac
   # The routine note is rendered in the TUI, and its renderer reads the glyph off
   # the front of this same string, so it must stay plain text.
   if ./bin/fm-operational-input.sh kind < "$home/state/delivered-routine-note" >/dev/null 2>&1; then
@@ -878,7 +906,9 @@ test_branch_default_on_heartbeat_afk_and_fallback() {
   home="$TMP_ROOT/gating-home"
   mkdir -p "$home/state" "$home/config" "$broken/bin"
   install_pi_branch_extension_fixture "$repo"
-  cp "$ROOT/bin/fm-lease.sh" "$ROOT/bin/fm-lease-lib.sh" "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-wake-grant.sh" "$broken/bin/"
+  cp "$ROOT/bin/fm-lease.sh" "$ROOT/bin/fm-lease-lib.sh" "$ROOT/bin/fm-session-lock-lib.sh" \
+    "$ROOT/bin/fm-cursor-lib.sh" \
+    "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-wake-grant.sh" "$broken/bin/"
   cat > "$broken/bin/fm-branch-prompt.sh" <<'SH'
 #!/usr/bin/env bash
 echo "synthetic generator failure" >&2

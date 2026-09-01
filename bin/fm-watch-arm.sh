@@ -103,6 +103,23 @@ lock_snapshot() {
 
 WATCH_DELIVERY_LOG="$STATE/.watch-deliveries.log"
 WATCH_DELIVERY_LOCK="$STATE/.watch-deliveries.lock"
+ARM_CLAIM_HELD=0
+if [ "${FM_WATCH_ARM_CLAIM_REQUIRED:-0}" = 1 ]; then
+  if ! fm_supervision_claim_acquire "$STATE/.supervision-claim.lock" "${FM_WATCH_ARM_CLAIM_TRIES:-100}"; then
+    echo "watcher: FAILED - Pi arm could not acquire the shared continuity claim" >&2
+    exit 125
+  fi
+  ARM_CLAIM_HELD=1
+fi
+
+# shellcheck disable=SC2329
+# Invoked indirectly by the EXIT trap after the arm cycle completes.
+arm_release_claim() {
+  if [ "$ARM_CLAIM_HELD" -eq 1 ]; then
+    fm_lock_release "$STATE/.supervision-claim.lock" || true
+    ARM_CLAIM_HELD=0
+  fi
+}
 
 cycle_active=0
 cycle_watcher_pid=none
@@ -222,15 +239,88 @@ cycle_mark_predecessor_successor() {
   fm_lock_release "$CYCLE_LOG_LOCK"
 }
 
-clear_stale_recorded_watcher_lock() {
-  local lock_home lock_path lock_identity
+restart_recorded_watcher_lock() {
+  local lock_home lock_path lock_pid lock_identity current_identity expected_pid expected_identity reclaim final_pid final_identity final_current_identity rc=0
+  expected_pid=${FM_WATCH_RESTART_EXPECTED_PID:-}
+  expected_identity=${FM_WATCH_RESTART_EXPECTED_IDENTITY:-}
+  reclaim=${FM_WATCH_RESTART_RECLAIM:-auto}
+  fm_lock_try_acquire "$WATCH_LOCK.steal" || return 1
   lock_home=$(cat "$WATCH_LOCK/fm-home" 2>/dev/null || true)
   lock_path=$(cat "$WATCH_LOCK/watcher-path" 2>/dev/null || true)
+  lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
   lock_identity=$(cat "$WATCH_LOCK/pid-identity" 2>/dev/null || true)
-  [ "$lock_home" = "$FM_HOME" ] || return 0
-  [ "$lock_path" = "$WATCH" ] || return 0
-  [ -n "$lock_identity" ] || return 0
-  fm_recovery_transition "$STATE/.watcher-down" clear-stale-lock "$WATCH_LOCK" downtime
+  if [ ! -e "$WATCH_LOCK" ] && [ ! -L "$WATCH_LOCK" ]; then
+    rc=0
+  elif [ "$lock_home" != "$FM_HOME" ] || [ "$lock_path" != "$WATCH" ] \
+    || { [ -z "$lock_identity" ] && fm_pid_alive "$lock_pid"; }; then
+    rc=1
+  elif [ -n "$expected_pid" ] && {
+    [ "$lock_pid" != "$expected_pid" ] || [ "$lock_identity" != "$expected_identity" ];
+  }; then
+    rc=3
+  else
+    current_identity=$(fm_pid_identity "$lock_pid" 2>/dev/null || printf '')
+    if [ -n "$expected_pid" ] && [ "$lock_pid" != "$expected_pid" ]; then
+      rc=3
+    elif [ -n "$expected_pid" ] && [ "$lock_identity" != "$expected_identity" ]; then
+      rc=3
+    elif [ "$reclaim" = auto ]; then
+      if fm_pid_alive "$lock_pid"; then
+        [ -n "$current_identity" ] || rc=1
+        [ "$current_identity" = "$lock_identity" ] && reclaim=0 || reclaim=1
+      else
+        reclaim=0
+      fi
+    fi
+    if [ "$rc" -eq 0 ] && [ -n "$expected_pid" ] && [ "$reclaim" = 1 ]; then
+      if fm_pid_alive "$lock_pid" \
+        && { [ -z "$current_identity" ] || [ "$current_identity" = "$lock_identity" ]; }; then
+        rc=1
+      fi
+    elif [ "$reclaim" = 1 ]; then
+      :
+    elif [ -n "$expected_pid" ] && [ -z "$current_identity" ] && fm_pid_alive "$lock_pid"; then
+      rc=1
+    elif [ "$reclaim" = 0 ] \
+      && fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME" \
+      && [ "$FM_WATCHER_HEALTHY_PID" = "$lock_pid" ] \
+      && [ "$FM_WATCHER_HEALTHY_IDENTITY" = "$lock_identity" ]; then
+      rc=4
+    elif fm_pid_alive "$lock_pid"; then
+      if [ "$current_identity" = "$lock_identity" ]; then
+        kill -TERM "$lock_pid" 2>/dev/null || true
+        i=0
+        while [ "$i" -lt 50 ] && fm_pid_alive "$lock_pid"; do
+          sleep 0.1
+          i=$((i + 1))
+        done
+      else
+        rc=1
+      fi
+    fi
+    if [ "$rc" -eq 0 ] && { [ -e "$WATCH_LOCK" ] || [ -L "$WATCH_LOCK" ]; }; then
+      final_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
+      final_identity=$(cat "$WATCH_LOCK/pid-identity" 2>/dev/null || true)
+      final_current_identity=$(fm_pid_identity "$final_pid" 2>/dev/null || printf '')
+      [ "$final_pid" = "$lock_pid" ] || rc=3
+      [ "$final_identity" = "$lock_identity" ] || rc=3
+      if [ "$reclaim" = 1 ]; then
+        if fm_pid_alive "$final_pid"; then
+          [ -n "$final_current_identity" ] && [ "$final_current_identity" != "$final_identity" ] || rc=1
+        fi
+      else
+        fm_pid_alive "$final_pid" && rc=1
+      fi
+    fi
+    if [ "$rc" -eq 0 ] && { [ -e "$WATCH_LOCK" ] || [ -L "$WATCH_LOCK" ]; }; then
+      if ! fm_recovery_transition "$STATE/.watcher-down" clear-stale-lock "$WATCH_LOCK" downtime "$lock_pid" "$lock_identity" 1; then
+        rc=1
+      fi
+    fi
+  fi
+  fm_lock_release "$WATCH_LOCK.steal"
+  [ "$rc" -eq 0 ] || return "$rc"
+  [ ! -e "$WATCH_LOCK" ] && [ ! -L "$WATCH_LOCK" ]
 }
 
 # A watcher is "healthy" iff the lock names a live process that is genuinely THIS
@@ -408,25 +498,19 @@ if [ "$mode" = handling-delivered ]; then
 fi
 
 if [ "$mode" = restart ]; then
-  # Home-scoped stop: only the watcher pid recorded in THIS home's lock.
-  lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
-  if fm_pid_alive "$lock_pid"; then
-    if fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$lock_pid" "$FM_HOME"; then
-      kill -TERM "$lock_pid" 2>/dev/null || true
-      # Wait for it to actually exit before relaunching, so the fresh watcher
-      # either takes a released lock or reclaims a now-dead-pid stale lock instead
-      # of seeing the dying one as a live holder and no-opping.
-      i=0
-      while [ "$i" -lt 50 ] && fm_pid_alive "$lock_pid"; do
-        sleep 0.1
-        i=$((i + 1))
-      done
-    else
-      if ! clear_stale_recorded_watcher_lock; then
-        echo "watcher: FAILED - stale watcher recovery state could not be persisted" >&2
-        exit 1
-      fi
-    fi
+  export FM_WATCH_RESTART=1
+  restart_recorded_watcher_lock
+  clear_rc=$?
+  if [ "$clear_rc" -eq 3 ]; then
+    echo "watcher: FAILED - a successor watcher won the stale-lock handoff" >&2
+    exit 1
+  fi
+  if [ "$clear_rc" -eq 4 ]; then
+    mode=arm
+  fi
+  if [ "$clear_rc" -ne 0 ] && [ "$clear_rc" -ne 4 ]; then
+    echo "watcher: FAILED - stale watcher recovery state could not be persisted" >&2
+    exit 1
   fi
 fi
 
@@ -448,31 +532,172 @@ fi
 # wake exit propagates out so the harness re-notifies firstmate.
 child=
 child_out=
+child_identity=
+child_status() {
+  local process_state
+  fm_pid_alive "$child" || return 0
+  process_state=$(ps -o stat= -p "$child" 2>/dev/null | tr -d '[:space:]')
+  [ -n "$process_state" ] || return 2
+  [[ "$process_state" == Z* ]] && return 0
+  return 1
+}
+stop_child_bounded() {
+  local current i=0 status
+  [ -n "$child" ] || return 0
+  child_status
+  status=$?
+  case "$status" in
+    0) wait "$child" 2>/dev/null || true; return 0 ;;
+    2) return 1 ;;
+  esac
+  current=$(fm_pid_identity "$child" 2>/dev/null || true)
+  [ -n "$child_identity" ] && [ -n "$current" ] && [ "$current" = "$child_identity" ] || return 1
+  kill -TERM "$child" 2>/dev/null || true
+  while [ "$i" -lt 20 ]; do
+    child_status
+    status=$?
+    [ "$status" -eq 0 ] && break
+    if [ "$status" -eq 2 ]; then
+      sleep 0.05
+      i=$((i + 1))
+      continue
+    fi
+    sleep 0.05
+    i=$((i + 1))
+  done
+  child_status
+  status=$?
+  if [ "$status" -eq 2 ]; then
+    return 1
+  fi
+  if [ "$status" -eq 1 ]; then
+    current=$(fm_pid_identity "$child" 2>/dev/null || true)
+    [ -n "$child_identity" ] && [ -n "$current" ] && [ "$current" = "$child_identity" ] || return 1
+    kill -KILL "$child" 2>/dev/null || true
+    i=0
+    while [ "$i" -lt 20 ]; do
+      child_status
+      status=$?
+      [ "$status" -eq 0 ] && break
+      if [ "$status" -eq 2 ]; then
+        sleep 0.05
+        i=$((i + 1))
+        continue
+      fi
+      sleep 0.05
+      i=$((i + 1))
+    done
+  fi
+  child_status
+  status=$?
+  [ "$status" -eq 0 ] || return 1
+  wait "$child" 2>/dev/null || true
+}
+arm_emergency_write() {
+  local reason=$1 emergency="$STATE/.watch-arm-emergency" tmp
+  if [ -e "$emergency" ] || [ -L "$emergency" ]; then
+    [ -f "$emergency" ] && [ ! -L "$emergency" ] || return 1
+  fi
+  tmp=$(mktemp "$STATE/.watch-arm-emergency.XXXXXX" 2>/dev/null) || return 1
+  if ! {
+    [ ! -f "$emergency" ] || cat "$emergency"
+    printf 'at=%s\nreason=%s\nchild_pid=%s\nchild_identity=%s\n' \
+      "$(date +%s)" "$reason" "${child:-unknown}" "${child_identity:-unknown}"
+  } > "$tmp" 2>/dev/null || ! chmod 0600 "$tmp" 2>/dev/null || ! mv -f "$tmp" "$emergency" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+arm_publish_failure() {
+  local reason=$1 queue_status=1 emergency_status=1
+  fm_recovery_transition "$STATE/.watcher-down" publish downtime >/dev/null 2>&1 || true
+  if FM_WAKE_APPEND_LOCK_TRIES=${FM_WAKE_APPEND_LOCK_TRIES:-${FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES:-100}} \
+    fm_wake_append check watcher-arm "$reason" >/dev/null 2>&1; then
+    queue_status=0
+  fi
+  if [ "$queue_status" -ne 0 ]; then
+    arm_emergency_write "$reason" >/dev/null 2>&1 && emergency_status=0
+  fi
+  [ "$queue_status" -eq 0 ] || [ "$emergency_status" -eq 0 ]
+}
 cleanup_child() {
-  if [ -n "$child" ] && fm_pid_alive "$child"; then
-    kill -TERM "$child" 2>/dev/null || true
+  local status attempts=0 max_attempts=${FM_WATCH_ARM_CLEANUP_TRIES:-40}
+  case "$max_attempts" in ''|*[!0-9]*|0) max_attempts=40 ;; esac
+  while [ "$attempts" -lt "$max_attempts" ]; do
+    if stop_child_bounded; then
+      break
+    fi
+    child_status
+    status=$?
+    case "$status" in
+      0) wait "$child" 2>/dev/null || true; break ;;
+      1|2) sleep 0.05 ;;
+    esac
+    attempts=$((attempts + 1))
+  done
+  if [ "$attempts" -ge "$max_attempts" ]; then
+    return 1
   fi
   if [ -n "$child_out" ]; then
     rm -f "$child_out" 2>/dev/null || true
   fi
+  return 0
+}
+
+hold_child_tracked() {
+  local status next_report=0 now reason hold_seconds=${FM_WATCH_ARM_UNKNOWN_CHILD_HOLD_SECONDS:-60} hold_deadline
+  case "$hold_seconds" in ''|*[!0-9]*|0) hold_seconds=60 ;; esac
+  hold_deadline=$(( $(date +%s) + hold_seconds ))
+  while [ -n "$child" ]; do
+    if stop_child_bounded; then
+      child=
+      break
+    fi
+    now=$(date +%s)
+    reason="watcher arm child remains live but its process identity cannot be confirmed (pid=${child:-unknown} identity=${child_identity:-unknown})"
+    if [ "$now" -ge "$next_report" ]; then
+      arm_publish_failure "$reason" || printf 'watcher: emergency diagnostic persistence failed\n' >&2
+      next_report=$((now + 20))
+    fi
+    if [ "$now" -ge "$hold_deadline" ]; then
+      reason="$reason; bounded cleanup window exhausted; abandoning arm ownership without signaling an unverifiable child"
+      arm_publish_failure "$reason" \
+        || printf 'watcher: emergency diagnostic persistence failed\n' >&2
+      arm_emergency_write "$reason" \
+        || printf 'watcher: emergency diagnostic persistence failed\n' >&2
+      return 125
+    fi
+    child_status
+    status=$?
+    case "$status" in
+      0) wait "$child" 2>/dev/null || true; child=; break ;;
+      1|2) sleep 1 ;;
+    esac
+  done
 }
 
 # shellcheck disable=SC2329 # Invoked indirectly by the signal traps below.
 handle_arm_signal() {
   local signal=$1 rc=$2
   trap - HUP TERM INT
-  if [ -n "$child" ] && fm_pid_alive "$child"; then
-    kill -TERM "$child" 2>/dev/null || true
-    wait "$child" 2>/dev/null || true
+  if ! cleanup_child; then
+    cycle_log_append "$rc" "$signal" arm-interrupted-unconfirmed none
+    arm_publish_failure "watcher arm interrupted by $signal; child termination could not be confirmed" \
+      || printf 'watcher: emergency diagnostic persistence failed\n' >&2
+    hold_child_tracked
+    exit "$rc"
   fi
+  fm_recovery_transition "$STATE/.watcher-down" publish downtime >/dev/null 2>&1 \
+    || printf 'watcher: recovery state could not be persisted\n' >&2
   cycle_log_append "$rc" "$signal" arm-interrupted none
-  cleanup_child
   exit "$rc"
 }
 
 trap 'handle_arm_signal HUP 129' HUP
 trap 'handle_arm_signal TERM 143' TERM
 trap 'handle_arm_signal INT 130' INT
+trap arm_release_claim EXIT
 
 child_out=$(mktemp "$STATE/.watch-arm-output.XXXXXX") || {
   echo "watcher: FAILED - no live watcher with a fresh beacon"
@@ -484,7 +709,8 @@ else
   "$WATCH" >"$child_out" &
 fi
 child=$!
-cycle_begin "$child" started "$(fm_pid_identity "$child" 2>/dev/null || true)"
+child_identity=$(fm_pid_identity "$child" 2>/dev/null || true)
+cycle_begin "$child" started "$child_identity"
 child_done=0
 
 owned_child_finished() {
@@ -551,8 +777,14 @@ while :; do
     if [ "$HEALTHY_PID" = "$child" ]; then
       cycle_refresh_lock_before
       if ! handling_generation=$(handling_successor_generation); then
-        cleanup_child
-        wait "$child" 2>/dev/null || true
+        if ! cleanup_child; then
+          arm_publish_failure "watcher arm child termination could not be confirmed" \
+            || printf 'watcher: emergency diagnostic persistence failed\n' >&2
+          cycle_log_append 1 none handling-handoff-termination-unconfirmed none
+          echo "watcher: FAILED - watcher termination could not be confirmed" >&2
+          hold_child_tracked
+          exit 1
+        fi
         cycle_log_append 1 none handling-handoff-failed none
         echo "watcher: FAILED - established successor could not inspect handling state"
         exit 1
@@ -587,9 +819,15 @@ done
 
 trap - HUP TERM INT
 print_watch_output "$child_out"
-cleanup_child
-wait "$child" 2>/dev/null
-rc=$?
+if ! cleanup_child; then
+  arm_publish_failure "watcher arm child termination could not be confirmed" \
+    || printf 'watcher: emergency diagnostic persistence failed\n' >&2
+  cycle_log_append 1 none confirmation-timeout-termination-unconfirmed none
+  echo "watcher: FAILED - watcher termination could not be confirmed" >&2
+  hold_child_tracked
+  exit 1
+fi
+rc=1
 cycle_log_append "$rc" "$(cycle_signal_name "$rc")" confirmation-timeout none
 echo "watcher: FAILED - no live watcher with a fresh beacon"
 exit 1

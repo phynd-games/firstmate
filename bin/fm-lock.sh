@@ -12,6 +12,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 LOCK="$STATE/.lock"
+LOCK_IDENTITY="$STATE/.lock-pid-identity"
 mkdir -p "$STATE" 2>/dev/null || {
   echo "error: cannot create session-lock state directory $STATE; operate read-only until resolved" >&2
   exit 1
@@ -44,6 +45,34 @@ rm -f "$probe" 2>/dev/null || {
 }
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# PUBLISHED_IDENTITY is what this run actually recorded: the identity string, or
+# empty when this host cannot produce one at all. It is deliberately not an
+# error. A host whose ps cannot answer -o lstart= -o command= and exposes no
+# readable /proc can never identify any process, so requiring an identity there
+# would leave the home permanently read-only - unable to take the helm at all -
+# rather than merely unable to detect pid reuse. Identity is a REFINEMENT of the
+# pid check: when the host can produce one it is recorded and enforced below;
+# when it cannot, the pid contract that predates it still holds.
+PUBLISHED_IDENTITY=
+publish_lock_identity() {
+  local identity tmp
+  identity=$(fm_pid_identity "$me" 2>/dev/null || true)
+  if [ -z "$identity" ]; then
+    PUBLISHED_IDENTITY=
+    return 0
+  fi
+  tmp="$LOCK_IDENTITY.tmp.${BASHPID:-$$}"
+  if ! printf '%s\n' "$identity" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  if ! mv -f "$tmp" "$LOCK_IDENTITY" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  [ "$(cat "$LOCK_IDENTITY" 2>/dev/null)" = "$identity" ] || return 1
+  PUBLISHED_IDENTITY=$identity
+}
 CLAIM_LOCK="$STATE/.lock.acquire"
 CLAIM_LOCK_HELD=0
 release_claim_lock() {
@@ -58,6 +87,23 @@ trap 'exit 1' HUP INT TERM
 if [ -f "$LOCK" ] && [ ! -L "$LOCK" ]; then
   old=$(cat "$LOCK" 2>/dev/null || true)
   if [ "$old" = "$me" ]; then
+    recorded=$(cat "$LOCK_IDENTITY" 2>/dev/null || true)
+    current=$(fm_pid_identity "$me" 2>/dev/null || true)
+    # Refuse only on PROVEN reuse: two identities that both exist and differ.
+    # One that is missing means this host could not answer, not that the holder
+    # changed, and treating "cannot tell" as "changed" locks the home out.
+    if [ -n "$recorded" ] && [ -n "$current" ] && [ "$recorded" != "$current" ]; then
+      echo "error: session-lock process identity changed; operate read-only until resolved" >&2
+      exit 1
+    fi
+    # Re-publish on re-entry so a lock taken before an identity was obtainable
+    # gains one. The Pi watch extension refuses to claim continuity for a lock
+    # with no recorded identity, so leaving this gap open would keep supervision
+    # from ever arming while every other check reported the lock healthy.
+    if ! publish_lock_identity; then
+      echo "error: cannot publish session-lock process identity; operate read-only until resolved" >&2
+      exit 1
+    fi
     echo "lock acquired: harness pid $me"
     exit 0
   fi
@@ -95,11 +141,17 @@ if ! { printf '%s\n' "$me" > "$LOCK"; } 2>/dev/null; then
   echo "error: cannot write session lock; operate read-only until resolved" >&2
   exit 1
 fi
+if ! publish_lock_identity; then
+  echo "error: cannot publish session-lock process identity; operate read-only until resolved" >&2
+  exit 1
+fi
 written=$(cat "$LOCK" 2>/dev/null) || {
   echo "error: cannot verify session lock ownership; operate read-only until resolved" >&2
   exit 1
 }
-if [ ! -f "$LOCK" ] || [ -L "$LOCK" ] || [ "$written" != "$me" ]; then
+if [ ! -f "$LOCK" ] || [ -L "$LOCK" ] || [ "$written" != "$me" ] \
+  || { [ -n "$PUBLISHED_IDENTITY" ] \
+    && [ "$(cat "$LOCK_IDENTITY" 2>/dev/null)" != "$PUBLISHED_IDENTITY" ]; }; then
   echo "error: session lock ownership verification failed; operate read-only until resolved" >&2
   exit 1
 fi

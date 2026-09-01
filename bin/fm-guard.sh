@@ -16,7 +16,8 @@
 # extension model the extension tears the watcher down and respawns it on every
 # actionable wake, so a fresh beacon with a genuinely unheld lock is healthy
 # while that live Pi session provably owns continuity; any held but unhealthy
-# lock is down; under every
+# lock is down; a fresh beacon with an unheld lock is also healthy when an
+# identity-proven Herdr supervisor owns continuity; under every
 # persistent-watcher harness a live identity-matched watcher with a fresh beacon
 # is required. The banner names the true failing condition (a missing live
 # watcher process vs a genuinely stale beacon). The full banner is emitted once

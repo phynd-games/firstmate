@@ -1184,7 +1184,8 @@ test_concurrent_relaunch_is_refused() {
     # shellcheck source=/dev/null
     . "$ROOT/bin/fm-wake-lib.sh"
     fm_lock_try_acquire "$lock" || exit 1
-    sleep 30
+    sleep 1
+    :
   ) &
   holder=$!
   i=0
@@ -1214,7 +1215,8 @@ test_direct_spawn_relaunch_participates_in_the_lifecycle_lock() {
   (
     . "$ROOT/bin/fm-wake-lib.sh"
     fm_lock_try_acquire "$lock" || exit 1
-    sleep 30
+    sleep 1
+    :
   ) &
   holder=$!
   while [ ! -e "$lock" ] && [ "$i" -lt 100 ]; do
@@ -1241,7 +1243,8 @@ test_promotion_participates_in_the_lifecycle_lock_before_metadata_resolution() {
   (
     . "$ROOT/bin/fm-wake-lib.sh"
     fm_lock_try_acquire "$lock" || exit 1
-    sleep 30
+    sleep 1
+    :
   ) &
   holder=$!
   while [ ! -e "$lock" ] && [ "$i" -lt 100 ]; do

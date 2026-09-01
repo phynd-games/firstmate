@@ -104,7 +104,8 @@ test_control_lock_contention_refuses_before_mutation() {
     # shellcheck source=/dev/null
     . "$ROOT/bin/fm-wake-lib.sh"
     fm_lock_try_acquire "$lock" || exit 1
-    sleep 30
+    sleep 1
+    :
   ) &
   holder=$!
   while [ ! -e "$lock" ] && [ "$i" -lt 100 ]; do

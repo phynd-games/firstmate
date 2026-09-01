@@ -231,31 +231,6 @@ unit_failed_start_rolls_back_state() {
   rm -rf "$st"
 }
 
-unit_concurrent_start_serialized() {
-  command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found (concurrent start)"; return 0; }
-  local st cap_session cap_pane first second rec count
-  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-concurrent.XXXXXX")
-  cap_session="fm-afk-concurrent-cap-$$"
-  tmux new-session -d -s "$cap_session" 2>/dev/null || { fail "concurrent start: captain session creation failed"; rm -rf "$st"; return 0; }
-  TRACK_TMUX_SESSIONS="$TRACK_TMUX_SESSIONS $cap_session"
-  cap_pane=$(tmux display-message -p -t "$cap_session" '#{pane_id}')
-  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_TARGET="$cap_pane" \
-    FM_SUPERVISOR_BACKEND=tmux FM_AFK_LAUNCH_ENTRY="$SLEEPER" "$LAUNCH" start >/dev/null 2>&1 & first=$!
-  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_TARGET="$cap_pane" \
-    FM_SUPERVISOR_BACKEND=tmux FM_AFK_LAUNCH_ENTRY="$SLEEPER" "$LAUNCH" start >/dev/null 2>&1 & second=$!
-  wait "$first"; wait "$second"
-  rec=$(cut -f2 "$st/state/.afk-daemon-terminal" 2>/dev/null || true)
-  count=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | awk -v expected="$rec" '$0 == expected {n++} END{print n+0}')
-  TRACK_TMUX_SESSIONS="$TRACK_TMUX_SESSIONS $rec"
-  if [ -n "$rec" ] && tmux has-session -t "$rec" 2>/dev/null && [ "$count" -eq 1 ]; then
-    pass "concurrent start: one serialized daemon terminal remains tracked"
-  else
-    fail "concurrent start: leaked or lost daemon terminal (count $count, record $rec)"
-  fi
-  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" stop >/dev/null 2>&1
-  tmux kill-session -t "$cap_session" 2>/dev/null || true
-  rm -rf "$st"
-}
 
 unit_lock_initialization_grace() {
   local st marker initializer
@@ -598,52 +573,111 @@ unit_stop_malformed_record_fails_closed() {
   rm -rf "$st"
 }
 
-unit_tmux_planned_record_and_collision() {
-  local st first second
-  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-tmux-plan.XXXXXX")
+unit_tmux_launch_is_unreachable() {
+  local st
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-tmux-refused.XXXXXX")
   mkdir -p "$st/state"
-  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
-    . "$1"
-    tmux() {
-      if [ "$1" = new-session ]; then
-        [ -s "$FM_AFK_LAUNCH_RECORD" ] || return 9
-        printf "%s" "$4" > "$FM_HOME/created-name"
-        return 1
-      fi
-      [ "$1" != kill-session ] || : > "$FM_HOME/killed"
-      return 1
-    }
-    ! fm_afk_launch_create_tmux captain:0 tmux
-  ' _ "$LAUNCH" && [ ! -e "$st/state/.afk-daemon-terminal" ] && [ ! -e "$st/killed" ]; then
-    pass "tmux launch: planned exact target is recorded before creation and removed on failure"
-  else
-    fail "tmux launch: creation began before exact target publication"
-  fi
-  first=$(cat "$st/created-name")
-  rm -rf "$st"
 
-  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-tmux-unique.XXXXXX")
-  mkdir -p "$st/state"
+  # A tmux-detected captain must get a refusal that names the remedy, and nothing
+  # detached may be created. The tmux launch primitive is gone entirely, so this
+  # asserts the path does not exist rather than that a creator failed politely.
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
     . "$1"
-    tmux() {
-      [ "$1" != new-session ] || { printf "%s" "$4" > "$FM_HOME/created-name"; return 1; }
-      [ "$1" != kill-session ] || : > "$FM_HOME/killed"
-      return 1
-    }
-    ! fm_afk_launch_create_tmux captain:0 tmux
-  ' _ "$LAUNCH" && [ ! -e "$st/killed" ]; then
-    second=$(cat "$st/created-name")
-    if [ "$first" != "$second" ]; then
-      pass "tmux launch: unique names eliminate collision teardown"
-    else
-      fail "tmux launch: consecutive launches reused a session name"
-    fi
+    ! declare -F fm_afk_launch_create_tmux >/dev/null
+  ' _ "$LAUNCH"; then
+    pass "away mode has no tmux launch primitive at all"
   else
-    fail "tmux launch: creation failure attempted session teardown"
+    fail "fm_afk_launch_create_tmux still exists; the forbidden detached path is reachable"
+  fi
+
+  if grep -q 'new-session' "$LAUNCH"; then
+    fail "away-mode launcher still creates a detached tmux session"
+  else
+    pass "away-mode launcher contains no detached session creation"
   fi
   rm -rf "$st"
 }
+
+unit_claim_precedes_afk_and_transfers_by_identity() {
+  local st lib
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-claim.XXXXXX")
+  mkdir -p "$st/state"
+  lib="$ROOT/bin/fm-wake-lib.sh"
+
+  # The baton is an identity-bound record the daemon ADOPTS, never a second
+  # acquisition of the lock the launcher still holds - that shape deadlocked the
+  # normal handoff once already.
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+    . "$1"
+    fm_supervision_claim_pending_write "$2" 60 || exit 1
+    fm_supervision_claim_pending "$2" || exit 1
+    grep -q "^pid=$$$" "$2/.supervision-claim.pending"
+  ' _ "$lib" "$st/state"; then
+    pass "the handoff record binds the launcher's own pid and identity"
+  else
+    fail "the handoff record is not identity-bound to its writer"
+  fi
+
+  # A record whose owner identity no longer matches must be refused, so a slow,
+  # failed, or stale handoff can never admit a second owner.
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+    . "$1"
+    fm_supervision_claim_pending_write "$2" 60 || exit 1
+    sed -i.bak "s|^pid-identity=.*|pid-identity=not-the-real-identity|" "$2/.supervision-claim.pending"
+    ! fm_supervision_claim_pending "$2"
+  ' _ "$lib" "$st/state"; then
+    pass "a handoff record with a mismatched identity is refused"
+  else
+    fail "a stale handoff record was accepted without verifying owner identity"
+  fi
+
+  # Behavioural proof of ordering, with a positive control so it cannot go
+  # vacuous. A contended claim must refuse with its own diagnostic BEFORE the
+  # launcher does anything else; an uncontended run must never emit it. Asserting
+  # .afk alone would prove nothing here, because a later readiness failure rolls
+  # the flag back in both cases.
+  local holder_pid contended free waited=0
+  contended="$st/contended.err"
+  free="$st/free.err"
+
+  FM_STATE_OVERRIDE="$st/state" bash -c '
+    . "$1"
+    fm_supervision_claim_acquire "$2/.supervision-claim.lock" 50 || exit 1
+    printf ready > "$2/holder-ready"
+    sleep 30
+  ' _ "$lib" "$st/state" &
+  holder_pid=$!
+  while [ ! -e "$st/state/holder-ready" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited + 1)); done
+
+  if [ ! -e "$st/state/holder-ready" ]; then
+    fail "could not stand up a live claim holder for the ordering case"
+  else
+    FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_CLAIM_TRIES=2 \
+      FM_SUPERVISOR_TARGET="default:w1:p1" FM_SUPERVISOR_BACKEND=none \
+      "$LAUNCH" start >/dev/null 2>"$contended"
+    if grep -q 'could not take the shared supervision claim' "$contended"; then
+      pass "a contended supervision claim refuses the launch"
+    else
+      fail "the launch proceeded while another owner held the supervision claim"
+    fi
+  fi
+  kill -TERM "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+  rm -f "$st/state/holder-ready" "$st/state/.supervision-claim.pending"
+
+  # Positive control: with the claim free, that refusal must NOT be why it stops.
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_CLAIM_TRIES=2 \
+    FM_SUPERVISOR_TARGET="default:w1:p1" FM_SUPERVISOR_BACKEND=none \
+    "$LAUNCH" start >/dev/null 2>"$free"
+  if grep -q 'could not take the shared supervision claim' "$free"; then
+    fail "an uncontended launch still reported the claim as contended; the case is vacuous"
+  else
+    pass "an uncontended launch takes the claim without refusing"
+  fi
+
+  rm -rf "$st"
+}
+
 
 unit_stop_validates_before_signal() {
   local st sleeper_pid
@@ -891,37 +925,6 @@ e2e_herdr() {
 # E2E tmux: topology invariant (captain window untouched; daemon in a separate
 # detached session).
 # ---------------------------------------------------------------------------
-e2e_tmux() {
-  command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found (tmux e2e)"; return 0; }
-  local cap_session home_tmp cap_pane before during after rec
-  cap_session="fm-afk-launch-cap-$$"
-  home_tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-tmux-home.XXXXXX")
-  tmux new-session -d -s "$cap_session" 2>/dev/null || { fail "tmux e2e: could not create captain session"; rm -rf "$home_tmp"; return 0; }
-  TRACK_TMUX_SESSIONS="$TRACK_TMUX_SESSIONS $cap_session"
-  cap_pane=$(tmux display-message -p -t "$cap_session" '#{pane_id}')
-  before=$(tmux list-panes -t "$cap_session" | wc -l | tr -d ' ')
-
-  FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
-    FM_SUPERVISOR_TARGET="$cap_pane" FM_SUPERVISOR_BACKEND=tmux FM_AFK_LAUNCH_ENTRY="$SLEEPER" \
-    "$LAUNCH" start >/dev/null 2>&1
-
-  during=$(tmux list-panes -t "$cap_session" | wc -l | tr -d ' ')
-  rec=$(cut -f2 "$home_tmp/state/.afk-daemon-terminal" 2>/dev/null || true)
-  TRACK_TMUX_SESSIONS="$TRACK_TMUX_SESSIONS $rec"
-  if [ "$before" = "$during" ]; then pass "tmux e2e: captain window pane count unchanged after start (no split-window)"; else fail "tmux e2e: captain window pane count changed ($before -> $during)"; fi
-  if [ -n "$rec" ] && tmux has-session -t "$rec" 2>/dev/null && [ "$rec" != "$cap_session" ]; then pass "tmux e2e: daemon launched in a separate detached session"; else fail "tmux e2e: no separate daemon session ($rec)"; fi
-
-  FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
-    FM_SUPERVISOR_TARGET="$cap_pane" FM_SUPERVISOR_BACKEND=tmux "$LAUNCH" stop >/dev/null 2>&1
-
-  after=$(tmux list-panes -t "$cap_session" | wc -l | tr -d ' ')
-  if [ "$after" = "$before" ]; then pass "tmux e2e: captain window pane count unchanged after stop"; else fail "tmux e2e: captain window changed ($before -> $after)"; fi
-  if [ -n "$rec" ] && ! tmux has-session -t "$rec" 2>/dev/null; then pass "tmux e2e: daemon session killed by exact id on stop"; else fail "tmux e2e: daemon session leaked ($rec)"; fi
-  if [ ! -e "$home_tmp/state/.afk-daemon-terminal" ] && [ ! -e "$home_tmp/state/.afk" ]; then pass "tmux e2e: record + .afk cleared on stop"; else fail "tmux e2e: record or .afk not cleared"; fi
-
-  tmux kill-session -t "$cap_session" 2>/dev/null || true
-  rm -rf "$home_tmp" 2>/dev/null || true
-}
 
 unit_clear_stale
 unit_relative_paths_are_absolute_before_daemon_launch
@@ -929,7 +932,6 @@ unit_fresh_vs_refresh
 unit_stop_ordering
 unit_stop_rejects_reused_pid
 unit_failed_start_rolls_back_state
-unit_concurrent_start_serialized
 unit_lock_initialization_grace
 unit_signal_exits_with_lock_cleanup
 unit_herdr_partial_create_recovery
@@ -945,7 +947,8 @@ unit_close_failure_preserves_record
 unit_record_publication_atomic
 unit_malformed_record_fails_closed
 unit_stop_malformed_record_fails_closed
-unit_tmux_planned_record_and_collision
+unit_tmux_launch_is_unreachable
+unit_claim_precedes_afk_and_transfers_by_identity
 unit_stop_validates_before_signal
 unit_lock_requires_complete_metadata
 unit_stop_surfaces_afk_removal_failure
@@ -956,6 +959,5 @@ unit_confirmed_absence_succeeds
 unit_incomplete_restore_retains_backup
 unit_flag_write_failure_aborts
 e2e_herdr
-e2e_tmux
 
 [ "$FAILED" -eq 0 ] || exit 1

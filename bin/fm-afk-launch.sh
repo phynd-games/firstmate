@@ -435,31 +435,9 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
 # Launch the daemon in a detached tmux session (never a split-window in the
 # captain's window). tmux pane ids are server-global, so the daemon reaches the
 # captain pane by its %id from this separate session.
-fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
-  local captain_target=$1 captain_backend=$2 session entry cmd hash nonce
-  hash=$(printf '%s' "$FM_HOME" | cksum | cut -d' ' -f1)
-  nonce="$$-${RANDOM:-0}-$(date '+%s')"
-  session="fm-afk-daemon-$hash-$nonce"
-  entry=$(fm_afk_launch_entry_cmd)
-  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q %q' \
-    "$FM_HOME" "$captain_target" "$captain_backend" "$entry")
-  if ! fm_afk_launch_record_write tmux "$session" ""; then
-    fm_afk_launch_log "failed to persist planned tmux daemon session '$session'"
-    return 1
-  fi
-  if ! tmux new-session -d -s "$session" "$cmd" 2>/dev/null; then
-    fm_afk_launch_log "failed to create detached tmux daemon session '$session'"
-    if ! rm -f "$FM_AFK_LAUNCH_RECORD"; then
-      fm_afk_launch_log "failed to remove planned tmux daemon record after creation failure"
-    fi
-    return 1
-  fi
-  fm_afk_launch_commit_terminal tmux "$session" "" 1 || return 1
-  fm_afk_launch_log "daemon launched in detached tmux session '$session', supervising $captain_target"
-}
 
 fm_afk_launch_start() {
-  local captain_target captain_backend backup artifact had_afk=0 result
+  local captain_target captain_backend backup artifact had_afk=0 result afk_claim_held=0
   if [ -e "$FM_AFK_LAUNCH_STATE/.afk-return-catchup" ]; then
     fm_afk_launch_log "return catch-up is still pending; run bin/fm-afk-return.sh check before re-entering away mode"
     return 1
@@ -502,6 +480,29 @@ fm_afk_launch_start() {
       result=1
     fi
   fi
+  # One continuity owner across the handoff. The claim is taken BEFORE .afk is
+  # written and before any daemon terminal exists, so there is never a window in
+  # which away mode has begun while the Herdr supervisor still believes it owns
+  # continuity.
+  #
+  # The baton is a TRANSFER, not a second acquisition. The launcher holds the lock
+  # and publishes an identity-bound pending record; the daemon ADOPTS that record
+  # by proving its own pid and identity against it, and never tries to acquire the
+  # lock this process is still holding. An earlier attempt did exactly that and
+  # deadlocked its own normal handoff.
+  if [ "$result" -eq 0 ]; then
+    if ! fm_supervision_claim_acquire "$FM_AFK_LAUNCH_STATE/.supervision-claim.lock" \
+      "${FM_AFK_CLAIM_TRIES:-100}"; then
+      fm_afk_launch_log "could not take the shared supervision claim; another owner holds it"
+      result=1
+    else
+      afk_claim_held=1
+      if ! fm_supervision_claim_pending_write "$FM_AFK_LAUNCH_STATE" "${FM_AFK_CLAIM_TTL:-60}"; then
+        fm_afk_launch_log "could not publish the supervision handoff record"
+        result=1
+      fi
+    fi
+  fi
   if [ "$result" -eq 0 ]; then
     if ! fm_afk_launch_flag_write; then
       fm_afk_launch_log "failed to write away-mode flag"
@@ -512,17 +513,28 @@ fm_afk_launch_start() {
   if [ "$result" -eq 0 ]; then
     case "$captain_backend" in
       herdr) fm_afk_launch_create_herdr "$captain_target" "$captain_backend"; result=$? ;;
-      tmux)  fm_afk_launch_create_tmux "$captain_target" "$captain_backend"; result=$? ;;
       *)
-        fm_afk_launch_log "no non-visible daemon-launch primitive for backend '$captain_backend' yet (supported: herdr, tmux)"
+        # Herdr is the only runtime that may host a daemon. There is deliberately
+        # no tmux launch primitive any more: it created a DETACHED session, which
+        # the runtime rule forbids outright, and a tmux-detected captain must get
+        # a refusal naming the remedy rather than a forbidden terminal.
+        fm_afk_launch_log "away mode needs a Herdr supervisor pane; backend '$captain_backend' cannot host a daemon. Start the captain session inside Herdr, or set FM_SUPERVISOR_BACKEND=herdr with FM_SUPERVISOR_TARGET=<session>:<pane-id>."
         result=1
         ;;
     esac
   fi
+  # An unadopted transfer must never strand the claim: on failure clear the
+  # pending record too, so nothing is left advertising a handoff that never
+  # happened. On success the daemon owns continuity and the record expires on its
+  # own deadline if the daemon never adopts it.
   if [ "$result" -ne 0 ]; then
+    fm_supervision_claim_pending_clear "$FM_AFK_LAUNCH_STATE" || true
     fm_afk_launch_restore_backup "$backup" "$had_afk" || result=1
   else
     rm -rf "$backup" || result=1
+  fi
+  if [ "$afk_claim_held" -eq 1 ]; then
+    fm_lock_release "$FM_AFK_LAUNCH_STATE/.supervision-claim.lock" || true
   fi
   return "$result"
 }

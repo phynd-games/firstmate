@@ -1,9 +1,11 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.js";
 
 const COORDINATOR_KEY = "__firstmateOpenCodeWatchArm";
+const adapterRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 // 35s on Windows so the budget stays above arm's MSYS confirm default (30s in
 // bin/fm-watch-arm.sh): a slow but successful Git Bash cold start must not be
 // SIGTERMed mid-confirmation. Conditioned on win32 so other platforms keep 12s.
@@ -13,6 +15,7 @@ const ARM_RETIRE_TIMEOUT_MS = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 
 const REARM_RETRY_BASE_MS = positiveInteger("FM_WATCH_REARM_RETRY_BASE_MS", 250);
 const REARM_RETRY_MAX_MS = positiveInteger("FM_WATCH_REARM_RETRY_MAX_MS", 4000);
 const REARM_RETRY_LIMIT = positiveInteger("FM_WATCH_REARM_RETRY_LIMIT", 5);
+const FAILURE_PERSIST_TIMEOUT_MS = positiveInteger("FM_WATCH_FAILURE_PERSIST_TIMEOUT_MS", 1000);
 
 let child = null;
 let armStatus = "idle";
@@ -103,6 +106,7 @@ async function isPrimaryRoot(root, home) {
 
 function shouldArm(paths) {
   if (existsSync(`${paths.state}/.afk`)) return false;
+  if (existsSync(`${paths.state}/.watch-arm-blocked`)) return false;
   if (existsSync(`${paths.config}/x-mode.env`)) return true;
   try {
     return readdirSync(paths.state).some((name) => name.endsWith(".meta"));
@@ -121,13 +125,49 @@ async function sessionOwnsLock(paths) {
   if (!/^[0-9]+$/.test(lockPid) || lockPid === "1") return false;
   let pid = String(process.pid);
   for (let i = 0; i < 8; i += 1) {
-    if (pid === lockPid) return true;
+    if (pid === lockPid) {
+      let recorded = "";
+      try {
+        recorded = readFileSync(`${paths.state}/.lock-pid-identity`, "utf8").trim();
+      } catch {
+        return false;
+      }
+      if (!recorded) return false;
+      const identityScript = existsSync(`${paths.root}/bin/fm-wake-lib.sh`)
+        ? `${paths.root}/bin/fm-wake-lib.sh`
+        : `${adapterRoot}/bin/fm-wake-lib.sh`;
+      const identity = await runProcess(
+        "bash",
+        ["-c", ". \"$1\" && fm_pid_identity \"$2\"", "fm-opencode-lock-identity", identityScript, lockPid],
+        {
+          cwd: paths.root,
+          encoding: "utf8",
+          env: { ...process.env, FM_HOME: paths.home, FM_ROOT_OVERRIDE: paths.root, FM_STATE_OVERRIDE: paths.state },
+        },
+      );
+      return identity.code === 0 && identity.stdout.trim() === recorded;
+    }
     const result = await runProcess("ps", ["-o", "ppid=", "-p", pid]);
     if (result.code !== 0) return false;
     pid = result.stdout.trim();
     if (!pid || pid === "1") return false;
   }
   return false;
+}
+
+function watcherRestartContract(paths) {
+  try {
+    const pid = readFileSync(`${paths.state}/.watch.lock/pid`, "utf8").trim();
+    const identity = readFileSync(`${paths.state}/.watch.lock/pid-identity`, "utf8").trim();
+    if (!/^[0-9]+$/.test(pid) || !identity) return {};
+    return {
+      FM_WATCH_RESTART_EXPECTED_PID: pid,
+      FM_WATCH_RESTART_EXPECTED_IDENTITY: identity,
+      FM_WATCH_RESTART_RECLAIM: "auto",
+    };
+  } catch {
+    return {};
+  }
 }
 
 function classifyArmClose(stdout, stderr, code, signal) {
@@ -248,8 +288,81 @@ function wakePrompt(reason) {
   return `WATCHER FIRED - drain queued wakes with bin/fm-wake-drain.sh and handle the reported wake. Watcher continuity is plugin-owned.\n\n${reason}`;
 }
 
+function persistFailure(paths, reason) {
+  const emergency = `${paths.state}/.watch-arm-emergency`;
+  const temporary = `${emergency}.opencode-${process.pid}-${Date.now()}`;
+  let durableStatus = 1;
+  try {
+    durableStatus = spawnSync(
+      "bash",
+      ["-c", ". \"$FM_ROOT_OVERRIDE/bin/fm-wake-lib.sh\" && fm_recovery_transition \"$FM_STATE_OVERRIDE/.watcher-down\" publish downtime >/dev/null 2>&1 || true; . \"$FM_ROOT_OVERRIDE/bin/fm-wake-lib.sh\" && fm_wake_append check opencode-watch-arm \"$1\"", "fm-opencode-watch-failure", reason],
+      {
+        cwd: paths.root,
+        encoding: "utf8",
+        timeout: FAILURE_PERSIST_TIMEOUT_MS,
+        env: {
+          ...process.env,
+          FM_HOME: paths.home,
+          FM_ROOT_OVERRIDE: paths.root,
+          FM_STATE_OVERRIDE: paths.state,
+          FM_RECOVERY_MARKER_LOCK_TRIES: process.env.FM_RECOVERY_MARKER_LOCK_TRIES || "100",
+          FM_WAKE_APPEND_LOCK_TRIES: process.env.FM_WAKE_APPEND_LOCK_TRIES || "100",
+        },
+      },
+    ).status ?? 1;
+  } catch {
+  }
+  if (durableStatus === 0) return true;
+  let previous = "";
+  try {
+    if (!lstatSync(emergency).isSymbolicLink()) previous = readFileSync(emergency, "utf8");
+  } catch {
+  }
+  try {
+    mkdirSync(paths.state, { recursive: true });
+    writeFileSync(
+      temporary,
+      `${previous}${previous && !previous.endsWith("\n") ? "\n" : ""}at=${Date.now()}\nreason=${reason}\n`,
+    );
+    chmodSync(temporary, 0o600);
+    renameSync(temporary, emergency);
+    return true;
+  } catch {
+    try {
+      unlinkSync(temporary);
+    } catch {
+    }
+    return false;
+  }
+}
+
+function persistBlocked(paths, reason) {
+  const blocked = `${paths.state}/.watch-arm-blocked`;
+  const temporary = `${blocked}.opencode-${process.pid}-${Date.now()}`;
+  try {
+    if (lstatSync(blocked).isSymbolicLink()) return false;
+  } catch {
+  }
+  try {
+    mkdirSync(paths.state, { recursive: true });
+    writeFileSync(temporary, `at=${Date.now()}\nreason=${reason}\n`);
+    chmodSync(temporary, 0o600);
+    renameSync(temporary, blocked);
+    return true;
+  } catch {
+    try {
+      unlinkSync(temporary);
+    } catch {
+    }
+    return false;
+  }
+}
+
 function surfaceFailure(paths, client, sessionID, reason) {
-  void sendPrompt(paths, client, sessionID, wakePrompt(reason)).catch(() => {
+  let durable = persistFailure(paths, reason);
+  if (!durable) durable = persistBlocked(paths, reason);
+  const message = durable ? reason : `${reason}\nwatcher: FAILED - OpenCode could not persist the recovery alarm or wake escalation`;
+  void sendPrompt(paths, client, sessionID, wakePrompt(message)).catch(() => {
     // OpenCode owns delivery errors; continuity restoration never waits on prompting.
   });
 }
@@ -341,6 +454,7 @@ function spawnArm(paths, sessionID, client, predecessorArmPid = "") {
     FM_ROOT_OVERRIDE: paths.root,
     FM_CONFIG_OVERRIDE: paths.config,
     FM_WATCH_PREDECESSOR_ARM_PID: predecessorArmPid,
+    ...watcherRestartContract(paths),
   };
   const armChild = spawn("bash", ["-lc", 'config_dir="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"; [ -f "$config_dir/x-mode.env" ] && . "$config_dir/x-mode.env"; exec "$FM_ROOT_OVERRIDE/bin/fm-watch-arm.sh" --restart'], {
     cwd: paths.root,

@@ -75,6 +75,10 @@
       "target": "docs/verification/supervision.md"
     },
     {
+      "source": "docs/herdr-supervisor.md",
+      "target": "docs/watcher-continuity.md"
+    },
+    {
       "source": "docs/wedge-alarm.md",
       "target": "docs/verification/supervision.md"
     },
@@ -138,6 +142,10 @@
     },
     {
       "path": ".agents/skills/captain-hold-lifecycle/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/confirmed-handoff/SKILL.md",
       "audience": "agent-runtime"
     },
     {
@@ -314,6 +322,10 @@
     },
     {
       "path": "docs/herdr-backend.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/herdr-supervisor.md",
       "audience": "operator-current"
     },
     {

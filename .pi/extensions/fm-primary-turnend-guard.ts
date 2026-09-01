@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -8,8 +8,10 @@ import {
   classifyFirstmateCurrentOperationalText,
   encodeFirstmateOperationalInput,
 } from "./lib/fm-operational-input.ts";
+import { processInstanceIdentity } from "./lib/fm-process-identity.ts";
 
 let guardFollowupActive = false;
+let herdrEnsureInFlight: Promise<void> | undefined;
 
 type LockOwnership = "owned" | "missing" | "other";
 
@@ -53,9 +55,70 @@ function lockOwnership(): LockOwnership {
   return pidAlive(lockPid) ? "other" : "missing";
 }
 
+function watcherRestartContract(): Record<string, string> {
+  try {
+    const pid = readFileSync(`${state}/.watch.lock/pid`, "utf8").trim();
+    const identity = readFileSync(`${state}/.watch.lock/pid-identity`, "utf8").trim();
+    if (!/^[0-9]+$/.test(pid) || !identity) return {};
+    return {
+      FM_WATCH_RESTART_EXPECTED_PID: pid,
+      FM_WATCH_RESTART_EXPECTED_IDENTITY: identity,
+      FM_WATCH_RESTART_RECLAIM: "auto",
+    };
+  } catch {
+    return {};
+  }
+}
+
+let markerRetryTimer: ReturnType<typeof setTimeout> | undefined;
+
+function clearMarkerRetry(): void {
+  if (!markerRetryTimer) return;
+  clearTimeout(markerRetryTimer);
+  markerRetryTimer = undefined;
+}
+
+function retryMarkLoaded(): void {
+  if (markerRetryTimer) return;
+  const timer = setTimeout(() => {
+    markerRetryTimer = undefined;
+    markLoaded();
+  }, 250);
+  (timer as unknown as { unref?: () => void }).unref?.();
+  markerRetryTimer = timer;
+}
+
 function markLoaded(): void {
-  if (!existsSync(state) || lockOwnership() === "other") return;
-  writeFileSync(marker, `${extensionVersion}\n${process.pid}\n`);
+  const ownership = lockOwnership();
+  if (ownership === "other") {
+    clearMarkerRetry();
+    return;
+  }
+  if (ownership === "missing") {
+    retryMarkLoaded();
+    return;
+  }
+  let lockPid = "";
+  try {
+    lockPid = readFileSync(`${state}/.lock`, "utf8").trim();
+  } catch {
+    retryMarkLoaded();
+    return;
+  }
+  const lockIdentity = processInstanceIdentity(lockPid);
+  let recordedIdentity = "";
+  try {
+    recordedIdentity = readFileSync(`${state}/.lock-pid-identity`, "utf8").trim();
+  } catch {
+    retryMarkLoaded();
+    return;
+  }
+  if (!lockIdentity || !recordedIdentity || lockIdentity !== recordedIdentity) {
+    retryMarkLoaded();
+    return;
+  }
+  writeFileSync(marker, `${extensionVersion}\n${process.pid}\n${lockIdentity}\n`);
+  clearMarkerRetry();
 }
 
 // Pi's session_start reasons are startup | reload | new | resume | fork, and a
@@ -167,6 +230,25 @@ function runGuard(): Promise<{ code: number; stderr: string }> {
   });
 }
 
+function ensureHerdrFallback(): Promise<void> {
+  if (herdrEnsureInFlight) return herdrEnsureInFlight;
+  const run = new Promise<void>((resolveEnsure) => {
+    const child = spawn(`${root}/bin/fm-herdr-supervisor.sh`, ["ensure"], {
+      cwd: root,
+      stdio: ["ignore", "ignore", "ignore"],
+      env: { ...process.env, FM_HOME: fmHome, FM_ROOT_OVERRIDE: root, FM_STATE_OVERRIDE: state },
+    });
+    child.on("error", () => resolveEnsure());
+    child.on("close", () => resolveEnsure());
+  });
+  let trackedRun: Promise<void>;
+  trackedRun = run.finally(() => {
+    if (herdrEnsureInFlight === trackedRun) herdrEnsureInFlight = undefined;
+  });
+  herdrEnsureInFlight = trackedRun;
+  return trackedRun;
+}
+
 // PreToolUse seatbelts (bin/fm-arm-pretool-check.sh, docs/arm-pretool-check.md;
 // bin/fm-cd-pretool-check.sh, docs/cd-guard.md). Both piggyback on this same
 // extension file rather than separate ones so no extra Pi -e flag is needed at
@@ -197,6 +279,10 @@ function runCdCheck(command: string): Promise<{ code: number; stderr: string }> 
 }
 
 export default function (pi: ExtensionAPI) {
+  pi.on?.("session_shutdown", () => {
+    clearMarkerRetry();
+  });
+
   pi.on?.("session_start", async (event, ctx) => {
     const reason = String((event as { reason?: unknown }).reason ?? "");
     const source = reason === "startup"
@@ -227,6 +313,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_settled", async () => {
+    await ensureHerdrFallback();
     if (guardFollowupActive) {
       guardFollowupActive = false;
       return;

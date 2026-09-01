@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap, network-checks, or dashboard section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, FLEET_SYNC, NETWORK_CHECKS, PR_CHECK_MIGRATION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, DASHBOARD_BLOCKED, or FMX - or when a standalone bin/fm-bootstrap.sh, bin/fm-startup-network.sh, or bin/fm-dashboard-start.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap, network-checks, or dashboard section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, FLEET_SYNC, NETWORK_CHECKS, PR_CHECK_MIGRATION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, HERDR_SUPERVISOR, DASHBOARD_BLOCKED, or FMX - or when a standalone bin/fm-bootstrap.sh, bin/fm-startup-network.sh, or bin/fm-dashboard-start.sh run prints one of those lines.
   A silent bootstrap section, or a BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -58,6 +58,11 @@ When any diagnostic needs captain attention, report the plain consequence and re
   An unsafe-outbox variant requires path and file-type inspection before any retry.
 - `NUDGE_SECONDMATES: secondmate <id>: send failed: <reason>` - secondmate convergence changed a running home's loaded instructions or inherited config, but the deterministic `fm-send.sh fm-<id>` re-read nudge failed.
   Inspect the reason, keep the pending marker under `state/.secondmate-nudge-pending/` intact, and rerun session start after the endpoint or metadata issue is fixed so bootstrap can retry the exact same marked send on the same local or remote route.
+- `HERDR_SUPERVISOR: <detail>` - this home needed a watcher continuity owner hosted in a Herdr pane and could not get one, so supervision will stop after the next watcher cycle unless the primary harness owns continuity itself.
+  Read the detail: it names the failing condition, and `state/.herdr-supervisor-alarm` holds the same diagnostic durably.
+  Confirm the current picture with `bin/fm-herdr-supervisor.sh status --verbose`, fix what it names - a Herdr server that is not running, an unresolvable session identity, or a Herdr pane that could not be created - and rerun `bin/fm-herdr-supervisor.sh ensure`.
+  A repeated failure is a real blocker: escalate it rather than leaving the fleet unsupervised, because nothing else will re-arm the watcher in this home.
+  `docs/herdr-supervisor.md` owns the contract, including the boundary it deliberately does not promise to recover across.
 - `FMX: X mode on ...` / `FMX: X mode off ...` - bootstrap confirmed or removed the local Relay poll artifacts (`docs/configuration.md` "Relay (.env)"); the emitted line still carries Relay's former `X mode` wording.
   Only when a running watcher needs the cadence transition applied immediately, restart the home-scoped watcher through the emitted harness supervision protocol; bootstrap deliberately never restarts the watcher itself.
 - `DASHBOARD_BLOCKED: <reason>` - the local read-only dashboard could not be brought up and proved ready, so no URL was reported.

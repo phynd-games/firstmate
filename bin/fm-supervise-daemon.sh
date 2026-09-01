@@ -1387,6 +1387,7 @@ fm_super_main() {
   local LOG="$STATE/.supervise-daemon.log"
   local WATCH_ERR="$STATE/.supervise-daemon.watcher.err"
   local LOCK="$STATE/.supervise-daemon.lock"
+  local CLAIM="$STATE/.supervision-claim.lock"
   local PIDFILE="$STATE/.supervise-daemon.pid"
   local INJECT_FAIL_SLEEP=${FM_INJECT_FAIL_SLEEP:-$INJECT_FAIL_SLEEP_DEFAULT}
   local CRASH_THRESHOLD=${FM_CRASH_THRESHOLD:-$CRASH_THRESHOLD_DEFAULT}
@@ -1394,7 +1395,25 @@ fm_super_main() {
   local CRASH_BACKOFF=${FM_CRASH_BACKOFF:-$CRASH_BACKOFF_DEFAULT}
   local CRASH_NORMAL_SLEEP=${FM_CRASH_NORMAL_SLEEP:-$CRASH_NORMAL_SLEEP_DEFAULT}
 
-  [ -x "$WATCH" ] || { echo "error: watcher not found or not executable: $WATCH" >&2; exit 1; }
+  release_inherited_claim() {
+    if [ "${FM_SUPERVISION_CLAIM_HELD:-0}" = 1 ]; then
+      fm_lock_release "$CLAIM" 2>/dev/null || true
+      unset FM_SUPERVISION_CLAIM_HELD
+    fi
+  }
+
+  if [ "${FM_AFK_HANDOFF:-0}" = 1 ] \
+    && ! fm_supervision_claim_refresh "$STATE"; then
+    echo "error: could not refresh the inherited continuity ownership claim" >&2
+    release_inherited_claim
+    exit 1
+  fi
+
+  if [ ! -x "$WATCH" ]; then
+    echo "error: watcher not found or not executable: $WATCH" >&2
+    release_inherited_claim
+    exit 1
+  fi
 
   # --- single instance (portable lock, no flock dependency) ------------------
   if ! fm_lock_try_acquire "$LOCK"; then
@@ -1403,7 +1422,12 @@ fm_super_main() {
     else
       echo "error: another fm-supervise-daemon is already running (lock $LOCK held)" >&2
     fi
+    release_inherited_claim
     exit 1
+  fi
+  release_inherited_claim
+  if [ "${FM_AFK_HANDOFF:-0}" = 1 ]; then
+    fm_supervision_claim_pending_clear "$STATE" || true
   fi
   echo "$$" > "$PIDFILE"
   fm_pid_identity "${BASHPID:-$$}" > "$LOCK/pid-identity" 2>/dev/null || true

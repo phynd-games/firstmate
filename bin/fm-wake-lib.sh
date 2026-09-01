@@ -9,6 +9,8 @@ STATE="${FM_STATE_OVERRIDE:-${STATE:-$FM_HOME/state}}"
 FM_WAKE_QUEUE="${FM_WAKE_QUEUE:-$STATE/.wake-queue}"
 FM_WAKE_QUEUE_LOCK="${FM_WAKE_QUEUE_LOCK:-$STATE/.wake-queue.lock}"
 FM_LOCK_STALE_AFTER="${FM_LOCK_STALE_AFTER:-2}"
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$FM_WAKE_LIB_DIR/fm-session-lock-lib.sh"
 # Resolved once at source time: fm_pid_identity and fm_path_mtime run inside 0.2s
 # confirm and 0.5s attach polls, and forking uname per call is a measurable cost on
 # the platform (Git Bash/MSYS) that already pays the highest fork price.
@@ -28,12 +30,46 @@ fm_current_pid() {
   printf '%s\n' "${BASHPID:-$$}"
 }
 
+# A ZOMBIE is not alive for any purpose this fleet cares about. It holds no lock,
+# runs no watcher, and can never act again; it exists only until its parent reaps
+# it. kill -0 still succeeds for one, which is what made a reaped-but-unwaited
+# watcher read as a live lock owner on Linux.
+#
+# That mattered concretely: fm_pid_identity's /proc branch requires a non-empty
+# /proc/<pid>/cmdline, and a zombie's cmdline is EMPTY, so identity returned an
+# ERROR rather than an answer. Ownership validation could then neither confirm nor
+# deny the owner, the watcher's cleanup could not persist its recovery state, and
+# the acknowledgement handshake that depends on that state failed after it. Making
+# a zombie definitively dead here turns that error into a clear answer.
+#
+# Detection is /proc-only on purpose: field 3 of /proc/<pid>/stat, read after the
+# final comm delimiter so a process name containing ")" cannot shift it. Hosts
+# without a readable /proc keep the plain kill -0 answer rather than paying a fork
+# per liveness check in the watcher's hot loops, and they do not need it - the
+# ps-based identity fallback still returns text for a defunct process, so it
+# answers instead of erroring there.
+#
+# The recycled-pid guarantee is untouched: identity comparison is unchanged, and a
+# zombie simply fails liveness before identity is ever consulted.
+fm_pid_zombie() {
+  local pid=$1 proc_root stat_line state
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
+  [ -r "$proc_root/$pid/stat" ] || return 1
+  stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
+  read -r state _ <<< "${stat_line##*) }"
+  [ "$state" = Z ]
+}
+
 fm_pid_alive() {
   local pid=$1
   case "$pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
-  kill -0 "$pid" 2>/dev/null
+  kill -0 "$pid" 2>/dev/null || return 1
+  ! fm_pid_zombie "$pid"
 }
 
 fm_pid_identity() {
@@ -201,38 +237,63 @@ fm_pi_extension_version() {
 }
 
 # fm_pi_extension_loaded <marker> <expected-version> <session-lock>
-# True when <marker> records <expected-version> and names the session process in
-# <session-lock>, i.e. the session holding this home loaded exactly this build.
+# True when <marker> records <expected-version> and names the session process and
+# its process-instance identity in <session-lock>, i.e. the session holding this
+# home loaded exactly this build.
 fm_pi_extension_loaded() {
-  local marker=$1 expected_version=$2 lock=$3 marker_version marker_pid lock_pid
+  local marker=$1 expected_version=$2 lock=$3 marker_version marker_pid marker_identity lock_pid lock_identity current_identity
   [ -f "$marker" ] && [ -f "$lock" ] && [ -n "$expected_version" ] || return 1
   marker_version=$(sed -n '1p' "$marker")
   marker_pid=$(sed -n '2p' "$marker")
+  marker_identity=$(sed -n '3p' "$marker")
   lock_pid=$(sed -n '1p' "$lock")
-  [ -n "$marker_pid" ] || return 1
-  [ "$marker_version" = "$expected_version" ] && [ "$marker_pid" = "$lock_pid" ]
+  lock_identity=$(sed -n '1p' "$(dirname "$lock")/.lock-pid-identity" 2>/dev/null || true)
+  [ -n "$marker_pid" ] && [ -n "$marker_identity" ] && [ -n "$lock_identity" ] || return 1
+  [ "$marker_version" = "$expected_version" ] && [ "$marker_pid" = "$lock_pid" ] || return 1
+  current_identity=$(fm_pid_identity "$lock_pid" 2>/dev/null) || return 1
+  [ "$marker_identity" = "$lock_identity" ] && [ "$current_identity" = "$lock_identity" ]
 }
 
 # fm_pi_extension_owns_supervision <state> <root>
-# True when a LIVE Pi session owns supervision continuity for this home: both
-# primary extensions are loaded at their current on-disk builds by the process
-# recorded in this home's session lock, and that process is still alive.
-# Requiring the turn-end guard extension too is deliberate - it is the structural
-# backstop that catches a cycle the watch extension failed to restore, so a home
-# missing it has no benign hand-off to tolerate.
+# True when a LIVE Pi session owns supervision continuity for this home: the
+# primary watcher extension loaded at its current on-disk build by the process
+# recorded in this home's session lock, with that process still alive.
 fm_pi_extension_owns_supervision() {
-  local state=$1 root=$2 lock session_pid pair source marker version
+  local state=$1 root=$2 lock source marker version
+  [ ! -e "$state/.watch-arm-blocked" ] && [ ! -L "$state/.watch-arm-blocked" ] || return 1
   lock="$state/.lock"
-  for pair in \
-    "fm-primary-pi-watch.ts:.pi-watch-extension-loaded" \
-    "fm-primary-turnend-guard.ts:.pi-turnend-extension-loaded"; do
-    source=${pair%%:*}
-    marker=${pair#*:}
-    version=$(fm_pi_extension_version "$root/.pi/extensions/$source") || return 1
-    fm_pi_extension_loaded "$state/$marker" "$version" "$lock" || return 1
-  done
-  session_pid=$(sed -n '1p' "$lock" 2>/dev/null)
-  fm_pid_alive "$session_pid"
+  source=fm-primary-pi-watch.ts
+  marker=.pi-watch-extension-loaded
+  version=$(fm_pi_extension_version "$root/.pi/extensions/$source") || return 1
+  fm_pi_extension_loaded "$state/$marker" "$version" "$lock"
+}
+
+# fm_herdr_supervisor_owns_supervision <state> <home>
+# True when the local Herdr continuity owner has a current, live, identity-
+# matched process and a fresh supervisor heartbeat. This deliberately performs
+# no Herdr calls because the verdict runs on every guard path.
+fm_herdr_supervisor_owns_supervision() {
+  local state=$1 home=$2 record="$1/.herdr-supervisor" live="$1/.herdr-supervisor-live"
+  local heartbeat="$1/.herdr-supervisor-heartbeat" version mode recorded_home generation live_generation
+  local loop_pid loop_identity current_identity age grace
+  [ -f "$record" ] && [ -f "$live" ] && [ -f "$heartbeat" ] || return 1
+  version=$(sed -n 's/^version=//p' "$record" | sed -n '1p')
+  mode=$(sed -n 's/^mode=//p' "$record" | sed -n '1p')
+  recorded_home=$(sed -n 's/^fm_home=//p' "$record" | sed -n '1p')
+  generation=$(sed -n 's/^generation=//p' "$record" | sed -n '1p')
+  live_generation=$(sed -n 's/^generation=//p' "$live" | sed -n '1p')
+  [ "$version" = 1 ] && [ "$mode" = active ] && [ "$recorded_home" = "$home" ] || return 1
+  [ -n "$generation" ] && [ "$live_generation" = "$generation" ] || return 1
+  loop_pid=$(sed -n 's/^loop_pid=//p' "$live" | sed -n '1p')
+  loop_identity=$(sed -n 's/^loop_identity=//p' "$live" | sed -n '1p')
+  [ -n "$loop_pid" ] && [ -n "$loop_identity" ] || return 1
+  fm_pid_alive "$loop_pid" || return 1
+  current_identity=$(fm_pid_identity "$loop_pid" 2>/dev/null || true)
+  [ -n "$current_identity" ] && [ "$current_identity" = "$loop_identity" ] || return 1
+  grace=${FM_HERDR_SUPERVISOR_HEARTBEAT_GRACE:-120}
+  case "$grace" in ''|*[!0-9]*|0) return 1 ;; esac
+  age=$(fm_path_age "$heartbeat")
+  [ "$age" -lt "$grace" ]
 }
 
 # fm_watcher_supervision_verdict <state> <watch-path> [grace] [home] [root]
@@ -282,7 +343,11 @@ fm_watcher_supervision_verdict() {
     # shellcheck disable=SC2034 # Read by callers after the function returns.
     FM_WATCHER_VERDICT_OK=true
   elif [ "$fresh" = true ]; then
-    if [ "$model" = extension ] && fm_watcher_lock_unheld "$state" \
+    if fm_watcher_lock_unheld "$state" \
+      && fm_herdr_supervisor_owns_supervision "$state" "$home"; then
+      # shellcheck disable=SC2034 # Read by callers after fm_watcher_supervision_verdict returns.
+      FM_WATCHER_VERDICT_OK=true
+    elif [ "$model" = extension ] && fm_watcher_lock_unheld "$state" \
       && fm_pi_extension_owns_supervision "$state" "$root"; then
       # shellcheck disable=SC2034 # Read by callers after the function returns.
       FM_WATCHER_VERDICT_OK=true
@@ -337,12 +402,28 @@ fm_lock_owner_dir() {
   mktemp -d "${lock_abs}.owner.XXXXXX" 2>/dev/null
 }
 
+# The pid-identity file is BEST EFFORT, and deliberately so. A host whose ps
+# cannot answer -o lstart= -o command= and exposes no readable /proc - a
+# restricted PATH, a stripped container, a busybox ps - can never produce an
+# identity for any process. Refusing to prepare an owner there does not fail
+# closed; it makes fm_lock_try_create return 1 forever, and fm_lock_acquire_wait
+# retries forever, so EVERY lock in the home wedges silently until an external
+# timeout kills the caller. Recording no identity is the safe degradation
+# instead: fm_lock_recheck_stale_owner only ever uses the identity to PERMIT
+# stealing a lock whose pid was reused, so an absent one leaves a live owner's
+# lock un-stealable, which is the conservative direction. Writing an identity we
+# did produce must still round-trip, or the record would lie about the owner.
 fm_lock_prepare_owner() {
-  local ownerdir=$1 mypid back
+  local ownerdir=$1 mypid back identity recorded_identity
   mypid=${BASHPID:-$$}
   printf '%s\n' "$mypid" > "$ownerdir/pid" 2>/dev/null || return 1
   back=$(cat "$ownerdir/pid" 2>/dev/null || true)
-  [ "$back" = "$mypid" ]
+  [ "$back" = "$mypid" ] || return 1
+  identity=$(fm_pid_identity "$mypid" 2>/dev/null || true)
+  [ -n "$identity" ] || return 0
+  printf '%s\n' "$identity" > "$ownerdir/pid-identity" 2>/dev/null || return 1
+  recorded_identity=$(cat "$ownerdir/pid-identity" 2>/dev/null || true)
+  [ "$recorded_identity" = "$identity" ]
 }
 
 fm_lock_link_owner() {
@@ -384,6 +465,17 @@ fm_lock_claim_blocked_by_steal() {
     return 1
   fi
   return 0
+}
+
+fm_lock_pending_supervision_handoff() {
+  local lockdir=$1 state
+  case "$lockdir" in
+    */.supervision-claim.lock)
+      state=${lockdir%/.supervision-claim.lock}
+      fm_supervision_claim_pending_occupied "$state"
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 fm_lock_claim() {
@@ -465,7 +557,7 @@ fm_lock_mid_acquire_is_fresh() {
 }
 
 fm_lock_recheck_stale_owner() {
-  local lockdir=$1 expected_owner=$2 expected_pid=$3 actual_pid
+  local lockdir=$1 expected_owner=$2 expected_pid=$3 actual_pid recorded_identity current_identity
   if [ -n "$expected_owner" ]; then
     fm_lock_points_to_owner "$lockdir" "$expected_owner" || return 1
   elif [ -e "$lockdir" ] || [ -L "$lockdir" ]; then
@@ -474,7 +566,12 @@ fm_lock_recheck_stale_owner() {
   actual_pid=$(cat "$lockdir/pid" 2>/dev/null || true)
   [ "$actual_pid" = "$expected_pid" ] || return 1
   if fm_pid_alive "$actual_pid"; then
-    return 1
+    recorded_identity=$(cat "$lockdir/pid-identity" 2>/dev/null || true)
+    current_identity=$(fm_pid_identity "$actual_pid" 2>/dev/null || true)
+    [ -n "$recorded_identity" ] && [ -n "$current_identity" ] \
+      && [ "$current_identity" != "$recorded_identity" ] || return 1
+  else
+    current_identity=
   fi
   if fm_lock_mid_acquire_is_fresh "$lockdir" "$actual_pid"; then
     return 1
@@ -523,6 +620,22 @@ _fm_recovery_marker_write_locked() {
   fi
 }
 
+_fm_recovery_marker_lock_acquire() {
+  local lock=$1 tries=${FM_RECOVERY_MARKER_LOCK_TRIES:-${FM_WAKE_APPEND_LOCK_TRIES:-100}} attempt=0
+  case "$tries" in
+    ''|*[!0-9]*|0) tries=100 ;;
+  esac
+  if [ "$tries" -gt 0 ]; then
+    while ! fm_lock_try_acquire "$lock"; do
+      [ "$attempt" -lt "$tries" ] || return 1
+      sleep 0.02
+      attempt=$((attempt + 1))
+    done
+  else
+    fm_lock_acquire_wait "$lock"
+  fi
+}
+
 # Preserve a pending or announced episode's generation across downtime
 # republication so its outstanding acknowledgement remains usable, and keep an
 # already-announced generation announced so it cannot be re-presented until a
@@ -532,7 +645,7 @@ _fm_recovery_marker_publish() {
   local marker=$1 kind=${2:-downtime} lock saved_token generation='' status=pending
   case "$kind" in handling|downtime) ;; *) return 1 ;; esac
   lock="${marker}.lock"
-  fm_lock_acquire_wait "$lock" || return 1
+  _fm_recovery_marker_lock_acquire "$lock" || return 1
   if [ -d "$marker" ] && [ ! -L "$marker" ]; then
     fm_lock_release "$lock"
     return 1
@@ -566,7 +679,7 @@ _fm_recovery_marker_publish() {
 _fm_recovery_marker_begin_handling() {
   local marker=$1 expected_generation=${2:-} lock line generation
   lock="${marker}.lock"
-  fm_lock_acquire_wait "$lock" || return 1
+  _fm_recovery_marker_lock_acquire "$lock" || return 1
   if ! fm_recovery_marker_read "$marker"; then
     fm_lock_release "$lock"
     return 1
@@ -602,7 +715,7 @@ fm_recovery_marker_snapshot() {
   local marker=$1 lock
   FM_RECOVERY_MARKER_TOKEN=
   lock="${marker}.lock"
-  fm_lock_acquire_wait "$lock" || return 1
+  _fm_recovery_marker_lock_acquire "$lock" || return 1
   fm_recovery_marker_read "$marker" || true
   fm_lock_release "$lock"
 }
@@ -611,7 +724,7 @@ _fm_recovery_marker_ack() {
   local marker=$1 expected_generation=$2 lock tmp line
   [ -n "$expected_generation" ] || return 2
   lock="${marker}.lock"
-  fm_lock_acquire_wait "$lock" || return 1
+  _fm_recovery_marker_lock_acquire "$lock" || return 1
   if ! fm_recovery_marker_read "$marker" \
     || [ "${FM_RECOVERY_MARKER_TOKEN##*:}" != "$expected_generation" ]; then
     fm_lock_release "$lock"
@@ -635,11 +748,11 @@ _fm_recovery_marker_ack() {
 }
 
 _fm_recovery_marker_arm_check() {
-  local marker=$1 lock line quarantine
+  local marker=$1 lock line quarantine queue_lock_tries=${FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES:-100}
   FM_RECOVERY_MARKER_ACTION='none'
   lock="${marker}.lock"
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
-  if ! fm_lock_acquire_wait "$lock"; then
+  fm_lock_acquire_bounded "$FM_WAKE_QUEUE_LOCK" "$queue_lock_tries" || return 1
+  if ! _fm_recovery_marker_lock_acquire "$lock"; then
     fm_lock_release "$FM_WAKE_QUEUE_LOCK"
     return 1
   fi
@@ -715,7 +828,7 @@ _fm_recovery_marker_arm_check() {
 _fm_recovery_marker_reopen_announced() {
   local marker=$1 lock
   lock="${marker}.lock"
-  fm_lock_acquire_wait "$lock" || return 1
+  _fm_recovery_marker_lock_acquire "$lock" || return 1
   if ! fm_recovery_marker_read "$marker"; then
     fm_lock_release "$lock"
     return 0
@@ -733,6 +846,8 @@ _fm_recovery_marker_reopen_announced() {
 
 fm_recovery_transition() {
   local marker=$1 action=$2 target=${3:-} value=${4:-}
+  local expected_pid=${5:-} expected_identity=${6:-} steal_held=${7:-0}
+  local steal acquired_steal=0 actual_pid actual_identity current_identity
   case "$action" in
     publish)
       _fm_recovery_marker_publish "$marker" "${target:-downtime}"
@@ -749,23 +864,60 @@ fm_recovery_transition() {
     release-lock)
       [ -n "$target" ] || return 1
       _fm_recovery_marker_publish "$marker" "${value:-downtime}" || return 1
+      steal="$target.steal"
+      fm_lock_try_acquire "$steal" || return 1
+      acquired_steal=1
       fm_lock_release "$target"
+      fm_lock_release "$steal"
       ;;
     release-lock-existing)
       [ -n "$target" ] || return 1
       local lock="${marker}.lock"
-      fm_lock_acquire_wait "$lock" || return 1
+      _fm_recovery_marker_lock_acquire "$lock" || return 1
       if ! fm_recovery_marker_read "$marker"; then
         fm_lock_release "$lock"
         return 1
       fi
+      steal="$target.steal"
+      fm_lock_try_acquire "$steal" || {
+        fm_lock_release "$lock"
+        return 1
+      }
+      acquired_steal=1
       fm_lock_release "$target"
+      fm_lock_release "$steal"
       fm_lock_release "$lock"
       ;;
     clear-stale-lock)
-      [ -n "$target" ] || return 1
+      [ -n "$target" ] && [ -n "$expected_pid" ] || return 1
       _fm_recovery_marker_publish "$marker" "${value:-downtime}" || return 1
-      fm_lock_remove_path "$target"
+      steal="$target.steal"
+      if [ "$steal_held" -ne 1 ]; then
+        fm_lock_try_acquire "$steal" || return 1
+        acquired_steal=1
+      fi
+      if [ -n "$expected_pid" ]; then
+        actual_pid=$(cat "$target/pid" 2>/dev/null || true)
+        actual_identity=$(cat "$target/pid-identity" 2>/dev/null || true)
+        if [ "$actual_pid" != "$expected_pid" ] || [ "$actual_identity" != "$expected_identity" ]; then
+          [ "$acquired_steal" -eq 1 ] && fm_lock_release "$steal"
+          return 3
+        fi
+        if fm_pid_alive "$actual_pid"; then
+          current_identity=$(fm_pid_identity "$actual_pid" 2>/dev/null || true)
+          if [ -z "$current_identity" ] || [ -z "$expected_identity" ] \
+            || [ "$current_identity" = "$expected_identity" ]; then
+            [ "$acquired_steal" -eq 1 ] && fm_lock_release "$steal"
+            return 3
+          fi
+        fi
+      fi
+      fm_lock_remove_path "$target" || {
+        [ "$acquired_steal" -eq 1 ] && fm_lock_release "$steal"
+        return 1
+      }
+      [ "$acquired_steal" -eq 1 ] && fm_lock_release "$steal"
+      return 0
       ;;
     *) return 2 ;;
   esac
@@ -792,7 +944,7 @@ fm_recovery_marker_reopen_announced() {
 }
 
 fm_lock_try_acquire() {
-  local lockdir=$1 pid steal cur rc steal_owner primary_owner
+  local lockdir=$1 pid steal cur rc steal_owner primary_owner lock_identity current_identity
   FM_LOCK_HELD_PID=
   FM_LOCK_OWNER_DIR=
   FM_LOCK_RECOVERED_PID=
@@ -805,6 +957,21 @@ fm_lock_try_acquire() {
   # $() forks a subshell whose BASHPID is not this frame's pid.
   pid=$(cat "$lockdir/pid" 2>/dev/null || true)
   if [ -n "$pid" ] && [ "$pid" = "${BASHPID:-$$}" ]; then
+    lock_identity=$(cat "$lockdir/pid-identity" 2>/dev/null || true)
+    current_identity=$(fm_pid_identity "$pid" 2>/dev/null || true)
+    if [ -z "$lock_identity" ] || [ -z "$current_identity" ]; then
+      FM_LOCK_HELD_PID=$pid
+      return 1
+    fi
+    if [ "$current_identity" != "$lock_identity" ]; then
+      if fm_lock_pending_supervision_handoff "$lockdir"; then
+        FM_LOCK_HELD_PID=$pid
+        return 1
+      fi
+    elif [ "${BASH_SUBSHELL:-0}" -ne 0 ]; then
+      FM_LOCK_HELD_PID=$pid
+      return 1
+    else
     # The recorded holder is THIS very process. Single-threaded bash can only
     # observe that when an interrupting trap abandoned the frame that held the
     # lock mid-critical-section (e.g. TERM inside a recovery-marker section,
@@ -819,15 +986,56 @@ fm_lock_try_acquire() {
     fi
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
     return 1
+    fi
   fi
   if fm_pid_alive "$pid"; then
-    FM_LOCK_HELD_PID=$pid
-    return 1
+    lock_identity=$(cat "$lockdir/pid-identity" 2>/dev/null || true)
+    current_identity=$(fm_pid_identity "$pid" 2>/dev/null || true)
+    if [ -z "$lock_identity" ] || [ -z "$current_identity" ] \
+      || [ "$current_identity" = "$lock_identity" ]; then
+      FM_LOCK_HELD_PID=$pid
+      return 1
+    fi
+    if fm_lock_pending_supervision_handoff "$lockdir"; then
+      FM_LOCK_HELD_PID=$pid
+      return 1
+    fi
   fi
   if fm_lock_mid_acquire_is_fresh "$lockdir" "$pid"; then
     FM_LOCK_HELD_PID=$pid
     return 1
   fi
+
+  # A steal lock is itself the serialization primitive for stale-lock
+  # recovery.  It cannot recursively acquire another steal lock when its
+  # recorded holder is stale: that creates an unbounded .steal path and can
+  # eventually fail with ENAMETOOLONG.  Reclaim a stale steal lock by moving
+  # it aside atomically, then make one bounded replacement attempt.
+  case "$lockdir" in
+    *.steal)
+      if [ -L "$lockdir" ]; then
+        steal_owner=$(fm_lock_link_owner "$lockdir" 2>/dev/null || true)
+        fm_lock_points_to_owner "$lockdir" "$steal_owner" || {
+          FM_LOCK_HELD_PID=$pid
+          return 1
+        }
+      elif [ ! -d "$lockdir" ]; then
+        FM_LOCK_HELD_PID=$pid
+        return 1
+      fi
+      cur="$lockdir.reclaim.${BASHPID:-$$}"
+      if ! mv "$lockdir" "$cur" 2>/dev/null; then
+        FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
+        return 1
+      fi
+      fm_lock_remove_path "$cur" || return 1
+      if fm_lock_try_create "$lockdir"; then
+        return 0
+      fi
+      FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
+      return 1
+      ;;
+  esac
 
   steal="$lockdir.steal"
   if ! fm_lock_try_acquire "$steal"; then
@@ -839,10 +1047,15 @@ fm_lock_try_acquire() {
 
   cur=$(cat "$lockdir/pid" 2>/dev/null || true)
   if fm_pid_alive "$cur"; then
-    fm_lock_release "$steal"
-    FM_LOCK_HELD_PID=$cur
-    FM_LOCK_OWNER_DIR=
-    return 1
+    lock_identity=$(cat "$lockdir/pid-identity" 2>/dev/null || true)
+    current_identity=$(fm_pid_identity "$cur" 2>/dev/null || true)
+    if [ -z "$lock_identity" ] || [ -z "$current_identity" ] \
+      || [ "$current_identity" = "$lock_identity" ]; then
+      fm_lock_release "$steal"
+      FM_LOCK_HELD_PID=$cur
+      FM_LOCK_OWNER_DIR=
+      return 1
+    fi
   fi
   if fm_lock_mid_acquire_is_fresh "$lockdir" "$cur"; then
     fm_lock_release "$steal"
@@ -876,7 +1089,18 @@ fm_lock_try_acquire() {
     FM_LOCK_OWNER_DIR=
     return 1
   fi
-  fm_lock_remove_path "$lockdir" || true
+  if ! fm_lock_recheck_stale_owner "$lockdir" "$primary_owner" "$cur"; then
+    fm_lock_release "$steal"
+    FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
+    FM_LOCK_OWNER_DIR=
+    return 1
+  fi
+  fm_lock_remove_path "$lockdir" || {
+    fm_lock_release "$steal"
+    FM_LOCK_HELD_PID=$cur
+    FM_LOCK_OWNER_DIR=
+    return 1
+  }
   rc=1
   if fm_lock_try_create "$lockdir" "$steal_owner"; then
     rc=0
@@ -899,6 +1123,18 @@ fm_lock_acquire_wait() {
   done
 }
 
+fm_lock_acquire_bounded() {
+  local lockdir=$1 tries=${2:-100} attempt=0
+  case "$tries" in
+    ''|*[!0-9]*|0) tries=100 ;;
+  esac
+  while ! fm_lock_try_acquire "$lockdir"; do
+    [ "$attempt" -lt "$tries" ] || return 1
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+}
+
 fm_lock_release() {
   local lockdir=$1 pid current ownerdir
   current=${BASHPID:-$$}
@@ -916,6 +1152,159 @@ fm_lock_release() {
   [ "$pid" = "$current" ] || return 0
   fm_lock_clean_known_files "$lockdir"
   rmdir "$lockdir" 2>/dev/null || true
+}
+
+fm_supervision_claim_acquire() {
+  fm_lock_acquire_bounded "$@"
+}
+
+fm_lock_owned_by_current() {
+  local lock=$1 owner pid expected current
+  if [ -L "$lock" ]; then
+    owner=$(fm_lock_link_owner "$lock" 2>/dev/null || true)
+  else
+    owner=$lock
+  fi
+  [ -n "$owner" ] && [ -d "$owner" ] || return 1
+  pid=$(cat "$owner/pid" 2>/dev/null || true)
+  expected=$(cat "$owner/pid-identity" 2>/dev/null || true)
+  [ "$pid" = "${BASHPID:-$$}" ] || return 1
+  [ -n "$expected" ] || return 1
+  current=$(fm_pid_identity "$pid" 2>/dev/null || true)
+  [ -n "$current" ] && [ "$current" = "$expected" ]
+}
+
+fm_supervision_claim_pending_write() {
+  local state=$1 ttl=${2:-30} pending="$1/.supervision-claim.pending" now deadline tmp owner_pid owner_identity
+  case "$ttl" in
+    ''|*[!0-9]*|0) ttl=30 ;;
+  esac
+  now=$(date +%s) || return 1
+  deadline=$((now + ttl))
+  owner_pid=${BASHPID:-$$}
+  owner_identity=$(fm_pid_identity "$owner_pid" 2>/dev/null) || return 1
+  [ -n "$owner_identity" ] || return 1
+  tmp=$(mktemp "$pending.tmp.XXXXXX") || return 1
+  if ! printf '%s\npid=%s\npid-identity=%s\n' "$deadline" "$owner_pid" "$owner_identity" > "$tmp" \
+    || ! chmod 0600 "$tmp" || ! mv -f -- "$tmp" "$pending"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+
+fm_supervision_claim_pending() {
+  local state=$1 result
+  fm_supervision_claim_pending_state "$state"
+  result=$?
+  [ "$result" -eq 0 ]
+}
+
+fm_supervision_claim_pending_state() {
+  local state=$1 pending="$1/.supervision-claim.pending" deadline owner_pid owner_identity current_identity now
+  [ -f "$pending" ] || return 1
+  read -r deadline < "$pending" || return 1
+  case "$deadline" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  owner_pid=$(sed -n 's/^pid=//p' "$pending" 2>/dev/null | head -n 1)
+  owner_identity=$(sed -n 's/^pid-identity=//p' "$pending" 2>/dev/null | head -n 1)
+  [ -n "$owner_pid" ] && [ -n "$owner_identity" ] || return 1
+  fm_pid_alive "$owner_pid" || return 1
+  current_identity=$(fm_pid_identity "$owner_pid" 2>/dev/null || true)
+  [ -n "$current_identity" ] && [ "$current_identity" = "$owner_identity" ] || return 1
+  now=$(date +%s) || return 1
+  [ "$deadline" -gt "$now" ] && return 0
+  return 2
+}
+
+fm_supervision_claim_pending_expired_live() {
+  local state=$1 result
+  fm_supervision_claim_pending_state "$state"
+  result=$?
+  [ "$result" -eq 2 ]
+}
+
+fm_supervision_claim_pending_occupied() {
+  local state=$1 pending="$1/.supervision-claim.pending" deadline owner_pid owner_identity current_identity
+  [ -f "$pending" ] || return 1
+  read -r deadline < "$pending" || return 1
+  case "$deadline" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  owner_pid=$(sed -n 's/^pid=//p' "$pending" 2>/dev/null | head -n 1)
+  owner_identity=$(sed -n 's/^pid-identity=//p' "$pending" 2>/dev/null | head -n 1)
+  [ -n "$owner_pid" ] && [ -n "$owner_identity" ] || return 1
+  fm_pid_alive "$owner_pid" || return 1
+  current_identity=$(fm_pid_identity "$owner_pid" 2>/dev/null || true)
+  [ -n "$current_identity" ] && [ "$current_identity" = "$owner_identity" ]
+}
+
+fm_supervision_claim_pending_key() {
+  local state=$1 pending="$1/.supervision-claim.pending" deadline owner_pid owner_identity
+  [ -f "$pending" ] || return 1
+  read -r deadline < "$pending" || return 1
+  owner_pid=$(sed -n 's/^pid=//p' "$pending" 2>/dev/null | head -n 1)
+  owner_identity=$(sed -n 's/^pid-identity=//p' "$pending" 2>/dev/null | head -n 1)
+  [ -n "$owner_pid" ] && [ -n "$owner_identity" ] || return 1
+  printf '%s:%s:%s\n' "$deadline" "$owner_pid" "$owner_identity"
+}
+
+fm_supervision_claim_pending_reclaim() {
+  local state=$1 pending="$1/.supervision-claim.pending" deadline now owner_pid owner_identity current_identity
+  fm_lock_owned_by_current "$state/.supervision-claim.lock" || return 1
+  [ -f "$pending" ] || return 0
+  read -r deadline < "$pending" || return 1
+  case "$deadline" in
+    ''|*[!0-9]*) rm -f -- "$pending"; return $? ;;
+  esac
+  now=$(date +%s) || return 1
+  if [ "$deadline" -le "$now" ]; then
+    owner_pid=$(sed -n 's/^pid=//p' "$pending" 2>/dev/null | head -n 1)
+    owner_identity=$(sed -n 's/^pid-identity=//p' "$pending" 2>/dev/null | head -n 1)
+    current_identity=$(fm_pid_identity "$owner_pid" 2>/dev/null || true)
+    if [ -z "$owner_pid" ] || [ -z "$owner_identity" ] || ! fm_pid_alive "$owner_pid" \
+      || [ -z "$current_identity" ] || [ "$current_identity" != "$owner_identity" ]; then
+      rm -f -- "$pending"
+    fi
+  fi
+}
+
+fm_supervision_claim_refresh() {
+  local state=$1 lock="$1/.supervision-claim.lock" owner pid identity recorded
+  fm_supervision_claim_pending "$state" || return 1
+  if [ -L "$lock" ]; then
+    owner=$(fm_lock_link_owner "$lock" 2>/dev/null || true)
+  else
+    owner=$lock
+  fi
+  [ -d "$owner" ] || return 1
+  pid=$(cat "$owner/pid" 2>/dev/null || true)
+  [ "$pid" = "${BASHPID:-$$}" ] || return 1
+  identity=$(fm_pid_identity "$pid" 2>/dev/null) || return 1
+  [ -n "$identity" ] || return 1
+  printf '%s\n' "$identity" > "$owner/pid-identity" 2>/dev/null || return 1
+  recorded=$(cat "$owner/pid-identity" 2>/dev/null || true)
+  [ "$recorded" = "$identity" ]
+}
+
+fm_supervision_claim_pending_clear() {
+  rm -f -- "$1/.supervision-claim.pending"
+}
+
+fm_supervision_claim_held_by_other() {
+  local lock=$1 owner pid expected current
+  if [ -L "$lock" ]; then
+    owner=$(fm_lock_link_owner "$lock" 2>/dev/null || true)
+  else
+    owner=$lock
+  fi
+  [ -n "$owner" ] && [ -d "$owner" ] || return 1
+  pid=$(cat "$owner/pid" 2>/dev/null || true)
+  expected=$(cat "$owner/pid-identity" 2>/dev/null || true)
+  current=$(fm_pid_identity "$pid" 2>/dev/null || true)
+  [ -n "$pid" ] && [ "$pid" != "${BASHPID:-$$}" ] \
+    && [ -n "$expected" ] && [ "$current" = "$expected" ] \
+    && fm_pid_alive "$pid"
 }
 
 fm_meta_lock_path() {
@@ -1365,8 +1754,25 @@ fm_wake_clean_field() {
   LC_ALL=C tr '\t\r\n' '   '
 }
 
+fm_wake_queue_lock_acquire() {
+  local lock_tries=${1:-${FM_WAKE_QUEUE_LOCK_TRIES:-${FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES:-0}}} lock_attempt=0
+  case "$lock_tries" in
+    ''|*[!0-9]*) lock_tries=0 ;;
+  esac
+  if [ "$lock_tries" -gt 0 ]; then
+    while ! fm_lock_try_acquire "$FM_WAKE_QUEUE_LOCK"; do
+      [ "$lock_attempt" -lt "$lock_tries" ] || return 1
+      sleep 0.02
+      lock_attempt=$((lock_attempt + 1))
+    done
+  else
+    fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  fi
+}
+
 fm_wake_append() {
   local kind=$1 key=$2 payload=$3 clean_key clean_payload epoch seq seq_file status
+  local lock_tries=${FM_WAKE_APPEND_LOCK_TRIES:-${FM_WAKE_QUEUE_LOCK_TRIES:-${FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES:-0}}}
   local recovery_marker
   case "$kind" in
     signal|stale|check|heartbeat) ;;
@@ -1380,7 +1786,7 @@ fm_wake_append() {
   recovery_marker="$STATE/.watcher-down"
   status=0
 
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  fm_wake_queue_lock_acquire "$lock_tries" || return 1
   _fm_recovery_marker_publish "$recovery_marker" downtime || status=$?
   if [ "$status" -eq 0 ]; then
     seq=$(cat "$seq_file" 2>/dev/null || echo 0)
@@ -1404,14 +1810,16 @@ fm_wake_append() {
 # for it is queued and unacknowledged, and disappears only after post-handling
 # acknowledgement consumes it.
 fm_wake_queued_keys() {
-  local kind=$1
+  local kind=$1 lock_tries=${FM_WAKE_QUEUED_KEYS_LOCK_TRIES:-${FM_WAKE_QUEUE_LOCK_TRIES:-${FM_WATCH_ARM_WAKE_QUEUE_LOCK_TRIES:-0}}} status
   case "$kind" in
     signal|stale|check|heartbeat) ;;
     *) printf 'fm_wake_queued_keys: invalid wake kind: %s\n' "$kind" >&2; return 2 ;;
   esac
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  fm_wake_queue_lock_acquire "$lock_tries" || return 1
   fm_wake_queued_keys_locked "$kind"
+  status=$?
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+  return "$status"
 }
 
 fm_wake_queued_keys_locked() {
