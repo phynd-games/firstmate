@@ -189,6 +189,7 @@ PY
 }
 
 test_malformed_source_fixtures() {
+  local overflow="$TMP_ROOT/source-overflow-count.json" report rc sha
   run_invalid_source nested-mismatch representation.mismatch
   run_invalid_source count-mismatch count.declared
   run_invalid_source duplicate-id id.duplicate-flat-task
@@ -197,6 +198,34 @@ test_malformed_source_fixtures() {
   run_invalid_source malformed-epic schema.type
   run_invalid_source empty-graph schema.type
   run_invalid_source empty-epic schema.min-items
+  python3 - "$SOURCE" "$overflow" <<'PY'
+import pathlib
+import re
+import sys
+
+source, output = map(pathlib.Path, sys.argv[1:])
+text = source.read_text(encoding="utf-8")
+text, count = re.subn(r'("task_count"\s*:\s*)[0-9]+', r'\g<1>1e400', text, count=1)
+assert count == 1
+output.write_text(text, encoding="utf-8")
+PY
+  report="$overflow.report"
+  sha=$(sha256_file "$overflow")
+  set +e
+  "$CLI" validate-source --source "$overflow" --expected-sha256 "$sha" >"$report"
+  rc=$?
+  set -e
+  [ "$rc" -eq 1 ] || fail "overflow task count should exit 1, got $rc"
+  json_assert "$report" "r['valid'] is False and r['graph']['declared_task_count'] is None" "overflow task count should normalize invalid numbers"
+  error_codes_include "$report" schema.type
+  python3 - "$report" <<'PY'
+import json
+import pathlib
+import sys
+
+value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+json.dumps(value, allow_nan=False)
+PY
   pass "malformed source fixtures reject mismatches, counts, IDs, edges, and cycles"
 }
 

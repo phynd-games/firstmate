@@ -69,7 +69,7 @@ The surface binding must be the lowercase SHA-256 digest of `<surface>|<evidence
 Use the raw relative path only when it contains no whitespace, comma, semicolon, or colon; encode every other path with `fm_pr_review_path_encode` as `hex:<lowercase-byte-hex>` so comma-separated file lists and semicolon-delimited records remain unambiguous.
 The seven surface file lists must collectively cover every target-project changed path, and each surface must cite changed-file evidence specific to its declared surface.
 When the target diff has at least seven paths, the seven surface evidence references must name seven distinct changed files; smaller diffs require one distinct evidence file per changed path up to the seven surfaces. Deleted files may use the exact referenced line from the merge-base blob.
-Each surface evidence line must also fall within a changed hunk for its referenced path, and when seven or more target paths exist its path must belong to the shared validator's relevant file class for that surface.
+Each surface evidence line must also fall within a changed hunk for its referenced path, and its path must belong to the shared validator's dedicated owner class for that surface; evidence from another surface's owner cannot satisfy the claim.
 The verification section must contain at least one non-empty `Command:` field and one non-empty `Result:` field.
 
 1. `Findings` with severity, `path:line`, evidence, consequence, and required fix for each issue.

@@ -510,6 +510,7 @@ def validate_source_bytes(
         declared_count_valid = declared_count >= 1
     if not declared_count_valid:
         errors.add("schema.type", "$.task_count", "expected positive integer")
+        declared_count = None
     else:
         declared_count = int(declared_count)
 

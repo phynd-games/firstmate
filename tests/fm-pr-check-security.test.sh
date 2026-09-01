@@ -682,6 +682,7 @@ PY
     run_check_entry "$dir" task-a https://github.com/o/r/pull/104 > "$dir/stdout" 2> "$dir/stderr"
   rc=$?
   set -e
+  unset FM_TEST_GH_HEAD
   [ "$rc" -ne 0 ] || fail "PR-ready path accepted a forge head for another revision"
 
   write_self_review_report "$dir/home" task-a
@@ -1025,40 +1026,28 @@ PY
   git -C "$dir/wt" add bin/fm-pr-create.sh
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm restore-delivery
   printf '#!/usr/bin/env bash\nspaced evidence\n' > "$dir/wt/bin/fm-pr spaced.sh"
-  git -C "$dir/wt" add -- 'bin/fm-pr spaced.sh'
+  printf '%s\n' 'fixture' 'authority spaced-path evidence' > "$dir/wt/bin/fm-pr-check.sh"
+  printf '%s\n' 'fixture' 'security spaced-path evidence' > "$dir/wt/bin/fm-pr-lib.sh"
+  printf '%s\n' 'fixture' 'path spaced-path evidence' > "$dir/wt/bin/fm-pr-self-review-check.sh"
+  printf '%s\n' 'fixture' 'failure spaced-path evidence' > "$dir/wt/bin/fm-operational-input.sh"
+  printf '%s\n' 'fixture' 'tests spaced-path evidence' > "$dir/wt/tests/fm-pr-check-security.test.sh"
+  printf '%s\n' 'fixture' 'documentation spaced-path evidence' > "$dir/wt/.agents/skills/firstmate-pr-self-review/SKILL.md"
+  printf '%s\n' 'fixture' 'delivery spaced-path evidence' > "$dir/wt/bin/fm-pr-create.sh"
+  git -C "$dir/wt" add -- 'bin/fm-pr spaced.sh' bin tests .agents
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm spaced-path
   write_self_review_report "$dir/home" task-a
-  delivery_digest=$(self_review_line_digest "$dir" bin/fm-pr-create.sh)
-  delivery_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-create.sh)
-  delivery_line_hex=$(self_review_line_hex "$dir" bin/fm-pr-create.sh)
-  delivery_record=$(surface_review_single_record Delivery delivery bin/fm-pr-create.sh "$delivery_digest" "$delivery_line_hex" "$delivery_change_digest")
-  python3 - "$report" "$delivery_record" <<'PY'
-import pathlib
-import re
-import sys
-
-report = pathlib.Path(sys.argv[1])
-record = sys.argv[2]
-report.write_text(re.sub(r"(?m)^Delivery: .*", record, report.read_text(encoding="utf-8"), count=1), encoding="utf-8")
-PY
-  rm -f "$report.bak"
-  spaced_digest=$(sed -n '2p' "$dir/wt/bin/fm-pr spaced.sh" | fm_pr_sha256_stream)
-  spaced_line_hex=$(awk 'NR == 2 { printf "%s", $0 }' "$dir/wt/bin/fm-pr spaced.sh" | od -An -tx1 | tr -d ' \n')
-  spaced_change_digest=$(surface_change_digest_for_file "$dir" 'bin/fm-pr spaced.sh')
   spaced_path=$(fm_pr_review_path_encode 'bin/fm-pr spaced.sh')
-  authority_record=$(surface_review_single_record Authority authority "$spaced_path" "$spaced_digest" "$spaced_line_hex" "$spaced_change_digest")
-  python3 - "$report" "$authority_record" "$spaced_path" <<'PY'
+  python3 - "$report" "$spaced_path" <<'PY'
 import pathlib
 import re
 import sys
 
 report = pathlib.Path(sys.argv[1])
-authority_record = sys.argv[2]
-spaced_path = sys.argv[3]
+spaced_path = sys.argv[2]
 text = report.read_text(encoding="utf-8")
 text = re.sub(
     r"(?m)^Authority: .*",
-    authority_record.replace("files=" + authority_record.split("files=", 1)[1].split(";", 1)[0], "files=bin/fm-pr-check.sh," + spaced_path),
+    lambda match: match.group(0).replace("files=bin/fm-pr-check.sh;", "files=bin/fm-pr-check.sh," + spaced_path + ";"),
     text,
     count=1,
   )
@@ -1073,47 +1062,29 @@ PY
   printf '#!/usr/bin/env bash\nsemicolon evidence\n' > "$dir/wt/bin/fm-pr;semi.sh"
   git -C "$dir/wt" add -- 'bin/fm-pr,comma.sh' 'bin/fm-pr;semi.sh'
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm delimiter-paths
+  printf '%s\n' 'fixture' 'authority delimiter evidence' > "$dir/wt/bin/fm-pr-check.sh"
+  printf '%s\n' 'fixture' 'security delimiter evidence' > "$dir/wt/bin/fm-pr-lib.sh"
+  printf '%s\n' 'fixture' 'path delimiter evidence' > "$dir/wt/bin/fm-pr-self-review-check.sh"
+  printf '%s\n' 'fixture' 'failure delimiter evidence' > "$dir/wt/bin/fm-operational-input.sh"
+  printf '%s\n' 'fixture' 'tests delimiter evidence' > "$dir/wt/tests/fm-pr-check-security.test.sh"
+  printf '%s\n' 'fixture' 'documentation delimiter evidence' > "$dir/wt/.agents/skills/firstmate-pr-self-review/SKILL.md"
+  printf '%s\n' 'fixture' 'delivery delimiter evidence' > "$dir/wt/bin/fm-pr-create.sh"
+  git -C "$dir/wt" add bin tests .agents
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm delimiter-surface-owners
   write_self_review_report "$dir/home" task-a
-  delivery_digest=$(self_review_line_digest "$dir" bin/fm-pr-create.sh)
-  delivery_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-create.sh)
-  delivery_line_hex=$(self_review_line_hex "$dir" bin/fm-pr-create.sh)
-  delivery_record=$(surface_review_single_record Delivery delivery bin/fm-pr-create.sh "$delivery_digest" "$delivery_line_hex" "$delivery_change_digest")
-  python3 - "$report" "$delivery_record" <<'PY'
-import pathlib
-import re
-import sys
-
-report = pathlib.Path(sys.argv[1])
-record = sys.argv[2]
-report.write_text(re.sub(r"(?m)^Delivery: .*", record, report.read_text(encoding="utf-8"), count=1), encoding="utf-8")
-PY
-  rm -f "$report.bak"
   spaced_path=$(fm_pr_review_path_encode 'bin/fm-pr spaced.sh')
   comma_path=$(fm_pr_review_path_encode 'bin/fm-pr,comma.sh')
   semi_path=$(fm_pr_review_path_encode 'bin/fm-pr;semi.sh')
-  spaced_digest=$(sed -n '2p' "$dir/wt/bin/fm-pr spaced.sh" | fm_pr_sha256_stream)
-  comma_digest=$(sed -n '2p' "$dir/wt/bin/fm-pr,comma.sh" | fm_pr_sha256_stream)
-  semi_digest=$(sed -n '2p' "$dir/wt/bin/fm-pr;semi.sh" | fm_pr_sha256_stream)
-  spaced_line_hex=$(awk 'NR == 2 { printf "%s", $0 }' "$dir/wt/bin/fm-pr spaced.sh" | od -An -tx1 | tr -d ' \n')
-  comma_line_hex=$(awk 'NR == 2 { printf "%s", $0 }' "$dir/wt/bin/fm-pr,comma.sh" | od -An -tx1 | tr -d ' \n')
-  semi_line_hex=$(awk 'NR == 2 { printf "%s", $0 }' "$dir/wt/bin/fm-pr;semi.sh" | od -An -tx1 | tr -d ' \n')
-  spaced_change_digest=$(surface_change_digest_for_file "$dir" 'bin/fm-pr spaced.sh')
-  comma_change_digest=$(surface_change_digest_for_file "$dir" 'bin/fm-pr,comma.sh')
-  semi_change_digest=$(surface_change_digest_for_file "$dir" 'bin/fm-pr;semi.sh')
-  authority_record=$(surface_review_single_record Authority authority "$spaced_path" "$spaced_digest" "$spaced_line_hex" "$spaced_change_digest")
-  security_record=$(surface_review_single_record Security security "$comma_path" "$comma_digest" "$comma_line_hex" "$comma_change_digest")
-  path_record=$(surface_review_single_record Path path "$semi_path" "$semi_digest" "$semi_line_hex" "$semi_change_digest")
-  python3 - "$report" "$authority_record" "$security_record" "$path_record" "bin/fm-pr-check.sh,$spaced_path,$comma_path,$semi_path" "bin/fm-pr-lib.sh,$comma_path" "bin/fm-pr-self-review-check.sh,$semi_path" <<'PY'
+  python3 - "$report" "bin/fm-pr-check.sh,$spaced_path,$comma_path,$semi_path" "bin/fm-pr-lib.sh,$comma_path" "bin/fm-pr-self-review-check.sh,$semi_path" <<'PY'
 import pathlib
 import re
 import sys
 
 report = pathlib.Path(sys.argv[1])
-authority_record, security_record, path_record = sys.argv[2:5]
-authority_files, security_files, path_files = sys.argv[5:8]
+authority_files, security_files, path_files = sys.argv[2:5]
 text = report.read_text(encoding="utf-8")
-for surface, record, files in (("Authority", authority_record, authority_files), ("Security", security_record, security_files), ("Path", path_record, path_files)):
-    text = re.sub(rf"(?m)^{surface}: .*", record.replace("files=" + record.split("files=", 1)[1].split(";", 1)[0], "files=" + files), text, count=1)
+for surface, files in (("Authority", authority_files), ("Security", security_files), ("Path", path_files)):
+    text = re.sub(rf"(?m)^({surface}: .*?files=)[^;]+(; evidence=)", rf"\g<1>{files}\g<2>", text, count=1)
 report.write_text(text, encoding="utf-8")
 PY
   run_check_entry "$dir" task-a https://github.com/o/r/pull/111 >/dev/null \
@@ -1123,37 +1094,19 @@ PY
   git -C "$dir/wt" add -- "$control_path"
   git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm control-path
   write_self_review_report "$dir/home" task-a
-  delivery_digest=$(self_review_line_digest "$dir" bin/fm-pr-create.sh)
-  delivery_change_digest=$(surface_change_digest_for_file "$dir" bin/fm-pr-create.sh)
-  delivery_line_hex=$(self_review_line_hex "$dir" bin/fm-pr-create.sh)
-  delivery_record=$(surface_review_single_record Delivery delivery bin/fm-pr-create.sh "$delivery_digest" "$delivery_line_hex" "$delivery_change_digest")
-  python3 - "$report" "$delivery_record" <<'PY'
-import pathlib
-import re
-import sys
-
-report = pathlib.Path(sys.argv[1])
-record = sys.argv[2]
-report.write_text(re.sub(r"(?m)^Delivery: .*", record, report.read_text(encoding="utf-8"), count=1), encoding="utf-8")
-PY
-  rm -f "$report.bak"
-  control_change_digest=$(surface_change_digest_for_file "$dir" "$control_path")
   control_path=$(fm_pr_review_path_encode "$control_path")
-  control_digest=$(printf '%s\n' 'control evidence' | fm_pr_sha256_stream)
-  control_line_hex=$(printf '%s' 'control evidence' | od -An -tx1 | tr -d ' \n')
   control_surface_files="bin/fm-pr-check.sh,$spaced_path,$comma_path,$semi_path,$control_path"
-  control_record=$(surface_review_single_record_at_line Authority authority "$control_path" 1 "$control_digest" "$control_line_hex" "$control_change_digest")
-  python3 - "$report" "$control_surface_files" "$control_record" <<'PY'
+  python3 - "$report" "$control_surface_files" <<'PY'
 import pathlib
 import re
 import sys
 
 report = pathlib.Path(sys.argv[1])
-control_surface_files, control_record = sys.argv[2:4]
+control_surface_files = sys.argv[2]
 text = report.read_text(encoding="utf-8")
 text = re.sub(
-    r"(?m)^Authority: .*",
-    control_record.replace("files=" + control_record.split("files=", 1)[1].split(";", 1)[0], "files=" + control_surface_files),
+    r"(?m)^(Authority: .*?files=)[^;]+(; evidence=)",
+    rf"\g<1>{control_surface_files}\g<2>",
     text,
     count=1,
 )
