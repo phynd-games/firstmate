@@ -390,19 +390,37 @@ cmd_silent() {
 # `<origin>-decision-<key>` identities pre-collapse decks still carry; the
 # security property is the slug SHAPE, which is unchanged.
 cmd_answers() {
-  local file=${1-} source expected='' session_source session_file
+  local file=${1-} source expected='' session_source session_file intake_marker marker_task
   [ -n "$file" ] || usage
   [ -f "$file" ] && [ ! -L "$file" ] || die "result file does not exist: $file"
   source=$(fm_procevent_result_source_id "$file" 2>/dev/null || true)
   if [ -n "$source" ]; then
-    expected=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$source" 2>/dev/null || true)
-    if [ -n "$expected" ] && [ "$expected" != "(any)" ]; then
+    intake_marker="$STATE/procevent/$source.intake"
+    if [ -e "$intake_marker" ] || [ -L "$intake_marker" ]; then
+      [ -f "$intake_marker" ] && [ ! -L "$intake_marker" ] \
+        || die "Lavish intake source marker is unsafe"
+      expected=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$source" 2>/dev/null || true)
+      marker_task=$(sed -n 's/^task_id=//p' "$intake_marker" | head -1)
+      [ -n "$expected" ] && [ "$expected" != "(any)" ] \
+        || die "Lavish intake source has no exact task binding"
+      [ "$marker_task" = "$expected" ] \
+        || die "Lavish intake source marker does not match its binding"
       session_file="$STATE/$expected.lavish-intake-session"
-      if [ -f "$session_file" ] && [ ! -L "$session_file" ]; then
-        session_source=$(sed -n 's/^source_id=//p' "$session_file" | head -1)
-        [ "$source" = "$session_source" ] || die "captured result source does not match the active intake session"
-      else
-        expected=''
+      [ -f "$session_file" ] && [ ! -L "$session_file" ] \
+        || die "Lavish intake source has no active session"
+      session_source=$(sed -n 's/^source_id=//p' "$session_file" | head -1)
+      [ "$source" = "$session_source" ] \
+        || die "captured result source does not match the active intake session"
+    else
+      expected=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$source" 2>/dev/null || true)
+      if [ -n "$expected" ] && [ "$expected" != "(any)" ]; then
+        session_file="$STATE/$expected.lavish-intake-session"
+        if [ -f "$session_file" ] && [ ! -L "$session_file" ]; then
+          session_source=$(sed -n 's/^source_id=//p' "$session_file" | head -1)
+          [ "$source" = "$session_source" ] || die "captured result source does not match the active intake session"
+        else
+          expected=''
+        fi
       fi
     fi
   fi

@@ -99,7 +99,8 @@ sha256_file() {
 receipt_path() { printf '%s/%s.lavish-intake\n' "$STATE" "$1"; }
 session_path() { printf '%s/%s.lavish-intake-session\n' "$STATE" "$1"; }
 intake_hold_path() { printf '%s/%s.lavish-intake-hold\n' "$STATE" "$1"; }
-intake_lock_path() { printf '%s/.lavish-intake-%s.lock\n' "$STATE" "$1"; }
+intake_lock_path() { printf '%s/.captain-task-%s.lock\n' "$STATE" "$1"; }
+intake_source_path() { printf '%s/procevent/%s.intake\n' "$STATE" "$1"; }
 
 meta_value() {
   local file=$1 key=$2
@@ -263,6 +264,7 @@ START_HOLD_CREATED=0
 START_BINDING_CREATED=0
 START_SESSION_CREATED=0
 START_SOURCE_PREEXISTING=0
+START_SOURCE_MARKER_CREATED=0
 START_OK=0
 
 start_marker_matches() {
@@ -301,6 +303,32 @@ write_start_marker() {
   START_HOLD_MARKER_CREATED=1
 }
 
+source_marker_matches() {
+  local marker
+  [ -n "$START_SID" ] || return 1
+  marker=$(intake_source_path "$START_SID")
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  [ "$(meta_value "$marker" task_id)" = "$START_TASK" ] \
+    && [ "$(meta_value "$marker" source_id)" = "$START_SID" ] \
+    && [ "$(meta_value "$marker" owner_token)" = "$START_OWNER_TOKEN" ]
+}
+
+write_source_marker() {
+  local marker tmp
+  marker=$(intake_source_path "$START_SID")
+  mkdir -p "${marker%/*}" || fail "cannot create intake source state"
+  tmp=$(mktemp "$STATE/.lavish-intake-source.XXXXXX") || fail "cannot stage intake source marker"
+  {
+    printf 'version=1\n'
+    printf 'task_id=%s\n' "$START_TASK"
+    printf 'source_id=%s\n' "$START_SID"
+    printf 'owner_token=%s\n' "$START_OWNER_TOKEN"
+  } > "$tmp"
+  chmod 0600 "$tmp"
+  mv -f -- "$tmp" "$marker"
+  START_SOURCE_MARKER_CREATED=1
+}
+
 start_cleanup() {
   local status=$?
   if [ "$START_OK" -eq 1 ]; then
@@ -313,6 +341,9 @@ start_cleanup() {
   [ -z "$START_SESSION_TMP" ] || rm -f -- "$START_SESSION_TMP"
   if [ "$START_SESSION_CREATED" -eq 1 ]; then
     rm -f -- "$(session_path "$START_TASK")"
+  fi
+  if [ "$START_SOURCE_MARKER_CREATED" -eq 1 ] && source_marker_matches; then
+    rm -f -- "$(intake_source_path "$START_SID")"
   fi
   if [ -n "$START_SID" ] && [ "$START_BINDING_CREATED" -eq 1 ]; then
     "$SCRIPT_DIR/fm-captain-hold.sh" unbind "$START_SID" >/dev/null 2>&1 || true
@@ -448,6 +479,7 @@ cmd_start() {
   START_BINDING_CREATED=0
   START_SESSION_CREATED=0
   START_SOURCE_PREEXISTING=0
+  START_SOURCE_MARKER_CREATED=0
   START_OK=0
   mkdir -p "$STATE" || fail "cannot create intake state directory"
   trap start_cleanup EXIT
@@ -475,9 +507,13 @@ cmd_start() {
   elif [ "$state" != done ] && [ -n "$hold_kind" ] && [ "$hold_kind" != - ]; then
     fail "task $task already carries a non-captain hold"
   else
-    write_start_marker
-    "$SCRIPT_DIR/fm-captain-hold.sh" hold "$task" --reason "$reason" >/dev/null \
+    fm_lock_release "$START_LOCK_PATH"
+    START_LOCK_HELD=0
+    "$SCRIPT_DIR/fm-captain-hold.sh" hold "$task" --reason "$reason" \
+      --intake-owner "$START_OWNER_TOKEN" >/dev/null \
       || fail "could not hold task for Lavish intake"
+    fm_lock_acquire_wait "$START_LOCK_PATH" || fail "could not relock intake task $task"
+    START_LOCK_HELD=1
     task_show=$(cd "$FM_HOME" && tasks-axi show "$task" --full 2>/dev/null || true)
     state=$(printf '%s\n' "$task_show" | sed -n 's/^  state: //p' | head -1)
     hold_kind=$(printf '%s\n' "$task_show" | sed -n 's/^  hold_kind: //p' | head -1)
@@ -487,8 +523,8 @@ cmd_start() {
     esac
     [ "$state" != done ] && [ "$hold_kind" = captain ] \
       && [ "$hold_reason" = "$reason" ] \
-      && start_marker_matches \
       || fail "could not prove intake captain-hold ownership"
+    write_start_marker
     START_HOLD_CREATED=1
   fi
   if lavish-axi "$artifact"; then
@@ -525,6 +561,7 @@ cmd_start() {
   mv -f -- "$tmp" "$mapping"
   START_SESSION_TMP=
   START_SESSION_CREATED=1
+  write_source_marker
   "$SCRIPT_DIR/fm-procevent-lavish.sh" arm "$artifact" >/dev/null \
     || fail "could not arm captured Lavish feedback"
   START_OK=1
@@ -675,7 +712,7 @@ cmd_verify() {
 }
 
 cmd_check_brief() {
-  local task=${1-} brief=${2-} contract evidence reason
+  local task=${1-} brief=${2-} contract evidence reason receipt receipt_reason
   [ "$#" -eq 2 ] || fail "check-brief requires <task-id> <brief.md>"
   validate_task_id "$task"
   brief=$(real_file "$brief") || fail "brief is not a regular file: $brief"
@@ -694,7 +731,10 @@ cmd_check_brief() {
     not-applicable)
       reason=$(awk -F': ' '/^Lavish intake reason: / { print $2; exit }' "$brief")
       [ -n "$reason" ] || fail "not-applicable brief has no concrete reason"
-      verify_receipt "$task" "$(receipt_path "$task")"
+      receipt=$(receipt_path "$task")
+      receipt_reason=$(require_unique_meta "$receipt" reason)
+      [ "$receipt_reason" = "$reason" ] || fail "not-applicable reason does not match intake evidence"
+      verify_receipt "$task" "$receipt"
       ;;
     required)
       fail "Lavish feature intake is required before implementation"

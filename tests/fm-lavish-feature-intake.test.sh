@@ -116,6 +116,31 @@ prompts[1]{uid,prompt,selector,tag,text}:
 EOF
 }
 
+make_incomplete_artifact() {
+  local output=$1 missing=$2 task=$3
+  python3 - "$output" "$missing" "$task" <<'PY'
+from pathlib import Path
+import sys
+
+output, missing, task = sys.argv[1:]
+fields = "product_goal intended_users use_cases scope non_goals constraints visual_product_references key_choices acceptance_criteria open_questions".split()
+parts = [
+    '<!doctype html>',
+    '<html data-lavish-intake="v1"><body>',
+    f'<form data-lavish-question="{task}">',
+]
+for field in fields:
+    if field != missing:
+        parts.append(f'<textarea data-lavish-intake-field="{field}"></textarea>')
+parts.extend([
+    '<button data-lavish-intake-submit="true"></button>',
+    '<script>window.lavish.queuePrompt("fixture");</script>',
+    '</form></body></html>',
+])
+Path(output).write_text("\n".join(parts) + "\n")
+PY
+}
+
 # Every required category appears in a real interactive intake template, and a
 # static page lacking the Lavish capture call is refused before a session opens.
 test_required_categories_and_static_refusal() {
@@ -127,7 +152,7 @@ test_required_categories_and_static_refusal() {
   for field in product_goal intended_users use_cases scope non_goals constraints \
     visual_product_references key_choices acceptance_criteria open_questions; do
     candidate=$home/missing-$field.html
-    grep -Fv "data-lavish-intake-field=\"$field\"" "$artifact" > "$candidate"
+    make_incomplete_artifact "$candidate" "$field" feature-a1
     set +e
     out=$(run_intake "$home" start feature-a1 --artifact "$candidate" 2>&1)
     rc=$?
@@ -197,6 +222,24 @@ test_explicit_exemptions_require_reason() {
   brief=$home/data/exemption-b2/brief.md
   [ "$(run_intake "$home" check-brief exemption-b2 "$brief" | sed -n 's/^status=//p')" = not-applicable ] \
     || fail "valid exemption brief did not preserve its classification"
+  python3 - "$brief" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+text = text.replace(
+    "Lavish intake reason: dependency pin update with no behavior change",
+    "Lavish intake reason: altered exemption reason",
+)
+path.write_text(text)
+PY
+  set +e
+  out=$(run_intake "$home" check-brief exemption-b2 "$brief" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "edited exemption reason passed check-brief"
+  assert_contains "$out" "does not match intake evidence" "exemption mismatch refusal was unclear"
   pass "Lavish intake: exemptions require and retain concrete reasons"
 }
 
@@ -250,6 +293,31 @@ test_malformed_captured_feedback_refused() {
   assert_contains "$out" "complete submitted intake payload" "malformed intake refusal was unclear"
   assert_absent "$home/state/malformed-a1.lavish-intake" "malformed feedback produced intake evidence"
   pass "Lavish intake: malformed Context data cannot satisfy the evidence boundary"
+}
+
+test_missing_intake_session_fails_closed() {
+  local home artifact sid result out rc
+  home=$(make_home missing-session)
+  add_task "$home" missing-session-a1
+  artifact=$home/intake.html
+  run_intake "$home" template missing-session-a1 --output "$artifact" >/dev/null
+  run_intake "$home" start missing-session-a1 --artifact "$artifact" >/dev/null
+  sid=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
+  fixture_for "$home" missing-session-a1
+  rm -f "$home/state/missing-session-a1.lavish-intake-session"
+  run_process_event "$home" "$sid" >/dev/null
+  result=$home/state/procevent-inbox/$sid.1.result
+  set +e
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-procevent-lavish.sh" answers "$result" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "missing intake session fell back to legacy answer routing"
+  assert_contains "$out" "no active session" "missing-session refusal was unclear"
+  (cd "$home" && tasks-axi show missing-session-a1 --full) | grep -Fq 'hold_kind: captain' \
+    || fail "missing intake session released the held task"
+  pass "Lavish intake: missing sessions fail closed"
 }
 
 test_intake_flag_rejects_exemption() {
@@ -426,6 +494,7 @@ test_ambiguous_classification_refuses_dispatch
 test_explicit_exemptions_require_reason
 test_absent_and_closed_without_feedback_refused
 test_malformed_captured_feedback_refused
+test_missing_intake_session_fails_closed
 test_intake_flag_rejects_exemption
 test_contractless_compatibility_requires_existing_endpoint
 test_start_failure_rolls_back_only_new_state

@@ -218,6 +218,12 @@ feed_keyed_answers() {  # <adapter> <source-id> <result-file>
         --source "the captured result $id sequence $seq" >/dev/null 2>&1
 }
 
+lavish_intake_source_marker() {
+  [ "$1" = lavish ] || return 1
+  local marker="$STATE/procevent/$2.intake"
+  [ -e "$marker" ] || [ -L "$marker" ]
+}
+
 read_adapter() {  # <source-id>
   local f; f=$(source_file "$1")
   [ -f "$f" ] && [ ! -L "$f" ] || return 1
@@ -459,7 +465,9 @@ cmd_start() {
 
   # Independent of publication and acknowledgement, so it runs once per capture
   # for every adapter and cannot change what the handler receives.
-  if feed_keyed_answers "$adapter" "$id" "$durable"; then
+  if lavish_intake_source_marker "$adapter" "$id"; then
+    :
+  elif feed_keyed_answers "$adapter" "$id" "$durable"; then
     printf 'answers-fed: %s\n' "$id"
   fi
 

@@ -144,7 +144,13 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 CAPTAIN_META_LOCK=
 CAPTAIN_META_LOCK_HELD=0
+CAPTAIN_TASK_LOCK=
+CAPTAIN_TASK_LOCK_HELD=0
 captain_hold_cleanup() {
+  if [ "$CAPTAIN_TASK_LOCK_HELD" = 1 ]; then
+    fm_lock_release "$CAPTAIN_TASK_LOCK" || true
+    CAPTAIN_TASK_LOCK_HELD=0
+  fi
   if [ "$CAPTAIN_META_LOCK_HELD" = 1 ]; then
     fm_lock_release "$CAPTAIN_META_LOCK" || true
     CAPTAIN_META_LOCK_HELD=0
@@ -378,7 +384,7 @@ resolve_entry() {  # <origin-or-empty> <entry>; prints the resolved id or fails
 }
 
 command_hold() {
-  local id=${1:-} title='' reason='' repo='' origin='' until='' show state existing_title body='' hold_kind
+  local id=${1:-} title='' reason='' repo='' origin='' until='' intake_owner='' show state existing_title body='' hold_kind
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -388,6 +394,7 @@ command_hold() {
       --repo) shift; repo=${1:-} ;;
       --origin) shift; origin=${1:-} ;;
       --until) shift; until=${1:-} ;;
+      --intake-owner) shift; intake_owner=${1:-} ;;
       *) usage >&2; exit 2 ;;
     esac
     shift
@@ -404,11 +411,25 @@ command_hold() {
       *) fail "--until must be a YYYY-MM-DD date: $until" ;;
     esac
   fi
+  if [ -n "$intake_owner" ]; then
+    validate_slug intake-owner "$intake_owner"
+    CAPTAIN_TASK_LOCK="$STATE/.captain-task-$id.lock"
+    fm_lock_acquire_wait "$CAPTAIN_TASK_LOCK" || fail "could not lock captain task $id"
+    CAPTAIN_TASK_LOCK_HELD=1
+  fi
   require_tasks_axi
   if show=$(task_show "$id"); then
     state=$(show_field "$show" state)
     [ "$state" != "done" ] \
       || fail "task $id is already closed; a new captain call needs its own task"
+    if [ -n "$intake_owner" ]; then
+      hold_kind=$(show_field_value "$show" hold_kind)
+      case "$hold_kind" in
+        ''|null|\"null\"|-|\"-\") hold_kind= ;;
+      esac
+      [ -z "$hold_kind" ] \
+        || fail "task $id already carries a hold"
+    fi
     if [ -n "$title" ]; then
       existing_title=$(show_field_value "$show" title)
       [ "$existing_title" = "$title" ] || fail "existing task $id has a different title"
