@@ -247,19 +247,80 @@ for my $field (split /\s+/, $field_text) {
   } @textareas;
   @matches == 1 or reject "artifact is missing required field: $field";
 }
-
-my @scripts = ($html =~ m{<script\b[^>]*>(.*?)</script\s*>}gis);
-my $script = join "\n", @scripts;
-$script =~ s{/\*.*?\*/}{}gs;
-$script =~ s{//[^\r\n]*}{}g;
-$script =~ /document\s*\.\s*querySelector\s*\(\s*[\"']#feature-intake[\"']\s*\)/s
-  or reject 'artifact has no executable intake form binding';
-$script =~ /form\s*\.\s*addEventListener\s*\(\s*[\"']submit[\"']\s*,.*?
-  event\s*\.\s*preventDefault\s*\(\s*\).*?
-  window\s*\.\s*lavish\s*\.\s*queuePrompt\s*\(.*?
-  data\s*:\s*\{/sx
-  or reject 'artifact has no executable intake submit listener';
 PERL
+  ); then
+    fail "$contract_error"
+  fi
+  if ! contract_error=$(node - "$artifact" "$task" "$FIELDS" 2>&1 <<'NODE'
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+
+const [path, task, fieldText] = process.argv.slice(2);
+const fields = fieldText.split(/\s+/);
+const html = fs.readFileSync(path, 'utf8').replace(/<!--[\s\S]*?-->/g, '');
+const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)].map((match) => match[1]);
+const fail = (message) => {
+  process.stderr.write(`${message}\n`);
+  process.exit(1);
+};
+
+try {
+  if (scripts.length === 0) fail('artifact has no executable intake script');
+  const elements = Object.fromEntries(fields.map((field) => [field, { value: `value for ${field}` }]));
+  const submit = { disabled: false };
+  const status = { textContent: '' };
+  const listeners = {};
+  const form = {
+    elements,
+    addEventListener(type, listener) {
+      if (type === 'submit') listeners.submit = listener;
+    },
+    querySelector(selector) {
+      return selector === '[data-lavish-intake-submit="true"]' ? submit : null;
+    },
+  };
+  const document = {
+    querySelector(selector) {
+      if (selector === '#feature-intake') return form;
+      if (selector === '#intake-status') return status;
+      return null;
+    },
+  };
+  const queued = [];
+  const window = {
+    lavish: {
+      queuePrompt(title, choice) {
+        queued.push({ title, choice });
+      },
+    },
+  };
+  const context = vm.createContext({ document, window }, {
+    codeGeneration: { strings: false, wasm: false },
+  });
+  for (const script of scripts) {
+    vm.runInContext(script, context, { timeout: 1000 });
+  }
+  if (typeof listeners.submit !== 'function') fail('artifact has no executable intake submit listener');
+  let prevented = false;
+  const event = { preventDefault() { prevented = true; } };
+  listeners.submit(event);
+  if (!prevented) fail('artifact submit listener does not prevent default submission');
+  if (queued.length !== 1) fail('artifact submit listener did not queue exactly one answer');
+  const data = queued[0].choice && queued[0].choice.data;
+  if (!data || data.question !== task || data.answer !== 'submitted' || data.close !== 'release' || data.submitted !== true) {
+    fail('artifact queued feedback does not match the intake contract');
+  }
+  if (!data.intake || fields.some((field) => typeof data.intake[field] !== 'string' || data.intake[field].trim() === '')) {
+    fail('artifact queued feedback is missing required intake fields');
+  }
+  if (submit.disabled !== true) fail('artifact submit control remains enabled after queueing');
+  listeners.submit(event);
+  if (queued.length !== 1) fail('artifact submit listener queued duplicate feedback');
+} catch (error) {
+  fail(error && error.message ? error.message : 'artifact executable validation failed');
+}
+NODE
   ); then
     fail "$contract_error"
   fi

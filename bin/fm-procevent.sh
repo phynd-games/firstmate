@@ -94,13 +94,13 @@
 # and this runner still decides nothing about them. Some sources carry the
 # captain's answer to a captain-held task. What such an answer MEANS is owned
 # once, by bin/fm-captain-hold.sh's keyed-answer intake, and reaching it must not
-# depend on an agent remembering. So after capture, a bound source
-# has its result passed to
-# `bin/fm-procevent-<adapter>.sh answers <result-file>`, and whatever that prints
-# is piped straight into that one intake. The adapter reports only what the
-# captain chose; the intake owns every rule about what happens next. This runner
-# names no adapter, parses no result, and knows no decision rule, so a future
-# source needs nothing here beyond an `answers` command and a binding.
+# depend on an agent remembering. After capture, an ordinary bound source has its
+# result passed to `bin/fm-procevent-<adapter>.sh answers <result-file>`, and
+# whatever that prints is piped straight into that one intake. A Lavish intake
+# registration is the explicit exception: the runner withholds its keyed rows
+# until bin/fm-lavish-intake.sh record validates the captured payload and performs
+# the exact release. The adapter reports only what the captain chose; the intake
+# owns every rule about what happens next.
 #
 # Feeding is deliberately independent of handling: it never acknowledges a result
 # and never suppresses a wake. Recording the captain's answer is transcription,

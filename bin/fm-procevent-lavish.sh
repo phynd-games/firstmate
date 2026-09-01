@@ -375,7 +375,7 @@ cmd_terminal() {
     case "$classification" in
       feedback) return 1 ;;
       ended) return 1 ;;
-      missing) return 0 ;;
+      missing) return 1 ;;
       *) return 1 ;;
     esac
   fi

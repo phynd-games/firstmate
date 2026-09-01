@@ -910,7 +910,7 @@ command_intake_owner() {
 
 command_intake_resolution() {
   local id=${1:-} owner=${2:-} source=${3:-} answer=${4:-} label=${5:-}
-  local show state hold_kind body digest phase recorded_digest
+  local show state hold_kind body digest phase recorded_digest owner_reason
   [ "$#" -eq 5 ] || { usage >&2; exit 2; }
   validate_slug task-id "$id"
   validate_slug intake-owner "$owner"
@@ -925,7 +925,15 @@ command_intake_resolution() {
   show=$(task_show "$id") || return 1
   state=$(show_field "$show" state)
   hold_kind=$(show_field_value "$show" hold_kind)
-  [ -z "$hold_kind" ] || return 1
+  owner_reason=$(sed -n 's/^hold_reason=//p' "$(intake_owner_path "$id")" | head -1)
+  case "$hold_kind" in
+    '') ;;
+    captain)
+      [ "$state" = done ] || return 1
+      [ "$(show_field "$show" hold_reason)" = "$owner_reason" ] || return 1
+      ;;
+    *) return 1 ;;
+  esac
   body=$(show_field "$show" body)
   body_has_resolution_record "$body" || return 1
   [ "$(recorded_resolution_mode "$body" || true)" = released ] || return 1

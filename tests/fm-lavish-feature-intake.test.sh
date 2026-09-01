@@ -427,6 +427,19 @@ test_absent_and_closed_without_feedback_refused() {
   assert_contains "$out" "captured result is not a regular file" "missing feedback refusal was unclear"
   sid=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
     "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
+  fixture_for "$home" feature-a1 missing
+  run_process_event "$home" "$sid" >/dev/null
+  result="$home/state/procevent-inbox/$sid.1.result"
+  assert_present "$home/state/procevent/$sid.source" \
+    "missing-session intake source was retired before valid feedback"
+  assert_absent "$home/state/procevent-inbox/$sid.1.handled" \
+    "missing-session intake was silently acknowledged"
+  set +e
+  out=$(run_intake "$home" record feature-a1 --artifact "$artifact" --result "$result" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "missing-session feedback result was accepted"
+  assert_contains "$out" "is not feedback" "missing-session refusal was unclear"
   fixture_for "$home" feature-a1 ended
   run_process_event "$home" "$sid" >/dev/null
   assert_present "$home/state/procevent/$sid.source" \
@@ -435,7 +448,7 @@ test_absent_and_closed_without_feedback_refused() {
     "empty ended intake was silently acknowledged"
   set +e
   out=$(run_intake "$home" record feature-a1 --artifact "$artifact" \
-    --result "$home/state/procevent-inbox/$sid.1.result" 2>&1)
+    --result "$home/state/procevent-inbox/$sid.2.result" 2>&1)
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "closed session without feedback was accepted"

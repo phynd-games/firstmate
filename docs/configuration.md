@@ -615,7 +615,8 @@ The remote-secondmate reply adapter declares itself self-announcing: a captured 
 
 Keyed captain answers use one more seam of the same kind, and the runner still decides nothing about them.
 Some sources carry the captain's answer to a captain-held task, and what such an answer means is owned once by `bin/fm-captain-hold.sh`'s keyed-answer intake rather than by any channel.
-A source bound with `bin/fm-captain-hold.sh bind` therefore has each captured result passed to `bin/fm-procevent-<adapter>.sh answers <result-file>`, and whatever that prints is piped straight into that intake.
+A source bound with `bin/fm-captain-hold.sh bind` normally has each captured result passed to `bin/fm-procevent-<adapter>.sh answers <result-file>`, and whatever that prints is piped straight into that intake.
+A Lavish feature-intake registration is the explicit exception: the runner withholds its keyed rows until `bin/fm-lavish-intake.sh record` validates the captured payload and performs the exact release through the captain-hold owner.
 A binding can select one decision origin or the script's cross-origin mode; the command header owns the exact forms and key interpretation.
 The adapter reports only what the captain chose; the intake owns every rule about what happens next, so the runner names no adapter, parses no result, and carries no decision rule, and a future source needs nothing here beyond an `answers` command and a binding.
 Feeding is independent of handling: it never acknowledges a result and never suppresses a wake, because recording the answer is transcription while acting on it is firstmate's judgement.

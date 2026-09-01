@@ -37,7 +37,8 @@ When a source carries captain answers to captain-held tasks, bind it BEFORE armi
 bin/fm-captain-hold.sh bind <source-id>
 ```
 
-The runner then passes each captured result to that source's own adapter `answers` command and pipes the keyed answers it prints into the one keyed-answer intake, which owns every rule about what they mean; the keys are captain-held task ids.
+The runner normally passes each captured result to that source's own adapter `answers` command and pipes the keyed answers it prints into the one keyed-answer intake, which owns every rule about what they mean; the keys are captain-held task ids.
+The explicit Lavish feature-intake registration is the exception: the runner withholds its keyed rows until `bin/fm-lavish-intake.sh record` validates the captured payload and performs the exact release through the captain-hold owner.
 This is generic: any adapter with an `answers` command works, and the runner still wakes you to act on the result.
 `captain-hold-lifecycle` owns when a binding is required and what the keys must be.
 
