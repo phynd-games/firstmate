@@ -252,12 +252,12 @@ fields = field_text.split()
 
 class IntakeParser(HTMLParser):
     def __init__(self):
-        super().__init__(convert_charrefs=True)
+        super().__init__(convert_charrefs=True, scripting=True)
         self.forms = []
         self.form = None
         self.inert = []
         self.script = None
-        self.scripts = []
+        self.events = []
         self.root_count = 0
         self.root_valid = False
         self.error = None
@@ -293,11 +293,22 @@ class IntakeParser(HTMLParser):
             if self.form is not None:
                 self.error = "artifact contains nested intake forms"
                 return
+            form_index = len(self.forms)
             self.form = {"attrs": attrs, "controls": [], "closed": False}
             self.forms.append(self.form)
+            self.events.append({"kind": "form-start", "index": form_index, "attrs": attrs})
             return
         if self.form is not None and tag in ("textarea", "button", "input"):
-            self.form["controls"].append({"tag": tag, "attrs": attrs})
+            control = {"tag": tag, "attrs": attrs}
+            self.form["controls"].append(control)
+            self.events.append({
+                "kind": "control",
+                "form_index": len(self.forms) - 1,
+                "tag": tag,
+                "attrs": attrs,
+            })
+        elif "id" in attrs:
+            self.events.append({"kind": "element", "tag": tag, "attrs": attrs})
 
     def handle_startendtag(self, tag, raw):
         self.handle_starttag(tag, raw)
@@ -314,7 +325,11 @@ class IntakeParser(HTMLParser):
                 "text/ecmascript",
                 "application/ecmascript",
             }:
-                self.scripts.append("".join(self.script["parts"]))
+                self.events.append({
+                    "kind": "script",
+                    "attrs": attrs,
+                    "code": "".join(self.script["parts"]),
+                })
             self.script = None
             return
         if tag in ("template", "noscript"):
@@ -330,6 +345,7 @@ class IntakeParser(HTMLParser):
                 self.error = "artifact contains an unmatched form close"
             else:
                 self.form["closed"] = True
+                self.events.append({"kind": "form-end", "index": len(self.forms) - 1})
                 self.form = None
 
     def handle_data(self, data):
@@ -380,7 +396,7 @@ submits = [
 if len(submits) != 1:
     print("artifact has no explicit intake submit control", file=sys.stderr)
     raise SystemExit(1)
-print(json.dumps({"forms": parser.forms, "scripts": parser.scripts}, separators=(",", ":")))
+print(json.dumps({"forms": parser.forms, "events": parser.events}, separators=(",", ":")))
 PY
   ); then
     fail "$contract_json"
@@ -395,7 +411,6 @@ const vm = require('vm');
 const [task, fieldText, validationNonce, domJson] = process.argv.slice(2);
 const fields = fieldText.split(/\s+/);
 const dom = JSON.parse(domJson);
-const scripts = dom.scripts;
 const attribute = (attrs, name) => Object.prototype.hasOwnProperty.call(attrs, name) ? attrs[name] : null;
 const hasAttribute = (attrs, name) => Object.prototype.hasOwnProperty.call(attrs, name);
 const fail = (message) => {
@@ -404,40 +419,51 @@ const fail = (message) => {
 };
 
 try {
-  if (scripts.length === 0) fail('artifact has no executable intake script');
-  const matchingForms = dom.forms.filter((form) => attribute(form.attrs, 'id') === 'feature-intake');
-  if (matchingForms.length !== 1 || attribute(matchingForms[0].attrs, 'data-lavish-question') !== task) fail('artifact has no keyed intake question');
-  const parsedForm = matchingForms[0];
-  const elements = {};
-  for (const field of fields) {
-    const controls = parsedForm.controls.filter((control) => control.tag === 'textarea' && attribute(control.attrs, 'name') === field && attribute(control.attrs, 'data-lavish-intake-field') === field && hasAttribute(control.attrs, 'required'));
-    if (controls.length !== 1) fail(`artifact is missing required field: ${field}`);
-    elements[field] = { value: '' };
-  }
-  const submitControls = parsedForm.controls.filter((control) => (control.tag === 'button' || control.tag === 'input') && attribute(control.attrs, 'data-lavish-intake-submit') === 'true' && (attribute(control.attrs, 'type') || '').toLowerCase() === 'submit');
-  if (submitControls.length !== 1) fail('artifact has no explicit intake submit control');
+  const executableScripts = dom.events.filter((event) => event.kind === 'script');
+  if (executableScripts.length === 0) fail('artifact has no executable intake script');
   const sentinels = Object.fromEntries(fields.map((field) => [field, `${validationNonce}-${field}`]));
-  for (const field of fields) elements[field].value = sentinels[field];
-  const submit = { disabled: false };
-  const status = { textContent: '' };
-  const listeners = {};
-  const domForm = {
-    elements,
+  const forms = [];
+  const documentElements = new Map();
+  const queued = [];
+  const document = {
+    querySelector(selector) {
+      if (selector === '#feature-intake') {
+        return forms.find((form) => attribute(form.attrs, 'id') === 'feature-intake') || null;
+      }
+      if (selector === '#intake-status') return documentElements.get('intake-status') || null;
+      return null;
+    },
+  };
+  const formFor = (index) => forms[index];
+  const addControl = (event) => {
+    const form = formFor(event.form_index);
+    if (!form) fail('artifact control appeared without an active form');
+    const attrs = event.attrs;
+    const name = attribute(attrs, 'name');
+    if (event.tag === 'textarea' && name && fields.includes(name)) {
+      form.elements[name] = { value: sentinels[name] };
+    }
+    if ((event.tag === 'button' || event.tag === 'input') &&
+        attribute(attrs, 'data-lavish-intake-submit') === 'true' &&
+        (attribute(attrs, 'type') || '').toLowerCase() === 'submit') {
+      form.submit = { disabled: false };
+    }
+  };
+  const addForm = (event) => {
+    const listeners = {};
+    forms[event.index] = {
+      attrs: event.attrs,
+      elements: {},
+      submit: null,
+      listeners,
     addEventListener(type, listener) {
       if (type === 'submit') listeners.submit = listener;
     },
     querySelector(selector) {
-      return selector === '[data-lavish-intake-submit="true"]' ? submit : null;
+      return selector === '[data-lavish-intake-submit="true"]' ? this.submit : null;
     },
   };
-  const document = {
-    querySelector(selector) {
-      if (selector === '#feature-intake') return domForm;
-      if (selector === '#intake-status') return status;
-      return null;
-    },
   };
-  const queued = [];
   const window = {
     lavish: {
       queuePrompt(title, choice) {
@@ -448,9 +474,26 @@ try {
   const context = vm.createContext({ document, window }, {
     codeGeneration: { strings: false, wasm: false },
   });
-  for (const script of scripts) {
-    vm.runInContext(script, context, { timeout: 1000 });
+  for (const event of dom.events) {
+    if (event.kind === 'form-start') {
+      addForm(event);
+    } else if (event.kind === 'control') {
+      addControl(event);
+    } else if (event.kind === 'element') {
+      const id = attribute(event.attrs, 'id');
+      if (id && !documentElements.has(id)) documentElements.set(id, { textContent: '' });
+    } else if (event.kind === 'script') {
+      vm.runInContext(event.code, context, { timeout: 1000 });
+    }
   }
+  const matchingForms = forms.filter((form) => form && attribute(form.attrs, 'id') === 'feature-intake');
+  if (matchingForms.length !== 1 || attribute(matchingForms[0].attrs, 'data-lavish-question') !== task) fail('artifact has no keyed intake question');
+  const domForm = matchingForms[0];
+  for (const field of fields) {
+    if (!domForm.elements[field]) fail(`artifact is missing required field: ${field}`);
+  }
+  if (!domForm.submit) fail('artifact has no explicit intake submit control');
+  const listeners = domForm.listeners;
   if (typeof listeners.submit !== 'function') fail('artifact has no executable intake submit listener');
   let prevented = false;
   const event = { preventDefault() { prevented = true; } };
@@ -467,7 +510,7 @@ try {
   if (fields.some((field) => data.intake[field] !== sentinels[field])) {
     fail('artifact queued feedback does not reflect submitted field values');
   }
-  if (submit.disabled !== true) fail('artifact submit control remains enabled after queueing');
+  if (domForm.submit.disabled !== true) fail('artifact submit control remains enabled after queueing');
   listeners.submit(event);
   if (queued.length !== 1) fail('artifact submit listener queued duplicate feedback');
 } catch (error) {
