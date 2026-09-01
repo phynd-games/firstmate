@@ -7,18 +7,11 @@
 #   fresh entry vs a refresh, and the correct-ordered stop (daemon SIGTERM'd
 #   while state/.afk is still present, .afk cleared last).
 #
-#   E2E TOPOLOGY (per backend, skipped when its tool is absent): the anti-
-#   regression for the pane split/shrink - entering AND exiting away mode leaves
-#   the captain's active tab topology UNCHANGED, because the daemon lands in a
-#   NON-VISIBLE separate terminal (a herdr dedicated workspace, a detached tmux
-#   session), never a split of the captain's pane. The herdr path runs on a
-#   throwaway, NEVER-default HERDR_SESSION and asserts the default session is
-#   byte-identical via the fm-herdr-lab.sh fleet-state tripwire; the tmux path
-#   uses uniquely-named throwaway sessions killed by exact name. A harmless
-#   sleeper replaces the real daemon (FM_AFK_LAUNCH_ENTRY) so the test observes
+#   E2E TOPOLOGY: the Herdr-only anti-regression for pane split/shrink uses a
+#   throwaway, NEVER-default HERDR_SESSION and the fm-herdr-lab.sh fleet-state
+#   tripwire. A harmless sleeper replaces the real daemon so the test observes
 #   only the terminal lifecycle.
 set -u
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAUNCH="$ROOT/bin/fm-afk-launch.sh"
 START="$ROOT/bin/fm-afk-start.sh"
@@ -30,13 +23,8 @@ pass() { printf 'ok - %s\n' "$1"; }
 SLEEPER=$(mktemp "${TMPDIR:-/tmp}/fm-afk-sleeper.XXXXXX")
 printf '#!/usr/bin/env bash\nexec sleep 600\n' > "$SLEEPER"
 chmod +x "$SLEEPER"
-TRACK_TMUX_SESSIONS=""
 GLOBAL_CLEANUP() {
   rm -f "$SLEEPER" 2>/dev/null || true
-  local s
-  for s in $TRACK_TMUX_SESSIONS; do
-    tmux kill-session -t "$s" 2>/dev/null || true
-  done
 }
 trap GLOBAL_CLEANUP EXIT
 
@@ -231,7 +219,6 @@ unit_failed_start_rolls_back_state() {
   rm -rf "$st"
 }
 
-
 unit_lock_initialization_grace() {
   local st marker initializer
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-lock-init.XXXXXX")
@@ -314,8 +301,12 @@ unit_herdr_partial_create_recovery() {
         return 1
       elif [ "$2 $3" = "workspace list" ]; then
         printf %s '\''{"result":{"workspaces":[{"workspace_id":"ws-partial","label":"afk-exact-label"}]}}'\''
+      elif [ "$2 $3" = "pane get" ]; then
+        printf %s '\''{"result":{"pane":{"pane_id":"pane-exact","tab_id":"tab-exact","workspace_id":"ws-partial"}}}'\''
+      elif [ "$2 $3" = "pane close" ]; then
+        printf %s '\''{"result":{"workspace_id":"ws-partial","tab_id":"tab-exact","pane_id":"pane-exact"}}'\''
       else
-        printf %s '\''{"result":{"panes":[{"pane_id":"pane-exact"}]}}'\''
+        printf %s '\''{"result":{"panes":[{"pane_id":"pane-exact","tab_id":"tab-exact","workspace_id":"ws-partial"}]}}'\''
       fi
     }
     fm_afk_launch_record_write() { printf "%s:%s:%s" "$1" "$2" "$3" > "$RECORDED"; }
@@ -338,11 +329,13 @@ unit_herdr_error_with_exact_ids_closes_exact() {
     fm_backend_herdr_server_ensure() { return 0; }
     fm_backend_herdr_cli() {
       if [ "$2 $3" = "workspace create" ]; then
-        printf %s '\''{"result":{"workspace":{"workspace_id":"ws-exact"},"root_pane":{"pane_id":"pane-exact"}}}'\''
+        printf %s '\''{"result":{"workspace":{"workspace_id":"ws-exact"},"tab":{"tab_id":"tab-exact"},"root_pane":{"pane_id":"pane-exact"}}}'\''
         return 1
       elif [ "$2 $3" = "pane get" ]; then
-        printf %s '\''{"error":{"code":"transport_error"}}'\''
-        return 2
+        printf %s '\''{"result":{"pane":{"pane_id":"pane-exact","tab_id":"tab-exact","workspace_id":"ws-exact"}}}'\''
+        return 0
+      elif [ "$2 $3" = "pane close" ]; then
+        printf %s '\''{"result":{"workspace_id":"ws-exact","tab_id":"tab-exact","pane_id":"pane-exact"}}'\''
       fi
       return 2
     }
@@ -365,13 +358,15 @@ unit_herdr_run_failure_preserves_unconfirmed_record() {
     fm_backend_herdr_server_ensure() { return 0; }
     fm_backend_herdr_cli() {
       if [ "$2 $3" = "workspace create" ]; then
-        printf %s '\''{"result":{"workspace":{"workspace_id":"ws-exact"},"root_pane":{"pane_id":"pane-exact"}}}'\''
+        printf %s '\''{"result":{"workspace":{"workspace_id":"ws-exact"},"tab":{"tab_id":"tab-exact"},"root_pane":{"pane_id":"pane-exact"}}}'\''
         return 0
       elif [ "$2 $3" = "pane run" ]; then
         return 1
+      elif [ "$2 $3" = "pane close" ]; then
+        return 1
       elif [ "$2 $3" = "pane get" ]; then
-        printf %s '\''{"error":{"code":"transport_error"}}'\''
-        return 2
+        printf %s '\''{"result":{"pane":{"pane_id":"pane-exact","tab_id":"tab-exact","workspace_id":"ws-exact"}}}'\''
+        return 0
       fi
       return 2
     }
@@ -381,6 +376,72 @@ unit_herdr_run_failure_preserves_unconfirmed_record() {
     pass "herdr run failure: unconfirmed exact id remains reconcilable"
   else
     fail "herdr run failure: unconfirmed exact id was discarded"
+  fi
+  rm -rf "$st"
+}
+
+unit_herdr_afk_record_binds_tab_identity() {
+  local st marker out
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-herdr-identity.XXXXXX")
+  mkdir -p "$st/state"
+  printf 'herdr\tlab:pane\tws-exact\t\n' > "$st/state/.afk-daemon-terminal"
+  out=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+    . "$1"
+    fm_backend_policy_refuse() { printf "refused\n" >&2; return 1; }
+    fm_afk_launch_record_read
+  ' _ "$LAUNCH" 2>&1)
+  if [ "$?" -eq 0 ] || [ ! -e "$st/state/.afk-daemon-terminal" ]; then
+    fail "AFK record without a tab identity was accepted or discarded: $out"
+  fi
+  marker="$st/closed"
+  printf 'herdr\tlab:pane\tws-exact\ttab-exact\n' > "$st/state/.afk-daemon-terminal"
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" MARKER="$marker" \
+    bash -c '
+      . "$1"
+      fm_backend_source() { return 0; }
+      fm_backend_herdr_presentation_session_lock_path() { printf /tmp/fm-afk-identity-lock; }
+      fm_lock_try_acquire() { return 0; }
+      fm_lock_release() { return 0; }
+      fm_backend_herdr_cli() {
+        case "$2 $3" in
+          "pane get") printf %s '\''{"result":{"pane":{"pane_id":"pane","workspace_id":"other","tab_id":"other-tab"}}}'\'' ;;
+          "pane close") : > "$MARKER" ;;
+        esac
+      }
+      fm_afk_launch_record_read
+      ! fm_afk_launch_close_recorded
+    ' _ "$LAUNCH"
+  if [ -e "$marker" ] || [ ! -e "$st/state/.afk-daemon-terminal" ]; then
+    fail "AFK rebound pane was operated on or its record was discarded"
+  else
+    pass "AFK terminal close refuses rebound panes with exact recorded tab identity"
+  fi
+  rm -rf "$st"
+}
+
+unit_explicit_herdr_target_resolves_exact_identity() {
+  local st observed
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-explicit-target.XXXXXX")
+  observed="$st/observed"
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_TARGET=lab:pane \
+    FM_SUPERVISOR_BACKEND=herdr OBSERVED="$observed" \
+    env -u FM_BACKEND_LEGACY_TEST_LANE bash -c '
+      . "$1"
+      fm_backend_herdr_target_ready() {
+        FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=ws-exact
+        FM_BACKEND_HERDR_EXPECTED_TAB_ID=tab-exact
+        return 0
+      }
+      fm_backend_target_exists() {
+        printf "%s|%s|%s|%s|%s" "$1" "$2" "$3" "$4" "$5" > "$OBSERVED"
+        return 0
+      }
+      fm_afk_launch_preflight
+    ' _ "$LAUNCH"
+  if [ "$(cat "$observed" 2>/dev/null || true)" = "herdr|lab:pane||ws-exact|tab-exact" ]; then
+    pass "explicit Herdr supervisor target resolves exact workspace and tab identity"
+  else
+    fail "explicit Herdr supervisor target did not pass its resolved identity to preflight"
   fi
   rm -rf "$st"
 }
@@ -925,7 +986,6 @@ e2e_herdr() {
 # E2E tmux: topology invariant (captain window untouched; daemon in a separate
 # detached session).
 # ---------------------------------------------------------------------------
-
 unit_clear_stale
 unit_relative_paths_are_absolute_before_daemon_launch
 unit_fresh_vs_refresh
@@ -933,10 +993,12 @@ unit_stop_ordering
 unit_stop_rejects_reused_pid
 unit_failed_start_rolls_back_state
 unit_lock_initialization_grace
+unit_explicit_herdr_target_resolves_exact_identity
 unit_signal_exits_with_lock_cleanup
 unit_herdr_partial_create_recovery
 unit_herdr_error_with_exact_ids_closes_exact
 unit_herdr_run_failure_preserves_unconfirmed_record
+unit_herdr_afk_record_binds_tab_identity
 unit_record_failure_closes_terminal
 unit_readiness_failure_rolls_back_terminal
 unit_readiness_failure_preserves_unconfirmed_record
@@ -959,5 +1021,4 @@ unit_confirmed_absence_succeeds
 unit_incomplete_restore_retains_backup
 unit_flag_write_failure_aborts
 e2e_herdr
-
 [ "$FAILED" -eq 0 ] || exit 1

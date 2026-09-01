@@ -72,7 +72,7 @@ set -u
 printf '%s\n' "$*" >> "$FM_HERDR_LOG"
 case "${1:-} ${2:-}" in
   "status --json") printf '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true}}\n' ;;
-  "pane get") printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "${3:-}" ;;
+  "pane get") printf '{"result":{"pane":{"pane_id":"%s","tab_id":"t1","workspace_id":"w1"}}}\n' "${3:-}" ;;
   "pane send-keys") : ;;
 esac
 SH

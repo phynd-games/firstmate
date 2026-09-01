@@ -775,14 +775,12 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
 }
 
 task_json_lines() {
-  set -o pipefail
-  local meta meta_text meta_reason id kind harness model effort mode yolo project worktree home projects spawn_gen backend target status_log report_path
-  local remote_host remote_root remote_state remote_rc remote_home_present remote_unavailable remote_reason
-  local pr pr_source event_json current_json endpoint_exists endpoint_state agent_alive meta_json status_json report_json worktree_json home_json
-  local last_event_raw current_state current_source current_freshness pending_decision blocked_event report_present=0 pr_from_status
-  local open_decisions_tsv open_decisions_json status_text status_reason
-  local open_decisions_available=true open_decisions_reason=''
-  local endpoint_freshness=unknown endpoint_reason='' endpoint_probe_output endpoint_probe_status
+  local meta id kind harness mode yolo project worktree home projects spawn_gen backend recorded_backend target status_log report_path
+  local remote_host remote_root remote_state remote_rc remote_home_present remote_identity_valid
+  local pr pr_source event_json current_json endpoint_exists endpoint_status agent_alive meta_json status_json report_json worktree_json home_json
+  local endpoint_rc agent_alive_rc local_identity_valid
+  local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
+  local open_decisions_tsv open_decisions_json
 
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || [ -L "$meta" ] || continue
@@ -812,17 +810,50 @@ task_json_lines() {
     remote_host=$(meta_value_text "$meta_text" remote_host)
     remote_root=$(meta_value_text "$meta_text" remote_root)
     remote_home_present=null
+    local_identity_valid=1
+    remote_identity_valid=1
     if [ -n "$remote_host" ]; then
-      backend=$(meta_value_text "$meta_text" remote_backend)
-      [ -n "$backend" ] || backend=unknown
-      target=$(meta_value_text "$meta_text" remote_target)
+      backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
+      case "$backend" in
+        herdr)
+          if ! fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote >/dev/null 2>&1; then
+            remote_identity_valid=2
+            backend="invalid:$backend"
+          fi
+          ;;
+        absent|tmux|zellij|orca|cmux)
+          remote_identity_valid=0
+          backend="legacy:${backend:-unrecorded}"
+          ;;
+        ambiguous|'')
+          remote_identity_valid=2
+          backend="ambiguous:${backend:-unrecorded}"
+          ;;
+        *)
+          remote_identity_valid=2
+          backend="invalid:$backend"
+          ;;
+      esac
+      target=$(meta_value "$meta" remote_target)
     else
-      backend=$(meta_value_text "$meta_text" backend)
-      [ -n "$backend" ] || backend=tmux
-      if [ "$backend" = orca ]; then
-        target=$(meta_value_text "$meta_text" terminal)
+      # A legacy (absent or non-herdr) backend identity is displayed as recorded
+      # with a marker, never dispatched on (hard rule 6); the snapshot is a view.
+      recorded_backend=$(fm_backend_meta_recorded_backend "$meta" 2>/dev/null || true)
+      if [ "$recorded_backend" = herdr ] && fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1; then
+        backend=$FM_BACKEND_VALIDATED_BACKEND
+        target=$FM_BACKEND_VALIDATED_TARGET
       else
-        target=$(meta_value_text "$meta_text" window)
+        if [ "$recorded_backend" = herdr ]; then
+          local_identity_valid=2
+          backend="invalid:$recorded_backend"
+        elif [ "$recorded_backend" = ambiguous ]; then
+          local_identity_valid=2
+          backend="ambiguous:$recorded_backend"
+        else
+          local_identity_valid=0
+          backend="legacy:${recorded_backend:-absent}"
+        fi
+        target=
       fi
     fi
     status_log="$STATE/$id.status"
@@ -850,14 +881,15 @@ task_json_lines() {
       pr_source=absent
     fi
 
-    if [ "$LOCAL_ONLY" -eq 1 ] && { [ -e "$status_log" ] || [ -L "$status_log" ]; } \
-      && ! snapshot_local_file_safe "$status_log"; then
-      current_json=$(jq -n --arg reason "$SNAPSHOT_FILE_REASON" \
-        '{state:"unknown",source:"status-log",detail:("status log unavailable: " + $reason),raw:"",freshness:"degraded"}')
-    elif [ "$LOCAL_ONLY" -eq 1 ] && [ -n "$remote_host" ]; then
-      current_json=$(jq -n \
-        --arg detail "remote current state is unavailable in the local-only snapshot" \
-        '{state:"unknown",source:"remote-endpoint",detail:$detail,raw:"",freshness:"degraded"}')
+    if [ "$remote_identity_valid" -eq 0 ] || [ "$local_identity_valid" -eq 0 ]; then
+      if [ -n "$remote_host" ]; then
+        recorded_backend=$(meta_value "$meta" remote_backend)
+      else
+        recorded_backend=$(meta_value "$meta" backend)
+      fi
+      current_json=$(jq -n --arg detail "legacy-record: backend=${recorded_backend:-absent} is not herdr; record is read-only" '{state:"unknown",source:"legacy-backend",detail:$detail,raw:""}')
+    elif [ "$remote_identity_valid" -eq 2 ] || [ "$local_identity_valid" -eq 2 ]; then
+      current_json=$(jq -n --arg detail "remote backend identity is ambiguous or invalid; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\"" '{state:"unknown",source:"backend-identity",detail:$detail,raw:""}')
     else
       current_json=$(crew_state_json "$id")
     fi
@@ -911,105 +943,104 @@ task_json_lines() {
     blocked_event=$(printf '%s' "$open_decisions_json" | jq 'if any(.[]; .verb == "blocked") then 1 else 0 end')
 
     endpoint_exists=null
+    endpoint_status=unknown
     agent_alive=not_checked
-    remote_unavailable=false
-    remote_reason=
-    if [ -n "$remote_host" ]; then
-      if [ "$LOCAL_ONLY" -eq 1 ]; then
-        remote_unavailable=true
-        remote_reason='remote evidence is unavailable in local-only mode'
+    if [ -n "$remote_host" ] && [ "$remote_identity_valid" -eq 1 ]; then
+      if remote_state=$(fm_run_timed "$FM_SNAPSHOT_SECONDMATE_TIMEOUT" \
+        "$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" --typed < /dev/null); then
+        remote_rc=0
       else
-        if remote_state=$(fm_run_timed "$FM_SNAPSHOT_SECONDMATE_TIMEOUT" \
-          "$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null 2>/dev/null); then
-          remote_rc=0
-        else
-          remote_rc=$?
-        fi
-        if [ "$remote_rc" -eq 0 ]; then
-          remote_home_present=true
-          endpoint_freshness=fresh
-          remote_state=$(printf '%s\n' "$remote_state" | tail -1)
-          case "$remote_state" in
-            alive) endpoint_exists=true; agent_alive=alive ;;
-            dead) endpoint_exists=true; agent_alive=dead ;;
-            missing) endpoint_exists=false; agent_alive=dead ;;
-            *) endpoint_exists=null; agent_alive=unknown ;;
-          esac
-        else
-          endpoint_exists=null
-          agent_alive=unknown
-          endpoint_freshness=degraded
-          endpoint_reason='remote endpoint probe failed'
-        fi
+        remote_rc=$?
       fi
-    else
+      if [ "$remote_rc" -eq 0 ]; then
+        remote_home_present=true
+        remote_state=$(printf '%s\n' "$remote_state" | tail -1)
+        case "$remote_state" in
+          alive) endpoint_exists=true; agent_alive=alive ;;
+          dead) endpoint_exists=true; agent_alive=dead ;;
+          missing) endpoint_exists=false; agent_alive=dead ;;
+          capability-failure)
+            endpoint_exists=null
+            endpoint_status=capability-failure
+            agent_alive=capability-failure
+            ;;
+          legacy-record|endpoint-refused)
+            endpoint_exists=null
+            endpoint_status=refused
+            agent_alive=not_checked
+            ;;
+          *) endpoint_exists=null; agent_alive=unknown ;;
+        esac
+      else
+        endpoint_exists=null
+        case "$remote_rc" in
+          2)
+            endpoint_status=capability-failure
+            agent_alive=capability-failure
+            ;;
+          3)
+            endpoint_status=refused
+            agent_alive=not_checked
+            ;;
+          *)
+            agent_alive=unknown
+            ;;
+        esac
+      fi
+    elif [ -n "$remote_host" ]; then
+      endpoint_exists=null
+      if [ "$remote_identity_valid" -eq 2 ]; then
+        endpoint_status=identity-failure
+        agent_alive=identity-failure
+      else
+        agent_alive=unknown
+      fi
+    elif [ "$local_identity_valid" -eq 1 ]; then
       if [ -n "$target" ]; then
-        if [ "$backend" = herdr ]; then
-          if endpoint_probe_output=$(snapshot_herdr_target_state "$target" "fm-$id" 2>&1); then
-            endpoint_probe_status=0
-            endpoint_state=$endpoint_probe_output
-            endpoint_freshness=fresh
-          else
-            endpoint_probe_status=$?
-            endpoint_state=unknown
-            endpoint_freshness=degraded
-            endpoint_reason=${endpoint_probe_output:-"Herdr endpoint probe failed (exit $endpoint_probe_status)"}
-          fi
-          case "$endpoint_state" in
-            present) endpoint_exists=true ;;
-            dead) endpoint_exists=false ;;
-            *) endpoint_exists=null
-               [ "$endpoint_probe_status" -eq 0 ] && {
-                 endpoint_freshness=unknown
-                 endpoint_reason='Herdr endpoint probe returned unknown state'
-               }
-               ;;
-          esac
+        if fm_backend_target_exists "$backend" "$target" "fm-$id" \
+          "${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}" \
+          "${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}" \
+          "${FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID:-}"; then
+          endpoint_exists=true
+          endpoint_status=alive
         else
-          if endpoint_probe_output=$(fm_backend_target_state "$backend" "$target" "fm-$id" 2>&1); then
-            endpoint_probe_status=0
-            endpoint_state=$endpoint_probe_output
-            endpoint_freshness=fresh
+          endpoint_rc=$?
+          if [ "$endpoint_rc" -eq 2 ]; then
+            endpoint_exists=null
+            endpoint_status=capability-failure
           else
-            endpoint_probe_status=$?
-            endpoint_state=unknown
-            endpoint_freshness=degraded
-            endpoint_reason=${endpoint_probe_output:-"endpoint probe failed (exit $endpoint_probe_status)"}
+            endpoint_exists=false
+            endpoint_status=absent
           fi
-          case "$endpoint_state" in
-            present) endpoint_exists=true ;;
-            absent) endpoint_exists=false ;;
-            *) endpoint_exists=null
-               [ "$endpoint_probe_status" -eq 0 ] && {
-                 endpoint_freshness=unknown
-                 endpoint_reason='endpoint probe returned unknown state'
-               }
-               ;;
-          esac
         fi
       else
         endpoint_reason='no endpoint target recorded'
       fi
       if [ "$kind" = secondmate ] && [ -n "$target" ]; then
-        if [ "$backend" = herdr ]; then
-          if endpoint_probe_output=$(snapshot_herdr_agent_alive "$target" 2>&1); then
-            agent_alive=$endpoint_probe_output
-          else
-            endpoint_probe_status=$?
-            agent_alive=unknown
-            endpoint_freshness=degraded
-            endpoint_reason=${endpoint_probe_output:-"Herdr agent probe failed (exit $endpoint_probe_status)"}
-          fi
+        if agent_alive=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null); then
+          :
         else
-          if endpoint_probe_output=$(fm_backend_agent_alive "$backend" "$target" 2>&1); then
-            agent_alive=$endpoint_probe_output
+          agent_alive_rc=$?
+          if [ "$agent_alive_rc" -eq 2 ]; then
+            agent_alive=capability-failure
+            endpoint_status=capability-failure
+            endpoint_exists=null
           else
-            endpoint_probe_status=$?
             agent_alive=unknown
-            endpoint_freshness=degraded
-            endpoint_reason=${endpoint_probe_output:-"agent probe failed (exit $endpoint_probe_status)"}
           fi
         fi
+        if [ "$endpoint_status" = capability-failure ]; then
+          agent_alive=capability-failure
+        fi
+      fi
+    else
+      endpoint_exists=null
+      if [ "$local_identity_valid" -eq 0 ]; then
+        endpoint_status=refused
+        agent_alive=not_checked
+      else
+        endpoint_status=identity-failure
+        agent_alive=identity-failure
       fi
     fi
 
@@ -1051,10 +1082,7 @@ task_json_lines() {
       --arg pr "$pr" \
       --arg pr_source "$pr_source" \
       --arg agent_alive "$agent_alive" \
-      --arg endpoint_freshness "$endpoint_freshness" \
-      --arg endpoint_reason "$endpoint_reason" \
-      --argjson pr_available "$pr_available" \
-      --arg pr_reason "$pr_reason" \
+      --arg endpoint_status "$endpoint_status" \
       --arg observed_at "$SNAPSHOT_NOW" \
       --arg last_event_raw "$last_event_raw" \
       --arg current_freshness "$current_freshness" \
@@ -1095,7 +1123,8 @@ task_json_lines() {
         secondmate_projects:($projects | if . == "" then [] else split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(. != "")) end),
         current_state:($current_state + {observed_at:$observed_at,freshness:$current_freshness}),
         endpoint:{target:($target | if . == "" then null else . end),exists:$endpoint_exists,agent_alive:$agent_alive,
-          status:(if $endpoint_exists == false then "absent"
+          status:(if $endpoint_status == "capability-failure" then "capability-failure"
+                  elif $endpoint_exists == false then "absent"
                   elif $agent_alive == "alive" or $agent_alive == "dead" then $agent_alive
                   else "unknown" end),
           observed_at:$observed_at,freshness:$endpoint_freshness,

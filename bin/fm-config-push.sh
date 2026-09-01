@@ -66,8 +66,6 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 SECONDMATES_MD="$DATA/secondmates.md"
 
-"$SCRIPT_DIR/fm-guard.sh" || true
-
 # shellcheck source=bin/fm-ff-lib.sh
 . "$SCRIPT_DIR/fm-ff-lib.sh"
 # shellcheck source=bin/fm-backend.sh
@@ -79,6 +77,52 @@ SECONDMATES_MD="$DATA/secondmates.md"
 # shellcheck source=bin/fm-secondmate-nudge-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-nudge-lib.sh"
 
+config_push_validate_primary_backend() {
+  local selected session line
+  if fm_backend_policy_legacy_lane; then
+    selected=
+    if [ -f "$CONFIG/backend" ]; then
+      while IFS= read -r line; do
+        line=$(printf '%s' "$line" | tr -d '[:space:]')
+        if [ -n "$line" ]; then
+          selected=$line
+          break
+        fi
+      done < "$CONFIG/backend"
+    fi
+    unset FM_CONFIG_INHERIT_BACKEND_OVERRIDE
+    if [ -n "$selected" ]; then
+      if [ "$selected" != "$FM_BACKEND_ACTIVE" ]; then
+        fm_backend_policy_legacy_adapter_allowed "$selected" || return 1
+      fi
+      FM_CONFIG_INHERIT_BACKEND_OVERRIDE=$selected
+      export FM_CONFIG_INHERIT_BACKEND_OVERRIDE
+    fi
+    case " $FM_INHERITABLE_CONFIG " in
+      *" backend ") ;;
+      *) FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG% } backend"; export FM_INHERITABLE_CONFIG ;;
+    esac
+    return 0
+  fi
+  selected=$(fm_backend_name) || return 1
+  if [ "$selected" != "$FM_BACKEND_ACTIVE" ] \
+    && ! fm_backend_policy_legacy_adapter_allowed "$selected"; then
+    fm_backend_validate "$selected" "config push primary backend" || return 1
+  fi
+  session=${HERDR_SESSION:-default}
+  fm_backend_source "$selected" "config push primary" "$session" || return 1
+  case " $FM_INHERITABLE_CONFIG " in
+    *" backend ") ;;
+    *) FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG% } backend"; export FM_INHERITABLE_CONFIG ;;
+  esac
+  FM_CONFIG_INHERIT_BACKEND_OVERRIDE=$selected
+  export FM_CONFIG_INHERIT_BACKEND_OVERRIDE
+}
+
+config_push_validate_primary_backend || exit 1
+
+"$SCRIPT_DIR/fm-guard.sh" || true
+
 print_item_report() {
   local report=$1 item status reason
   while IFS=$'\t' read -r item status reason; do
@@ -89,6 +133,61 @@ print_item_report() {
       printf '  %s: %s\n' "$item" "$status"
     fi
   done < "$report"
+}
+
+config_push_validate_remote_record() { # <task-id> <meta-file>; 10 means legacy skip
+  local id=$1 meta=$2 backend
+  backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
+  case "$backend" in
+    absent|tmux|zellij|orca|cmux)
+      return 10
+      ;;
+    ambiguous|'')
+      fm_backend_policy_refuse "remote secondmate $id endpoint record (ambiguous or empty remote_backend)" "$backend" \
+        "Repair the remote endpoint metadata and verify the named Herdr session with 'herdr status --json'."
+      return 11
+      ;;
+    herdr)
+      ;;
+    *)
+      fm_backend_policy_refuse "remote secondmate $id endpoint record (invalid remote_backend)" "$backend" \
+        "Declare remote_backend=herdr, repair the endpoint metadata, and verify the named Herdr session with 'herdr status --json'."
+      return 11
+      ;;
+  esac
+  if ! fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote >/dev/null 2>&1; then
+    fm_backend_policy_refuse "remote secondmate $id endpoint record (invalid Herdr endpoint metadata)" "$backend" \
+      "Repair the endpoint metadata and verify the named Herdr session with 'herdr status --json'."
+    return 11
+  fi
+  return 0
+}
+
+config_push_validate_local_record() { # <task-id> <meta-file>
+  local id=$1 meta=$2 target
+  if fm_backend_policy_legacy_lane; then
+    return 0
+  fi
+  fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null || return 1
+  target=$FM_BACKEND_VALIDATED_TARGET
+  fm_backend_source herdr "config push secondmate $id" "${target%%:*}" || return 1
+}
+
+config_push_remote_preflight() { # <task-id> <remote-host>
+  local id=$1 remote_host=$2 output rc refusal
+  if output=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh route "$id" < /dev/null 2>&1); then
+    return 0
+  else
+    rc=$?
+  fi
+  refusal=$(printf '%s\n' "$output" | sed -n '/^REFUSED: /{p;q;}')
+  if [ -n "$refusal" ]; then
+    printf '%s\n' "$refusal" >&2
+  else
+    printf 'config-push: secondmate %s (%s) blocked: exact remote Herdr capability preflight failed; repair Herdr and verify with herdr status --json\n' \
+      "$id" "$remote_host" >&2
+  fi
+  return "$rc"
 }
 
 records=$(mktemp "${TMPDIR:-/tmp}/fm-config-push-records.XXXXXX" 2>/dev/null) || exit 1
@@ -121,11 +220,43 @@ while IFS='|' read -r id home _window meta; do
   fi
   remote_host=$(fm_meta_get "$meta" remote_host)
   if [ -n "$remote_host" ]; then
+    if config_push_validate_remote_record "$id" "$meta"; then
+      :
+    else
+      validation_rc=$?
+      if [ "$validation_rc" -eq 10 ]; then
+        printf 'secondmate %s (%s:%s): skipped - legacy remote backend record; see docs/configuration.md "Legacy task records"\n' "$id" "$remote_host" "$home"
+      else
+        errors=1
+      fi
+      continue
+    fi
+    if ! config_push_remote_preflight "$id" "$remote_host"; then
+      errors=1
+      continue
+    fi
     printf 'secondmate %s (%s:%s):\n' "$id" "$remote_host" "$home"
     remote_lock=$(fm_remote_inherit_transaction_lock_path "$STATE" "$id" 2>/dev/null || true)
     if [ -z "$remote_lock" ] || ! fm_lock_acquire_wait "$remote_lock"; then
       echo "  config-reread: transaction lock failed"
       errors=1
+      continue
+    fi
+    if config_push_validate_remote_record "$id" "$meta"; then
+      :
+    else
+      validation_rc=$?
+      if [ "$validation_rc" -eq 10 ]; then
+        printf '  config-reread: skipped - remote endpoint became a legacy record\n'
+      else
+        errors=1
+      fi
+      fm_lock_release "$remote_lock" || true
+      continue
+    fi
+    if ! config_push_remote_preflight "$id" "$remote_host"; then
+      errors=1
+      fm_lock_release "$remote_lock" || true
       continue
     fi
     remote_generation=$(fm_remote_inherit_generation_next "$STATE" "$id" 2>/dev/null || true)
@@ -183,6 +314,11 @@ while IFS='|' read -r id home _window meta; do
   esac
   seen_homes="$seen_homes $home_real"
 
+  if ! config_push_validate_local_record "$id" "$meta"; then
+    errors=1
+    continue
+  fi
+
   printf 'secondmate %s (%s):\n' "$id" "$home_real"
   dirty=$(dirty_status "$home_real" yes || true)
   if [ -n "$dirty" ]; then
@@ -204,6 +340,11 @@ while IFS='|' read -r id home _window meta; do
     errors=1
     continue
   }
+  if ! config_push_validate_local_record "$id" "$meta"; then
+    errors=1
+    fm_lock_release "$home_lock" || true
+    continue
+  fi
   if fm_config_reread_retry_queue_is_full "$FM_HOME" "$id"; then
     fm_config_reread_retry_pending "$id" "$home_real" || true
     if fm_config_reread_retry_queue_is_full "$FM_HOME" "$id"; then

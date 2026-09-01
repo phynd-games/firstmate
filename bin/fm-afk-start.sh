@@ -17,14 +17,14 @@
 # enables nounset and errexit; callers that need different shell options must
 # restore them explicitly.
 #
-# This is the COMMON daemon entry for every backend. HOW it becomes a tracked
-# background process differs by harness/backend and is owned elsewhere:
+# This is the common daemon entry for the Herdr runtime. How it becomes a
+# tracked background process differs by harness and is owned elsewhere:
 #   - Harnesses with a native in-pane tracked-background tool (e.g. claude, grok)
 #     run this directly via that tool, so the daemon inherits the captain pane's
 #     env and auto-discovers it.
-#   - Harnesses with NO native background mechanism (e.g. pi) run this THROUGH
-#     bin/fm-afk-launch.sh, which creates a non-visible tracked terminal per
-#     backend (herdr tab/workspace, tmux detached session) and passes the
+#   - Harnesses with NO native background mechanism run this THROUGH
+#     bin/fm-afk-launch.sh, which creates a non-visible tracked Herdr terminal
+#     and passes the
 #     captain pane in as FM_SUPERVISOR_TARGET so injection targets it, not the
 #     daemon's own new pane.
 # Do not wrap this in `nohup ... &`: Codex/herdr can reap fire-and-forget shell
@@ -42,6 +42,20 @@ FM_AFK_DAEMON="${FM_AFK_DAEMON_OVERRIDE:-$FM_AFK_START_DIR/fm-supervise-daemon.s
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$FM_AFK_START_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-backend.sh
+. "$FM_AFK_START_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-supervisor-target-lib.sh
+. "$FM_AFK_START_DIR/fm-supervisor-target-lib.sh"
+
+fm_afk_start_preflight() {
+  fm_backend_policy_legacy_lane && return 0
+  local backend target
+  backend=$(discover_supervisor_backend) || return 1
+  fm_backend_validate "$backend" || return 1
+  target=$(discover_supervisor_target) || return 1
+  fm_backend_target_exists "$backend" "$target" "" \
+    "${HERDR_WORKSPACE_ID:-}" "${HERDR_TAB_ID:-}" || return $?
+}
 
 fm_afk_start_usage() {
   sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -141,13 +155,19 @@ fm_afk_flag_write() {  # <state-dir>
 }
 
 fm_afk_start_main() {
-  local claim_acquired=0
+  local preflight_rc
   case "${1:-}" in
     '' ) ;;
     -h|--help) fm_afk_start_usage; return 0 ;;
     * ) echo "usage: $(basename "${BASH_SOURCE[1]:-fm-afk-start.sh}")" >&2; return 2 ;;
   esac
 
+  if fm_afk_start_preflight; then
+    :
+  else
+    preflight_rc=$?
+    return "$preflight_rc"
+  fi
   mkdir -p "$FM_AFK_STATE"
   if [ "${FM_SUPERVISION_CLAIM_HELD:-0}" = 1 ]; then
     if ! fm_lock_owned_by_current "$FM_SUPERVISION_CLAIM"; then

@@ -7,7 +7,8 @@
 #          Silent = all good.
 #          Lines: "MISSING: <tool> (install: <command>)",
 #                 "MISSING_MANUAL: <tool> (instructions: <url>)", "NEEDS_GH_AUTH",
-#                 "BACKEND_INVALID: <name> (known: <names>)",
+#                 "BACKEND_INVALID: <name>|none - <policy diagnostic naming Herdr and the remediation>"
+#                 (or the legacy-lane form "BACKEND_INVALID: <name> (known: <names>)"),
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
@@ -583,7 +584,48 @@ secondmate_sync() {
   # "move on to the next secondmate".
   secondmate_sync_remote_one() {  # <id> <home> <remote-host>
     local id=$1 _home=$2 remote_host=$3
-    local sync_out inherit_out nudge_needed remote_marker remote_pending converged out remote_lock remote_generation
+    local sync_out inherit_out nudge_needed remote_marker remote_pending converged out remote_lock remote_generation remote_backend remote_rc
+    remote_backend=$(fm_backend_meta_recorded_backend "$STATE/$id.meta" remote_backend 2>/dev/null || true)
+    case "$remote_backend" in
+      absent|tmux|zellij|orca|cmux)
+        echo "SECONDMATE_SYNC: secondmate $id: skipped: legacy remote backend record (backend=${remote_backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
+        return 0
+        ;;
+      ambiguous|'')
+        echo "SECONDMATE_SYNC: secondmate $id: blocked: ambiguous or empty remote backend identity; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\"" >&2
+        return 0
+        ;;
+      herdr) ;;
+      *)
+        echo "SECONDMATE_SYNC: secondmate $id: blocked: invalid remote backend identity '${remote_backend}'; declare Herdr and verify with herdr status --json" >&2
+        return 0
+        ;;
+    esac
+    if ! fm_backend_validate_remote_task_endpoint "$STATE/$id.meta" "$id" fm-remote >/dev/null 2>&1; then
+      echo "SECONDMATE_SYNC: secondmate $id: blocked: remote Herdr metadata is invalid; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\"" >&2
+      return 0
+    fi
+    if out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" --typed < /dev/null 2>&1); then
+      case "$(printf '%s\n' "$out" | tail -1)" in
+        missing)
+          echo "SECONDMATE_SYNC: secondmate $id: blocked: remote endpoint metadata is missing on $remote_host; repair or explicitly migrate the record" >&2
+          return 0
+          ;;
+        capability-failure|unreadable|unverified|ambiguous)
+          echo "SECONDMATE_SYNC: secondmate $id: blocked: Herdr capability could not be confirmed on $remote_host; repair Herdr and verify with herdr status --json" >&2
+          return 0
+          ;;
+      esac
+    else
+      remote_rc=$?
+      case "$remote_rc" in
+        2) echo "SECONDMATE_SYNC: secondmate $id: blocked: Herdr capability is unavailable on $remote_host; $(first_line "$out")" >&2 ;;
+        3) echo "SECONDMATE_SYNC: secondmate $id: blocked: remote endpoint metadata was refused as read-only on $remote_host; $(first_line "$out")" >&2 ;;
+        255) echo "SECONDMATE_SYNC: secondmate $id: skipped: remote host unavailable on $remote_host; route preserved" ;;
+        *) echo "SECONDMATE_SYNC: secondmate $id: blocked: remote endpoint preflight failed on $remote_host: $(first_line "$out")" >&2 ;;
+      esac
+      return 0
+    fi
     remote_lock=$(fm_remote_inherit_transaction_lock_path "$STATE" "$id" 2>/dev/null || true)
     if [ -z "$remote_lock" ] || ! fm_lock_acquire_wait "$remote_lock"; then
       echo "NUDGE_SECONDMATES: secondmate $id: send failed: cannot lock remote inheritance transaction"
@@ -665,6 +707,74 @@ secondmate_sync() {
   return 0
 }
 
+bootstrap_secondmate_runtime_preflight() {
+  [ -d "$STATE" ] || return 0
+  local meta id remote_host backend target output
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] || continue
+    [ "$(fm_meta_get "$meta" kind)" = secondmate ] || continue
+    id=$(basename "$meta" .meta)
+    remote_host=$(fm_meta_get "$meta" remote_host)
+    if [ -n "$remote_host" ]; then
+      backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
+      case "$backend" in
+        absent|tmux|zellij|orca|cmux)
+          echo "SECONDMATE_SYNC: secondmate $id: skipped: legacy remote backend record (backend=${backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
+          continue
+          ;;
+        ambiguous|'')
+          fm_backend_refuse_remote_task_endpoint "$meta" "$id"
+          return 1
+          ;;
+        herdr) ;;
+        *)
+          fm_backend_refuse_remote_task_endpoint "$meta" "$id"
+          return 1
+          ;;
+      esac
+      if ! fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote; then
+        fm_backend_refuse_remote_task_endpoint "$meta" "$id"
+        return 1
+      fi
+      if ! output=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh route "$id" < /dev/null 2>&1); then
+        [ -z "$output" ] || printf '%s\n' "$output" >&2
+        return 1
+      fi
+      continue
+    fi
+    backend=$(fm_backend_meta_recorded_backend "$meta" 2>/dev/null || true)
+    if fm_backend_policy_legacy_lane; then
+      [ "$backend" = absent ] && backend=tmux
+    else
+      case "$backend" in
+        absent|tmux|zellij|orca|cmux)
+          echo "SECONDMATE_SYNC: secondmate $id: skipped: legacy backend record (backend=${backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
+          continue
+          ;;
+        ambiguous|'')
+          fm_backend_policy_refuse "secondmate $id endpoint record (ambiguous or empty backend identity)" "$backend" \
+            "Repair or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+          return 1
+          ;;
+        herdr) ;;
+        *)
+          fm_backend_policy_refuse "secondmate $id endpoint record (backend=$backend)" "$backend" \
+            "Declare Herdr or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+          return 1
+          ;;
+      esac
+    fi
+    if fm_backend_policy_legacy_lane; then
+      target=$(fm_backend_target_of_meta "$meta")
+      [ -n "$target" ] || target=$(fm_meta_get "$meta" window)
+    else
+      fm_backend_validate_task_endpoint "$meta" "$id" || return 1
+      target=$FM_BACKEND_VALIDATED_TARGET
+    fi
+    fm_backend_source "$backend" "bootstrap secondmate $id" "${target%%:*}" || return 1
+  done
+}
+
 # A relaunch replaces the endpoint record a digest may already have printed. On
 # the local pass that digest has not been composed yet, so the fact stays behind
 # FM_BOOTSTRAP_VERBOSE_FACTS as before; on the deferred network pass the digest
@@ -726,11 +836,29 @@ secondmate_liveness_one_timed() {  # <meta> <id> <label>
 secondmate_liveness_one() {  # <meta> <id>
   local meta=$1 id=$2
   local window harness backend target agent_state out cause remote_host remote_rc readiness_reason route_out remote_backend
-  window=$(fm_meta_get "$meta" window)
-  [ -n "$window" ] || return 0
   harness=$(fm_meta_get "$meta" harness)
   remote_host=$(fm_meta_get "$meta" remote_host)
   if [ -n "$remote_host" ]; then
+    remote_backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
+    case "$remote_backend" in
+      absent|tmux|zellij|orca|cmux)
+        echo "SECONDMATE_LIVENESS: secondmate $id: skipped: legacy remote backend record (backend=${remote_backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
+        return 0
+        ;;
+      ambiguous|'')
+        echo "SECONDMATE_LIVENESS: secondmate $id: blocked: ambiguous or empty remote backend identity; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\"" >&2
+        return 0
+        ;;
+      herdr) ;;
+      *)
+        echo "SECONDMATE_LIVENESS: secondmate $id: blocked: invalid remote backend identity '${remote_backend}'; declare Herdr and verify with herdr status --json" >&2
+        return 0
+        ;;
+    esac
+    if ! fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote >/dev/null 2>&1; then
+      echo "SECONDMATE_LIVENESS: secondmate $id: blocked: remote Herdr metadata is invalid; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\"" >&2
+      return 0
+    fi
     remote_rc=0
     fm_remote_readiness_ensure "$SCRIPT_DIR" "$id" || remote_rc=$?
     if [ "$remote_rc" -eq 255 ]; then
@@ -745,7 +873,7 @@ secondmate_liveness_one() {  # <meta> <id>
       echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote readiness failed on $remote_host: $readiness_reason"
       return 0
     fi
-    if out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null 2>/dev/null); then
+    if out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" --typed < /dev/null); then
       remote_rc=0
     else
       remote_rc=$?
@@ -755,7 +883,11 @@ secondmate_liveness_one() {  # <meta> <id>
       return 0
     fi
     if [ "$remote_rc" -ne 0 ]; then
-      echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote endpoint probe unreadable on $remote_host"
+      case "$remote_rc" in
+        2) echo "SECONDMATE_LIVENESS: secondmate $id: skipped: Herdr capability is unavailable on $remote_host; repair Herdr and verify with herdr status --json" ;;
+        3) echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote endpoint metadata was refused as read-only on $remote_host; migrate or retire it explicitly" ;;
+        *) echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote endpoint probe unreadable on $remote_host" ;;
+      esac
       return 0
     fi
     agent_state=$(printf '%s\n' "$out" | tail -1)
@@ -793,14 +925,45 @@ secondmate_liveness_one() {  # <meta> <id>
       ambiguous|unreadable|unverified)
         echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote endpoint state is $agent_state on $remote_host"
         ;;
+      capability-failure)
+        echo "SECONDMATE_LIVENESS: secondmate $id: skipped: Herdr capability is unavailable on $remote_host; repair Herdr and verify with herdr status --json"
+        ;;
+      legacy-record|endpoint-refused)
+        echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote endpoint metadata was refused as read-only on $remote_host; migrate or retire it explicitly"
+        ;;
       *) echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote endpoint returned an invalid state" ;;
     esac
     return 0
   fi
-  backend=$(fm_backend_of_meta "$meta")
+  backend=$(fm_backend_meta_recorded_backend "$meta" 2>/dev/null || true)
+  if fm_backend_policy_legacy_lane; then
+    [ "$backend" = absent ] && backend=tmux
+  else
+    case "$backend" in
+      herdr) ;;
+      absent|tmux|zellij|orca|cmux)
+        echo "SECONDMATE_LIVENESS: secondmate $id: skipped: legacy backend record (backend=${backend:-absent}); Herdr is the sole supported runtime backend - see docs/configuration.md \"Legacy task records\""
+        return 0
+        ;;
+      ambiguous|'')
+        echo "SECONDMATE_LIVENESS: secondmate $id: blocked: backend identity is ambiguous or missing; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\""
+        return 0
+        ;;
+      *)
+        echo "SECONDMATE_LIVENESS: secondmate $id: blocked: backend=${backend} is not herdr; declare Herdr and verify with herdr status --json"
+        return 0
+        ;;
+    esac
+  fi
   target=$(fm_backend_target_of_meta "$meta")
   [ -n "$target" ] || target="$window"
-  agent_state=$(fm_backend_agent_state "$backend" "$target" 2>/dev/null) || agent_state=unreadable
+  agent_state=$(fm_backend_agent_state "$backend" "$target")
+  local agent_state_rc=$?
+  if [ "$agent_state_rc" -eq 2 ]; then
+    echo "SECONDMATE_LIVENESS: secondmate $id: skipped: Herdr capability is unavailable; respawn refused until Herdr passes its native capability check" >&2
+    return 0
+  fi
+  [ "$agent_state_rc" -eq 0 ] || agent_state=unreadable
   case "$harness" in
     claude|codex|opencode|pi|pi-signed|grok|kimi) ;;
     *)
@@ -899,13 +1062,45 @@ missing_tool_diagnostic() {
 # never told tmux is missing, and only orca drops treehouse. A backend value with
 # no verified dependency set is reported before the universal checks continue.
 COMMON_TOOLS="node git gh no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi"
-BACKEND=$(fm_backend_name)
-BACKEND_VALID=1
-if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
-  BACKEND_VALID=0
-  BACKEND_TOOLS=""
+
+materialize_primary_backend() {
+  local backend_file="$CONFIG/backend"
+  if [ -e "$backend_file" ] || [ -L "$backend_file" ]; then
+    return 0
+  fi
+  mkdir -p "$CONFIG"
+  printf 'herdr\n' > "$backend_file"
+  chmod 600 "$backend_file"
+}
+
+# Only the locked mutable bootstrap may create the missing declaration. This
+# happens before selection so the same invocation resolves and proves Herdr.
+if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase \
+  && [ "${FM_BOOTSTRAP_LOCKED:-0}" = 1 ]; then
+  materialize_primary_backend
 fi
+
+# fm_backend_name refuses anything but a declared herdr (AGENTS.md hard rule 6);
+# its one-line diagnostic is captured here and surfaced as the BACKEND_INVALID
+# line so the digest carries the remediation instead of a bare name.
+BACKEND_DIAGNOSTIC=""
+BACKEND_VALID=1
+BACKEND_DIAG_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-bootstrap-backend.XXXXXX" 2>/dev/null) || BACKEND_DIAG_FILE=/dev/null
+if BACKEND=$(fm_backend_name 2>"$BACKEND_DIAG_FILE"); then
+  # A successful resolution may still have printed a notice (the regression
+  # lane's auto-detect notice); forward it unchanged so the digest keeps it.
+  [ -s "$BACKEND_DIAG_FILE" ] && cat "$BACKEND_DIAG_FILE" >&2
+else
+  BACKEND_VALID=0
+  BACKEND_DIAGNOSTIC=$(head -n 1 "$BACKEND_DIAG_FILE" 2>/dev/null || true)
+fi
+[ "$BACKEND_DIAG_FILE" = /dev/null ] || rm -f "$BACKEND_DIAG_FILE"
+if [ "$BACKEND_VALID" -eq 1 ] && ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
+  BACKEND_VALID=0
+fi
+[ "$BACKEND_VALID" -eq 1 ] || BACKEND_TOOLS=""
 TOOLS="$BACKEND_TOOLS $COMMON_TOOLS"
+SECONDMATE_RUNTIME_VALID=0
 NO_MISTAKES_MIN=1.46.0
 # AXI-FAMILY FLOOR POLICY. Every axi-family floor is the CURRENT LATEST published
 # version of that tool, captain-bumped periodically to keep the whole fleet on the
@@ -963,6 +1158,8 @@ x_mode_write_if_changed() {
       return 0
     fi
   fi
+  window=$(fm_meta_get "$meta" window)
+  [ -n "$window" ] || return 0
   tmp=$(umask 077; mktemp "$parent/.fm-x-mode.XXXXXX" 2>/dev/null) || return 1
   if ! printf '%s\n' "$content" > "$tmp" \
     || ! chmod "$mode" "$tmp" \
@@ -1469,7 +1666,11 @@ fi
 # leaves this machine, so it stays on the session-start critical path.
 detect_local_tools() {
   if [ "$BACKEND_VALID" -eq 0 ]; then
-    echo "BACKEND_INVALID: $BACKEND (known: $FM_BACKEND_KNOWN)"
+    if [ -n "$BACKEND_DIAGNOSTIC" ]; then
+      echo "BACKEND_INVALID: ${BACKEND:-none} - $BACKEND_DIAGNOSTIC"
+    else
+      echo "BACKEND_INVALID: $BACKEND (known: $FM_BACKEND_KNOWN)"
+    fi
   fi
   for t in $BACKEND_TOOLS; do
     fm_backend_required_tool_available "$BACKEND" "$t" \
@@ -1608,12 +1809,16 @@ fi
 local_phase && detect_local_config
 
 if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
+  if [ "$BACKEND_VALID" -eq 1 ] && network_phase \
+    && bootstrap_secondmate_runtime_preflight; then
+    SECONDMATE_RUNTIME_VALID=1
+  fi
   # secondmate_sync consumes SECONDMATE_RESPAWNED_IDS from the liveness sweep, so
   # those two always run together in the same phase. Clone refresh does not
   # depend on them, so it starts in the background and overlaps their wall clock.
   fleet_sync_pid=
   fleet_sync_out=
-  if network_phase && network_sweep_authorized 'project clone refresh'; then
+  if [ "$BACKEND_VALID" -eq 1 ] && network_phase && network_sweep_authorized 'project clone refresh'; then
     fleet_sync_out=$(mktemp "${TMPDIR:-/tmp}/fm-bootstrap-fleet.XXXXXX") || fleet_sync_out=
     if [ -n "$fleet_sync_out" ]; then
       (
@@ -1628,7 +1833,7 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
       fm_timing_record phase fleet-sync "$__fm_timing_stamp"
     fi
   fi
-  if network_phase; then
+  if [ "$BACKEND_VALID" -eq 1 ] && [ "$SECONDMATE_RUNTIME_VALID" -eq 1 ] && network_phase; then
     if network_sweep_authorized 'dead-secondmate relaunch'; then
       __fm_timing_stamp=$(fm_timing_now_ms)
       secondmate_liveness_sweep

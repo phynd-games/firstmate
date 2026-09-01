@@ -762,6 +762,29 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+test_herdr_worker_interaction_contract_renders_resolved_paths() {
+  local ship scout brief
+  FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" brief-worker-ship alpha --mode no-mistakes >/dev/null 2>&1 \
+    || fail "fm-brief.sh ship scaffold exited non-zero"
+  FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" brief-worker-scout alpha --scout >/dev/null 2>&1 \
+    || fail "fm-brief.sh scout scaffold exited non-zero"
+  ship="$BRIEF_HOME/data/brief-worker-ship/brief.md"
+  scout="$BRIEF_HOME/data/brief-worker-scout/brief.md"
+  for brief in "$ship" "$scout"; do
+    assert_grep 'backend=herdr with herdr_session, herdr_workspace_id, herdr_tab_id, and herdr_pane_id' "$brief" \
+      "generated worker contract omitted the exact recorded Herdr target"
+    assert_grep "'$ROOT/bin/fm-peek.sh' <id>" "$brief" \
+      "generated worker contract omitted the resolved peek path"
+    assert_grep "FM_HOME='$BRIEF_HOME' '$ROOT/bin/fm-send.sh' <id> <message>" "$brief" \
+      "generated worker contract omitted the resolved durable send path"
+    assert_grep "'$ROOT/bin/fm-control.sh' <id> interrupt|exit|relaunch" "$brief" \
+      "generated worker contract omitted the resolved lifecycle path"
+    assert_grep 'Never use tmux, treehouse status as endpoint authority, send-keys, ambient targets, detached processes, or fallback backends.' "$brief" \
+      "generated worker contract omitted forbidden transport guidance"
+  done
+  pass "fm-brief: ship and scout outputs carry the resolved Herdr worker contract"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
@@ -783,3 +806,4 @@ test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
+test_herdr_worker_interaction_contract_renders_resolved_paths

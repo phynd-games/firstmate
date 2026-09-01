@@ -1,6 +1,6 @@
 ---
 name: firstmate-orca
-description: Agent-only operator checklist for Firstmate's Orca runtime backend. Use when switching to Orca, spawning or supervising Orca-backed work, smoke-testing Orca backend behavior, debugging Orca task state, or reconciling Orca-backed task metadata.
+description: Agent-only reference for Firstmate's retained legacy Orca runtime adapter. Use only when reconciling a pre-invariant Orca-backed task record; Herdr is the sole supported runtime backend, so requests to switch to, spawn on, or smoke-test Orca are refused rather than planned.
 user-invocable: false
 metadata:
   internal: true
@@ -8,8 +8,10 @@ metadata:
 
 # firstmate-orca
 
-Use this as the operator checklist for Firstmate's experimental Orca runtime backend.
-It does not replace `AGENTS.md`, `docs/orca-backend.md`, or `harness-adapters`.
+Orca is a retained legacy adapter, not a selectable backend: Herdr is Firstmate's sole supported runtime backend (`AGENTS.md` hard rule 6), so `--backend orca`, `FM_BACKEND=orca`, and `config/backend` naming `orca` are refused by name, and a request to switch to, spawn on, or smoke-test Orca is answered with that refusal and the Herdr remediation rather than planned.
+Load this skill only to reconcile a pre-invariant Orca-backed task record, which the runtime treats as read-only under `docs/configuration.md` "Legacy task records".
+The remainder of this page is historical regression-lane material only and is not operational guidance.
+The historical checklist below describes the adapter as it behaved when it was selectable and does not replace `AGENTS.md`, `docs/orca-backend.md`, or `harness-adapters`.
 
 Orca is a runtime backend, not an agent harness.
 The runtime backend owns the task endpoint and, for Orca, the task worktree.
@@ -17,11 +19,11 @@ The harness is the agent process launched inside that endpoint, such as `claude`
 Load `harness-adapters` for harness-specific launch, interrupt, resume, trust-dialog, and skill-invocation facts.
 
 Implementation details, metadata fields, teardown guarantees, and limitations live in `docs/orca-backend.md`.
-`docs/verification/runtime-backends.md` "Orca" owns active smoke evidence.
+`docs/verification/runtime-backends.md` "Orca" records retired-adapter evidence only.
 Prefer the `bin/fm-*` helpers over raw `orca` commands.
 Use raw `orca` only when the helper surface cannot answer the inspection question, and keep the recorded firstmate metadata as the task identity.
 
-## Preflight
+## Historical regression-lane preflight
 
 Work from the current firstmate home or repo root.
 If `FM_HOME` is set, remember that operational state lives under `$FM_HOME` while the helper scripts still run from this repo's `bin/`.
@@ -34,7 +36,7 @@ Before switching or spawning against Orca:
 - Treat a backend switch as affecting future spawns only; existing tasks keep their recorded backend.
 - Reconcile watcher wakes before unrelated work, especially if Orca tasks are already in flight.
 
-## Spawn
+## Historical regression-lane spawn
 
 Use `bin/fm-spawn.sh` so firstmate creates the brief, worktree, terminal, metadata, status file, and watcher surface together.
 Pass `--backend orca` for a one-off Orca task, or rely on the already-selected Orca backend when that selection is intentional.
@@ -49,7 +51,7 @@ After spawn, check the task with firstmate helpers:
 Do not manually create the Orca worktree or terminal for a normal firstmate task.
 Do not manually patch metadata to make an externally-created Orca terminal look like a firstmate task.
 
-## Supervision
+## Historical regression-lane supervision
 
 Use `bin/fm-peek.sh`, `bin/fm-send.sh`, `bin/fm-crew-state.sh`, and `bin/fm-teardown.sh` for routine operation.
 For steer messages, use `bin/fm-send.sh <id> '...'`; the stable `fm-<id>` alias also works, and ordinary local text steers may contain newlines because they ride the durable inbox.
@@ -63,7 +65,7 @@ If an ordinary steer fails to enqueue, or a typed-plane `fm-send` fails to submi
 Read the reported failure and peek first, then decide whether the record exists or the target is busy, waiting on a prompt, stuck behind a popup, or genuinely wedged.
 For harness-specific interrupts or exits, load `harness-adapters`.
 
-## Recovery
+## Historical regression-lane recovery
 
 For a messy Orca-backed task:
 
@@ -78,7 +80,7 @@ Teardown remains governed by the normal firstmate landing rules.
 Scout work can be torn down after the report exists and the `captain-hold-lifecycle` completion gate passes.
 Ship work can be torn down only after the work is landed by its project mode.
 
-## Smoke Test
+## Historical regression-lane smoke test
 
 Keep Orca smoke tests focused on lifecycle plumbing:
 

@@ -64,8 +64,8 @@ lab() { env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESS
 production_process_proof() {
   FM_HOME="$HOME_DIR" FM_BACKEND=herdr HERDR_SESSION="$HERDR_LAB_SESSION" \
     FM_HERDR_SESSION_CLEANUP_SOURCE_ONLY=1 PATH="$FAKEBIN:$HERDR_ORIGINAL_PATH" \
-    bash -c '. "$1"; fm_backend_herdr_pane_idle_shell_pid "$2" "$3" >/dev/null' \
-      _ "$ROOT/bin/fm-herdr-session-cleanup.sh" "$HERDR_LAB_SESSION" "$PANE"
+    bash -c '. "$1"; fm_backend_herdr_pane_idle_shell_pid "$2" "$3" "$4" "$5" >/dev/null' \
+      _ "$ROOT/bin/fm-herdr-session-cleanup.sh" "$HERDR_LAB_SESSION" "$PANE" "$WS" "$TAB"
 }
 focus_snapshot() {
   local list workspace tab tabs
@@ -101,6 +101,7 @@ BEFORE_FOCUS=$(focus_snapshot) || fail 'could not capture exact pre-cleanup focu
 WORKSPACES=$(lab workspace list) || fail 'could not inspect restored workspaces'
 TABS=$(lab tab list --workspace "$WS") || fail 'could not inspect restored tabs'
 PANES=$(lab pane list --workspace "$WS") || fail 'could not inspect restored panes'
+TAB=$(printf '%s' "$TABS" | jq -er '.result.tabs | select(length == 1) | .[0].tab_id') || fail 'could not identify restored tab'
 [ "$(printf '%s' "$WORKSPACES" | jq --arg title "$TITLE" '[.result.workspaces[] | select(.label == $title)] | length')" = 1 ] \
   || fail 'restored projected title is not unique'
 [ "$(printf '%s' "$TABS" | jq '.result.tabs | length')" = 1 ] || fail 'restored child is not one tab'

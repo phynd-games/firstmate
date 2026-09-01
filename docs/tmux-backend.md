@@ -1,16 +1,18 @@
-# tmux runtime backend
+# tmux runtime backend (retained legacy adapter)
 
-tmux is Firstmate's verified reference runtime backend and the fully supported baseline for secondmate homes.
-[`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns shared backend selection and metadata semantics.
+**Retired from the active runtime.**
+Herdr is Firstmate's sole supported runtime backend (`AGENTS.md` hard rule 6); tmux is never selected, detected, or defaulted to, and `config/backend`, `FM_BACKEND`, or `--backend` naming `tmux` is refused by name with the Herdr remediation.
+The adapter file `bin/backends/tmux.sh` and the tmux primitives in `bin/fm-tmux-lib.sh` stay on disk only as historical, non-operational reference; [`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns the current selection contract and the read-only handling of pre-invariant tmux task records, and [`architecture.md`](architecture.md#runtime-session-backends) owns the removal plan.
+The rest of this page is historical regression-lane material only and is not an instruction for active Firstmate operation.
 
-## Setup
+## Historical regression-lane material (non-operational)
+
+> Everything below is retained historical regression-lane reference only; do not execute it for active Firstmate work. Herdr is the sole supported runtime.
 
 Install tmux with `brew install tmux` or your platform package manager.
 The universal harness and toolchain requirements are in [`configuration.md`](configuration.md#toolchain).
 
-tmux is the hard default when no explicit setting or runtime auto-detection selects another backend.
-Select it explicitly with local `config/backend` containing `tmux`, with `FM_BACKEND=tmux` for one launch, or by asking Firstmate to use tmux.
-An explicit selection is also the opt-out from Herdr or cmux runtime auto-detection.
+tmux was the default before the Herdr-only invariant; it is no longer selectable in the active runtime.
 
 No provisioning is required before the first task.
 

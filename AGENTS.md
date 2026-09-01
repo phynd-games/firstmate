@@ -42,6 +42,10 @@ Hard rules, in priority order:
    Treat direct captain intervention in a crewmate window as authoritative and reconcile it at the next supervision review.
 5. **Report outcomes faithfully.**
    If work failed, say so plainly with the evidence.
+6. **Herdr is the sole runtime backend.**
+   Every session, secondmate, crewmate, scout, task endpoint, supervision surface, send/read/state/control/recovery path, and lab operation runs on Herdr, proven by the Herdr adapter's own native identity and capability checks, never by a label or an ambient marker.
+   A missing, below-floor, unauthenticated, ambiguous, or unhealthy Herdr is a blocker to surface, never a reason to fall back, auto-detect, default, or retry on tmux, zellij, orca, cmux, or any future backend, and firstmate never uses tmux for any operation.
+   `bin/fm-backend-policy-lib.sh` owns this invariant and every boundary enforces it; `docs/configuration.md` "Runtime backend" owns the operator contract, including the read-only handling of pre-invariant task records, and this rule takes precedence over any older compatibility prose that still describes tmux as a default or a fallback.
 
 You may maintain this repo's private operational state directly.
 Shared tracked material is `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.tasks.toml`, `.github/workflows/`, `bin/`, `.agents/skills/`, public `skills/`, and the checked-in Phynd defaults under `config/`.
@@ -54,6 +58,7 @@ Never add an agent name as a commit co-author.
 
 `docs/configuration.md` is the single owner of the top-level operational-home layout and configuration schemas; each producing script's header and help own exact child fields and mutation mechanics.
 `FM_HOME` selects an instance's private `data/`, `state/`, `config/`, and `projects/`, while scripts continue to come from their tracked code root.
+In the locked mutable primary bootstrap path, a missing `config/backend` is materialized exactly as `herdr\n`; existing files are never overwritten, and detect-only or unlocked paths do not materialize it.
 Each secondmate has a persistent isolated `FM_HOME`, including its own state, backlog, projects, and session lock.
 `bin/fm-send.sh` fails closed unless `FM_HOME` is explicit, so a steer cannot silently resolve against another home.
 
@@ -75,7 +80,7 @@ config/crew-harness  crewmate harness override; LOCAL, gitignored; absent or "de
 config/crew-dispatch.json  tracked Phynd crewmate dispatch profiles; opinionated but human-editable natural-language rules that choose a per-task harness/model/effort profile (section 4). Inherited by secondmate homes
 config/secondmate-harness  harness the PRIMARY uses to launch SECONDMATE agents, optionally followed by a model and effort token on the same line ("<harness> [<model>] [<effort>]"; section 4); LOCAL, gitignored; absent or "default" harness falls back to config/crew-harness then firstmate's own. The primary's own setting; NOT inherited into secondmate homes (secondmates do not spawn secondmates)
 config/backlog-backend  backlog backend override; LOCAL, gitignored; absent or "tasks-axi" = default tasks-axi backend, "manual" = force routine backlog updates to hand-editing; inherited by secondmate homes (section 10)
-config/backend  tracked Phynd runtime session-provider backend default for new tasks; Phynd setup writes `herdr`; absent = falls through to runtime auto-detection (the runtime firstmate itself is executing inside), then tmux; tmux is the verified reference backend (docs/tmux-backend.md), while herdr, zellij, orca, and cmux are experimental spawn backends (docs/herdr-backend.md, docs/zellij-backend.md, docs/orca-backend.md, docs/cmux-backend.md) - herdr and cmux can also be selected by runtime auto-detection, zellij and orca never are (always explicit), and codex-app is not accepted; see docs/codex-app-backend.md; inherited by secondmate homes under the primary-authoritative contract in secondmate-provisioning
+config/backend  tracked Phynd runtime session-provider backend declaration; Phynd setup writes `herdr`, the only accepted value (hard rule 6); absent, empty, or any other value refuses every spawn and the session-start bootstrap by name with the Herdr remediation, and nothing is ever auto-detected from runtime markers (docs/configuration.md "Runtime backend"; docs/herdr-backend.md); tmux, zellij, orca, and cmux are retained legacy adapters unreachable for the active runtime, and codex-app is not accepted (docs/codex-app-backend.md); inherited by secondmate homes under the primary-authoritative contract in secondmate-provisioning
 config/calm     Pi Calm presentation preference; LOCAL, gitignored, and not inherited; see docs/configuration.md "Pi Calm preference"
 config/supervision-branch-model config/supervision-branch-effort  Pi supervision-branch model and reasoning-effort pins written by /supervision-model; LOCAL, gitignored, independently settable, and not inherited; see docs/configuration.md "Pi supervision branch model and effort"
 config/startup-memory-budget     primary-authoritative per-home startup-memory budget; LOCAL, gitignored, materialized as 7,500 estimated tokens by locked primary bootstrap and inherited into secondmate homes; see docs/configuration.md "Startup memory budget"
@@ -83,8 +88,7 @@ config/stow-pass-horizon  optional presence flag opting this home in to /stow's 
 config/herdr-presentation-spaces  tracked Phynd setting for Herdr's disposable single-task visual projection; Phynd setup writes `on`; inherited by secondmate homes; see docs/herdr-backend.md "Presentation spaces"
 config/herdr-supervisor  optional selector for hosting this home's watcher continuity in a Herdr-tracked pane when the primary harness never loaded its own owner; LOCAL, gitignored; absent or `auto` covers a Pi primary whose extension is provably not loaded, `on` covers any harness, `off` disables it; inherited by secondmate homes; see docs/herdr-supervisor.md
 config/trace-context  optional presence flag enabling default-off native W3C trace-context propagation to spawned agents; LOCAL, gitignored; inherited by secondmate homes; see docs/configuration.md "Trace context propagation" and docs/trace-context.md
-config/turnend-churn-absorb  optional presence flag opting this home into the default-off absorb of bare turn-end wakes on pane churn; LOCAL, gitignored, and not inherited; see docs/configuration.md "Turn-end pane-churn absorb"
-config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored; read fresh on every cmux CLI call and passed through without ever overriding an operator's own ambient CMUX_SOCKET_PASSWORD when absent (docs/cmux-backend.md "Setup")
+config/cmux-socket-password  retained historical cmux control-socket password setting; LOCAL, gitignored, ignored by the active Herdr-only runtime, and non-operational (docs/cmux-backend.md)
 config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
 bin/fm-setup-phynd.sh  engineer workstation setup: installs Pi, installs configured Pi packages, and applies the checked-in Phynd Pi defaults
 config/watched-tools.json  optional list of the tools this home depends on, read by the update check armed with bin/fm-tool-update-check.sh; LOCAL, gitignored, firstmate-maintained but human-editable, and NOT inherited by secondmate homes; see docs/configuration.md "Watched tool updates"
@@ -226,8 +230,8 @@ The generic effort fallback and its precedence are owned by `harness-adapters`: 
 Do not add model-specific versions of that policy.
 
 `secondmate-provisioning` owns secondmate harness pins and inherited local material, while `harness-adapters` owns the harness consequences.
-Dispatch only on a backend that `fm-spawn` validates as spawn-capable; pass an explicit per-spawn `--backend` only under that exact task's own authority, never as later-task precedent (selection contract: [`docs/configuration.md`](docs/configuration.md) "Runtime backend").
-A missing dependency, authentication failure, unsupported backend, or version refusal is a blocker; never silently retry on another backend.
+Dispatch only on Herdr, the one backend `fm-spawn` validates as spawn-capable under hard rule 6; an explicit per-spawn `--backend` may only restate `herdr` and is passed only under that exact task's own authority, never as later-task precedent (selection contract: [`docs/configuration.md`](docs/configuration.md) "Runtime backend").
+A missing dependency, authentication failure, refused backend identity, or version refusal is a blocker to surface; there is no other backend to retry on.
 
 ## 5. Recovery
 
@@ -562,7 +566,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `ask-user-authority` - load before deciding any ask-user finding and before approving a validation review step.
 - `quota-array-dispatch` - load before choosing among a matched crew-dispatch profile array from current quota-axi default TOON.
 - `harness-adapters` - load before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter.
-- `firstmate-orca` - load before switching to Orca, spawning or supervising Orca-backed work, smoke-testing Orca backend behavior, debugging Orca task state, or reconciling Orca-backed task metadata.
+- `firstmate-orca` - load only when reconciling a pre-invariant Orca-backed task record; Orca is a retained legacy adapter that hard rule 6 makes unselectable, so requests to switch to, spawn on, or smoke-test Orca are refused rather than planned.
 - `project-management` - load before adding, creating, removing, or initializing a project.
   Cloning or registering a project is add intake and uses the same trigger.
 - `confirmed-handoff` - load before reporting any actionable steer dispatched, before ending a turn that sent one, and before relaying a parked finding, decision, or blocker again.

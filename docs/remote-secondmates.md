@@ -8,7 +8,7 @@ The remote second-mate agent itself always runs on the [Herdr backend](herdr-bac
 `fm-remote` is reserved for remote fleet work and must not be used for personal work.
 The user's interactive Herdr session remains `default` and is not a remote-secondmate prerequisite.
 Herdr's remote-session server belongs to the host's own GUI login session rather than to the SSH connection, so the agent's endpoint survives every disconnection the primary's supervision depends on.
-Local second mates are unaffected and keep their ordinary backend and session selection, as do the workers a remote second mate supervises inside its own home.
+Local second mates also use Herdr exclusively, as do the workers a remote second mate supervises inside its own home; missing, invalid, or unhealthy Herdr refuses the operation.
 
 ## Prerequisites
 
@@ -38,7 +38,7 @@ Within a home's lane the worker preempts a running reply long-poll as soon as an
 A caller that disconnects or whose caller-side wait expires before its job completes cancels it instead of abandoning it: cancelled queued work is skipped, cancelled running work is stopped, and the finalized record is cleaned up, so retries never convoy behind abandoned work.
 Linux uses the same queue and worker protocol without the Aqua-session requirement.
 A worker stops itself once its configured code root stops being a Firstmate checkout, so a worker started from a worktree cannot outlive that worktree, and `bin/fm-remote-job-reap-orphans.sh` clears any worker already left behind that way without ever touching one whose checkout still exists.
-The remote account must provide the required toolchain, the selected worker runtime, the selected session backend, and credentials that work on that host.
+The remote account must provide the required toolchain, the selected worker runtime, Herdr in the pinned `fm-remote` session, and credentials that work on that host.
 The origin URL named for each project must be reachable from the remote account because projects are cloned on that host rather than copied from the primary.
 
 ## Non-interactive tool contract
@@ -160,7 +160,7 @@ An explicit request for any other backend is refused rather than honored, and th
 An existing remote endpoint recorded in another Herdr session, including `default`, is classified as unverified and left untouched; launch, liveness recovery, control, and retirement refuse it until an operator explicitly migrates it instead of attempting a live cutover.
 A launch after a host has drifted out of readiness fails with the doctor's own gap text instead of leaving a half-created endpoint.
 Raw launch commands are not accepted for remote secondmates.
-Backends that already refuse secondmate launch, currently Orca and cmux, remain unsupported on the remote host.
+Herdr is the sole supported remote session backend; missing, non-Herdr, duplicate, malformed, or task-mismatched endpoint identity is refused before any remote operation.
 
 Startup liveness recovery relaunches a dead or missing remote second mate through this same command, so recovery passes the same readiness gate rather than a weaker one.
 

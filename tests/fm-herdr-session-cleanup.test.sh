@@ -38,18 +38,30 @@ case "$*" in
 esac
 SH
 chmod +x "$FAKE_PS"
-LINUX_PROCESS_INFO='{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p1","shell_pid":67,"foreground_process_group_id":67,"foreground_processes":[{"argv":["/bin/sh"],"name":"sh","pid":67}]}}}'
+LINUX_PROCESS_INFO='{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p1","workspace_id":"w2","tab_id":"w2:t1","shell_pid":67,"foreground_process_group_id":67,"foreground_processes":[{"argv":["/bin/sh"],"name":"sh","pid":67}]}}}'
 argv_pid=$(
   # shellcheck disable=SC2329 # invoked indirectly by the idle-shell proof.
-  fm_backend_herdr_cli() { printf '%s\n' "$LINUX_PROCESS_INFO"; }
-  FM_HERDR_PS_BIN="$FAKE_PS" fm_backend_herdr_pane_idle_shell_pid test w2:p1
+  fm_backend_herdr_cli() {
+    if [ "${2:-}" = pane ] && [ "${3:-}" = get ]; then
+      printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p1","workspace_id":"w2","tab_id":"w2:t1"}}}'
+    else
+      printf '%s\n' "$LINUX_PROCESS_INFO"
+    fi
+  }
+  FM_HERDR_PS_BIN="$FAKE_PS" fm_backend_herdr_pane_idle_shell_pid test w2:p1 w2 w2:t1
 ) || fail "Linux Herdr process argv array was not accepted"
 [ "$argv_pid" = 67 ] || fail "idle-shell proof printed the wrong shell pid: $argv_pid"
 if (
   # shellcheck disable=SC2329 # invoked indirectly by the idle-shell proof.
-  fm_backend_herdr_cli() { printf '%s\n' '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p1","shell_pid":67,"foreground_process_group_id":67,"foreground_processes":[{"argv":[67],"name":"sh","pid":67}]}}}'; }
+  fm_backend_herdr_cli() {
+    if [ "${2:-}" = pane ] && [ "${3:-}" = get ]; then
+      printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p1","workspace_id":"w2","tab_id":"w2:t1"}}}'
+    else
+      printf '%s\n' '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p1","workspace_id":"w2","tab_id":"w2:t1","shell_pid":67,"foreground_process_group_id":67,"foreground_processes":[{"argv":[67],"name":"sh","pid":67}]}}}'
+    fi
+  }
   FM_HERDR_PS_BIN="$FAKE_PS" FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
-    fm_backend_herdr_pane_idle_shell_pid test w2:p1
+    fm_backend_herdr_pane_idle_shell_pid test w2:p1 w2 w2:t1
 ) >/dev/null 2>&1; then
   fail "non-string Herdr process argv was accepted"
 fi
@@ -134,7 +146,8 @@ fm_backend_herdr_cli() {
   [ ! -e "$FIXTURE_DIR/error-${first}-${second}" ] || return 1
   if [ -e "$FIXTURE_DIR/closed" ]; then
     case "$first $second" in
-      "pane get") printf '%s\n' '{"error":{"code":"pane_not_found"}}' >&2; return 1 ;;
+      "pane get") printf '%s\n' '{"error":{"code":"pane_not_found"}}'; return 0 ;;
+      "agent get") printf '%s\n' '{"error":{"code":"pane_not_found"}}'; return 0 ;;
       "workspace list") printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate","focused":true,"active_tab_id":"w1:t1","tab_count":1,"pane_count":1}]}}'; return 0 ;;
     esac
   fi
@@ -163,7 +176,7 @@ fm_backend_herdr_cli() {
       ;;
     "agent get")
       case "$(cat "$FIXTURE_DIR/agent")" in
-        absent) printf '%s\n' '{"error":{"code":"agent_not_found"}}' >&2; return 1 ;;
+        absent) printf '%s\n' '{"error":{"code":"agent_not_found"}}'; return 0 ;;
         live) printf '%s\n' '{"result":{"agent":{"agent_status":"idle"}}}' ;;
         unknown) printf '%s\n' '{"error":{"code":"internal_error"}}' >&2; return 1 ;;
       esac

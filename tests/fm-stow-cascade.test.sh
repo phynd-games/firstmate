@@ -105,6 +105,8 @@ run_cascade() { # <primary-home> [env assignments...]
     TMPDIR="${TMPDIR:-/tmp}" \
     FM_HOME="$home" \
     FM_SSH_BIN="$FAKEBIN/fake-ssh" \
+    FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$home/state" \
     "$@" \
     "$CASCADE"
 }

@@ -239,8 +239,6 @@ fi
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 
-FM_GUARD_CONTINUE_LINE='This is a supervision warning only; the requested message WILL still be sent.' "$SCRIPT_DIR/fm-guard.sh" || true
-
 fm_send_id_from_meta() {  # <meta-file>
   local base
   base=${1##*/}
@@ -259,13 +257,17 @@ fm_send_id_from_meta() {  # <meta-file>
 # control-plane capability table (bin/fm-control-lib.sh) rather than a second
 # copy here - the same table bin/fm-control.sh's interrupt verb reads.
 fm_send_clear_after_interrupt() {  # <key>
-  local key=$1 family clear
+  local key=$1 family clear send_rc
   [ "$key" = Escape ] || return 0
   family=$(fm_control_harness_family "$TARGET_HARNESS") || return 0
   clear=$(fm_control_interrupt_clear_key "$family") || return 0
   [ -n "$clear" ] || return 0
   [ "$TARGET_BACKEND" != remote ] || return 0
-  if ! fm_backend_send_key "$TARGET_BACKEND" "$T" "$clear" "$EXPECTED_LABEL"; then
+  if fm_backend_send_key "$TARGET_BACKEND" "$T" "$clear" "$EXPECTED_LABEL"; then
+    :
+  else
+    send_rc=$?
+    [ "$send_rc" -eq 2 ] && return 2
     echo "error: Escape reached $T, but the $TARGET_HARNESS composer could not be cleared; it still holds the restored prompt. Clear it before sending the next message." >&2
     return 1
   fi
@@ -333,6 +335,20 @@ fm_send_resolve_target() {  # <raw-target>
   if [ -n "$meta" ]; then
     if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
       id=$(fm_send_id_from_meta "$meta")
+      if ! fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote; then
+        remote_backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
+        case "$remote_backend" in
+          absent|ambiguous|herdr)
+            fm_backend_policy_refuse "task $id remote endpoint record $meta" herdr \
+              "Repair the remote endpoint metadata and verify the native runtime with 'herdr status --json'."
+            ;;
+          *)
+            fm_backend_policy_refuse "task $id remote endpoint record $meta (remote_backend=$remote_backend)" "$remote_backend" \
+              "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
+            ;;
+        esac
+        return 1
+      fi
       RESOLVED_TARGET="remote:$id"
       TARGET_BACKEND=remote
       TARGET_META=$meta
@@ -344,13 +360,15 @@ fm_send_resolve_target() {  # <raw-target>
       RESOLUTION_TRIED="meta=$meta; placement=remote"
       return 0
     fi
+    id=$(fm_send_id_from_meta "$meta")
+    fm_backend_validate_task_endpoint "$meta" "$id" || return 1
+    backend=$FM_BACKEND_VALIDATED_BACKEND
     RESOLUTION_TRIED="meta=$meta; backend=from-meta"
-    target=$(fm_backend_target_of_meta "$meta")
+    target=$FM_BACKEND_VALIDATED_TARGET
     if [ -z "$target" ]; then
       echo "error: no backend target recorded in $meta (tried $RESOLUTION_TRIED)" >&2
       return 1
     fi
-    backend=$(fm_backend_of_meta "$meta")
     RESOLVED_TARGET=$target
     TARGET_BACKEND=$backend
     TARGET_META=$meta
@@ -384,13 +402,15 @@ fm_send_resolve_target() {  # <raw-target>
 
   meta=$(fm_backend_meta_for_window "$raw" "$STATE" 2>/dev/null || true)
   if [ -n "$meta" ]; then
-    target=$(fm_backend_target_of_meta "$meta")
+    id=$(fm_send_id_from_meta "$meta")
+    fm_backend_validate_task_endpoint "$meta" "$id" || return 1
+    TARGET_BACKEND=$FM_BACKEND_VALIDATED_BACKEND
+    target=$FM_BACKEND_VALIDATED_TARGET
     if [ -z "$target" ]; then
       echo "error: no backend target recorded in $meta (tried explicit target '$raw' via recorded window/terminal; backend=from-meta)" >&2
       return 1
     fi
     RESOLVED_TARGET=$target
-    TARGET_BACKEND=$(fm_backend_of_meta "$meta")
     TARGET_META=$meta
     TARGET_HARNESS=$(fm_meta_get "$meta" harness)
     RESOLUTION_TRIED="explicit target '$raw' matched $meta; backend=$TARGET_BACKEND"
@@ -400,12 +420,21 @@ fm_send_resolve_target() {  # <raw-target>
   case "$raw" in
     *:*)
       colons=$(fm_send_count_colons "$raw")
-      if [ "$colons" -ge 2 ]; then
+      # Active runtime (hard rule 6): an explicit target is a Herdr
+      # "<session>:<pane-id>" endpoint, proven live by the adapter's own pane
+      # read below, never a tmux window. The one-colon tmux reading survives
+      # only in the regression lane.
+      if [ "$colons" -ge 2 ] || ! fm_backend_policy_legacy_lane; then
         assumed=herdr
       else
         assumed=tmux
       fi
-      if ! fm_backend_target_exists "$assumed" "$raw"; then
+      if fm_backend_target_exists "$assumed" "$raw" "" \
+        "${HERDR_WORKSPACE_ID:-}" "${HERDR_TAB_ID:-}"; then
+        :
+      else
+        target_exists_rc=$?
+        [ "$target_exists_rc" -eq 2 ] && exit 2
         echo "error: explicit target '$raw' is not a live $assumed endpoint (tried meta=$STATE/$raw.meta; metadata window/terminal lookup; backend=$assumed). Use fm-<id> for a recorded task/lane, or pass a target whose backend endpoint can be verified." >&2
         return 1
       fi
@@ -420,10 +449,52 @@ fm_send_resolve_target() {  # <raw-target>
   return 1
 }
 
+fm_send_remote_preflight() {
+  local output rc refusal
+  if output=$("$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh route "$TARGET_REMOTE_ID" < /dev/null 2>&1); then
+    return 0
+  else
+    rc=$?
+  fi
+  refusal=$(printf '%s\n' "$output" | sed -n '/^REFUSED: /{p;q;}')
+  if [ -n "$refusal" ]; then
+    printf '%s\n' "$refusal" >&2
+  elif [ -n "$output" ]; then
+    printf '%s\n' "$output" >&2
+  fi
+  return "$rc"
+}
+
+fm_send_validate_explicit_corr() {
+  local id
+  [ "$TARGET_BACKEND" = remote ] || return 0
+  [ "${FM_PENDING_REPLY_EXISTING_CORR+x}" = x ] || return 0
+  [ "$TARGET_SELECTOR" = 1 ] && [ -n "$TARGET_META" ] || return 0
+  [ "$(fm_meta_get "$TARGET_META" kind)" = secondmate ] || return 0
+  id=$(fm_send_id_from_meta "$TARGET_META")
+  if [ -n "$FM_PENDING_REPLY_EXISTING_CORR" ] \
+    && fm_pending_reply_corr_reusable "$STATE" "$FM_PENDING_REPLY_EXISTING_CORR" "$id"; then
+    return 0
+  fi
+  echo "error: explicitly requested pending-reply correlation '${FM_PENDING_REPLY_EXISTING_CORR:-empty}' is not reusable for $id; refusing to mint a replacement correlation" >&2
+  return 1
+}
+
 RAW_TARGET=$1
 fm_send_resolve_target "$RAW_TARGET" || exit 1
 T=$RESOLVED_TARGET
+fm_send_validate_explicit_corr || exit 1
+if [ "$TARGET_BACKEND" = remote ]; then
+  fm_send_remote_preflight || exit $?
+else
+  fm_backend_validate "$TARGET_BACKEND" || exit 1
+  if [ "$TARGET_BACKEND" = herdr ]; then
+    fm_backend_herdr_capability_preflight "send target $T" "${T%%:*}" || exit 1
+  fi
+fi
 shift
+
+FM_GUARD_CONTINUE_LINE='This is a supervision warning only; the requested message WILL still be sent.' "$SCRIPT_DIR/fm-guard.sh" || true
 
 # Supervision lease guard: a steer is overlap territory between the two Pi
 # supervision actors, so refuse while the OTHER actor holds this task's live
@@ -485,10 +556,6 @@ while :; do
     *) break ;;
   esac
 done
-
-if [ "$TARGET_BACKEND" != remote ]; then
-  fm_backend_validate "$TARGET_BACKEND" || exit 1
-fi
 
 # Classify a from-firstmate -> secondmate request. Only a task selector resolved
 # through this home's meta whose authoritative kind is secondmate is marked: the
@@ -657,21 +724,32 @@ if [ "${1:-}" = "--key" ]; then
   esac
   key=$2
   semantic_key=$(fm_send_normalize_key "$key")
+  send_key_out= send_key_rc=0
   if [ "$TARGET_BACKEND" = remote ]; then
-    FM_SEND_REMOTE_BUDGET=${FM_SEND_REMOTE_BUDGET:-30}
-    case "$FM_SEND_REMOTE_BUDGET" in
-      ''|*[!0-9]*|0)
-        echo "error: FM_SEND_REMOTE_BUDGET must be a positive integer: $FM_SEND_REMOTE_BUDGET" >&2
-        exit 1
-        ;;
-    esac
-    if ! fm_run_timed "$FM_SEND_REMOTE_BUDGET" "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" \
-      fm-remote-secondmate-control.sh key "$TARGET_REMOTE_ID" "$key" < /dev/null; then
-      echo "error: key '$key' not sent to remote secondmate $TARGET_REMOTE_ID; completion may be unknown" >&2
-      exit 1
+    if send_key_out=$("$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh key "$TARGET_REMOTE_ID" "$key" < /dev/null 2>&1); then
+      send_key_rc=0
+    else
+      send_key_rc=$?
     fi
-  elif ! fm_backend_send_key "$TARGET_BACKEND" "$T" "$key" "$EXPECTED_LABEL"; then
-    echo "error: key '$key' not sent to $T ($TARGET_BACKEND send failed; tried $RESOLUTION_TRIED)" >&2
+  else
+    if send_key_out=$(fm_backend_send_key "$TARGET_BACKEND" "$T" "$key" "$EXPECTED_LABEL" 2>&1); then
+      send_key_rc=0
+    else
+      send_key_rc=$?
+    fi
+  fi
+  if [ "$send_key_rc" -ne 0 ]; then
+    send_key_refusal=$(printf '%s\n' "$send_key_out" | sed -n 's/^\(REFUSED: .*\)$/\1/p' | head -1)
+    if [ -n "$send_key_refusal" ]; then
+      printf '%s\n' "$send_key_refusal" >&2
+    else
+      [ -z "$send_key_out" ] || printf '%s\n' "$send_key_out" >&2
+      if [ "$TARGET_BACKEND" = remote ]; then
+        echo "error: key '$key' not sent to remote secondmate $TARGET_REMOTE_ID; completion may be unknown" >&2
+      else
+        echo "error: key '$key' not sent to $T ($TARGET_BACKEND send failed; tried $RESOLUTION_TRIED)" >&2
+      fi
+    fi
     exit 1
   fi
   fm_send_clear_after_interrupt "$semantic_key" || exit 1
@@ -808,28 +886,45 @@ else
       echo "error: steer not sent to remote secondmate $TARGET_REMOTE_ID: its parent task retired or changed route during target resolution" >&2
       exit 1
     fi
+    if fm_send_remote_preflight; then
+      :
+    else
+      remote_preflight_rc=$?
+      fm_lock_release "$REMOTE_META_LOCK"
+      fm_send_known_undelivered_cleanup || true
+      exit "$remote_preflight_rc"
+    fi
     remote_rc=0
     remote_completion_unknown=0
+    remote_output=
+    remote_retry_output=
     REMOTE_SEND_ARGS=("$TARGET_REMOTE_ID" "$MESSAGE")
     [ -z "$FIRE_AND_FORGET_ID" ] || REMOTE_SEND_ARGS+=(fire-and-forget)
-    # Each transport attempt is bounded by FM_SEND_REMOTE_BUDGET seconds.
-    # fm_run_timed's 124 means the attempt was killed at the bound with remote
-    # completion unknown - the enqueue may have landed - so it exits through
-    # the same unconfirmed-delivery contract as a lost transport, without a
-    # retry that would only wait out the same busy remote queue again. (A
-    # remote job's own timeout also relays as 124; treating it as unconfirmed
-    # stays safe because the remote enqueue deduplicates.)
-    fm_run_timed "$FM_SEND_REMOTE_BUDGET" "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" \
-      fm-remote-secondmate-control.sh send "${REMOTE_SEND_ARGS[@]}" < /dev/null || remote_rc=$?
-    if [ "$remote_rc" -eq 124 ]; then
-      remote_completion_unknown=1
-    elif [ "$remote_rc" -eq 255 ]; then
+    if remote_output=$("$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh send \
+      "${REMOTE_SEND_ARGS[@]}" < /dev/null 2>&1); then
+      remote_rc=0
+    else
+      remote_rc=$?
+    fi
+    if [ "$remote_rc" -eq 255 ]; then
       remote_completion_unknown=1
       remote_rc=0
-      fm_run_timed "$FM_SEND_REMOTE_BUDGET" "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" \
-        fm-remote-secondmate-control.sh send "${REMOTE_SEND_ARGS[@]}" < /dev/null || remote_rc=$?
+      if remote_retry_output=$("$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh send \
+        "${REMOTE_SEND_ARGS[@]}" < /dev/null 2>&1); then
+        remote_rc=0
+      else
+        remote_rc=$?
+      fi
     fi
     fm_lock_release "$REMOTE_META_LOCK"
+    remote_refusal=$(printf '%s\n%s\n' "$remote_output" "$remote_retry_output" | sed -n '/^REFUSED: /{p;q;}')
+    if [ -n "$remote_refusal" ] && [ "$remote_rc" -ne 0 ]; then
+      fm_send_known_undelivered_cleanup || true
+      printf '%s\n' "$remote_refusal" >&2
+      exit "$remote_rc"
+    fi
+    [ -z "$remote_output" ] || printf '%s\n' "$remote_output" >&2
+    [ -z "$remote_retry_output" ] || printf '%s\n' "$remote_retry_output" >&2
     if [ "$remote_rc" -ne 0 ] && [ "$remote_completion_unknown" -eq 1 ]; then
       if [ -n "$FIRE_AND_FORGET_ID" ]; then
         echo "error: fire-and-forget steer to remote secondmate $TARGET_REMOTE_ID is unconfirmed (delivery-id=$FIRE_AND_FORGET_ID); retry only with the same delivery id" >&2
@@ -898,7 +993,9 @@ else
     CURRENT_INBOX_SPAWN_GEN=
     if [ -f "$TARGET_META" ]; then
       CURRENT_INBOX_TARGET=$(fm_backend_target_of_meta "$TARGET_META")
-      CURRENT_INBOX_BACKEND=$(fm_backend_of_meta "$TARGET_META")
+      # A record that has become legacy since resolution cannot match the
+      # herdr backend resolved above, so the identity check below refuses it.
+      CURRENT_INBOX_BACKEND=$(fm_backend_of_meta "$TARGET_META" 2>/dev/null) || CURRENT_INBOX_BACKEND=
       CURRENT_INBOX_SPAWN_GEN=$(fm_meta_get "$TARGET_META" spawn_gen)
     fi
     if [ "$CURRENT_INBOX_TARGET" != "$T" ] \
@@ -1010,17 +1107,28 @@ else
   # block: remote text rides the inbox leg above, and remote --key exits
   # earlier.
   send_rc=0
-  if verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MESSAGE" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL"); then
+  verdict=
+  send_stderr_file=$(mktemp "${TMPDIR:-/tmp}/fm-send-stderr.XXXXXX") || exit 1
+  if verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MESSAGE" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL" 2>"$send_stderr_file"); then
     :
   else
     send_rc=$?
   fi
+  send_stderr=$(cat "$send_stderr_file")
+  rm -f -- "$send_stderr_file"
   if [ "$send_rc" -ne 0 ]; then
+    refusal=$(printf '%s\n' "$send_stderr" | sed -n '/^REFUSED:/p' | sed -n '1p')
+    if [ -n "$refusal" ]; then
+      printf '%s\n' "$refusal" >&2
+      exit 1
+    fi
+    [ -z "$send_stderr" ] || printf '%s\n' "$send_stderr" >&2
     fm_send_known_undelivered_cleanup || \
       echo "error: known-undelivered pending-reply state could not be reset for $TARGET_TASK_ID" >&2
     echo "error: text not sent to $T ($TARGET_BACKEND send failed; tried $RESOLUTION_TRIED)" >&2
     exit 1
   fi
+  [ -z "$send_stderr" ] || printf '%s\n' "$send_stderr" >&2
   case "$verdict" in
     empty)
       ;;

@@ -18,7 +18,7 @@
 # selection rather than reading this home's config/backend. The interactive
 # default session remains for the user's work.
 # fm-spawn/fm-send/fm-teardown keep owning the local endpoint mechanics.
-# The home's own workers keep their ordinary backend selection.
+# The secondmate home and every worker it supervises run only on Herdr.
 # bin/fm-remote-doctor.sh owns that host's readiness for Herdr.
 # docs/remote-secondmates.md owns why.
 # A private parent-route state directory stores only the remote secondmate
@@ -69,20 +69,26 @@ validate_home() { # <id> [allow-absent]
 meta_path() { printf '%s/%s.meta\n' "$CONTROL_STATE" "$1"; }
 
 remote_endpoint_load() {
-  local id=$1 herdr_session
+  local id=$1 herdr_session capability_error
   REMOTE_ENDPOINT_ERROR=
+  REMOTE_ENDPOINT_FAILURE=endpoint-refused
   REMOTE_ENDPOINT_META=$(meta_path "$id")
-  if ! fm_backend_validate_task_endpoint "$REMOTE_ENDPOINT_META" "$id" 2>/dev/null; then
+  if ! fm_backend_validate_remote_task_endpoint "$REMOTE_ENDPOINT_META" "$id" "$REMOTE_HERDR_SESSION" 2>/dev/null; then
+    case "$(fm_backend_meta_recorded_backend "$REMOTE_ENDPOINT_META" remote_backend 2>/dev/null || true)" in
+      ''|absent|ambiguous|herdr) ;;
+      *) REMOTE_ENDPOINT_FAILURE=legacy-record ;;
+    esac
     REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint metadata is invalid; refusing access until it is explicitly migrated"
     return 1
   fi
   REMOTE_ENDPOINT_BACKEND=$FM_BACKEND_VALIDATED_BACKEND
   REMOTE_ENDPOINT_TARGET=$FM_BACKEND_VALIDATED_TARGET
   if [ "$REMOTE_ENDPOINT_BACKEND" != herdr ]; then
+    REMOTE_ENDPOINT_FAILURE=legacy-record
     REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint is recorded on backend '$REMOTE_ENDPOINT_BACKEND', expected 'herdr'; refusing access until it is explicitly migrated"
     return 1
   fi
-  herdr_session=$(fm_backend_meta_exact_value "$REMOTE_ENDPOINT_META" herdr_session 2>/dev/null || true)
+  herdr_session=$(fm_backend_meta_exact_value "$REMOTE_ENDPOINT_META" remote_herdr_session 2>/dev/null || true)
   if [ "$herdr_session" != "$REMOTE_HERDR_SESSION" ]; then
     REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint is recorded in Herdr session '${herdr_session:-missing}', expected '$REMOTE_HERDR_SESSION'; refusing access until it is explicitly migrated"
     return 1
@@ -94,22 +100,66 @@ remote_endpoint_load() {
       return 1
       ;;
   esac
+  if ! capability_error=$(fm_backend_herdr_capability_preflight "remote endpoint route for $id" "$REMOTE_HERDR_SESSION" 2>&1); then
+    REMOTE_ENDPOINT_FAILURE=capability-failure
+    REMOTE_ENDPOINT_ERROR=$(printf '%s\n' "$capability_error" | sed -n '1p')
+    [ -n "$REMOTE_ENDPOINT_ERROR" ] || REMOTE_ENDPOINT_ERROR="REFUSED: Herdr capability is unavailable; repair Herdr and verify with herdr status --json"
+    return 1
+  fi
 }
 
 remote_endpoint_require() {
-  remote_endpoint_load "$1" || die "$REMOTE_ENDPOINT_ERROR"
+  remote_endpoint_load "$1" || {
+    remote_endpoint_refuse "$1" || true
+    return 1
+  }
 }
 
-state_value() { # <id>; prints recovery-grade state
-  local id=$1 meta
+remote_endpoint_refuse() {
+  local id=$1 recorded
+  case "$REMOTE_ENDPOINT_FAILURE" in
+    capability-failure)
+      printf '%s\n' "$REMOTE_ENDPOINT_ERROR" >&2
+      ;;
+    legacy-record)
+      recorded=$(fm_backend_meta_recorded_backend "$REMOTE_ENDPOINT_META" remote_backend 2>/dev/null || true)
+      fm_backend_policy_refuse "remote secondmate $id endpoint record" "$recorded" \
+        "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
+      ;;
+    *)
+      fm_backend_policy_refuse "remote secondmate $id endpoint record" herdr \
+        "Repair the endpoint metadata and verify the native runtime with 'herdr status --json'."
+      ;;
+  esac
+}
+
+state_value() { # <id> [--typed]; prints recovery-grade state
+  local id=$1 typed=${2:-} meta state state_rc
   meta=$(meta_path "$id")
   [ -f "$meta" ] && [ ! -L "$meta" ] || { printf 'missing\n'; return 0; }
   if ! remote_endpoint_load "$id"; then
-    printf 'error: %s\n' "$REMOTE_ENDPOINT_ERROR" >&2
-    printf 'unverified\n'
-    return 0
+    remote_endpoint_refuse "$id" || true
+    if [ "$typed" = --typed ]; then
+      case "$REMOTE_ENDPOINT_FAILURE" in
+        capability-failure) return 2 ;;
+        legacy-record|endpoint-refused) return 3 ;;
+        *) return 1 ;;
+      esac
+    fi
+    return 1
   fi
-  fm_backend_agent_state "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null || printf 'unreadable\n'
+  if state=$(fm_backend_agent_state "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null); then
+    printf '%s\n' "$state"
+  else
+    state_rc=$?
+    if [ "$state_rc" -eq 2 ]; then
+      fm_backend_policy_refuse "remote Herdr agent state for $id" herdr \
+        "The native Herdr agent get operation failed after preflight. Repair Herdr, then verify with 'herdr status --json'." || true
+      printf 'capability-failure\n'
+    else
+      printf 'unreadable\n'
+    fi
+  fi
 }
 
 print_route() { # <id>
@@ -126,19 +176,15 @@ print_route() { # <id>
 }
 
 cmd_route() {
-  local id=$1 meta
+  local id=$1
   validate_id "$id"
   validate_home "$id"
-  meta=$(meta_path "$id")
-  if [ ! -f "$meta" ] || [ -L "$meta" ]; then
-    die "remote secondmate has no endpoint metadata"
-  fi
   print_route "$id"
 }
 
 cmd_launch() {
   local id=$1 harness=$2 model=$3 effort=$4 selected_backend=$5 traceparent=${6:-}
-  local current meta out herdr_session
+  local current current_rc meta out herdr_session refusal
 
   validate_id "$id"
   validate_home "$id"
@@ -150,12 +196,26 @@ cmd_launch() {
   # Herdr is required on this host, not merely preferred: its server belongs to
   # the GUI login session, so the endpoint survives every SSH disconnection that
   # a remote route depends on. bin/fm-remote-doctor.sh is the readiness owner.
-  case "$selected_backend" in herdr) ;; *) die "a remote secondmate runs only on the herdr backend, not '$selected_backend'" ;; esac
+  case "$selected_backend" in
+    herdr) ;;
+    *)
+      fm_backend_policy_refuse "remote secondmate launch backend" "$selected_backend" \
+        "Declare Herdr explicitly with --backend herdr, then prove the runtime with 'herdr status --json'."
+      return 1
+      ;;
+  esac
+  fm_backend_herdr_capability_preflight "remote secondmate launch for $id" "$REMOTE_HERDR_SESSION" || return 1
   mkdir -p "$CONTROL_STATE" "$CONTROL_DATA"
   meta=$(meta_path "$id")
   if [ -f "$meta" ]; then
     remote_endpoint_require "$id"
-    current=$(fm_backend_agent_state "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null || printf 'unreadable\n')
+    if current=$(fm_backend_agent_state "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET"); then
+      :
+    else
+      current_rc=$?
+      [ "$current_rc" -eq 2 ] && return 1
+      current=unreadable
+    fi
     case "$current" in
       alive)
         print_route "$id"
@@ -177,6 +237,11 @@ cmd_launch() {
     FM_STATE_OVERRIDE="$CONTROL_STATE" FM_DATA_OVERRIDE="$CONTROL_DATA" \
     FM_CONFIG_OVERRIDE="$TARGET_HOME/config" FM_SKIP_SECONDMATE_INHERIT=1 \
     "$SCRIPT_DIR/fm-spawn.sh" "${ARGS[@]}" 2>&1); then
+    refusal=$(printf '%s\n' "$out" | sed -n '/^REFUSED: /p' | sed -n '1p')
+    if [ -n "$refusal" ]; then
+      printf '%s\n' "$refusal" >&2
+      return 1
+    fi
     [ -z "$out" ] || printf '%s\n' "$out" >&2
     die "remote host-local secondmate launch failed"
   fi
@@ -193,12 +258,14 @@ cmd_send() {
   [ -z "$delivery_mode" ] || [ "$delivery_mode" = fire-and-forget ] || die "invalid send delivery mode"
   validate_home "$id"
   meta=$(meta_path "$id")
+  remote_endpoint_require "$id" || return 1
   meta_lock=$(fm_meta_lock_path "$meta") || die "remote secondmate metadata lock path is invalid"
   fm_task_inbox_lock_acquire "$meta_lock" \
     || die "remote secondmate endpoint metadata could not be locked for final delivery validation"
   if ! remote_endpoint_load "$id"; then
     fm_lock_release "$meta_lock"
-    die "$REMOTE_ENDPOINT_ERROR"
+    remote_endpoint_refuse "$id" || true
+    return 1
   fi
   # A remote steer is delivered by durable record, never by typing its payload
   # into the pane: write it into this secondmate's host-local steering inbox,
@@ -344,7 +411,7 @@ cmd_retire() {
 
 case "${1:-}" in
   launch) shift; [ "$#" -ge 5 ] && [ "$#" -le 6 ] || usage; cmd_launch "$@" ;;
-  state) shift; [ "$#" -eq 1 ] || usage; validate_id "$1"; validate_home "$1"; state_value "$1" ;;
+  state) shift; [ "$#" -ge 1 ] && [ "$#" -le 2 ] || usage; [ "$#" -eq 1 ] || [ "$2" = --typed ] || usage; validate_id "$1"; validate_home "$1"; state_value "$@" ;;
   route) shift; [ "$#" -eq 1 ] || usage; cmd_route "$1" ;;
   send) shift; [ "$#" -ge 2 ] && [ "$#" -le 3 ] || usage; cmd_send "$@" ;;
   key) shift; [ "$#" -eq 2 ] || usage; cmd_key "$@" ;;

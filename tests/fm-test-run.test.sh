@@ -113,11 +113,7 @@ init_changed_fixture_repo() {
     fm-quota-choose.test.sh \
     fm-pi-watch-extension.test.sh \
     fm-afk-return.test.sh \
-    fm-bearings-snapshot.test.sh \
-    fm-backend-cmux.test.sh \
-    fm-backend-zellij.test.sh \
-    fm-control-herdr-smoke.test.sh \
-    fm-backend-orca.test.sh; do
+    fm-bearings-snapshot.test.sh; do
     printf '#!/usr/bin/env bash\n# tests/lib.sh\n' >"$repo/tests/$script"
     chmod +x "$repo/tests/$script"
   done
@@ -617,7 +613,7 @@ SH
 }
 
 test_exclude_family() {
-  local listed
+  local listed legacy
   listed=$("$RUNNER" --list --all --exclude-family real-herdr-gated)
   printf '%s\n' "$listed" | grep -Fq 'tests/fm-backend-herdr-smoke.test.sh' \
     && fail "exclude-family real-herdr-gated left a real-herdr script"
@@ -627,16 +623,51 @@ test_exclude_family() {
   listed=$("$RUNNER" --list --family real-herdr-gated)
   printf '%s\n' "$listed" | grep -Fq 'tests/fm-backend-herdr-smoke.test.sh' \
     || fail "family real-herdr-gated must list smoke test"
+  legacy=$("$RUNNER" --list --lane legacy-adapter)
+  assert_contains "$legacy" 'tests/fm-backend-tmux-smoke.test.sh' \
+    "legacy-adapter lane must own tmux conformance"
+  assert_contains "$legacy" 'tests/fm-backend-zellij.test.sh' \
+    "legacy-adapter lane must own zellij conformance"
+  assert_contains "$legacy" 'tests/fm-backend-cmux.test.sh' \
+    "legacy-adapter lane must own cmux conformance"
+  assert_contains "$legacy" 'tests/fm-backend-orca.test.sh' \
+    "legacy-adapter lane must own orca conformance"
+  assert_contains "$legacy" 'tests/fm-teardown-endpoint-safety.test.sh' \
+    "legacy-adapter lane must own teardown endpoint conformance"
+  local cmux zellij orca
+  cmux=$("$RUNNER" --list --family cmux)
+  assert_contains "$cmux" 'tests/fm-backend-cmux-smoke.test.sh' \
+    "cmux family must select its smoke suite"
+  zellij=$("$RUNNER" --list --family zellij)
+  assert_contains "$zellij" 'tests/fm-backend-zellij-smoke.test.sh' \
+    "zellij family must select its smoke suite"
+  orca=$("$RUNNER" --list --family orca)
+  assert_contains "$orca" 'tests/fm-backend-orca.test.sh' \
+    "orca family must select its conformance suite"
+  for lane in portable-parallel-1 portable-parallel-2 portable-serial; do
+    listed=$("$RUNNER" --list --lane "$lane")
+    for forbidden in fm-backend-tmux-smoke.test.sh fm-backend-cmux-smoke.test.sh \
+      fm-backend-zellij-smoke.test.sh fm-backend-orca.test.sh; do
+      if printf '%s\n' "$listed" | grep -Fq "$forbidden"; then
+        fail "$lane must not schedule optional adapter tests: $forbidden"
+      fi
+    done
+  done
+  assert_contains "$legacy" 'tests/fm-backend-cmux-smoke.test.sh' \
+    "legacy-adapter lane must own cmux smoke"
+  assert_contains "$legacy" 'tests/fm-backend-zellij-smoke.test.sh' \
+    "legacy-adapter lane must own zellij smoke"
   pass "exclude-family drops the named primary family after selection"
 }
 
 test_portable_shard_union_and_coverage_guard() {
-  local s1 s2 proven serial herdr all_count union_count overlap out first
+  local s1 s2 proven serial herdr legacy all_count union_count overlap out first
   s1=$("$RUNNER" --list --lane portable-parallel-1)
   s2=$("$RUNNER" --list --lane portable-parallel-2)
   proven=$("$RUNNER" --list --proven-isolated)
   serial=$("$RUNNER" --list --lane portable-serial)
   herdr=$("$RUNNER" --list --family real-herdr-gated)
+  legacy=$("$RUNNER" --list --lane legacy-adapter)
   [ -n "$s1" ] && [ -n "$s2" ] || fail "portable parallel shards must be non-empty"
   # Shards disjoint.
   overlap=$(comm -12 <(printf '%s\n' "$s1" | LC_ALL=C sort) <(printf '%s\n' "$s2" | LC_ALL=C sort) || true)
@@ -653,11 +684,11 @@ test_portable_shard_union_and_coverage_guard() {
   out=$("$RUNNER" --check-coverage)
   assert_contains "$out" "FM_TEST_COVERAGE ok" "coverage guard success marker"
   all_count=$("$RUNNER" --list --all | wc -l | tr -d ' ')
-  union_count=$(printf '%s\n' "$s1" "$s2" "$serial" "$herdr" | LC_ALL=C sort -u | wc -l | tr -d ' ')
+  union_count=$(printf '%s\n' "$s1" "$s2" "$serial" "$herdr" "$legacy" | LC_ALL=C sort -u | wc -l | tr -d ' ')
   [ "$union_count" = "$all_count" ] \
     || fail "union of lanes ($union_count) must equal --all ($all_count)"
   # No duplicates across the four partitions.
-  [ "$(printf '%s\n' "$s1" "$s2" "$serial" "$herdr" | LC_ALL=C sort | uniq -d | wc -l | tr -d ' ')" = "0" ] \
+  [ "$(printf '%s\n' "$s1" "$s2" "$serial" "$herdr" "$legacy" | LC_ALL=C sort | uniq -d | wc -l | tr -d ' ')" = "0" ] \
     || fail "lanes must not duplicate scripts"
   # LPT order: first script of shard 1 is the longest proven script.
   first=$(printf '%s\n' "$s1" | head -n 1)

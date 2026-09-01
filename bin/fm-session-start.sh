@@ -690,7 +690,7 @@ elif [ "$REEMIT" -eq 1 ]; then
 else
   BOOT_OUT=$(
     "$SCRIPT_DIR/fm-herdr-session-cleanup.sh" 2>&1 || true
-    FM_BOOTSTRAP_NETWORK=skip FM_TASKS_AXI_COMPATIBLE="$TASKS_AXI_COMPATIBLE" \
+    FM_BOOTSTRAP_LOCKED=1 FM_BOOTSTRAP_NETWORK=skip FM_TASKS_AXI_COMPATIBLE="$TASKS_AXI_COMPATIBLE" \
       "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1
   )
 fi
@@ -823,17 +823,109 @@ for meta in "$STATE"/*.meta; do
   printf '\n--- %s ---\n' "$id"
   cat "$meta"
 
+  backend=
+  local_identity_valid=1
+  if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
+    backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
+  else
+    backend=$(fm_backend_meta_recorded_backend "$meta" 2>/dev/null || true)
+  fi
   window=$(fm_meta_get "$meta" window)
-  target=$(fm_backend_target_of_meta "$meta")
-  if [ -n "$window" ]; then
-    backend=$(fm_backend_of_meta "$meta")
-    if fm_backend_target_exists "$backend" "${target:-$window}" "fm-$id"; then
-      printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"
+  target=
+  if [ -z "$(fm_meta_get "$meta" remote_host)" ]; then
+    recorded_backend=$backend
+    if [ "$recorded_backend" = herdr ]; then
+      if fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1; then
+        backend=$FM_BACKEND_VALIDATED_BACKEND
+        target=$FM_BACKEND_VALIDATED_TARGET
+      else
+        local_identity_valid=2
+      fi
     else
-      printf 'endpoint: dead (backend=%s window=%s)\n' "$backend" "$window"
+      case "$recorded_backend" in
+        absent|tmux|zellij|orca|cmux) local_identity_valid=0 ;;
+        *) local_identity_valid=2 ;;
+      esac
+    fi
+  fi
+  if [ -z "$window" ] && [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
+    remote_backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
+    case "$remote_backend" in
+      herdr)
+        printf 'endpoint: remote record, read-only (backend=%s host=%s; no window recorded)\n' "$remote_backend" "$(fm_meta_get "$meta" remote_host)"
+        ;;
+      ambiguous|'')
+        printf 'endpoint: remote record ambiguous, read-only (backend=%s host=%s; no window recorded); repair or explicitly migrate it through docs/configuration.md "Legacy task records"\n' "${remote_backend:-absent}" "$(fm_meta_get "$meta" remote_host)"
+        ;;
+      *)
+        printf 'endpoint: legacy record, read-only (backend=%s host=%s; no window recorded); Herdr is the sole supported runtime backend - see docs/configuration.md "Legacy task records"\n' "$remote_backend" "$(fm_meta_get "$meta" remote_host)"
+        ;;
+    esac
+    continue
+  fi
+  if [ -n "$window" ]; then
+    # A record whose backend identity is absent or not herdr is a legacy
+    # record (hard rule 6): present it as such, never probe or dispatch on it.
+    if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
+      remote_backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
+      case "$remote_backend" in
+        herdr)
+          if fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote >/dev/null 2>&1; then
+            printf 'endpoint: remote record, read-only (backend=%s host=%s)\n' "$remote_backend" "$(fm_meta_get "$meta" remote_host)"
+          else
+            printf 'endpoint: remote record invalid, read-only (backend=%s host=%s); repair or explicitly migrate it through docs/configuration.md "Legacy task records"\n' "$remote_backend" "$(fm_meta_get "$meta" remote_host)"
+          fi
+          ;;
+        ambiguous|'')
+          printf 'endpoint: remote record ambiguous, read-only (backend=%s host=%s); repair or explicitly migrate it through docs/configuration.md "Legacy task records"\n' "${remote_backend:-absent}" "$(fm_meta_get "$meta" remote_host)"
+          ;;
+        *)
+          printf 'endpoint: legacy record, read-only (backend=%s host=%s); Herdr is the sole supported runtime backend - see docs/configuration.md "Legacy task records"\n' "$remote_backend" "$(fm_meta_get "$meta" remote_host)"
+          ;;
+      esac
+    else
+      if [ "$local_identity_valid" -eq 0 ]; then
+        printf 'endpoint: legacy record, read-only (backend=%s window=%s); Herdr is the sole supported runtime - see docs/configuration.md "Legacy task records"\n' "${recorded_backend:-absent}" "$window"
+      elif [ "$local_identity_valid" -eq 2 ]; then
+        printf 'endpoint: invalid Herdr record, read-only (backend=%s window=%s); repair the endpoint metadata and verify the named Herdr session\n' "$recorded_backend" "$window"
+      else
+        case "$backend" in
+          herdr)
+          if fm_backend_target_exists "$backend" "${target:-$window}" "fm-$id" \
+            "${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}" \
+            "${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}" \
+            "${FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID:-}"; then
+            printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"
+          else
+            endpoint_rc=$?
+            if [ "$endpoint_rc" -eq 2 ]; then
+              printf 'endpoint: capability failure (backend=%s window=%s); repair Herdr and verify with herdr status --json\n' "$backend" "$window"
+            else
+              printf 'endpoint: dead (backend=%s window=%s)\n' "$backend" "$window"
+            fi
+            fi
+            ;;
+          *)
+            printf 'endpoint: ambiguous backend record, read-only (backend=%s window=%s); repair or explicitly migrate it through docs/configuration.md "Legacy task records"\n' "${backend:-absent}" "$window"
+            ;;
+        esac
+      fi
     fi
   else
-    printf 'endpoint: unknown (no window recorded)\n'
+    if [ "$local_identity_valid" -eq 2 ]; then
+      printf 'endpoint: invalid Herdr record, read-only (backend=%s; no window recorded); repair the endpoint metadata and verify the named Herdr session\n' "$backend"
+    elif [ "$local_identity_valid" -eq 0 ]; then
+      printf 'endpoint: legacy record, read-only (backend=%s; no window recorded); Herdr is the sole supported runtime backend - see docs/configuration.md "Legacy task records"\n' "${backend:-absent}"
+    else
+      case "$backend" in
+        ambiguous)
+        printf 'endpoint: ambiguous backend record, read-only (backend=%s; no window recorded); repair or explicitly migrate it through docs/configuration.md "Legacy task records"\n' "$backend"
+        ;;
+        *)
+          printf 'endpoint: unknown (no window recorded)\n'
+          ;;
+      esac
+    fi
   fi
 
   status="$STATE/$id.status"

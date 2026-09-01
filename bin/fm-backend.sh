@@ -29,12 +29,21 @@
 # Codex App is intentionally not in the known set yet.
 # docs/codex-app-backend.md owns that blocked backend contract.
 #
-# Compatibility contract: a task's meta may omit `backend=`; every reader here
-# treats that as `tmux` (fm_backend_of_meta), and fm-spawn.sh does not write
-# `backend=tmux` for a default-backend task, so existing and newly spawned
-# default-path metas stay byte-identical. Only a task spawned on a non-tmux
-# spawn-capable backend, currently experimental herdr, zellij, orca, or cmux,
-# carries an explicit `backend=` line.
+# HERDR-ONLY RUNTIME INVARIANT (AGENTS.md hard rule 6; owner:
+# bin/fm-backend-policy-lib.sh). The paragraphs above are the adapter history.
+# In the active runtime only `herdr` is known, spawn-capable, selectable, or
+# dispatchable: FM_BACKEND, config/backend, --backend, inherited secondmate
+# config, task metadata, selectors, and supervisor discovery all refuse any
+# other value and any absent identity through fm_backend_policy_refuse, and
+# fm_backend_detect never selects anything. The tmux, zellij, orca, and cmux
+# adapter files stay on disk as retained legacy code and are unreachable by
+# every Firstmate runtime path.
+#
+# Pre-invariant compatibility contract (legacy lane only): a task's meta may
+# omit `backend=`; readers treat that as `tmux` (fm_backend_of_meta), and
+# fm-spawn.sh does not write `backend=tmux` for a default-backend task. In the
+# active runtime an absent `backend=` is a legacy record and is refused
+# read-only (docs/configuration.md "Legacy task records").
 #
 # Event-source framing (herdr-addendum "Events as the core abstraction"): a
 # backend's supervision surface is conceptually an EVENT SOURCE - it produces
@@ -54,20 +63,15 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-${FM_ROOT:-$FM_BACKEND_DEFAULT_ROOT}}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 FM_BACKEND_CONFIG_DIR="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
-# Verified backend adapters. Extend only after a backend gets its own
-# bin/backends/<name>.sh and empirical verification, mirroring AGENTS.md
-# section 4's harness-verification discipline. herdr is EXPERIMENTAL (P2;
-# data/fm-backend-design-d7/herdr-addendum.md) - verified against the real
-# v0.7.1/protocol-14 binary (data/fm-backend-design-d7/herdr-verification-p2.md)
-# but newer than tmux's long-proven default path. zellij is EXPERIMENTAL (P3;
-# data/fm-backend-design-d7/report.md "Zellij Backend") - verified against the
-# real 0.44.0 binary (docs/zellij-backend.md). orca is EXPERIMENTAL and
-# spawn-capable; unlike tmux/herdr/zellij it is also the worktree provider.
-# cmux is EXPERIMENTAL and spawn-capable, session-provider-only like
-# herdr/zellij - verified against the real 0.64.17 binary (docs/cmux-backend.md).
+# The Herdr-only invariant and its retained-adapter history.
+# shellcheck source=bin/fm-backend-policy-lib.sh
+. "$FM_BACKEND_LIB_DIR/fm-backend-policy-lib.sh"
+
+# Known and spawn-capable backends are exactly the one supported backend,
+# herdr (FM_BACKEND_ACTIVE). Retained adapters remain historical files and
 # codex-app remains deliberately absent; see docs/codex-app-backend.md.
-FM_BACKEND_KNOWN="tmux herdr zellij orca cmux"
-FM_BACKEND_SPAWN="tmux herdr zellij orca cmux"
+FM_BACKEND_KNOWN="$FM_BACKEND_ACTIVE"
+FM_BACKEND_SPAWN="$FM_BACKEND_ACTIVE"
 
 # fm_backend_list_contains: whitespace-delimited membership without relying on
 # shell word splitting. fm-backend.sh is normally sourced by bash scripts, but
@@ -87,13 +91,11 @@ fm_backend_is_known() {  # <name>
   fm_backend_list_contains "$FM_BACKEND_KNOWN" "$1"
 }
 
-# fm_backend_detect: detect the runtime firstmate itself is CURRENTLY executing
-# inside, from verified environment markers (mirrors bin/fm-harness.sh's
-# env-marker detection layer for harnesses). Prints the detected backend name
-# and returns 0, or returns 1 when nothing is detected. Nesting resolves
-# INNERMOST-first: tmux sets $TMUX in every process running inside it, even a
-# tmux started inside a herdr pane, so $TMUX is checked first and wins over
-# HERDR_ENV=1 in that nested case. herdr injects HERDR_ENV=1 (plus
+# fm_backend_detect: runtime markers never select a backend and this function
+# always returns 1.
+# Nesting resolves INNERMOST-first: tmux sets $TMUX in every process running
+# inside it, even a tmux started inside a herdr pane, so $TMUX is checked first
+# and wins over HERDR_ENV=1 in that nested case. herdr injects HERDR_ENV=1 (plus
 # HERDR_SOCKET_PATH/HERDR_PANE_ID) into every process it manages a pane for;
 # HERDR_ENV=1 alone (no $TMUX) selects herdr. cmux injects CMUX_WORKSPACE_ID
 # (plus CMUX_SURFACE_ID/CMUX_SOCKET_PATH and the legacy CMUX_TAB_ID/
@@ -140,6 +142,7 @@ FM_BACKEND_CMUX_BUNDLE_ID="com.cmuxterm.app"
 fm_backend_detect() {
   FM_BACKEND_DETECTED=""
   FM_BACKEND_DETECT_SIGNAL=""
+  return 1
   if [ -n "${TMUX:-}" ]; then
     FM_BACKEND_DETECTED=tmux
     FM_BACKEND_DETECT_SIGNAL=TMUX
@@ -229,31 +232,57 @@ fm_backend_detect_cmux_app_is_ancestor() {
 
 # fm_backend_name: resolve the ACTIVE backend for a NEW spawn, absent an
 # explicit per-task override. Precedence: FM_BACKEND env, then config/backend
-# (a single word on its first non-empty line, mirroring config/crew-harness),
-# then runtime auto-detection (fm_backend_detect), then default tmux. A
-# per-task `--backend` flag is parsed by the caller (fm-spawn.sh) and takes
-# precedence over this resolution entirely; it is not read here. Auto-detect
-# fires only when nothing was explicitly configured, so an explicit setting
-# always wins. Selecting herdr or cmux via auto-detect prints one loud stderr
-# notice (both are experimental); auto-detecting tmux stays silent - it is
-# today's default-path behavior and callers must see zero change. The cmux
-# notice names the winning signal, so a fallback-detected cmux (bundle id or
-# ancestry, after the claude wrapper stripped CMUX_WORKSPACE_ID) is visibly
-# distinct from the primary-marker case.
+# (a single word on its first non-empty line, mirroring config/crew-harness).
+# A per-task `--backend` flag is parsed by the caller (fm-spawn.sh) and takes
+# precedence over this resolution entirely; it is not read here.
+#
+# Active runtime (hard rule 6): whichever input is consulted first must name
+# herdr, and a home that declares nothing is refused - there is no default and
+# runtime markers ($TMUX, HERDR_ENV=1, cmux signals) never select. A refusal
+# prints exactly one fm_backend_policy_refuse line naming the input, Herdr, and
+# the remediation, prints NOTHING to stdout, and returns 1, so a caller that
+# captures the name can never receive a usable non-Herdr value.
+#
 fm_backend_name() {
-  local line v detected marker
-  if [ -n "${FM_BACKEND:-}" ]; then
-    printf '%s' "$FM_BACKEND"
-    return 0
-  fi
+  local line v detected marker config_line=""
   if [ -f "$FM_BACKEND_CONFIG_DIR/backend" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
       v=$(printf '%s' "$line" | tr -d '[:space:]')
       if [ -n "$v" ]; then
-        printf '%s' "$v"
-        return 0
+        config_line=$v
+        break
       fi
     done < "$FM_BACKEND_CONFIG_DIR/backend"
+  fi
+  if ! fm_backend_policy_legacy_lane; then
+    if [ -n "${FM_BACKEND:-}" ]; then
+      [ "$FM_BACKEND" = "$FM_BACKEND_ACTIVE" ] && { printf '%s' "$FM_BACKEND_ACTIVE"; return 0; }
+      fm_backend_policy_refuse "FM_BACKEND" "$FM_BACKEND" \
+        "$(fm_backend_policy_config_remediation "$FM_BACKEND_CONFIG_DIR")"
+      return 1
+    fi
+    if [ -n "$config_line" ]; then
+      [ "$config_line" = "$FM_BACKEND_ACTIVE" ] && { printf '%s' "$FM_BACKEND_ACTIVE"; return 0; }
+      fm_backend_policy_refuse "$FM_BACKEND_CONFIG_DIR/backend" "$config_line" \
+        "$(fm_backend_policy_config_remediation "$FM_BACKEND_CONFIG_DIR")"
+      return 1
+    fi
+    if [ -f "$FM_BACKEND_CONFIG_DIR/backend" ]; then
+      fm_backend_policy_refuse "$FM_BACKEND_CONFIG_DIR/backend (present but empty)" "" \
+        "$(fm_backend_policy_config_remediation "$FM_BACKEND_CONFIG_DIR")"
+      return 1
+    fi
+    fm_backend_policy_refuse "neither FM_BACKEND nor $FM_BACKEND_CONFIG_DIR/backend" "" \
+      "$(fm_backend_policy_config_remediation "$FM_BACKEND_CONFIG_DIR")"
+    return 1
+  fi
+  if [ -n "${FM_BACKEND:-}" ]; then
+    printf '%s' "$FM_BACKEND"
+    return 0
+  fi
+  if [ -n "$config_line" ]; then
+    printf '%s' "$config_line"
+    return 0
   fi
   # Called directly (not in a command substitution) so the detect signal
   # globals survive into the notice below.
@@ -276,19 +305,35 @@ fm_backend_name() {
   printf 'tmux'
 }
 
-# fm_backend_validate: refuse an unknown backend LOUDLY. Silent on success.
-fm_backend_validate() {  # <name>
-  local name=$1
-  if ! fm_backend_is_known "$name"; then
-    echo "error: unknown backend '$name' (known: $FM_BACKEND_KNOWN)" >&2
+# fm_backend_validate: refuse anything but a dispatchable backend LOUDLY.
+# Silent on success. <origin> names the input being judged in the refusal
+# (default: "the selected runtime backend"). Every dispatcher below routes
+# through fm_backend_source, which calls this, so a retained legacy adapter is
+# unreachable for the active runtime no matter which operation names it.
+fm_backend_validate() {  # <name> [origin]
+  local name=$1 origin=${2:-the selected runtime backend}
+  if fm_backend_policy_permits "$name"; then
+    return 0
+  fi
+  if fm_backend_policy_is_retained "$name"; then
+    fm_backend_policy_refuse "$origin" "$name" \
+      "Select Herdr instead; the $name adapter is retained on disk only as historical code and is unreachable for Firstmate."
     return 1
   fi
-  return 0
+  if fm_backend_policy_legacy_lane; then
+    echo "error: unknown backend '$name' (known: $FM_BACKEND_KNOWN)" >&2
+  else
+    fm_backend_policy_refuse "$origin" "$name" \
+      "Declare Herdr explicitly in config/backend or with FM_BACKEND=herdr, then prove the runtime with 'herdr status --json'."
+    return 1
+  fi
+  return 1
 }
 
-fm_backend_validate_spawn() {  # <name>
+fm_backend_validate_spawn() {  # <name> [origin]
   local name=$1
-  fm_backend_validate "$name" || return 1
+  fm_backend_validate "$name" "${2-}" || return 1
+  fm_backend_policy_legacy_adapter_allowed "$name" && return 0
   fm_backend_list_contains "$FM_BACKEND_SPAWN" "$name" && return 0
   echo "error: backend '$name' does not support task spawning yet (spawn-supported: $FM_BACKEND_SPAWN)" >&2
   return 1
@@ -341,23 +386,63 @@ fm_meta_get() {  # <meta-file> <key>
   grep "^$key=" "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
 
-# fm_backend_of_meta: the backend recorded in <meta-file>, defaulting to
-# `tmux` when the field is absent - the P1 compatibility contract.
+# fm_backend_of_meta: the backend identity recorded in <meta-file>.
+# Active runtime: prints `herdr` for a Herdr record. Any other record is
+# refused - an absent `backend=` line is a pre-invariant legacy record, a
+# non-Herdr value is a retained-adapter record - with one
+# fm_backend_policy_refuse line naming the record, and return 1. Refusals never
+# print an accepted backend to stdout. Callers that render fleet state
+# (fm-session-start.sh, fm-crew-state.sh, fm-fleet-snapshot.sh) check the
+# status and present the record as legacy instead of dispatching on it.
 fm_backend_of_meta() {  # <meta-file>
-  local v
+  local v backend_count
+  backend_count=$(grep -c '^backend=' "$1" 2>/dev/null || true)
+  if ! fm_backend_policy_legacy_lane && [ "$backend_count" -gt 1 ]; then
+    fm_backend_policy_refuse "task record $1 (ambiguous duplicate backend identity)" "" \
+      "Retire or explicitly migrate this pre-invariant task record through docs/configuration.md \"Legacy task records\"."
+    return 1
+  fi
   v=$(fm_meta_get "$1" backend)
-  printf '%s' "${v:-tmux}"
+  if fm_backend_policy_legacy_lane; then
+    printf '%s' "${v:-tmux}"
+    return 0
+  fi
+  if [ "$v" = "$FM_BACKEND_ACTIVE" ]; then
+    printf '%s' "$v"
+    return 0
+  fi
+  if [ -z "$v" ]; then
+    fm_backend_policy_refuse "task record $1 (no backend= line)" "" \
+      "$(fm_backend_policy_legacy_record_remediation)"
+  else
+    fm_backend_policy_refuse "task record $1 (backend=$v)" "$v" \
+      "$(fm_backend_policy_legacy_record_remediation)"
+  fi
+  return 1
 }
 
 fm_backend_target_of_meta() {  # <meta-file>
   local meta=$1 backend terminal window
-  backend=$(fm_backend_of_meta "$meta")
+  # A pure record read: the recorded name only chooses which field holds the
+  # target. Identity judgement belongs to fm_backend_of_meta, so a legacy record
+  # is diagnosed exactly once, by the caller that asks for its backend.
+  backend=$(fm_meta_get "$meta" backend)
   if [ "$backend" = orca ]; then
     terminal=$(fm_meta_get "$meta" terminal)
     [ -n "$terminal" ] && { printf '%s' "$terminal"; return 0; }
   fi
   window=$(fm_meta_get "$meta" window)
   [ -n "$window" ] && printf '%s' "$window"
+}
+
+fm_backend_meta_recorded_backend() {  # <meta-file> [<key>]; passive display accessor
+  local meta=$1 key=${2:-backend} count
+  count=$(grep -c "^$key=" "$meta" 2>/dev/null || true)
+  case "$count" in
+    0) printf 'absent' ;;
+    1) fm_meta_get "$meta" "$key" ;;
+    *) printf 'ambiguous' ;;
+  esac
 }
 
 # fm_backend_validate_task_endpoint: validate a task cleanup record entirely
@@ -377,6 +462,66 @@ fm_backend_meta_exact_value() {  # <meta-file> <key>
   printf '%s' "$value"
 }
 
+fm_backend_validate_remote_meta() {  # <meta-file> <task-id>
+  local meta=$1 id=$2 expected_session=${3:-fm-remote}
+  fm_backend_validate_remote_task_endpoint "$meta" "$id" "$expected_session" && return 0
+  fm_backend_refuse_remote_task_endpoint "$meta" "$id"
+  return 1
+}
+
+fm_backend_refuse_remote_task_endpoint() {  # <meta-file> <task-id>
+  local meta=$1 id=$2 backend
+  backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
+  if [ -n "$backend" ]; then
+    fm_backend_policy_refuse "task $id remote endpoint record $meta (remote_backend=$backend)" "$backend" \
+      "Retire or explicitly migrate this remote task record through docs/configuration.md \"Legacy task records\"."
+  else
+    fm_backend_policy_refuse "task $id remote endpoint record $meta (missing or ambiguous remote_backend)" "" \
+      "Retire or explicitly migrate this remote task record through docs/configuration.md \"Legacy task records\"."
+  fi
+  return 1
+}
+
+fm_backend_validate_remote_task_endpoint() {  # <meta-file> <task-id> [expected-session]
+  local meta=$1 id=$2 expected_session=${3:-}
+  local backend binding recorded_session target target_session pane
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  case "$id" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  backend=$(fm_backend_meta_exact_value "$meta" remote_backend 2>/dev/null || true)
+  [ "$backend" = "$FM_BACKEND_ACTIVE" ] || return 1
+  binding=$(fm_backend_meta_exact_value "$meta" endpoint_task_id 2>/dev/null || true)
+  [ "$binding" = "$id" ] || return 1
+  recorded_session=$(fm_backend_meta_exact_value "$meta" remote_herdr_session 2>/dev/null || true)
+  [ -n "$recorded_session" ] || return 1
+  [ -z "$expected_session" ] || [ "$recorded_session" = "$expected_session" ] || return 1
+  fm_backend_endpoint_atom_valid "$recorded_session" || return 1
+  target=$(fm_backend_meta_exact_value "$meta" remote_target 2>/dev/null || true)
+  [ -n "$target" ] || return 1
+  target_session=${target%%:*}
+  pane=${target#*:}
+  [ "$target_session" = "$recorded_session" ] || return 1
+  [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
+  fm_backend_endpoint_atom_valid "${pane//:/_}" || return 1
+  FM_BACKEND_VALIDATED_BACKEND=$backend
+  FM_BACKEND_VALIDATED_TARGET=$target
+}
+
+fm_backend_herdr_capability_check() {  # <origin>
+  local origin=$1 detail
+  if detail=$(fm_backend_herdr_version_check 2>&1); then
+    return 0
+  fi
+  detail=$(printf '%s\n' "$detail" | sed -n '1p')
+  fm_backend_policy_refuse "$origin" herdr \
+    "The native Herdr capability check failed${detail:+: $detail} Upgrade or repair Herdr, then verify with 'herdr status --json'."
+  return 2
+}
+
+fm_backend_herdr_capability_preflight() {  # <origin> [session]
+  local origin=$1 session=${2:-}
+  fm_backend_source herdr "$origin" "$session"
+}
+
 fm_backend_endpoint_atom_valid() {  # <value>
   case "$1" in
     ''|*[!A-Za-z0-9._@%+-]*) return 1 ;;
@@ -384,60 +529,104 @@ fm_backend_endpoint_atom_valid() {  # <value>
 }
 
 fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
-  local meta=$1 id=$2 backend_count backend window worktree project binding_count binding
-  local session pane recorded_session workspace tab terminal worktree_id surface
+  local meta=$1 id=$2 backend_count backend window worktree project binding_count binding terminal
+  local session pane recorded_session workspace tab worktree_id surface identity_rc
   FM_BACKEND_VALIDATED_BACKEND=
   FM_BACKEND_VALIDATED_TARGET=
+  # shellcheck disable=SC2034
+  FM_BACKEND_HERDR_EXPECTED_TARGET=
+  # shellcheck disable=SC2034
+  FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=
+  # shellcheck disable=SC2034
+  FM_BACKEND_HERDR_EXPECTED_TAB_ID=
+  FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID=
   [ -f "$meta" ] && [ ! -L "$meta" ] || {
-    echo "REFUSED: task $id has no regular endpoint metadata at $meta; preserving task state." >&2
+    fm_backend_policy_refuse "task $id endpoint record" "" \
+      "Repair or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
     return 1
   }
   case "$id" in ''|*[!A-Za-z0-9._-]*)
-    echo "REFUSED: task endpoint identity has an invalid task id; preserving task state." >&2
-    return 1
-  esac
-  window=$(fm_backend_meta_exact_value "$meta" window) || {
-    echo "REFUSED: task $id has a missing, empty, or ambiguous window endpoint; preserving task state." >&2
-    return 1
-  }
-  worktree=$(fm_backend_meta_exact_value "$meta" worktree) || {
-    echo "REFUSED: task $id has a missing, empty, or ambiguous worktree identity; preserving task state." >&2
-    return 1
-  }
-  project=$(fm_backend_meta_exact_value "$meta" project) || {
-    echo "REFUSED: task $id has a missing, empty, or ambiguous project identity; preserving task state." >&2
-    return 1
-  }
-  case "$worktree$project$window" in *$'\n'*|*$'\r'*|*$'\t'*)
-    echo "REFUSED: task $id has malformed endpoint metadata; preserving task state." >&2
+    fm_backend_policy_refuse "task endpoint identity" "" \
+      "Use a valid task id and explicitly migrate any legacy record through docs/configuration.md \"Legacy task records\"."
     return 1
   esac
   backend_count=$(grep -c '^backend=' "$meta" 2>/dev/null || true)
   case "$backend_count" in
-    0) backend=tmux ;;
+    0)
+      if fm_backend_policy_legacy_lane; then
+        backend=tmux
+      else
+        fm_backend_policy_refuse "task $id endpoint record $meta (no backend= line)" "" \
+          "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
+        return 1
+      fi
+      ;;
     1) backend=$(fm_backend_meta_exact_value "$meta" backend) || backend= ;;
     *) backend= ;;
   esac
-  if [ -z "$backend" ] || ! fm_backend_is_known "$backend"; then
-    echo "REFUSED: task $id has a missing, ambiguous, or unknown backend identity; preserving task state." >&2
+  if [ -z "$backend" ]; then
+    fm_backend_policy_refuse "task $id endpoint record $meta (missing or ambiguous backend identity)" "" \
+      "Retire or explicitly migrate this pre-invariant task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
     return 1
   fi
+  if [ "$backend" = tmux ] && fm_backend_policy_legacy_lane; then
+    window=$(fm_meta_get "$meta" window)
+    [ -n "$window" ] || window=$(fm_meta_get "$meta" terminal)
+    [ -n "$window" ] || return 1
+    FM_BACKEND_VALIDATED_BACKEND=$backend
+    FM_BACKEND_VALIDATED_TARGET=$window
+    return 0
+  fi
+  if ! fm_backend_policy_permits "$backend"; then
+    fm_backend_policy_refuse "task $id endpoint record $meta (backend=$backend)" "$backend" \
+      "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
+    return 1
+  fi
+  if ! fm_backend_is_known "$backend" \
+    && ! fm_backend_policy_legacy_adapter_allowed "$backend"; then
+    fm_backend_policy_refuse "task $id endpoint record $meta (unknown backend=$backend)" "$backend" \
+      "Retire or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+    return 1
+  fi
+  window=$(fm_backend_meta_exact_value "$meta" window) || {
+    fm_backend_policy_refuse "task $id endpoint record (window)" "$backend" \
+      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+    return 1
+  }
+  worktree=$(fm_backend_meta_exact_value "$meta" worktree) || {
+    fm_backend_policy_refuse "task $id endpoint record (worktree)" "$backend" \
+      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+    return 1
+  }
+  project=$(fm_backend_meta_exact_value "$meta" project) || {
+    fm_backend_policy_refuse "task $id endpoint record (project)" "$backend" \
+      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+    return 1
+  }
+  case "$worktree$project$window" in *$'\n'*|*$'\r'*|*$'\t'*)
+    fm_backend_policy_refuse "task $id endpoint record (malformed metadata)" "$backend" \
+      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+    return 1
+  esac
   binding_count=$(grep -c '^endpoint_task_id=' "$meta" 2>/dev/null || true)
   case "$binding_count" in
     0) binding= ;;
     1)
       binding=$(fm_backend_meta_exact_value "$meta" endpoint_task_id) || {
-        echo "REFUSED: task $id has an empty endpoint task binding; preserving task state." >&2
+        fm_backend_policy_refuse "task $id endpoint record (empty task binding)" "$backend" \
+      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
         return 1
       }
       ;;
     *)
-      echo "REFUSED: task $id has an ambiguous endpoint task binding; preserving task state." >&2
+      fm_backend_policy_refuse "task $id endpoint record (ambiguous task binding)" "$backend" \
+      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
       return 1
       ;;
   esac
   if [ -n "$binding" ] && [ "$binding" != "$id" ]; then
-    echo "REFUSED: endpoint metadata belongs to task $binding, not $id; preserving task state." >&2
+    fm_backend_policy_refuse "task $id endpoint record (task binding mismatch)" "$backend" \
+      "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
     return 1
   fi
 
@@ -447,32 +636,64 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
       pane=${window#*:}
       if [ "$pane" = "$window" ] || [ "$pane" != "fm-$id" ] \
         || [ -z "$session" ]; then
-        echo "REFUSED: tmux endpoint '$window' is malformed or does not belong to task $id; preserving task state." >&2
+        fm_backend_policy_refuse "task $id endpoint record (legacy tmux endpoint)" "$backend" \
+          "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
         return 1
       fi
       ;;
     herdr)
       [ "$binding" = "$id" ] || {
-        echo "REFUSED: legacy Herdr endpoint metadata for task $id lacks an exact task binding; preserving task state." >&2
+        fm_backend_policy_refuse "task $id endpoint record (Herdr binding)" "$backend" \
+          "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
         return 1
       }
       recorded_session=$(fm_backend_meta_exact_value "$meta" herdr_session) || recorded_session=
       workspace=$(fm_backend_meta_exact_value "$meta" herdr_workspace_id) || workspace=
       tab=$(fm_backend_meta_exact_value "$meta" herdr_tab_id) || tab=
       pane=$(fm_backend_meta_exact_value "$meta" herdr_pane_id) || pane=
-      if [ -z "$recorded_session" ] || [ -z "$workspace" ] || [ -z "$tab" ] || [ -z "$pane" ] \
+      terminal=$(fm_backend_meta_exact_value "$meta" herdr_terminal_id) || terminal=
+      if [ -z "$recorded_session" ] || [ -z "$workspace" ] || [ -z "$tab" ] || [ -z "$pane" ] || [ -z "$terminal" ] \
         || [ "$window" != "$recorded_session:$pane" ] \
         || ! fm_backend_endpoint_atom_valid "$recorded_session" \
         || ! fm_backend_endpoint_atom_valid "$workspace" \
         || ! fm_backend_endpoint_atom_valid "${tab//:/_}" \
         || ! fm_backend_endpoint_atom_valid "${pane//:/_}"; then
-        echo "REFUSED: Herdr endpoint metadata for task $id is malformed or inconsistent; preserving task state." >&2
+        fm_backend_policy_refuse "task $id endpoint record (Herdr endpoint)" "$backend" \
+          "Repair the endpoint metadata or explicitly migrate the record through docs/configuration.md \"Legacy task records\". Task state is preserved."
         return 1
       fi
+      if ! fm_backend_policy_legacy_lane; then
+        fm_backend_source herdr "task $id endpoint identity" "$recorded_session" || return 2
+        identity_rc=0
+        FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID=$terminal
+        fm_backend_herdr_endpoint_identity "$recorded_session" "$workspace" "$tab" "$pane" || identity_rc=$?
+        case "$identity_rc" in
+          0) ;;
+          1)
+            fm_backend_policy_refuse "task $id endpoint record (Herdr target identity)" herdr \
+              "The recorded Herdr pane is missing or no longer matches its workspace and tab identity. Repair the endpoint metadata or explicitly migrate the task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+            return 1
+            ;;
+          *)
+            fm_backend_policy_refuse "task $id endpoint record (Herdr target identity)" herdr \
+              "The native Herdr pane identity check failed. Repair Herdr, then verify with 'herdr status --json'. Task state is preserved."
+            return 2
+            ;;
+        esac
+      fi
+      # shellcheck disable=SC2034
+      FM_BACKEND_HERDR_EXPECTED_TARGET=$window
+      # shellcheck disable=SC2034
+      FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=$workspace
+      # shellcheck disable=SC2034
+      FM_BACKEND_HERDR_EXPECTED_TAB_ID=$tab
+      # shellcheck disable=SC2034
+      FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID=$terminal
       ;;
     zellij)
       [ "$binding" = "$id" ] || {
-        echo "REFUSED: legacy Zellij endpoint metadata for task $id lacks an exact task binding; preserving task state." >&2
+        fm_backend_policy_refuse "task $id endpoint record (legacy Zellij endpoint)" "$backend" \
+          "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
         return 1
       }
       recorded_session=$(fm_backend_meta_exact_value "$meta" zellij_session) || recorded_session=
@@ -482,36 +703,42 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
       if [ -z "$recorded_session" ] || [ -z "$tab" ] || [ -z "$pane" ] \
         || [ "$window" != "$recorded_session:$pane" ] \
         || ! fm_backend_endpoint_atom_valid "$recorded_session"; then
-        echo "REFUSED: Zellij endpoint metadata for task $id is malformed or inconsistent; preserving task state." >&2
+        fm_backend_policy_refuse "task $id endpoint record (legacy Zellij endpoint)" "$backend" \
+          "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
         return 1
       fi
       ;;
     orca)
       [ "$binding" = "$id" ] || {
-        echo "REFUSED: legacy Orca endpoint metadata for task $id lacks an exact task binding; preserving task state." >&2
+        fm_backend_policy_refuse "task $id endpoint record (legacy Orca endpoint)" "$backend" \
+          "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
         return 1
       }
       terminal=$(fm_backend_meta_exact_value "$meta" terminal) || terminal=
       worktree_id=$(fm_backend_meta_exact_value "$meta" orca_worktree_id) || worktree_id=
       [ -n "$terminal" ] || {
-        echo "REFUSED: missing terminal in $meta; cannot close Orca endpoint; preserving task state." >&2
+        fm_backend_policy_refuse "task $id endpoint record (legacy Orca terminal)" "$backend" \
+          "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
         return 1
       }
       [ -n "$worktree_id" ] || {
-        echo "REFUSED: missing orca_worktree_id in $meta; cannot remove Orca worktree; preserving task state." >&2
+        fm_backend_policy_refuse "task $id endpoint record (legacy Orca worktree)" "$backend" \
+          "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
         return 1
       }
       if [ "$window" != "fm-$id" ] \
         || ! fm_backend_endpoint_atom_valid "$terminal" \
         || ! fm_backend_endpoint_atom_valid "$worktree_id"; then
-        echo "REFUSED: Orca endpoint metadata for task $id is malformed or inconsistent; preserving task state." >&2
+        fm_backend_policy_refuse "task $id endpoint record (legacy Orca endpoint)" "$backend" \
+          "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
         return 1
       fi
       window=$terminal
       ;;
     cmux)
       [ "$binding" = "$id" ] || {
-        echo "REFUSED: legacy cmux endpoint metadata for task $id lacks an exact task binding; preserving task state." >&2
+        fm_backend_policy_refuse "task $id endpoint record (legacy cmux endpoint)" "$backend" \
+          "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
         return 1
       }
       workspace=$(fm_backend_meta_exact_value "$meta" cmux_workspace_id) || workspace=
@@ -519,7 +746,8 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
       if [ -z "$workspace" ] || [ -z "$surface" ] || [ "$window" != "$workspace:$surface" ] \
         || ! fm_backend_endpoint_atom_valid "$workspace" \
         || ! fm_backend_endpoint_atom_valid "$surface"; then
-        echo "REFUSED: cmux endpoint metadata for task $id is malformed or inconsistent; preserving task state." >&2
+        fm_backend_policy_refuse "task $id endpoint record (legacy cmux endpoint)" "$backend" \
+          "$(fm_backend_policy_legacy_record_remediation) Task state is preserved."
         return 1
       fi
       ;;
@@ -571,14 +799,56 @@ fm_backend_meta_for_selector() {  # <raw-target> <state-dir>
 }
 
 fm_backend_of_selector() {  # <raw-target> <resolved-target> <state-dir>
-  local raw=$1 resolved=$2 state=$3 meta
+  local raw=$1 resolved=$2 state=$3 meta target id
   meta=$(fm_backend_meta_for_selector "$raw" "$state" 2>/dev/null || true)
-  [ -n "$meta" ] && { fm_backend_of_meta "$meta"; return 0; }
+  if [ -n "$meta" ]; then
+    id=${meta##*/}
+    id=${id%.meta}
+    if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
+      fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote || {
+        fm_backend_policy_refuse "task $id remote endpoint record" herdr \
+          "Repair or explicitly migrate this remote task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+        return 1
+      }
+    else
+      fm_backend_validate_task_endpoint "$meta" "$id" || return 1
+    fi
+    local backend=$FM_BACKEND_VALIDATED_BACKEND
+    target=$FM_BACKEND_VALIDATED_TARGET
+    fm_backend_herdr_capability_preflight "selector backend for $raw" "${target%%:*}" || return 2
+    printf '%s' "$backend"
+    return $?
+  fi
   if [ -n "$resolved" ]; then
     meta=$(fm_backend_meta_for_window "$resolved" "$state" 2>/dev/null || true)
-    [ -n "$meta" ] && { fm_backend_of_meta "$meta"; return 0; }
+    if [ -n "$meta" ]; then
+      id=${meta##*/}
+      id=${id%.meta}
+      if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
+        fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote || {
+          fm_backend_policy_refuse "task $id remote endpoint record" herdr \
+            "Repair or explicitly migrate this remote task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+          return 1
+        }
+      else
+        fm_backend_validate_task_endpoint "$meta" "$id" || return 1
+      fi
+      local backend=$FM_BACKEND_VALIDATED_BACKEND
+      target=$FM_BACKEND_VALIDATED_TARGET
+      fm_backend_herdr_capability_preflight "selector backend for $raw" "${target%%:*}" || return 2
+      printf '%s' "$backend"
+      return $?
+    fi
   fi
-  printf 'tmux'
+  # An explicit target with no matching record is a Herdr "<session>:<pane-id>"
+  # endpoint in the active runtime; the adapter's capability proof is required
+  # before the backend identity is returned.
+  if fm_backend_policy_legacy_lane; then
+    printf 'tmux'
+  else
+    fm_backend_herdr_capability_preflight "selector backend for $raw" "${resolved%%:*}" || return 2
+    printf '%s' "$FM_BACKEND_ACTIVE"
+  fi
 }
 
 fm_backend_expected_label_of_selector() {  # <raw-target> <state-dir>
@@ -592,8 +862,8 @@ fm_backend_expected_label_of_selector() {  # <raw-target> <state-dir>
 # Each adapter is an independently linted canonical root. The /dev/null source
 # boundaries keep runtime dispatch from importing all five adapter ASTs into
 # every dispatcher consumer while preserving the runtime source operations.
-fm_backend_source() {  # <name>
-  local name=$1
+fm_backend_source() {  # <name> [origin] [session] [spawn]
+  local name=$1 origin=${2:-Herdr runtime operation} session=${3:-} mode=${4:-}
   fm_backend_validate "$name" || return 1
   case "$name" in
     tmux)
@@ -632,6 +902,28 @@ fm_backend_source() {  # <name>
       fi
       ;;
   esac
+  if [ "$name" = herdr ]; then
+    fm_backend_herdr_capability_check "$origin" || return 2
+    if [ "$mode" = spawn ] || [ "$mode" = setup ]; then
+      [ -n "$session" ] || session=$(fm_backend_herdr_session)
+      if ! fm_backend_herdr_server_ensure "$session" >/dev/null 2>&1; then
+        fm_backend_policy_refuse "$origin" herdr \
+          "The native Herdr named-session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'."
+        return 2
+      fi
+      if ! fm_backend_herdr_session_capability_check "$session" >/dev/null 2>&1; then
+        fm_backend_policy_refuse "$origin" herdr \
+          "The native Herdr named-session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'."
+        return 2
+      fi
+      return 0
+    fi
+    [ -n "$session" ] || session=$(fm_backend_herdr_session)
+    fm_backend_herdr_session_capability_check "$session" >/dev/null 2>&1 && return 0
+    fm_backend_policy_refuse "$origin" herdr \
+      "The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'."
+    return 2
+  fi
 }
 
 # fm_backend_resolve_selector: resolve a raw fm-send.sh/fm-peek.sh style
@@ -639,11 +931,8 @@ fm_backend_source() {  # <name>
 #   target with ":"   used as-is (the escape hatch for a window/pane outside
 #                      this firstmate home) - backend-independent, a literal string.
 #   exact task id      routed through <state-dir>/<id>.meta's backend target
-#                      (`window=` normally, `terminal=` for Orca) -
-#                      backend-independent, a stored value, NOT re-verified
-#                      against a live backend inventory (matches today's
-#                      behavior: tmux window names can be trusted from meta
-#                      without a live re-check).
+#                      (`window=` normally, `terminal=` for Orca), after the
+#                      active backend's native capability proof.
 #   "fm-<id>"          legacy task window label fallback routed through
 #                      <state-dir>/<id>.meta when no exact
 #                      <state-dir>/fm-<id>.meta exists.
@@ -651,17 +940,36 @@ fm_backend_source() {  # <name>
 #                      metadata, then treated as an ad hoc bare window name and
 #                      resolved by searching the legacy tmux live inventory.
 fm_backend_resolve_selector() {  # <raw-target> <state-dir>
-  local raw=$1 state=$2 meta window
+  local raw=$1 state=$2 meta window id backend=
   case "$raw" in
     *:*)
+      if ! fm_backend_policy_legacy_lane; then
+        fm_backend_herdr_capability_preflight "explicit endpoint resolution" "${raw%%:*}" || return 2
+      fi
       printf '%s' "$raw"
       return 0
       ;;
   esac
   meta=$(fm_backend_meta_for_selector "$raw" "$state" 2>/dev/null || true)
   if [ -n "$meta" ]; then
-    window=$(fm_backend_target_of_meta "$meta")
+    id=${meta##*/}
+    id=${id%.meta}
+    if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
+      fm_backend_validate_remote_task_endpoint "$meta" "$id" fm-remote || {
+        fm_backend_policy_refuse "task $id remote endpoint record" herdr \
+          "Repair or explicitly migrate this remote task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+        return 1
+      }
+      backend=$FM_BACKEND_VALIDATED_BACKEND
+      window=$FM_BACKEND_VALIDATED_TARGET
+    else
+      fm_backend_validate_task_endpoint "$meta" "$id" || return 1
+      backend=$FM_BACKEND_VALIDATED_BACKEND
+      window=$FM_BACKEND_VALIDATED_TARGET
+    fi
     [ -n "$window" ] || { echo "error: no backend target recorded in $meta" >&2; return 1; }
+    [ "$backend" != "$FM_BACKEND_ACTIVE" ] || \
+      fm_backend_herdr_capability_preflight "selector resolution for task $id" "${window%%:*}" || return 2
     printf '%s' "$window"
     return 0
   fi
@@ -673,10 +981,20 @@ fm_backend_resolve_selector() {  # <raw-target> <state-dir>
     *)
       meta=$(fm_backend_meta_for_window "$raw" "$state" 2>/dev/null || true)
       if [ -n "$meta" ]; then
+        backend=$(fm_backend_of_meta "$meta") || return 1
+        [ "$backend" = "$FM_BACKEND_ACTIVE" ] || return 1
         window=$(fm_backend_target_of_meta "$meta")
         [ -n "$window" ] || { echo "error: no backend target recorded in $meta" >&2; return 1; }
+        fm_backend_herdr_capability_preflight "selector resolution for task ${meta##*/}" "${window%%:*}" || return 2
         printf '%s' "$window"
         return 0
+      fi
+      # Active runtime: a bare window name has no inventory to search - Herdr
+      # endpoints are "<session>:<pane-id>" and every task is reachable by id.
+      # The legacy tmux live-inventory search survives only in the regression lane.
+      if ! fm_backend_policy_legacy_lane; then
+        echo "error: target '$raw' has no task record in $state, and bare window names are not resolvable because Herdr is the sole supported runtime backend; pass a task id, fm-<id>, or an explicit <herdr-session>:<pane-id> target" >&2
+        return 1
       fi
       fm_backend_source tmux || return 1
       fm_backend_tmux_resolve_bare_selector "$raw"
@@ -693,9 +1011,10 @@ fm_backend_resolve_selector() {  # <raw-target> <state-dir>
 
 # fm_backend_capture: bounded plain-text session capture.
 fm_backend_capture() {  # <backend> <target> <lines> [expected-label]
-  local backend=$1
+  local backend=$1 target op_rc
   shift
-  fm_backend_source "$backend" || return 1
+  target=${1:-}
+  fm_backend_source "$backend" "capture" "${target%%:*}" || return $?
   case "$backend" in
     tmux) fm_backend_tmux_capture "$@" ;;
     herdr) fm_backend_herdr_capture "$@" ;;
@@ -704,13 +1023,62 @@ fm_backend_capture() {  # <backend> <target> <lines> [expected-label]
     cmux) fm_backend_cmux_capture "$@" ;;
     *) echo "error: no capture implementation for backend '$backend'" >&2; return 1 ;;
   esac
+  op_rc=$?
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr capture for $target" herdr \
+      "The native Herdr pane read failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
+}
+
+fm_backend_send_literal() {  # <backend> <target> <text> [expected-label]
+  local backend=$1 target op_rc
+  shift
+  target=${1:-}
+  fm_backend_source "$backend" "send literal" "${target%%:*}" || return $?
+  case "$backend" in
+    tmux) fm_backend_tmux_send_literal "$@" ;;
+    herdr) fm_backend_herdr_send_literal "$@" ;;
+    zellij) fm_backend_zellij_send_literal "$@" ;;
+    orca) fm_backend_orca_send_literal "$@" ;;
+    cmux) fm_backend_cmux_send_literal "$@" ;;
+    *) echo "error: no send-literal implementation for backend '$backend'" >&2; return 1 ;;
+  esac
+  op_rc=$?
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr send-text for $target" herdr \
+      "The native Herdr send-text operation failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
+}
+
+fm_backend_send_text_line() {  # <backend> <target> <text> [expected-label]
+  local backend=$1 target op_rc
+  shift
+  target=${1:-}
+  fm_backend_source "$backend" "send text line" "${target%%:*}" || return $?
+  case "$backend" in
+    tmux) fm_backend_tmux_send_text_line "$@" ;;
+    herdr) fm_backend_herdr_send_text_line "$@" ;;
+    zellij) fm_backend_zellij_send_text_line "$@" ;;
+    orca) fm_backend_orca_send_text_line "$@" ;;
+    cmux) fm_backend_cmux_send_text_line "$@" ;;
+    *) echo "error: no send-text-line implementation for backend '$backend'" >&2; return 1 ;;
+  esac
+  op_rc=$?
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr send-text for $target" herdr \
+      "The native Herdr send-text operation failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
 }
 
 # fm_backend_send_key: one backend-supported named special key.
 fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
-  local backend=$1
+  local backend=$1 target op_rc
   shift
-  fm_backend_source "$backend" || return 1
+  target=${1:-}
+  fm_backend_source "$backend" "send key" "${target%%:*}" || return $?
   case "$backend" in
     tmux) fm_backend_tmux_send_key "$@" ;;
     herdr) fm_backend_herdr_send_key "$@" ;;
@@ -719,15 +1087,22 @@ fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
     cmux) fm_backend_cmux_send_key "$@" ;;
     *) echo "error: no send-key implementation for backend '$backend'" >&2; return 1 ;;
   esac
+  op_rc=$?
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr send-keys for $target" herdr \
+      "The native Herdr send-keys operation failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
 }
 
 # fm_backend_send_text_submit: type text once, then submit and verify,
 # retrying only the submission (never retyping). Echoes the backend's
 # proof-carrying verdict; callers require exact empty for confirmed delivery.
 fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sleep> <settle> [expected-label]
-  local backend=$1
+  local backend=$1 target op_rc
   shift
-  fm_backend_source "$backend" || return 1
+  target=${1:-}
+  fm_backend_source "$backend" "send text" "${target%%:*}" || return $?
   case "$backend" in
     tmux) fm_backend_tmux_send_text_submit "$@" ;;
     herdr) fm_backend_herdr_send_text_submit "$@" ;;
@@ -736,16 +1111,23 @@ fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sl
     cmux) fm_backend_cmux_send_text_submit "$@" ;;
     *) echo "error: no send-text implementation for backend '$backend'" >&2; return 1 ;;
   esac
+  op_rc=$?
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr send-text for $target" herdr \
+      "The native Herdr send-text, send-keys, or agent get operation failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
 }
 
 # fm_backend_kill: remove the task's session endpoint (best-effort; a
 # nonexistent/already-gone target is not an error - callers already swallow
 # failures here exactly as the inline `tmux kill-window ... || true` did).
 fm_backend_kill() {  # <backend> <target>
-  local backend=$1
+  local backend=$1 target op_rc
   shift
   [ -n "${1:-}" ] || { echo "error: refusing empty backend kill target" >&2; return 1; }
-  fm_backend_source "$backend" || return 1
+  target=$1
+  fm_backend_source "$backend" "kill endpoint" "${target%%:*}" || return $?
   case "$backend" in
     tmux) fm_backend_tmux_kill "$@" ;;
     herdr) fm_backend_herdr_kill "$@" ;;
@@ -754,6 +1136,12 @@ fm_backend_kill() {  # <backend> <target>
     cmux) fm_backend_cmux_kill "$@" ;;
     *) echo "error: no kill implementation for backend '$backend'" >&2; return 1 ;;
   esac
+  op_rc=$?
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr endpoint cleanup for $target" herdr \
+      "The native Herdr cleanup operation failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
 }
 
 fm_backend_remove_worktree() {  # <backend> <worktree-id>
@@ -784,13 +1172,25 @@ fm_backend_worktree_path() {  # <backend> <worktree-id>
 # fm-crew-state.sh also corroborates native idle verdicts with the recorded
 # harness's signature before treating a no-run crew as not busy.
 fm_backend_busy_state() {  # <backend> <target>
-  local backend=$1
+  local backend=$1 target op_rc
   shift
-  fm_backend_source "$backend" || { printf 'unknown'; return 0; }
+  target=${1:-}
+  fm_backend_source "$backend" "busy state" "${target%%:*}"
+  local source_rc=$?
+  if [ "$source_rc" -ne 0 ]; then
+    fm_backend_policy_legacy_lane && { printf 'unknown'; return 0; }
+    return "$source_rc"
+  fi
   case "$backend" in
     herdr) fm_backend_herdr_busy_state "$@" ;;
     *) printf 'unknown' ;;
   esac
+  op_rc=$?
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr busy state for $target" herdr \
+      "The native Herdr agent get operation failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
 }
 
 # fm_backend_composer_state: classify the composer/input area of <target> as
@@ -806,9 +1206,15 @@ fm_backend_busy_state() {  # <backend> <target>
 # assumption; zellij's classifier reads `dump-screen --ansi`, which replaced
 # its old no-classifier content-diff reporting.
 fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pending|pending-unproven|unknown
-  local backend=$1
+  local backend=$1 target op_rc
   shift
-  fm_backend_source "$backend" || { printf 'unknown'; return 0; }
+  target=${1:-}
+  fm_backend_source "$backend" "composer state" "${target%%:*}"
+  local source_rc=$?
+  if [ "$source_rc" -ne 0 ]; then
+    fm_backend_policy_legacy_lane && { printf 'unknown'; return 0; }
+    return "$source_rc"
+  fi
   case "$backend" in
     tmux) fm_tmux_composer_state "$@" ;;
     herdr) fm_backend_herdr_composer_state "$@" ;;
@@ -817,6 +1223,12 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
     zellij) fm_backend_zellij_composer_state "$@" ;;
     *) printf 'unknown' ;;
   esac
+  op_rc=$?
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr composer state for $target" herdr \
+      "The native Herdr pane or agent read failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
 }
 
 # fm_backend_target_exists: cheap, READ-ONLY existence check - does the
@@ -832,37 +1244,32 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # Mirrors fm-crew-state.sh's pane_readable check; exists here as one shared
 # primitive so callers that only need a fast alive/dead read (recovery
 # digests, the session-start fleet digest) do not re-derive it inline.
-fm_backend_tmux_target_shape_valid() {  # <target>
-  local target=${1:-} pane_id
-  case "$target" in
-    %*)
-      pane_id=${target#%}
-      case "$pane_id" in
-        ''|*[!0-9]*) return 1 ;;
-      esac
-      return 0
-      ;;
-  esac
-  case "$target" in
-    ''|:*|*:|*:*:*|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
-    *:*) ;;
-    *) return 1 ;;
-  esac
-  return 0
-}
-
-fm_backend_target_exists() {  # <backend> <target> [expected-label]
-  local backend=$1 target=$2 expected_label=${3:-} session pane
+fm_backend_target_exists() {  # <backend> <target> [expected-label] [expected-workspace] [expected-tab] [expected-terminal]
+  local backend=$1 target=$2 expected_label=${3:-} session pane pane_out pane_rc expected_workspace=${4:-} expected_tab=${5:-} expected_terminal=${6:-${FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID:-}} validate_rc=0
+  # The tmux arm below calls the tmux CLI directly rather than through
+  # fm_backend_source, so the invariant is enforced here explicitly: a retained
+  # legacy backend is refused before any runtime command runs.
+  if fm_backend_validate "$backend"; then
+    :
+  else
+    validate_rc=$?
+    return "$validate_rc"
+  fi
   case "$backend" in
     tmux)
       fm_backend_tmux_target_shape_valid "$target" || return 1
       tmux display-message -p -t "$target" '#{pane_id}' >/dev/null 2>&1
       ;;
     herdr)
-      fm_backend_source herdr || return 1
       session=${target%%:*}
       pane=${target#*:}
       [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
+      fm_backend_herdr_capability_preflight "target existence check" "$session" || return 2
+      [ -n "$expected_workspace" ] && [ -n "$expected_tab" ] && [ -n "$expected_terminal" ] || {
+        fm_backend_policy_refuse "Herdr target $target" herdr \
+          "The recorded Herdr target lacks its complete workspace, tab, and terminal identity. Recreate or explicitly migrate the endpoint, then verify with 'herdr status --json'."
+        return 2
+      }
       # fm_backend_herdr_cli (not a raw HERDR_SESSION-only call): verified
       # empirically (docs/herdr-backend.md "Session targeting") that the bare
       # env var alone is NOT reliably honored once another herdr server is
@@ -871,7 +1278,16 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
       # flag on top, so this check is correctly scoped even when the caller's
       # own ambient session (e.g. the primary firstmate's default session) is
       # a DIFFERENT one than the target's.
-      fm_backend_herdr_cli "$session" pane get "$pane" >/dev/null 2>&1
+      if pane_out=$(fm_backend_herdr_pane_presence_state "$session" "$pane" "$expected_workspace" "$expected_tab" "$expected_terminal"); then
+        [ "$pane_out" = present ] && return 0
+        [ "$pane_out" = dead ] && return 1
+      else
+        pane_rc=$?
+        [ "$pane_rc" -eq 2 ] || return 1
+      fi
+      fm_backend_policy_refuse "Herdr target $target" herdr \
+        "The verified Herdr session became unavailable while reading the endpoint. Repair Herdr, then verify with 'herdr status --json'."
+      return 2
       ;;
     zellij)
       fm_backend_source zellij || return 1
@@ -1038,20 +1454,45 @@ fm_backend_target_state() {  # <backend> <target> [expected-label] -> present|ab
 # agent-process recovery path has not been empirically validated. Orca and cmux
 # do not support secondmate spawns.
 fm_backend_agent_state() {  # <backend> <target>
-  local backend=$1 target=$2
-  fm_backend_source "$backend" || { printf 'unverified'; return 0; }
+  local backend=$1 target=$2 state op_rc=0
+  fm_backend_source "$backend" "agent state" "${target%%:*}"
+  local source_rc=$?
+  if [ "$source_rc" -ne 0 ]; then
+    fm_backend_policy_legacy_lane && { printf 'unverified'; return 0; }
+    return "$source_rc"
+  fi
   case "$backend" in
-    tmux) fm_backend_tmux_agent_state "$target" ;;
-    herdr) fm_backend_herdr_agent_state "$target" ;;
-    *) printf 'unverified' ;;
+    tmux)
+      fm_backend_tmux_agent_state "$target"
+      op_rc=$?
+      ;;
+    herdr)
+      if state=$(fm_backend_herdr_agent_state "$target"); then
+        printf '%s' "$state"
+      else
+        op_rc=$?
+      fi
+      ;;
+    *)
+      printf 'unverified'
+      ;;
   esac
+  if [ "$backend" = herdr ] && [ "$op_rc" -eq 2 ]; then
+    fm_backend_policy_refuse "Herdr agent state for $target" herdr \
+      "The native Herdr agent get operation failed after preflight. Repair Herdr, then verify with 'herdr status --json'."
+  fi
+  return "$op_rc"
 }
 
 # Backward-compatible three-state view for existing callers. An
 # authoritatively missing endpoint is confidently not a live agent, while every
 # ambiguous, unreadable, or unverified result stays unknown.
 fm_backend_agent_alive() {  # <backend> <target>
-  case "$(fm_backend_agent_state "$1" "$2")" in
+  local state state_rc
+  state=$(fm_backend_agent_state "$1" "$2")
+  state_rc=$?
+  [ "$state_rc" -eq 0 ] || return "$state_rc"
+  case "$state" in
     alive) printf 'alive' ;;
     dead|missing) printf 'dead' ;;
     *) printf 'unknown' ;;
@@ -1083,12 +1524,12 @@ fm_backend_has_push() {  # <backend>
 # The watcher memoizes this per session so the potentially heavy capability
 # probe is not repeated every poll.
 fm_backend_events_capable() {  # <backend> <session>
-  local backend=$1
-  shift
+  local backend=$1 session=$2
+  shift 2
   fm_backend_has_push "$backend" || return 1
-  fm_backend_source "$backend" || return 1
+  fm_backend_source "$backend" "event capability" "$session" || return 1
   case "$backend" in
-    herdr) fm_backend_herdr_events_capable "$@" ;;
+    herdr) fm_backend_herdr_events_capable "$session" "$@" ;;
     *) return 1 ;;
   esac
 }
@@ -1100,34 +1541,34 @@ fm_backend_events_capable() {  # <backend> <session>
 # returns 2 when the event path is unusable (the caller sleeps the budget
 # itself). Non-push backends always return 2.
 fm_backend_wait_transition() {  # <backend> <session> <timeout_secs> <state_dir> <pane_window...>
-  local backend=$1
-  shift
+  local backend=$1 session=$2
+  shift 2
   fm_backend_has_push "$backend" || return 2
-  fm_backend_source "$backend" || return 2
+  fm_backend_source "$backend" "event wait" "$session" || return 2
   case "$backend" in
-    herdr) fm_backend_herdr_wait_transition "$@" ;;
+    herdr) fm_backend_herdr_wait_transition "$session" "$@" ;;
     *) return 2 ;;
   esac
 }
 
 fm_backend_commit_transition() {  # <backend> <state_dir> <session> <record>
-  local backend=$1
-  shift
+  local backend=$1 state_dir=$2 session=$3
+  shift 3
   fm_backend_has_push "$backend" || return 1
-  fm_backend_source "$backend" || return 1
+  fm_backend_source "$backend" "event commit" "$session" || return 1
   case "$backend" in
-    herdr) fm_backend_herdr_commit_transition "$@" ;;
+    herdr) fm_backend_herdr_commit_transition "$state_dir" "$session" "$@" ;;
     *) return 1 ;;
   esac
 }
 
 fm_backend_clear_transition() {  # <backend> <state_dir> <window>
-  local backend=$1
-  shift
+  local backend=$1 state_dir=$2 window=$3
+  shift 3
   fm_backend_has_push "$backend" || return 0
-  fm_backend_source "$backend" || return 1
+  fm_backend_source "$backend" "event clear" "${window%%:*}" || return 1
   case "$backend" in
-    herdr) fm_backend_herdr_clear_transition "$@" ;;
+    herdr) fm_backend_herdr_clear_transition "$state_dir" "$window" "$@" ;;
     *) return 0 ;;
   esac
 }

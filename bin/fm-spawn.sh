@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
+# Spawn a direct report: a crewmate in a Herdr workspace, or a
 # secondmate in its isolated firstmate home.
 # Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
@@ -28,8 +28,8 @@
 #   positional, and batch pairs are all refused alongside it; only harness,
 #   model, and effort may change, which is what makes a harness switch one
 #   ordinary relaunch. It refuses unless the recorded endpoint is positively
-#   agent-free on a backend with a recovery-grade agent-state classifier (tmux
-#   or herdr), refuses unless the endpoint's shell is sitting in the recorded
+#   agent-free on a backend with a recovery-grade agent-state classifier,
+#   refuses unless the endpoint's shell is sitting in the recorded
 #   worktree, and clears the previous harness's per-task wiring before arming
 #   the new incarnation.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
@@ -40,24 +40,15 @@
 #   from that harness's launch rather than guessed.
 #   --backend <name> is the explicit runtime session-provider backend for this
 #   exact task only (docs/configuration.md "Runtime backend" owns when that flag
-#   is authorized). Without it, the script resolves FM_BACKEND, then
-#   config/backend, then runtime auto-detection from the runtime firstmate's
-#   environment: $TMUX, HERDR_ENV=1, or cmux runtime signals (via
-#   bin/fm-backend.sh's fm_backend_detect, with cmux fallback details in
-#   docs/cmux-backend.md),
-#   then tmux.
-#   Spawn-capable backends are the reference tmux adapter and experimental
-#   herdr, zellij, orca, and cmux. Orca owns both the task worktree and
-#   terminal, so ship/scout Orca spawns do not run treehouse get; cmux is a
-#   session provider only, exactly like herdr/zellij, so it does. An
-#   auto-detected herdr or cmux spawn prints a loud stderr notice;
-#   auto-detected tmux stays silent; zellij and orca are never auto-detected.
-#   codex-app is not a known backend yet; docs/codex-app-backend.md owns that
-#   blocked backend contract. Default tmux spawns do not write backend= to meta;
-#   absent backend= means tmux. cmux does not support --secondmate spawns yet.
+#   is authorized). Without it, FM_BACKEND or config/backend must explicitly
+#   declare herdr; a missing identity refuses. The selected Herdr runtime is
+#   proven by native capability and version checks before any endpoint exists.
+#   Every other backend value is refused with actionable Herdr remediation, and
+#   runtime markers never select a backend. Herdr is the sole supported backend
+#   for crewmates, scouts, secondmates, supervision, and task endpoints.
 #   A backend spawn refusal (missing dependency, version gate, unauthenticated
-#   socket, or unsupported secondmate mode) is terminal for that selected backend;
-#   callers must surface it instead of silently retrying another backend.
+#   service, or unsupported secondmate mode) is terminal and callers must
+#   surface it instead of silently retrying another backend.
 #   A herdr crewmate or scout is placed in the exact workspace of the firstmate
 #   or secondmate process launching it, resolved from that process's own herdr
 #   pane rather than from a workspace label (herdr enforces no label uniqueness,
@@ -306,9 +297,6 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
-# Skip the watcher guard when re-exec'd for one pair of a batch (FM_SPAWN_NO_GUARD is
-# set by the batch loop below), so the guard runs once for the batch, not once per pair.
-[ -n "${FM_SPAWN_NO_GUARD:-}" ] || "$FM_ROOT/bin/fm-guard.sh" || true
 KIND=ship
 KIND_SET=0
 HARNESS_ARG=
@@ -371,7 +359,11 @@ done
 [ "$HARNESS_SET" -eq 0 ] || [ -n "$HARNESS_ARG" ] || { echo "error: --harness requires a non-empty value" >&2; exit 1; }
 [ "$MODEL_SET" -eq 0 ] || [ -n "$MODEL" ] || { echo "error: --model requires a non-empty value" >&2; exit 1; }
 [ "$EFFORT_SET" -eq 0 ] || [ -n "$EFFORT" ] || { echo "error: --effort requires a non-empty value" >&2; exit 1; }
-[ "$BACKEND_SET" -eq 0 ] || [ -n "$BACKEND_ARG" ] || { echo "error: --backend requires a non-empty value" >&2; exit 1; }
+if [ "$BACKEND_SET" -eq 1 ] && [ -z "$BACKEND_ARG" ]; then
+  fm_backend_policy_refuse "--backend" "" \
+    "Declare Herdr explicitly with --backend herdr, then prove the runtime with 'herdr status --json'."
+  exit 1
+fi
 [ "$MODE_SET" -eq 0 ] || [ -n "$MODE" ] || { echo "error: --mode requires a non-empty value" >&2; exit 1; }
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
@@ -392,6 +384,10 @@ case "$EFFORT" in
   ''|low|medium|high|xhigh|max) ;;
   *) echo "error: --effort must be one of low, medium, high, xhigh, max" >&2; exit 1 ;;
 esac
+
+if [ "$RELAUNCH" -eq 0 ] && [ "$BACKEND_SET" -eq 1 ]; then
+  fm_backend_validate_spawn "$BACKEND_ARG" "--backend" || exit 1
+fi
 
 # --relaunch reuses an existing task's endpoint, worktree, project, and kind,
 # so every axis this block resolves for a fresh spawn instead comes from that
@@ -444,8 +440,32 @@ spawn_remote_secondmate() {
   local remote_backend remote_target remote_harness remote_herdr_session registry_lock remote_lock remote_generation
   local remote_traceparent remote_recorded_traceparent
   local -a launch_args
+  if [ "$BACKEND_SET" -eq 1 ]; then
+    BACKEND=$BACKEND_ARG
+  else
+    BACKEND=$(fm_backend_name) || return 1
+  fi
+  fm_backend_validate_spawn "$BACKEND" "remote secondmate backend" || return 1
+  fm_backend_source "$BACKEND" "remote secondmate backend" "" spawn || return 1
   id=${POS[0]:-}
   fm_task_id_creation_valid "$id" || { echo "error: invalid task id" >&2; return 2; }
+  remote=$(secondmate_registry_field "$DATA/secondmates.md" "$id" remote 2>/dev/null || true)
+  [ "$remote" = 1 ] || return 3
+  host=$(secondmate_registry_field "$DATA/secondmates.md" "$id" host)
+  root=$(secondmate_registry_field "$DATA/secondmates.md" "$id" root)
+  home=$(secondmate_registry_field "$DATA/secondmates.md" "$id" home)
+  rc=0
+  fm_remote_readiness_ensure "$SCRIPT_DIR" "$id" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if [ "$rc" -eq 255 ]; then
+      echo "error: remote secondmate $id readiness could not be confirmed; preserved route $host:$home" >&2
+    else
+      echo "error: remote secondmate $id host $host is not ready for a remote second mate; launch refused" >&2
+    fi
+    [ -z "$FM_REMOTE_READINESS_OUT" ] || printf '%s\n' "$FM_REMOTE_READINESS_OUT" >&2
+    [ "$rc" -ne 255 ] || return 255
+    return 1
+  fi
   mkdir -p "$STATE" || { echo "error: could not create parent state directory" >&2; return 1; }
   SPAWN_TASK_LOCK="$STATE/.spawn-$id.lock"
   if ! fm_lock_try_acquire "$SPAWN_TASK_LOCK"; then
@@ -698,6 +718,34 @@ spawn_remote_secondmate() {
   return 0
 }
 
+spawn_remote_secondmate_preflight() {
+  local id=$1 remote host root home rc
+  if [ "$BACKEND_SET" -eq 1 ]; then
+    BACKEND=$BACKEND_ARG
+  else
+    BACKEND=$(fm_backend_name) || return 1
+  fi
+  fm_backend_validate_spawn "$BACKEND" "remote secondmate backend" || return 1
+  fm_backend_source "$BACKEND" "remote secondmate backend" "" spawn || return 1
+  remote=$(secondmate_registry_field "$DATA/secondmates.md" "$id" remote 2>/dev/null || true)
+  [ "$remote" = 1 ] || return 3
+  host=$(secondmate_registry_field "$DATA/secondmates.md" "$id" host)
+  root=$(secondmate_registry_field "$DATA/secondmates.md" "$id" root)
+  home=$(secondmate_registry_field "$DATA/secondmates.md" "$id" home)
+  rc=0
+  fm_remote_readiness_ensure "$SCRIPT_DIR" "$id" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if [ "$rc" -eq 255 ]; then
+      echo "error: remote secondmate $id readiness could not be confirmed; preserved route $host:$home" >&2
+    else
+      echo "error: remote secondmate $id host $host is not ready for a remote second mate; launch refused" >&2
+    fi
+    [ -z "$FM_REMOTE_READINESS_OUT" ] || printf '%s\n' "$FM_REMOTE_READINESS_OUT" >&2
+    [ "$rc" -ne 255 ] || return 255
+    return 1
+  fi
+}
+
 BACKEND=
 ORCA_ABORT_CLEANUP=0
 ORCA_WORKTREE_ID=
@@ -706,6 +754,7 @@ HERDR_PROJECTION_ABORT_CLEANUP=0
 HERDR_PROJECTION_ABORT_SESSION=
 HERDR_PROJECTION_ABORT_TASK_PANE=
 HERDR_PROJECTION_ABORT_SEEDED_PANE=
+HERDR_TERMINAL_ID=
 HERDR_PRESENTATION_ORDER_LOCK=
 HERDR_PRESENTATION_ORDER_LOCK_HELD=0
 SPAWN_TASK_LOCK=
@@ -968,14 +1017,17 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
 fi
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
-if [ -e "$STATE" ] || [ -L "$STATE" ]; then
-  fm_backlog_directory_present "$STATE" "state directory" || {
-    echo "error: spawn refused: $FM_BACKLOG_TRANSITION_ERROR" >&2
+if [ "$RELAUNCH" -eq 1 ] && [ -f "$STATE/$ID.meta" ] && [ -n "$(fm_meta_get "$STATE/$ID.meta" remote_host)" ]; then
+  if ! fm_backend_validate_remote_task_endpoint "$STATE/$ID.meta" "$ID" fm-remote; then
+    fm_backend_refuse_remote_task_endpoint "$STATE/$ID.meta" "$ID"
     exit 1
-  }
-elif [ "$RELAUNCH" -eq 1 ]; then
-  echo "error: spawn refused: state directory does not exist at $STATE" >&2
-  exit 1
+  fi
+fi
+if [ "$RELAUNCH" -eq 1 ] && [ -f "$STATE/$ID.meta" ] && [ -z "$(fm_meta_get "$STATE/$ID.meta" remote_host)" ]; then
+  fm_backend_validate_task_endpoint "$STATE/$ID.meta" "$ID" || exit 1
+  if [ "$FM_BACKEND_VALIDATED_BACKEND" = herdr ]; then
+    fm_backend_herdr_capability_preflight "relaunch task $ID" "${FM_BACKEND_VALIDATED_TARGET%%:*}" || exit 1
+  fi
 fi
 # Role partition: spawning NEW work is MAIN-owned. A relaunch of an existing
 # task is legitimate branch recovery (fm-control drives it through this same
@@ -1005,6 +1057,37 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fi
 fi
 if [ "$RELAUNCH" -eq 0 ]; then
+  if [ "$BACKEND_SET" -eq 1 ]; then
+    BACKEND=$BACKEND_ARG
+  else
+    BACKEND=$(fm_backend_name) || exit 1
+  fi
+  fm_backend_validate_spawn "$BACKEND" || exit 1
+    fm_backend_source "$BACKEND" "spawn backend selection" "" spawn || exit 1
+fi
+if [ "$RELAUNCH" -eq 0 ]; then
+  SPAWN_TASK_SET_LOCK=$(fm_task_set_lock_path "$STATE") || {
+    echo "error: could not resolve the task-set lock for $STATE" >&2
+    exit 1
+  }
+fi
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = secondmate ]; then
+  if [ -e "$SPAWN_TASK_SET_LOCK" ]; then
+    echo "error: this home's task set is locked by another operation (a forced teardown is enumerating or removing its tasks); refusing to create task $ID rather than racing it" >&2
+    exit 1
+  fi
+  if spawn_remote_secondmate_preflight "$ID"; then
+    remote_spawn_preflight_rc=0
+  else
+    remote_spawn_preflight_rc=$?
+  fi
+  [ "$remote_spawn_preflight_rc" -eq 3 ] || [ "$remote_spawn_preflight_rc" -eq 0 ] \
+    || exit "$remote_spawn_preflight_rc"
+fi
+# Skip the watcher guard when re-exec'd for one pair of a batch (FM_SPAWN_NO_GUARD is
+# set by the batch loop below), so the guard runs once for the batch, not once per pair.
+[ -n "${FM_SPAWN_NO_GUARD:-}" ] || "$FM_ROOT/bin/fm-guard.sh" || true
+if [ "$RELAUNCH" -eq 0 ]; then
   mkdir -p "$STATE" || {
     echo "error: could not create parent state directory" >&2
     exit 1
@@ -1028,10 +1111,6 @@ if [ "$RELAUNCH" -eq 0 ]; then
   #
   # Refusing rather than waiting is the fail-closed direction: the home may be
   # moments from removal, so there is nothing worth waiting for.
-  SPAWN_TASK_SET_LOCK=$(fm_task_set_lock_path "$STATE") || {
-    echo "error: could not resolve the task-set lock for $STATE" >&2
-    exit 1
-  }
   if ! fm_lock_try_acquire "$SPAWN_TASK_SET_LOCK"; then
     echo "error: this home's task set is locked by another operation (a forced teardown is enumerating or removing its tasks); refusing to create task $ID rather than racing it" >&2
     exit 1
@@ -1046,21 +1125,16 @@ if [ "$KIND" = secondmate ]; then
   fi
   [ "$remote_spawn_rc" -eq 3 ] || exit "$remote_spawn_rc"
 fi
-# Backend selection (data/fm-backend-design-d7): explicit --backend, else
-# FM_BACKEND env, else config/backend, else runtime auto-detection, else
-# default tmux (fm_backend_name). fm_backend_validate_spawn refuses unknown or
-# non-spawn-capable backends. The resolved value is
-# recorded in meta only when it is NOT tmux (fm-teardown.sh and fm-watch.sh's
-# window_backend/fm_backend_of_meta already treat an absent backend= as tmux),
-# so the default path's meta stays byte-identical.
+# Backend selection: explicit --backend, else fm_backend_name (FM_BACKEND, then
+# config/backend). Herdr is the sole supported runtime backend (AGENTS.md hard
+# rule 6; bin/fm-backend-policy-lib.sh): every input must name herdr, an
+# undeclared home refuses, and runtime markers never select, so no spawn can
+# fall back to tmux or another retained adapter. fm_backend_validate_spawn
+# refuses any other or unknown value by name before any worktree, lock, or
+# runtime side effect. A herdr task records backend=herdr plus its exact
+# endpoint fields; the tmux-default path that wrote no backend= line survives
+# only in the regression lane.
 if [ "$RELAUNCH" -eq 0 ]; then
-  if [ "$BACKEND_SET" -eq 1 ]; then
-    BACKEND=$BACKEND_ARG
-  else
-    BACKEND=$(fm_backend_name)
-  fi
-  fm_backend_validate_spawn "$BACKEND" || exit 1
-  fm_backend_source "$BACKEND" || exit 1
   if [ "$BACKEND" = orca ] && [ "$KIND" = secondmate ]; then
     echo "error: backend=orca does not support --secondmate spawns yet" >&2
     exit 1
@@ -1114,7 +1188,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   BACKEND=$FM_BACKEND_VALIDATED_BACKEND
   RELAUNCH_TARGET=$FM_BACKEND_VALIDATED_TARGET
   fm_backend_validate_spawn "$BACKEND" || exit 1
-  fm_backend_source "$BACKEND" || exit 1
+  fm_backend_source "$BACKEND" "spawn backend selection" "" spawn || exit 1
   # A relaunch must PROVE the previous agent is gone before it launches another
   # one into the same endpoint, and only tmux and herdr have a recovery-grade
   # classifier that can (bin/fm-control-lib.sh owns that capability table).
@@ -1152,6 +1226,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     HERDR_WORKSPACE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_workspace_id)
     HERDR_TAB_ID=$(fm_meta_get "$RELAUNCH_META" herdr_tab_id)
     HERDR_PANE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_pane_id)
+    HERDR_TERMINAL_ID=$(fm_meta_get "$RELAUNCH_META" herdr_terminal_id)
   fi
   # With no explicit harness, a relaunch reuses the harness already recorded
   # for this task. It must NOT fall through to the fresh-spawn config
@@ -1995,7 +2070,8 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
       echo "error: existing herdr endpoint for $ID could not be inspected; refusing duplicate launch" >&2
       return 1
     }
-    old_state=$(fm_backend_herdr_pane_agent_state "$old_session" "$old_pane")
+    old_state=$(fm_backend_herdr_pane_agent_state "$old_session" "$old_pane" \
+      "$HERDR_RECOVERY_WORKSPACE_ID" "$HERDR_RECOVERY_TAB_ID")
     case "$old_state" in
       dead|no-agent) return 0 ;;
       live|unknown)
@@ -2125,8 +2201,13 @@ case "$BACKEND" in
         if [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; then
           herdr_projection_existing_meta_allows_flat "$STATE/$ID.meta" || exit 1
         fi
-        fm_backend_herdr_projection_recovery_allows_flat \
-          "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID" || exit 1
+        if fm_backend_herdr_projection_recovery_allows_flat \
+          "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID"; then
+          :
+        else
+          HERDR_RECOVERY_FLAT_STATUS=$?
+          exit "$HERDR_RECOVERY_FLAT_STATUS"
+        fi
         if [ "${HERDR_RECOVERY_BACKEND:-}" = herdr ]; then
           set +e
           FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_reclaim_task \
@@ -2142,6 +2223,7 @@ case "$BACKEND" in
               HERDR_SEEDED_DEFAULT_TAB_ID=""
               HERDR_TAB_ID=$FM_BACKEND_HERDR_PROJECTION_TAB_ID
               HERDR_PANE_ID=$FM_BACKEND_HERDR_PROJECTION_PANE_ID
+              HERDR_TERMINAL_ID=$FM_BACKEND_HERDR_PROJECTION_TERMINAL_ID
               HERDR_PROJECTION_ABORT_CLEANUP=1
               HERDR_PROJECTION_ABORT_SESSION=$HERDR_SES
               HERDR_PROJECTION_ABORT_TASK_PANE=$HERDR_PANE_ID
@@ -2149,6 +2231,7 @@ case "$BACKEND" in
               ;;
             2)
               spawn_herdr_presentation_order_lock_release
+              [ "${FM_BACKEND_HERDR_PROJECTION_RECLAIM_NATIVE_FAILURE:-0}" = 1 ] && exit 2
               ;;
             *) exit 1 ;;
           esac
@@ -2158,9 +2241,15 @@ case "$BACKEND" in
       elif [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ]; then
         # Session lock path resolution and exact parent binding both need a
         # live named-session socket before journal publication.
-        if ! fm_backend_herdr_server_ensure "$HERDR_SES"; then
-          echo "warning: herdr presentation could not ensure its session server; using the ordinary flat layout without projection" >&2
-        elif [ "${FM_BACKEND_HERDR_PRESENTATION_PREFERENCE:-default}" = default ] \
+        if fm_backend_herdr_server_ensure "$HERDR_SES"; then
+          :
+        else
+          HERDR_SERVER_STATUS=$?
+          fm_backend_policy_refuse "task $ID Herdr presentation server" herdr \
+            "The native Herdr server health check failed before presentation launch. Repair Herdr, then verify with 'herdr status --json'. Task state is preserved." || true
+          exit "$HERDR_SERVER_STATUS"
+        fi
+        if [ "${FM_BACKEND_HERDR_PRESENTATION_PREFERENCE:-default}" = default ] \
           && ! fm_backend_herdr_presentation_default_supported "$STATE" "$HERDR_SES"; then
           :
         elif spawn_herdr_presentation_order_lock_acquire "$HERDR_SES"; then
@@ -2175,8 +2264,13 @@ case "$BACKEND" in
           set -e
           case "$HERDR_LAUNCHER_STATUS" in
             0) HERDR_PARENT_WORKSPACE_ID=$FM_BACKEND_HERDR_LAUNCHER_WORKSPACE_ID ;;
-            2) HERDR_PARENT_WORKSPACE_ID=$(fm_backend_herdr_projection_parent_workspace_exact \
-                 "$HERDR_SES" "$HERDR_PARENT_LABEL" 2>/dev/null || true) ;;
+            2)
+              HERDR_PARENT_WORKSPACE_ID=$(fm_backend_herdr_projection_parent_workspace_exact \
+                "$HERDR_SES" "$HERDR_PARENT_LABEL") || {
+                spawn_herdr_presentation_order_lock_release
+                exit 2
+              }
+              ;;
             *) spawn_herdr_presentation_order_lock_release; exit 1 ;;
           esac
           if [ -z "$HERDR_PARENT_WORKSPACE_ID" ]; then
@@ -2201,6 +2295,7 @@ case "$BACKEND" in
             HERDR_SEEDED_DEFAULT_TAB_ID=$FM_BACKEND_HERDR_PROJECTION_SEEDED_TAB_ID
             HERDR_TAB_ID=$FM_BACKEND_HERDR_PROJECTION_TAB_ID
             HERDR_PANE_ID=$FM_BACKEND_HERDR_PROJECTION_PANE_ID
+            HERDR_TERMINAL_ID=$FM_BACKEND_HERDR_PROJECTION_TERMINAL_ID
             HERDR_PROJECTION_ABORT_CLEANUP=1
             HERDR_PROJECTION_ABORT_SESSION=$HERDR_SES
             HERDR_PROJECTION_ABORT_TASK_PANE=$HERDR_PANE_ID
@@ -2240,7 +2335,7 @@ case "$BACKEND" in
       HERDR_SES=${CONTAINER%%:*}
       HERDR_WORKSPACE_ID=${CONTAINER#*:}
       HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$PROJ_ABS" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
-      read -r HERDR_TAB_ID HERDR_PANE_ID <<EOF
+      read -r HERDR_TAB_ID HERDR_PANE_ID HERDR_TERMINAL_ID <<EOF
 $HERDR_TASK_IDS
 EOF
     fi
@@ -2313,13 +2408,7 @@ fi
 # worktree-detection steps below must never reference an unbound WT_TARGET under set -u.
 : "${WT_TARGET:=$T}"
 spawn_send_text_line() {  # <target> <text>
-  case "$BACKEND" in
-    tmux) fm_backend_tmux_send_text_line "$1" "$2" ;;
-    herdr) fm_backend_herdr_send_text_line "$1" "$2" ;;
-    zellij) fm_backend_zellij_send_text_line "$1" "$2" "$W" ;;
-    orca) fm_backend_orca_send_text_line "$1" "$2" ;;
-    cmux) fm_backend_cmux_send_text_line "$1" "$2" "$W" ;;
-  esac
+  fm_backend_send_text_line "$BACKEND" "$1" "$2" "$W"
 }
 spawn_current_path() {  # <target>
   case "$BACKEND" in
@@ -2330,22 +2419,10 @@ spawn_current_path() {  # <target>
   esac
 }
 spawn_send_literal() {  # <target> <text>
-  case "$BACKEND" in
-    tmux) fm_backend_tmux_send_literal "$1" "$2" ;;
-    herdr) fm_backend_herdr_send_literal "$1" "$2" ;;
-    zellij) fm_backend_zellij_send_literal "$1" "$2" "$W" ;;
-    orca) fm_backend_orca_send_literal "$1" "$2" ;;
-    cmux) fm_backend_cmux_send_literal "$1" "$2" "$W" ;;
-  esac
+  fm_backend_send_literal "$BACKEND" "$1" "$2" "$W"
 }
 spawn_send_key() {  # <target> <key>
-  case "$BACKEND" in
-    tmux) fm_backend_tmux_send_key "$1" "$2" ;;
-    herdr) fm_backend_herdr_send_key "$1" "$2" ;;
-    zellij) fm_backend_zellij_send_key "$1" "$2" "$W" ;;
-    orca) fm_backend_orca_send_key "$1" "$2" ;;
-    cmux) fm_backend_cmux_send_key "$1" "$2" "$W" ;;
-  esac
+  fm_backend_send_key "$BACKEND" "$1" "$2" "$W"
 }
 
 kimi_capture() {
@@ -2414,7 +2491,16 @@ if [ "$RELAUNCH" -eq 1 ]; then
   relaunch_wt_real=$(real_path_or_raw "$WT")
   relaunch_seen=
   for _ in $(seq 1 10); do
-    relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
+    relaunch_seen=$(spawn_current_path "$WT_TARGET"); current_path_rc=$?
+    case "$current_path_rc" in
+      0|1) ;;
+      2)
+        fm_backend_policy_refuse "task $ID Herdr current-path read" herdr \
+          "The native Herdr endpoint read failed while verifying the recorded worktree. Repair Herdr, then verify with 'herdr status --json'. Task state is preserved."
+        exit 2
+        ;;
+      *) exit 1 ;;
+    esac
     [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ] || break
     sleep 0.5
   done
@@ -2448,7 +2534,16 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # inter-poll sleep as confirmation, not a whole extra cycle on top.
   candidate=""
   for _ in $(seq 1 60); do
-    p=$(spawn_current_path "$WT_TARGET" || true)
+    p=$(spawn_current_path "$WT_TARGET"); current_path_rc=$?
+    case "$current_path_rc" in
+      0|1) ;;
+      2)
+        fm_backend_policy_refuse "task $ID Herdr current-path read" herdr \
+          "The native Herdr endpoint read failed while verifying the worktree. Repair Herdr, then verify with 'herdr status --json'. Task state is preserved."
+        exit 2
+        ;;
+      *) exit 1 ;;
+    esac
     if [ -n "$p" ]; then
       p_real=$(real_path_or_raw "$p")
       if [ "$p_real" != "$PROJ_ABS_REAL" ]; then
@@ -2849,7 +2944,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id herdr_terminal_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2879,6 +2974,7 @@ preserve_relaunch_meta() {
     echo "herdr_workspace_id=$HERDR_WORKSPACE_ID"
     echo "herdr_tab_id=$HERDR_TAB_ID"
     echo "herdr_pane_id=$HERDR_PANE_ID"
+    echo "herdr_terminal_id=$HERDR_TERMINAL_ID"
   fi
   if [ "$BACKEND" = zellij ]; then
     echo "zellij_session=$ZELLIJ_SES"

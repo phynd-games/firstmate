@@ -104,6 +104,26 @@ HARNESS=$(meta_value harness)
 REMOTE_HOST=$(meta_value remote_host)
 [ -n "$KIND" ] || KIND=ship
 
+if [ -z "$REMOTE_HOST" ]; then
+  TASK_BACKEND=$(fm_backend_meta_recorded_backend "$META" 2>/dev/null || true)
+  case "$TASK_BACKEND" in
+    herdr)
+      fm_backend_validate_task_endpoint "$META" "$ID" || exit $?
+      TASK_TARGET=$FM_BACKEND_VALIDATED_TARGET
+      fm_backend_herdr_capability_preflight "crew state task $ID" "${TASK_TARGET%%:*}" || exit $?
+      ;;
+    absent|tmux|zellij|orca|cmux)
+      emit unknown legacy-backend "legacy-record: backend=${TASK_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
+      ;;
+    ambiguous|'')
+      emit unknown backend-identity "task backend identity is ambiguous or missing; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\""
+      ;;
+    *)
+      emit unknown backend-identity "task backend=${TASK_BACKEND} is not herdr; declare Herdr and verify with herdr status --json"
+      ;;
+  esac
+fi
+
 # A torn-down (or never-created) worktree has no current state to read. A
 # remote secondmate's recorded worktree is a path on ITS host, so the local
 # probe proves nothing for it - the remote arm below reads the true source.
@@ -153,8 +173,28 @@ LOG_VERB=$(status_line_verb "$LOG_LINE")
 # down or dead mate; only the remote host's own dead/missing verdict may say
 # the endpoint is actually gone.
 if [ -n "$REMOTE_HOST" ]; then
+  REMOTE_BACKEND=$(fm_backend_meta_recorded_backend "$META" remote_backend 2>/dev/null || true)
+  case "$REMOTE_BACKEND" in
+    absent|tmux|zellij|orca|cmux)
+      emit unknown legacy-backend "legacy-record: remote backend=${REMOTE_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
+      exit 0
+      ;;
+    ambiguous|'')
+      emit unknown backend-identity "remote backend identity is ambiguous or missing; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\""
+      exit 0
+      ;;
+    herdr) ;;
+    *)
+      emit unknown backend-identity "remote backend=${REMOTE_BACKEND} is not herdr; declare Herdr and verify with herdr status --json"
+      exit 0
+      ;;
+  esac
+  if ! fm_backend_validate_remote_task_endpoint "$META" "$ID" fm-remote >/dev/null 2>&1; then
+    emit unknown backend-identity "remote Herdr metadata is invalid; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\""
+    exit 0
+  fi
   if ! REMOTE_STATE=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-on.sh" "$ID" \
-    fm-remote-secondmate-control.sh state "$ID" < /dev/null 2>/dev/null); then
+    fm-remote-secondmate-control.sh state "$ID" --typed < /dev/null); then
     REMOTE_STATE=
   fi
   REMOTE_STATE=$(printf '%s\n' "$REMOTE_STATE" | tail -1)
@@ -171,6 +211,9 @@ if [ -n "$REMOTE_HOST" ]; then
     dead|missing)
       emit unknown remote-endpoint "remote endpoint $REMOTE_STATE on $REMOTE_HOST"
       ;;
+    capability-failure)
+      emit unknown herdr-capability "Herdr capability is unavailable; repair Herdr and verify with herdr status --json"
+      ;;
     '')
       emit unknown remote-endpoint "unknown-remote: $REMOTE_HOST unreachable or endpoint unreadable (not proof of death)"
       ;;
@@ -183,11 +226,11 @@ fi
 # pane_readable is consulted ONLY in the no-run fallback below. The run-step path
 # stays authoritative regardless of pane liveness - judge by the run-step, not the
 # shell - so a finished crew whose endpoint has closed still reports its run-step
-# state (e.g. done) instead of being masked as unknown. Backend-aware
-# (fm_backend_of_meta defaults absent backend= to tmux, the P1 contract): a
-# herdr task is read through fm_backend_capture instead of a bare tmux probe.
-TASK_BACKEND=$(fm_backend_of_meta "$META")
-BACKEND_TARGET=$(fm_backend_target_of_meta "$META")
+# state (e.g. done) instead of being masked as unknown. Backend-aware: a
+# herdr task is read through fm_backend_capture. A record whose backend
+# identity is absent or not herdr is a legacy record (AGENTS.md hard rule 6):
+# it is reported as such and never probed, since no read path exists for it.
+BACKEND_TARGET=$TASK_TARGET
 EXPECTED_LABEL="fm-$ID"
 pane_readable() {  # <target>
   case "$TASK_BACKEND" in

@@ -1037,9 +1037,14 @@ EOF
   pass "the read-once contract is stated once, ahead of the sources it governs"
 }
 
+# Herdr is the sole supported runtime backend (AGENTS.md hard rule 6). Both
+# modes run OUTSIDE the regression lane tests/lib.sh exports, so this is the real
+# session-start path judging a real home: a declared herdr home starts silently
+# and never asks for tmux, while a home that declares nothing is refused by name
+# even though it is running inside Herdr (HERDR_ENV=1 never selects).
 test_herdr_backend_diagnostics_follow_real_session_start() {
   local mode rec root home fakebin mask out
-  for mode in configured autodetected; do
+  for mode in configured undeclared; do
     rec=$(new_world "herdr-$mode")
     IFS='|' read -r root home fakebin <<EOF
 $rec
@@ -1060,21 +1065,29 @@ command() {
 SH
     if [ "$mode" = configured ]; then
       printf '%s\n' herdr > "$home/config/backend"
-      out=$(TMUX='' HERDR_ENV='' BASH_ENV="$mask" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
-      assert_not_contains "$out" "NOTICE: auto-detected herdr runtime" \
-        "an explicit Herdr home should not be reported as auto-detected"
+      out=$(FM_BACKEND_LEGACY_TEST_LANE='' TMUX='' HERDR_ENV=1 BASH_ENV="$mask" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+      assert_not_contains "$out" "NOTICE: auto-detected" \
+        "a declared Herdr home must start silently, never as auto-detected"
+      assert_not_contains "$out" "BACKEND_INVALID" \
+        "a declared Herdr home must not be refused"
+      assert_not_contains "$out" "MISSING: herdr" "Herdr session start missed its available session CLI"
+      assert_not_contains "$out" "MISSING: jq" "Herdr session start missed its available JSON dependency"
+      assert_not_contains "$out" "MISSING: treehouse" "Herdr session start missed its available worktree provider"
     else
-      out=$(TMUX='' HERDR_ENV=1 BASH_ENV="$mask" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
-      assert_contains "$out" "NOTICE: auto-detected herdr runtime (HERDR_ENV=1)" \
-        "session start did not preserve the Herdr runtime auto-detection fallback"
+      out=$(FM_BACKEND_LEGACY_TEST_LANE='' TMUX='' HERDR_ENV=1 BASH_ENV="$mask" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+      assert_not_contains "$out" "NOTICE: auto-detected" \
+        "an undeclared home must not auto-detect a backend from HERDR_ENV=1"
+      assert_contains "$out" "BACKEND_INVALID: none - REFUSED: neither FM_BACKEND nor $home/config/backend declares no backend identity" \
+        "an undeclared home must be refused by name at session start"
+      assert_contains "$out" "Herdr is the sole supported Firstmate runtime backend" \
+        "the session-start refusal must name Herdr"
+      assert_contains "$out" "never used for selection: HERDR_ENV=1" \
+        "the session-start refusal must show that the Herdr marker was seen and ignored"
     fi
     assert_contains "$out" "SESSION START - $home" "the real session-start path did not run in the throwaway home"
     assert_not_contains "$out" "MISSING: tmux" "Herdr session start falsely required masked tmux"
-    assert_not_contains "$out" "MISSING: herdr" "Herdr session start missed its available session CLI"
-    assert_not_contains "$out" "MISSING: jq" "Herdr session start missed its available JSON dependency"
-    assert_not_contains "$out" "MISSING: treehouse" "Herdr session start missed its available worktree provider"
   done
-  pass "session start: configured and auto-detected Herdr homes never require tmux"
+  pass "session start: a declared Herdr home starts silently and an undeclared home is refused; neither ever requires tmux"
 }
 
 # --- status tail bounding -----------------------------------------------------

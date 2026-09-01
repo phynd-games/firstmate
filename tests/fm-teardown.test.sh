@@ -1554,8 +1554,10 @@ test_herdr_flat_teardown_refuses_records_on_unparseable_presence() {
     || fail "herdr-garbage-presence: ambiguous presence erased the durable endpoint metadata"
   [ -e "$case_dir/state/task-x1.status" ] \
     || fail "herdr-garbage-presence: ambiguous presence erased the task status record"
-  assert_grep "ambiguous structured presence" "$case_dir/stderr" \
-    "herdr-garbage-presence: the ambiguity refusal was not explained visibly"
+  assert_grep "^REFUSED: " "$case_dir/stderr" \
+    "herdr-garbage-presence: the identity refusal was not policy-owned"
+  assert_grep "native Herdr pane identity check" "$case_dir/stderr" \
+    "herdr-garbage-presence: the identity refusal was not explained visibly"
   pass "herdr flat teardown never erases records when pane presence is unparseable"
 }
 

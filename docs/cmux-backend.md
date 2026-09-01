@@ -1,10 +1,16 @@
-# cmux runtime backend
+# cmux runtime backend (retained legacy adapter)
 
-cmux is an experimental macOS GUI terminal backend.
+**Retired from the active runtime.**
+Herdr is Firstmate's sole supported runtime backend (`AGENTS.md` hard rule 6); selecting `cmux` through `config/backend`, `FM_BACKEND`, or `--backend` is refused by name, cmux runtime markers are never used for detection, and `bin/backends/cmux.sh` stays on disk only as historical, non-operational reference.
+[`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns the current contract and [`architecture.md`](architecture.md#runtime-session-backends) owns the removal plan; the rest of this page describes the retained adapter as it behaved when it was selectable.
+
+The sections below are historical regression-lane documentation and are not active setup, selection, detection, or operation instructions.
+
+cmux was an experimental macOS GUI terminal backend.
 It provides task workspaces and surfaces while Treehouse continues to provide git worktrees.
 [`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns shared selection and metadata semantics.
 
-## Setup
+## Historical regression-lane setup
 
 Pick cmux when you already use the app as your terminal and want task workspaces in its sidebar.
 cmux is macOS-only, GUI-first, and unsuitable for a headless or SSH-only Firstmate session.
@@ -48,7 +54,7 @@ Task workspace and surface creation use `focus=false`.
 
 Verify setup by spawning a small task and confirming metadata contains `backend=cmux`, `cmux_workspace_id=`, and `cmux_surface_id=`.
 
-## Runtime detection
+## Historical regression-lane runtime detection
 
 `CMUX_WORKSPACE_ID` is the primary cmux runtime marker.
 `CMUX_SOCKET_PATH` is not sufficient because operators may set it outside cmux.

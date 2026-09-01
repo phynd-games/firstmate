@@ -728,13 +728,29 @@ fm_pending_reply_fallback_idle_eligible() {  # <record-path>
 # another read busy, and a weak rendered idle degrades to `fallback-idle`,
 # which the caller accepts as idle only after its grace window.
 fm_pending_reply_backend_observation() {  # <backend> <target> [expected-label] [harness]
-  local backend=$1 target=$2 expected_label=${3-} harness=${4-} native tail40
-  native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || printf 'unknown')
+  local backend=$1 target=$2 expected_label=${3-} harness=${4-} native tail40 native_rc
+  if [ "$backend" = herdr ]; then
+    fm_backend_herdr_capability_preflight "pending-reply observation" "${target%%:*}" || return 2
+  fi
+  if native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null); then
+    native_rc=0
+  else
+    native_rc=$?
+  fi
+  if [ "$native_rc" -ne 0 ] && [ "$backend" = herdr ]; then
+    return "$native_rc"
+  fi
+  [ "$native_rc" -eq 0 ] || native=unknown
   case "$native" in
     busy|idle) printf '%s' "$native"; return 0 ;;
   esac
-  tail40=$(fm_backend_capture "$backend" "$target" 40 "$expected_label" 2>/dev/null) \
-    || { printf 'unknown'; return 0; }
+  if tail40=$(fm_backend_capture "$backend" "$target" 40 "$expected_label" 2>/dev/null); then
+    :
+  else
+    [ "$backend" = herdr ] && return 2
+    printf 'unknown'
+    return 0
+  fi
   if printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -6 \
     | fm_busy_lines_match "$harness"; then
     printf 'busy'
@@ -1285,7 +1301,7 @@ fm_pending_reply_tick_one() {  # <state-dir> <corr_id> <busy_state> [secondmate-
 # Never scrapes secondmate conversation; uses only parent status, backend busy
 # state, and optional secondmate-home wrong-home path checks.
 fm_pending_reply_tick() {  # <state-dir>
-  local state=$1 dir rec corr task_id phase delivered meta backend target label busy sm_home harness remote_host
+  local state=$1 dir rec corr task_id phase delivered meta backend target label busy sm_home harness remote_host recorded_backend remote_backend
   local observation observation_task found i
   local -a observation_tasks=() observation_values=()
   dir=$(fm_pending_reply_dir "$state")
@@ -1347,20 +1363,58 @@ fm_pending_reply_tick() {  # <state-dir>
       awaiting_report|recovery_sent) ;;
       *) continue ;;
     esac
-    backend=tmux
+    backend=
     target=
     busy=unknown
     sm_home=
     harness=
     if [ -f "$meta" ]; then
       remote_host=$(fm_meta_get "$meta" remote_host)
-      backend=$(fm_backend_of_meta "$meta")
-      target=$(fm_backend_target_of_meta "$meta")
       sm_home=$(fm_meta_get "$meta" home)
       harness=$(fm_meta_get "$meta" harness)
       if [ -n "$remote_host" ]; then
+        remote_backend=$(fm_backend_meta_recorded_backend "$meta" remote_backend 2>/dev/null || true)
+        case "$remote_backend" in
+          absent|tmux|zellij|orca|cmux) continue ;;
+          herdr)
+            backend=herdr
+            ;;
+          ambiguous|'')
+            fm_backend_policy_refuse "pending reply remote record $meta" "$remote_backend" \
+              "Repair or explicitly migrate this remote task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+            return 2
+            ;;
+          *)
+            fm_backend_policy_refuse "pending reply remote record $meta" "$remote_backend" \
+              "Declare Herdr in the remote task record or explicitly migrate it through docs/configuration.md \"Legacy task records\". Task state is preserved."
+            return 2
+            ;;
+        esac
+        fm_backend_validate_remote_task_endpoint "$meta" "$task_id" fm-remote >/dev/null 2>&1 || return 2
         target="remote:$task_id"
         sm_home=
+      else
+        recorded_backend=$(fm_backend_meta_recorded_backend "$meta" 2>/dev/null || true)
+        case "$recorded_backend" in
+          absent|tmux|zellij|orca|cmux) continue ;;
+          herdr)
+            if ! fm_backend_validate_task_endpoint "$meta" "$task_id"; then
+              return 2
+            fi
+            backend=herdr
+            ;;
+          ambiguous|'')
+            fm_backend_policy_refuse "pending reply task record $meta" "$recorded_backend" \
+              "Repair or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+            return 2
+            ;;
+          *)
+            fm_backend_policy_refuse "pending reply task record $meta" "$recorded_backend" \
+              "Declare Herdr in the task record or explicitly migrate it through docs/configuration.md \"Legacy task records\". Task state is preserved."
+            return 2
+            ;;
+        esac
+        target=$(fm_backend_target_of_meta "$meta")
       fi
       if [ -n "$target" ]; then
         label="fm-$task_id"
@@ -1375,11 +1429,16 @@ fm_pending_reply_tick() {  # <state-dir>
         done
         if [ "$found" = 0 ]; then
           if [ -n "$remote_host" ]; then
-            observation=$("$_FM_PENDING_REPLY_LIB_DIR/fm-on.sh" "$task_id" \
-              fm-remote-secondmate-control.sh observe "$task_id" < /dev/null 2>/dev/null || printf 'unknown')
+            if ! observation=$("$_FM_PENDING_REPLY_LIB_DIR/fm-on.sh" "$task_id" \
+              fm-remote-secondmate-control.sh observe "$task_id" < /dev/null 2>&1); then
+              printf '%s\n' "$observation" | sed -n '1p' >&2
+              return 2
+            fi
             case "$observation" in busy|idle|fallback-idle|unknown) ;; *) observation=unknown ;; esac
           else
-            observation=$(fm_pending_reply_backend_observation "$backend" "$target" "$label" "$harness")
+            if ! observation=$(fm_pending_reply_backend_observation "$backend" "$target" "$label" "$harness"); then
+              return 2
+            fi
           fi
           observation_tasks+=("$task_id")
           observation_values+=("$observation")

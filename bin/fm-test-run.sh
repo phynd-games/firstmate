@@ -212,7 +212,7 @@ family_for_basename() {
     fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
     fm-tmux-submit-busy.test.sh|fm-trace-context-lib.test.sh|\
     fm-transition-lib.test.sh|\
-    fm-test-run.test.sh|fm-test-isolation-proof.test.sh)
+    fm-test-run.test.sh|fm-test-isolation-proof.test.sh|fm-setup-phynd.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
     fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
@@ -226,7 +226,7 @@ family_for_basename() {
     fm-herdr-supervisor.test.sh)
       printf '%s\n' watcher-wake-lock
       ;;
-    fm-afk-inject-herdr-e2e.test.sh|fm-afk-launch.test.sh|fm-backend-autodetect-smoke.test.sh|\
+    fm-afk-inject-herdr-e2e.test.sh|fm-afk-launch.test.sh|fm-backend-herdr-only-smoke.test.sh|\
     fm-backend-herdr-eventwait-smoke.test.sh|fm-backend-herdr-presentation-e2e.test.sh|\
     fm-backend-herdr-launcher-workspace-e2e.test.sh|\
     fm-backend-herdr-prune-safety-e2e.test.sh|fm-backend-herdr-respawn-idem-e2e.test.sh|\
@@ -241,7 +241,7 @@ family_for_basename() {
     fm-remote-transport-lanes.test.sh|\
     fm-remote-reply.test.sh|fm-remote-secondmate-lifecycle-e2e.test.sh|\
     fm-remote-secondmate-trace-context.test.sh|\
-    fm-secondmate-harness.test.sh|fm-secondmate-lifecycle-e2e.test.sh|\
+    fm-secondmate-lifecycle-e2e.test.sh|\
     fm-secondmate-liveness.test.sh|fm-secondmate-reconcile.test.sh|\
     fm-secondmate-safety.test.sh|fm-secondmate-sync.test.sh|\
     fm-startup-memory-budget.test.sh|fm-stow-cascade.test.sh|\
@@ -271,18 +271,30 @@ family_for_basename() {
     fm-herdr-submit-confirm-live-e2e.test.sh)
       printf '%s\n' live-harness-optin
       ;;
-    fm-backend-herdr.test.sh|fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|\
-    fm-tmux-agent-liveness.test.sh|\
+    fm-backend-herdr.test.sh|fm-backend-herdr-only.test.sh|\
     fm-control.test.sh|fm-control-relaunch.test.sh|\
     fm-herdr-session-cleanup.test.sh|fm-send-resolve-key.test.sh|fm-send-strict.test.sh|\
     fm-send-inbox.test.sh|fm-spawn-batch.test.sh|\
     fm-spawn-dispatch-profile.test.sh|\
-    fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh|\
-    fm-teardown-endpoint-safety.test.sh)
+    fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh)
       printf '%s\n' backend-dispatch
       ;;
-    fm-check-unregister.test.sh|fm-pr-check-security.test.sh|fm-pr-merge.test.sh|\
-    fm-review-diff.test.sh|fm-teardown.test.sh|fm-x-mode.test.sh)
+    fm-backend-cmux-smoke.test.sh)
+      printf '%s\n' cmux
+      ;;
+    fm-backend-zellij-smoke.test.sh)
+      printf '%s\n' zellij
+      ;;
+    fm-backend-orca.test.sh)
+      printf '%s\n' orca
+      ;;
+    fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|fm-tmux-agent-liveness.test.sh|\
+    fm-backend-zellij.test.sh|fm-backend-cmux.test.sh|\
+    fm-teardown-endpoint-safety.test.sh)
+      printf '%s\n' legacy-adapter
+      ;;
+    fm-pr-check-security.test.sh|fm-pr-merge.test.sh|fm-review-diff.test.sh|\
+    fm-teardown.test.sh|fm-x-mode.test.sh)
       printf '%s\n' pr-forge
       ;;
     fm-afk-inject-e2e.test.sh|fm-afk-return.test.sh)
@@ -291,15 +303,6 @@ family_for_basename() {
     fm-bearings-board-render.test.sh|fm-bearings-snapshot.test.sh|\
     fm-fleet-snapshot-view.test.sh|fm-home-summary-refresh.test.sh)
       printf '%s\n' snapshot-bearings
-      ;;
-    fm-backend-cmux.test.sh|fm-backend-cmux-smoke.test.sh)
-      printf '%s\n' cmux
-      ;;
-    fm-backend-zellij.test.sh|fm-backend-zellij-smoke.test.sh)
-      printf '%s\n' zellij
-      ;;
-    fm-backend-orca.test.sh)
-      printf '%s\n' orca
       ;;
     *)
       printf '%s\n' unclassified
@@ -311,6 +314,7 @@ expected_gate_skip_for_family() {
   case "$1" in
     real-herdr-gated) printf '%s\n' herdr ;;
     live-harness-optin) printf '%s\n' optin-env ;;
+    legacy-adapter) printf '%s\n' legacy-adapter-optin ;;
     cmux|zellij|orca) printf '%s\n' optional-binary ;;
     snapshot-bearings) printf '%s\n' optional-binary ;;
     *) printf '%s\n' none ;;
@@ -329,6 +333,7 @@ backend-dispatch
 pr-forge
 afk
 snapshot-bearings
+legacy-adapter
 cmux
 zellij
 orca
@@ -347,6 +352,7 @@ list_known_lanes() {
     i=$((i + 1))
   done
   printf '%s\n' real-herdr-gated
+  printf '%s\n' legacy-adapter
 }
 
 # Exact proven-isolated candidate set (same paths as
@@ -482,7 +488,8 @@ list_portable_serial() {
     [ -n "$s" ] || continue
     base=$(basename "$s")
     fam=$(family_for_basename "$base")
-    if [ "$fam" = "real-herdr-gated" ]; then
+    if [ "$fam" = "real-herdr-gated" ] || [ "$fam" = "legacy-adapter" ] \
+      || [ "$fam" = "cmux" ] || [ "$fam" = "zellij" ] || [ "$fam" = "orca" ]; then
       continue
     fi
     if is_proven_isolated_script "$s"; then
@@ -504,12 +511,9 @@ tests/fm-afk-pi-herdr-return-e2e.test.sh 66
 tests/fm-afk-return.test.sh 3974
 tests/fm-ask-user-authority.test.sh 83
 tests/fm-backend-cmux-smoke.test.sh 30
-tests/fm-backend-cmux.test.sh 3351
 tests/fm-backend-herdr-focus-flash-e2e.test.sh 21
-tests/fm-backend-orca.test.sh 14681
 tests/fm-backend-tmux-smoke.test.sh 361
 tests/fm-backend-zellij-smoke.test.sh 22
-tests/fm-backend-zellij.test.sh 8297
 tests/fm-backend.test.sh 17169
 tests/fm-backlog-handoff.test.sh 4157
 tests/fm-bearings-board.test.sh 3385
@@ -574,7 +578,6 @@ tests/fm-remote-reply.test.sh 40906
 tests/fm-remote-secondmate-lifecycle-e2e.test.sh 170240
 tests/fm-remote-secondmate-parent-binding.test.sh 13064
 tests/fm-remote-secondmate-trace-context.test.sh 39927
-tests/fm-secondmate-harness.test.sh 123471
 tests/fm-secondmate-lifecycle-e2e.test.sh 6539
 tests/fm-secondmate-liveness.test.sh 16365
 tests/fm-secondmate-safety.test.sh 49011
@@ -599,7 +602,6 @@ tests/fm-subagent-pretool-check.test.sh 1066
 tests/fm-supervision-events.test.sh 1431
 tests/fm-tangle-guard.test.sh 8364
 tests/fm-task-delivery.test.sh 2414
-tests/fm-teardown-endpoint-safety.test.sh 7295
 tests/fm-teardown.test.sh 87400
 tests/fm-test-fixture-cleanup.test.sh 532
 tests/fm-test-fixtures.test.sh 1045
@@ -743,6 +745,13 @@ select_lane() {
       select_family real-herdr-gated
       found=1
       ;;
+    legacy-adapter)
+      select_family legacy-adapter
+      select_family cmux
+      select_family zellij
+      select_family orca
+      found=1
+      ;;
     *)
       die "unknown lane '$want' (see --list-lanes)"
       ;;
@@ -778,7 +787,7 @@ run_coverage_guard() {
     return 1
   fi
 
-  # Serial (whole lane and each CI shard) + Herdr lane listings without
+  # Serial (whole lane and each CI shard) + Herdr and legacy lanes listings without
   # disturbing a caller's selection.
   saved_scripts=("${SCRIPTS[@]+"${SCRIPTS[@]}"}")
   SCRIPTS=()
@@ -801,6 +810,9 @@ run_coverage_guard() {
   SCRIPTS=()
   select_family real-herdr-gated
   printf '%s\n' "${SCRIPTS[@]+"${SCRIPTS[@]}"}" | LC_ALL=C sort -u >"$tmp/herdr"
+  SCRIPTS=()
+  select_lane legacy-adapter
+  printf '%s\n' "${SCRIPTS[@]+"${SCRIPTS[@]}"}" | LC_ALL=C sort -u >"$tmp/legacy"
   SCRIPTS=("${saved_scripts[@]+"${saved_scripts[@]}"}")
 
   # Every serial script runs in exactly one CI shard: no duplicate work across
@@ -823,7 +835,8 @@ run_coverage_guard() {
     return 1
   fi
 
-  for pair in "shards_union:serial" "shards_union:herdr" "serial:herdr"; do
+  for pair in "shards_union:serial" "shards_union:herdr" "shards_union:legacy" \
+    "serial:herdr" "serial:legacy" "herdr:legacy"; do
     a=${pair%%:*}
     b=${pair#*:}
     comm -12 "$tmp/$a" "$tmp/$b" >"$tmp/overlap"
@@ -835,7 +848,7 @@ run_coverage_guard() {
     fi
   done
 
-  cat "$tmp/shards_union" "$tmp/serial" "$tmp/herdr" | LC_ALL=C sort >"$tmp/union_raw"
+  cat "$tmp/shards_union" "$tmp/serial" "$tmp/herdr" "$tmp/legacy" | LC_ALL=C sort >"$tmp/union_raw"
   uniq -d "$tmp/union_raw" >"$tmp/union_dups"
   if [ -s "$tmp/union_dups" ]; then
     log "coverage guard: duplicate scripts across lanes:"
@@ -847,7 +860,7 @@ run_coverage_guard() {
   missing=$(comm -23 "$tmp/all" "$tmp/union" || true)
   extra=$(comm -13 "$tmp/all" "$tmp/union" || true)
   if [ -n "$missing" ] || [ -n "$extra" ]; then
-    log "coverage guard: union of portable shards + portable serial + Herdr must equal tests/*.test.sh"
+    log "coverage guard: union of portable shards + portable serial + Herdr + legacy lanes must equal tests/*.test.sh"
     [ -z "$missing" ] || { log "missing from union:"; printf '%s\n' "$missing" >&2; }
     [ -z "$extra" ] || { log "extra beyond inventory:"; printf '%s\n' "$extra" >&2; }
     rm -rf "$tmp"
@@ -1072,7 +1085,7 @@ families_for_changed_path() {
   case "$path" in
     tests/fm-backend-herdr-eventwait.test.py)
       printf '%s\n' real-herdr-gated
-      printf '%s\n' backend-dispatch
+      printf '%s\n' legacy-adapter
       ;;
     tests/*.test.sh)
       # A single test file change selects only that script via basename family
@@ -2129,7 +2142,20 @@ else
       export TMPDIR="$work/tmp"
       export TMP="$work/tmp"
       unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
-        FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
+        FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND \
+        FM_BACKEND_TEST_HARNESS FM_GATE_REFUSE_BYPASS 2>/dev/null || true
+      case "$family" in
+        legacy-adapter|cmux|zellij|orca)
+          export FM_ROOT_OVERRIDE="$ROOT"
+          export FM_STATE_OVERRIDE="$work/state"
+          export FM_BACKEND_LEGACY_TEST_LANE=1
+          export FM_BACKEND_TEST_HARNESS=1
+          export FM_GATE_REFUSE_BYPASS=1
+          mkdir -p "$FM_STATE_OVERRIDE"
+          printf '%s' firstmate-herdr-legacy-test-runner-v1 > "$FM_STATE_OVERRIDE/.fm-backend-legacy-test-runner"
+          chmod 0600 "$FM_STATE_OVERRIDE/.fm-backend-legacy-test-runner"
+          ;;
+      esac
       cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
       set +e

@@ -43,7 +43,8 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
   Personal fleet state is gitignored; the checked-in Phynd defaults and local configuration distinction are owned by [`docs/configuration.md`](docs/configuration.md#operational-home-layout-and-state).
   The root `.tasks.toml` is tracked `tasks-axi` config for `data/backlog.md`; compatible `tasks-axi` is the default backend for routine backlog mutations, with the compatibility definition owned by [`docs/configuration.md`](docs/configuration.md) ("Backlog backend").
   A local `config/backlog-backend=manual` opt-out forces firstmate's routine backlog updates to hand-editing and stays gitignored; validated secondmate handoffs still delegate through `tasks-axi mv`.
-  The checked-in `config/backend` file provides the Phynd runtime session-provider default; backend selection details are owned by [`docs/configuration.md`](docs/configuration.md).
+  The tracked `config/backend` file declares the runtime backend for new task endpoints, and `herdr` is its only accepted value: Herdr is the sole supported runtime backend (`AGENTS.md` hard rule 6), nothing is auto-detected, and `tmux`, `zellij`, `orca`, and `cmux` are retained legacy adapters that the active runtime refuses by name, while `codex-app` is documented only in `docs/codex-app-backend.md`.
+  Retained-adapter regression coverage is retired from active test execution; current unit tests prove Herdr-only behavior, and live smoke uses the named Herdr lab contract.
   It does not make `data/` tracked.
 - Helper scripts in `bin/` are plain bash.
   Each starts with a usage header comment; keep it accurate when you change behavior.
@@ -114,7 +115,7 @@ Shared test helpers live in `tests/lib.sh` (reporters, temp roots, git fixtures)
 Source those instead of copying a fake toolchain into a new suite.
 A fixture may shorten a production timeout to keep a failure path prompt, but never below what the real work inside that window costs on a loaded machine: a fork, an exec, a lock acquisition, a beacon publication, or a first-poll check.
 Where a case's assertion is not about the timeout itself, give that window headroom over the measured loaded cost, and bound the test's own waiting with iteration-counted poll loops, which stretch under load where a wall-clock budget does not.
-Tests that need a real optional backend or an explicit opt-in (real herdr/zellij/cmux smoke tests, the live Pi regression) skip themselves and print the tool or environment gate needed to enable them, so the portable suite remains safe on machines without those tools.
+Tests that need the Herdr lab or an explicit opt-in (real Herdr smoke tests and the live Pi regression) skip themselves and print the tool or environment gate needed to enable them, so the portable suite remains safe on machines without those tools.
 The [Herdr backend guide](docs/herdr-backend.md#destructive-lab-safety) owns the lane's isolation boundary, while [runtime backend verification](docs/verification/runtime-backends.md#herdr) owns active empirical evidence; live harness credential tests remain opt-in.
 
 ## Questions

@@ -6,6 +6,63 @@ This record contains reusable version-scoped evidence for active runtime guarant
 The backend guides own current setup, safety boundaries, and limitations.
 Exact task chronology, branch names, temporary homes, local paths, process ids, thread ids, and delivery transcripts remain in private reports or PR evidence.
 
+## Herdr-only runtime invariant
+
+Herdr is the sole supported runtime backend (`AGENTS.md` hard rule 6; owner `bin/fm-backend-policy-lib.sh`).
+The deterministic guard runs without any real backend binary; the real-Herdr guard drives the real spawn and teardown inside a helper-provisioned lab session.
+
+```sh
+bash tests/fm-backend-herdr-only.test.sh
+bash tests/fm-backend-herdr-only-smoke.test.sh
+```
+
+Verified 2026-08-29 on macOS aarch64 with the installed Herdr 0.8.2 (`herdr status --json` client protocol 20) for the smoke run; the deterministic run used a canned `herdr` stub answering protocol 13 for the floor case and a PATH without `herdr` for the missing-binary case:
+
+```text
+ok - known and spawn-capable backend sets are exactly herdr
+ok - fm_backend_name refuses an undeclared home instead of defaulting (no tmux default)
+ok - fm_backend_name refuses every retained, blocked, and unknown config/backend value
+ok - fm_backend_name refuses every non-herdr FM_BACKEND even when config/backend declares herdr (no fall-through)
+ok - fm_backend_name accepts a declared herdr from config/backend or FM_BACKEND
+ok - runtime markers (TMUX, HERDR_ENV, cmux), nested or alone, never select a backend and detection is inert
+ok - every dispatcher refuses tmux/zellij/orca/cmux by name and never executes their CLIs
+ok - selector resolution: bare names refuse without a tmux inventory search, explicit targets are herdr
+ok - fm-spawn refuses --backend, FM_BACKEND, config/backend, and undeclared/auto-detect selection before any side effect
+ok - fm-spawn refuses a missing or below-floor Herdr as a terminal blocker and never touches tmux
+ok - an inherited secondmate config/backend is accepted only as herdr; tmux or absence refuses in that home too
+ok - supervisor discovery: herdr override or Herdr pane identity only; TMUX_PANE never selects and there is no firstmate:0 default
+ok - the away-mode daemon refuses a non-Herdr supervisor backend at startup
+ok - legacy task metadata (absent or retained backend) is refused read-only by the helpers and by crew-state/peek/send/control/teardown
+ok - a Herdr record and a declared Herdr backend pass every selection, validation, and dispatch boundary
+ok - bootstrap surfaces a refused runtime backend as BACKEND_INVALID carrying the Herdr remediation
+```
+
+```text
+ok - real herdr: HERDR_ENV=1 alone never selects - an undeclared home is refused by name and nothing is created
+ok - real herdr: fm-spawn.sh accepts the declared herdr home silently
+ok - real herdr: the spawn records backend=herdr and its exact herdr_session/workspace/tab/pane endpoint fields
+ok - real herdr: the launch command actually ran in the herdr pane
+ok - real herdr: teardown completes the spawn/teardown cycle (meta cleared, pane closed)
+ok - real herdr: isolated lab session removed and default fleet session unchanged
+```
+
+The refusal shape every boundary emits, captured from `fm_backend_name` in a home with no declaration while `TMUX` and `HERDR_ENV=1` were both present (paths elided):
+
+```text
+REFUSED: neither FM_BACKEND nor <config>/backend declares no backend identity, but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. Declare Herdr explicitly: write exactly 'herdr' as the first non-empty line of <config>/backend (bin/fm-setup-phynd.sh writes it), or export FM_BACKEND=herdr for one launch, then prove the runtime with 'herdr status --json'. Runtime markers present but never used for selection: TMUX, HERDR_ENV=1.
+```
+
+Mutation checks, 2026-08-29, each followed by a byte-identical restore and a sixteen-pass rerun:
+
+```text
+# fm_backend_policy_permits made to return success for every name
+not ok - fm_backend_validate tmux: expected a refusal exit, got 0
+# fm_backend_name made to print any FM_BACKEND value instead of requiring herdr
+not ok - FM_BACKEND=tmux: expected a refusal exit, got 0
+```
+
+The tmux, Zellij, Orca, and cmux sections below are historical retained-adapter evidence: they describe adapters that the active runtime refuses by name and that are no longer executable through Firstmate.
+
 ## tmux
 
 Foreground-process behavior was verified on 2026-07-07 with tmux 3.6a on macOS.
@@ -181,7 +238,6 @@ Herdr's Claude idle-native submit confirmation is pinned by `tests/fm-backend-he
 The cleanup identity boundary was validated on 2026-07-28 with tmux 3.6a and metadata fixtures for every supported backend.
 
 ```sh
-tests/fm-teardown-endpoint-safety.test.sh
 tests/fm-teardown.test.sh
 tests/fm-backend-herdr.test.sh
 tests/fm-backend-zellij.test.sh
@@ -193,10 +249,7 @@ Bounded output from the incident regression:
 
 ```text
 ok - fm-teardown: missing, empty, malformed, ambiguous, and task-mismatched endpoints refuse before every mutation or runtime call
-ok - cleanup identity: valid tmux, Herdr, Zellij, Orca, and cmux records validate while every empty backend target refuses
-ok - tmux backend: direct empty target returns nonzero without invoking tmux
 ok - process cleanup: creation-time PID identity removes only the exact child and preserves the control child
-ok - fm-teardown: dedicated-socket invalid cleanup preserves target/control and valid cleanup removes only the exact target
 ```
 
 The dedicated tmux cell removed ambient tmux variables, required a socket-bound wrapper, kept one target and one independent control window, and proved the wrapper was not called for invalid metadata or a direct empty target.

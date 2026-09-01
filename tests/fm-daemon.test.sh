@@ -51,7 +51,7 @@ test_afk_start_ignores_stale_pidfile_without_lock() {
 
   [ "$status" -ne 0 ] || fail "fm-afk-start.sh should attempt daemon startup instead of trusting a pidfile-only live pid"
   assert_contains "$out" "starting supervise daemon" "fm-afk-start.sh did not attempt daemon startup"
-  assert_contains "$out" "does not support supervisor backend 'unsupported'" "daemon startup did not reach backend validation"
+  assert_contains "$out" "cannot supervise backend 'unsupported'" "daemon startup did not reach backend validation"
   assert_not_contains "$out" "daemon already running" "fm-afk-start.sh trusted a stale pidfile-only live pid"
   pass "fm-afk-start.sh ignores stale pidfile-only live pids"
 }
@@ -71,7 +71,7 @@ test_afk_start_reclaims_stale_daemon_lock_reused_pid() {
 
   [ "$status" -ne 0 ] || fail "fm-afk-start.sh should attempt daemon startup after rejecting a reused-pid lock"
   assert_contains "$out" "starting supervise daemon" "fm-afk-start.sh did not attempt daemon startup after rejecting the stale lock"
-  assert_contains "$out" "does not support supervisor backend 'unsupported'" "daemon startup did not reach backend validation after stale lock cleanup"
+  assert_contains "$out" "cannot supervise backend 'unsupported'" "daemon startup did not reach backend validation after stale lock cleanup"
   assert_not_contains "$out" "daemon already running" "fm-afk-start.sh trusted a stale daemon lock with a reused pid"
   assert_not_contains "$out" "another fm-supervise-daemon is already running" "daemon singleton lock still trusted the reused pid"
   pass "fm-afk-start.sh reclaims stale daemon locks whose live pid identity no longer matches"
@@ -1023,6 +1023,29 @@ test_housekeeping_paused_resumed_cleared() {
   [ -e "$state/.subsuper-paused-$key" ] && fail "resumed (busy, no longer declaring) pause marker was not cleared"
   [ ! -s "$state/.subsuper-escalations" ] || fail "a resumed pause was escalated"
   pass "a busy pane cannot gate the pause clear once its crew's status no longer declares the wait"
+}
+
+test_migrate_watcher_pause_markers_uses_metadata_task() {
+  local dir state task win seen
+  dir=$(make_supercase migrate-valid-herdr)
+  state="$dir/state"
+  task=migrate-w12
+  win=herdr-session:herdr-pane
+  printf 'paused: waiting for the upstream tool\n' > "$state/$task.status"
+  printf 'backend=herdr\n' > "$state/$task.meta"
+  (
+    seen=
+    fm_backend_of_meta() { printf 'herdr\n'; }
+    fm_backend_validate_task_endpoint() {
+      seen=$2
+      FM_BACKEND_VALIDATED_TARGET=herdr-session:herdr-pane
+      return 0
+    }
+    reconcile_pause_tracking() { :; }
+    migrate_watcher_pause_markers "$state"
+    [ "$seen" = "$task" ] || exit 1
+  ) || fail "valid Herdr metadata was not validated with its filename-derived task"
+  pass "pause-marker migration validates and reconciles a valid Herdr task record"
 }
 
 # The inverse of test_housekeeping_paused_resumed_cleared, and the first half of
@@ -2640,6 +2663,7 @@ test_housekeeping_resumed_stale_cleared
 test_housekeeping_paused_resurfaces_and_resets
 test_housekeeping_captain_held_resurfaces_and_resets
 test_housekeeping_paused_resumed_cleared
+test_migrate_watcher_pause_markers_uses_metadata_task
 test_housekeeping_busy_declared_wait_matures_its_window
 test_housekeeping_paused_unpaused_cleared
 test_housekeeping_captain_held_resolved_cleared

@@ -56,6 +56,8 @@
 #
 # shellcheck source=bin/fm-startup-memory-budget-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-startup-memory-budget-lib.sh"
+# shellcheck source=bin/fm-backend-policy-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-backend-policy-lib.sh"
 
 # The one shared data file in this inheritance contract. There is deliberately
 # no shared learnings file.
@@ -140,6 +142,30 @@ copy_inheritable_file() {
   mkdir -p "$dest_parent" 2>/dev/null || return 1
   tmp=$(mktemp "$dest_parent/.fm-inherit.XXXXXX" 2>/dev/null) || return 1
   if ! cp "$src" "$tmp" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  if [ -L "$dest" ] && ! rm -f "$dest" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  if mv -f "$tmp" "$dest" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  return 1
+}
+
+copy_inheritable_value() {
+  local value=$1 dest=$2 dest_parent tmp
+  if [ -e "$dest" ] && [ ! -f "$dest" ] && [ ! -L "$dest" ]; then
+    return 1
+  fi
+  dest_parent=${dest%/*}
+  [ -n "$dest_parent" ] && [ "$dest_parent" != "$dest" ] || return 1
+  mkdir -p "$dest_parent" 2>/dev/null || return 1
+  tmp=$(mktemp "$dest_parent/.fm-inherit.XXXXXX" 2>/dev/null) || return 1
+  if ! printf '%s\n' "$value" > "$tmp"; then
     rm -f "$tmp" 2>/dev/null || true
     return 1
   fi
@@ -443,10 +469,31 @@ propagate_secondmate_inheritance() {
 }
 
 propagate_inheritable_config() {
-  local src_config=$1 dest_config=$2 item src dest reason rc
+  local src_config=$1 dest_config=$2 item src dest reason rc backend_override
   [ -n "$src_config" ] || return 1
   [ -n "$dest_config" ] || return 1
   rc=0
+  backend_override=
+  case "${FM_CONFIG_INHERIT_BACKEND_OVERRIDE:-}" in
+    '') ;;
+    herdr) backend_override=herdr ;;
+    tmux|zellij|orca|cmux)
+      if fm_backend_policy_legacy_adapter_allowed "${FM_CONFIG_INHERIT_BACKEND_OVERRIDE}"; then
+        backend_override=${FM_CONFIG_INHERIT_BACKEND_OVERRIDE}
+      else
+        reason="invalid backend inheritance override"
+        warn_inheritable_config_error backend "$dest_config/backend" "$reason"
+        record_inheritable_config_result backend error "$reason"
+        return 1
+      fi
+      ;;
+    *)
+      reason="invalid backend inheritance override"
+      warn_inheritable_config_error backend "$dest_config/backend" "$reason"
+      record_inheritable_config_result backend error "$reason"
+      return 1
+      ;;
+  esac
   for item in $FM_INHERITABLE_CONFIG; do
     case "$item" in
       ''|/*|.|..|../*|*/../*|*/..) return 1 ;;
@@ -457,6 +504,27 @@ propagate_inheritable_config() {
     fi
     src="$src_config/$item"
     dest="$dest_config/$item"
+    if [ "$item" = backend ] && [ -n "$backend_override" ]; then
+      if ! destination_allows_inherited_item "$dest_config" "$item"; then
+        reason=$(inheritable_config_skip_reason)
+        warn_inheritable_config_skip "$item" "$dest_config" "$reason"
+        record_inheritable_config_result "$item" skipped "$reason"
+        continue
+      fi
+      if [ -L "$dest" ] || [ ! -f "$dest" ] || ! cmp -s <(printf '%s\n' "$backend_override") "$dest"; then
+        if copy_inheritable_value "$backend_override" "$dest"; then
+          record_inheritable_config_result "$item" pushed "normalized primary backend"
+        else
+          reason="failed to copy"
+          warn_inheritable_config_error "$item" "$dest" "$reason"
+          record_inheritable_config_result "$item" error "$reason"
+          rc=1
+        fi
+      else
+        record_inheritable_config_result "$item" unchanged "normalized primary backend"
+      fi
+      continue
+    fi
     # This one scalar config is consumed as a local safety boundary, so reject
     # every unsafe or malformed source/destination artifact before the generic
     # byte-copy behavior below can treat it as ordinary inherited material.

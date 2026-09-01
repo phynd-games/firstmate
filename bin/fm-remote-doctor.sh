@@ -145,7 +145,7 @@ herdr_adapter_load() {
   [ -f "$SCRIPT_DIR/fm-backend.sh" ] && [ -f "$SCRIPT_DIR/backends/herdr.sh" ] || return 1
   # shellcheck source=bin/fm-backend.sh
   . "$SCRIPT_DIR/fm-backend.sh" || return 1
-  fm_backend_source herdr || return 1
+  fm_backend_source herdr "remote doctor" "$HERDR_SESSION_NAME" setup || return 1
   FM_REMOTE_DOCTOR_HERDR_LOADED=1
 }
 

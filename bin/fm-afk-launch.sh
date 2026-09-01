@@ -10,7 +10,7 @@
 # native background mechanism (pi) has to manufacture a terminal, and doing that
 # by SPLITTING the captain's active pane visibly shrinks it - the regression this
 # script fixes. Instead this creates a non-visible tracked terminal (a herdr tab/
-# workspace with --no-focus, or a detached tmux session) that never touches the
+# workspace with --no-focus) that never touches the
 # captain's active tab, and NEVER uses shell `&` (which herdr/codex can reap).
 #
 # Correct supervisor targeting: the daemon finds the captain pane to inject into
@@ -36,8 +36,8 @@
 #   fm-afk-launch.sh reconcile Close a recorded-but-dead daemon terminal by exact
 #                              id and drop the record (recovery after a crash).
 #
-# Supported backends: herdr, tmux. Others (zellij, orca, cmux) have no verified
-# non-visible-launch primitive here yet and refuse loudly.
+# Supported active backend: herdr. Retained adapters are available only in the
+# repository's regression lane.
 #
 # Test seam: FM_AFK_LAUNCH_ENTRY overrides the command run in the created
 # terminal (default bin/fm-afk-start.sh), so a topology test can run a harmless
@@ -77,6 +77,8 @@ FM_AFK_LAUNCH_WS_LABEL="firstmate-afk-daemon"
 
 # shellcheck source=bin/fm-backend.sh
 . "$FM_AFK_LAUNCH_DIR/fm-backend.sh"
+# shellcheck source=bin/backends/herdr.sh
+. "$FM_AFK_LAUNCH_DIR/backends/herdr.sh"
 # shellcheck source=bin/fm-supervisor-target-lib.sh
 . "$FM_AFK_LAUNCH_DIR/fm-supervisor-target-lib.sh"
 # fm-afk-start.sh provides the daemon-lock liveness helpers and
@@ -88,6 +90,24 @@ FM_AFK_LAUNCH_WS_LABEL="firstmate-afk-daemon"
 set +e
 
 fm_afk_launch_log() { printf 'fm-afk-launch: %s\n' "$*" >&2; }
+
+fm_afk_launch_preflight() {
+  fm_backend_policy_legacy_lane && return 0
+  local backend target workspace tab
+  backend=$(discover_supervisor_backend) || return 1
+  fm_backend_validate "$backend" || return 1
+  target=$(discover_supervisor_target) || return 1
+  if [ "$backend" = herdr ] && [ "${FM_SUPERVISOR_TARGET:-}" = "$target" ]; then
+    fm_backend_herdr_target_ready "$target" || return $?
+    workspace=$FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID
+    tab=$FM_BACKEND_HERDR_EXPECTED_TAB_ID
+  else
+    workspace=${HERDR_WORKSPACE_ID:-}
+    tab=${HERDR_TAB_ID:-}
+  fi
+  fm_backend_target_exists "$backend" "$target" "" \
+    "$workspace" "$tab" "${FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID:-}" || return $?
+}
 
 fm_afk_launch_lock_owned() {
   local pid expected actual
@@ -155,37 +175,58 @@ fm_afk_launch_entry_cmd() {
   printf '%s' "${FM_AFK_LAUNCH_ENTRY:-$FM_ROOT/bin/fm-afk-start.sh}"
 }
 
-fm_afk_launch_record_write() {  # <backend> <target> <extra>
+fm_afk_launch_record_write() {  # <backend> <target> <workspace> [tab] [terminal]
   local pending
   mkdir -p "$FM_AFK_LAUNCH_STATE" || return 1
   pending=$(mktemp "$FM_AFK_LAUNCH_STATE/.afk-daemon-terminal.pending.XXXXXX") || return 1
-  printf '%s\t%s\t%s\n' "$1" "$2" "$3" > "$pending" || { rm -f "$pending"; return 1; }
+  if [ "$1" = herdr ]; then
+    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "${4:-}" "${5:-}" > "$pending" || { rm -f "$pending"; return 1; }
+  else
+    printf '%s\t%s\t%s\n' "$1" "$2" "$3" > "$pending" || { rm -f "$pending"; return 1; }
+  fi
   mv "$pending" "$FM_AFK_LAUNCH_RECORD" || { rm -f "$pending"; return 1; }
+}
+
+fm_afk_launch_allow_tmux() {
+  fm_backend_policy_legacy_adapter_allowed tmux && return 0
+  fm_backend_policy_refuse "AFK daemon terminal record" tmux \
+    "Retire this pre-invariant AFK terminal record through docs/configuration.md \"Legacy task records\"."
+  return 1
 }
 
 fm_afk_launch_flag_write() {
   fm_afk_flag_write "$FM_AFK_LAUNCH_STATE"
 }
 
-# Read the recorded terminal into FM_AFK_REC_BACKEND/FM_AFK_REC_TARGET. The third
-# field (a herdr workspace id, kept for the record's own documentation) is not
-# needed to close by id, so it is discarded. Returns 1 when no record exists.
+# Read the recorded terminal into the FM_AFK_REC_* fields. Returns 1 when no
+# record exists.
 fm_afk_launch_record_read() {
-  local extra record
-  FM_AFK_REC_BACKEND=""; FM_AFK_REC_TARGET=""; extra=""
+  local record fields
+  FM_AFK_REC_BACKEND=""; FM_AFK_REC_TARGET=""; FM_AFK_REC_WORKSPACE=""; FM_AFK_REC_TAB=""; FM_AFK_REC_TERMINAL=""
   [ -f "$FM_AFK_LAUNCH_RECORD" ] || return 1
   record=$(cat "$FM_AFK_LAUNCH_RECORD" 2>/dev/null) || record=""
-  IFS=$'\t' read -r FM_AFK_REC_BACKEND FM_AFK_REC_TARGET extra \
+  fields=$(printf '%s\n' "$record" | awk -F '\t' 'NF { print NF; exit }')
+  IFS=$'\t' read -r FM_AFK_REC_BACKEND FM_AFK_REC_TARGET FM_AFK_REC_WORKSPACE FM_AFK_REC_TAB FM_AFK_REC_TERMINAL \
     < "$FM_AFK_LAUNCH_RECORD" || true
-  if ! printf '%s\n' "$record" | awk -F '\t' 'NF != 3 { bad=1 } END { exit !(NR == 1 && !bad) }' \
+  if { [ "$fields" != 3 ] && [ "$fields" != 4 ] && [ "$fields" != 5 ]; } \
     || [ -z "$FM_AFK_REC_BACKEND" ] || [ -z "$FM_AFK_REC_TARGET" ]; then
     fm_afk_launch_log "daemon terminal record is malformed; refusing to act on it"
     return 2
   fi
   case "$FM_AFK_REC_BACKEND" in
-    herdr) [ -n "$extra" ] ;;
-    tmux) : ;;
-    none) [ "$FM_AFK_REC_TARGET" = - ] && [ "$extra" = native ] ;;
+    herdr)
+      [ "$fields" = 5 ] && [ -n "$FM_AFK_REC_WORKSPACE" ] && [ -n "$FM_AFK_REC_TAB" ] && [ -n "$FM_AFK_REC_TERMINAL" ] || {
+        if declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
+          fm_backend_policy_refuse "AFK Herdr terminal record" herdr \
+            "This record lacks exact workspace and tab identity; retire it through docs/configuration.md \"Legacy task records\"."
+        else
+          fm_afk_launch_log "daemon terminal record lacks exact Herdr workspace/tab identity"
+        fi
+        return 2
+      }
+      ;;
+    tmux) fm_afk_launch_allow_tmux || return 2 ;;
+    none) [ "$fields" = 3 ] && [ "$FM_AFK_REC_TARGET" = - ] && [ "$FM_AFK_REC_WORKSPACE" = native ] ;;
     *) return 2 ;;
   esac || { fm_afk_launch_log "daemon terminal record is malformed; refusing to act on it"; return 2; }
 }
@@ -197,19 +238,39 @@ fm_afk_launch_record_validate_if_present() {
   [ "$result" -ne 2 ]
 }
 
+fm_afk_launch_stop_preflight() {
+  fm_backend_policy_legacy_lane && return 0
+  local target session
+  fm_afk_launch_record_validate_if_present || return 1
+  if [ "$FM_AFK_REC_BACKEND" = herdr ]; then
+    session=${FM_AFK_REC_TARGET%%:*}
+  else
+    target=$(discover_supervisor_target) || return 1
+    session=${target%%:*}
+  fi
+  [ -n "$session" ] || return 1
+  fm_backend_herdr_capability_preflight "AFK lifecycle" "$session" || return 1
+}
+
 # Close a recorded terminal by EXACT id (never a broad sweep). The
 # recorded workspace id (herdr) needs no separate close: closing the pane takes
 # its single-tab dedicated workspace with it.
 fm_afk_launch_close_terminal() {  # <backend> <target>
-  local backend=$1 target=$2
+  local backend=$1 target=$2 session pane
   case "$backend" in
     herdr)
-      fm_backend_source herdr || return 1
-      local session=${target%%:*} pane=${target#*:}
-      [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
-      fm_backend_herdr_cli "$session" pane close "$pane" >/dev/null 2>&1
+      session=${target%%:*}
+      pane=${target#*:}
+      fm_backend_source herdr "AFK terminal close" "$session" || return 1
+      [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] \
+        && [ -n "${FM_AFK_REC_WORKSPACE:-}" ] && [ -n "${FM_AFK_REC_TAB:-}" ] \
+        && [ -n "${FM_AFK_REC_TERMINAL:-}" ] || return 2
+      FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID=$FM_AFK_REC_TERMINAL
+      fm_backend_herdr_stable_operation \
+        "$session" "$FM_AFK_REC_WORKSPACE" "$FM_AFK_REC_TAB" "$pane" close >/dev/null
       ;;
     tmux)
+      fm_afk_launch_allow_tmux || return 1
       # target is the dedicated daemon session name - kill exactly it.
       tmux kill-session -t "$target" 2>/dev/null
       ;;
@@ -224,19 +285,23 @@ fm_afk_launch_close_terminal() {  # <backend> <target>
 }
 
 fm_afk_launch_terminal_absent() {  # <backend> <target>
-  local backend=$1 target=$2 session pane out result code
+  local backend=$1 target=$2 session pane workspace=${3:-} tab=${4:-} terminal=${5:-} presence presence_rc
   case "$backend" in
     herdr)
       session=${target%%:*}
       pane=${target#*:}
-      [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
-      out=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>&1)
-      result=$?
-      [ "$result" -ne 0 ] || return 1
-      code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null) || return 1
-      [ "$code" = pane_not_found ]
+      fm_backend_source herdr "AFK terminal liveness" "$session" || return 1
+      [ -n "$workspace" ] && [ -n "$tab" ] && [ -n "$terminal" ] || return 2
+      if presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane" "$workspace" "$tab" "$terminal"); then
+        :
+      else
+        presence_rc=$?
+        return "$presence_rc"
+      fi
+      [ "$presence" = dead ]
       ;;
     tmux)
+      fm_afk_launch_allow_tmux || return 1
       out=$(tmux has-session -t "$target" 2>&1)
       result=$?
       [ "$result" -eq 1 ] || return 1
@@ -252,7 +317,8 @@ fm_afk_launch_terminal_absent() {  # <backend> <target>
 fm_afk_launch_close_recorded() {
   local close_result=0
   fm_afk_launch_close_terminal "$FM_AFK_REC_BACKEND" "$FM_AFK_REC_TARGET" || close_result=$?
-  if fm_afk_launch_terminal_absent "$FM_AFK_REC_BACKEND" "$FM_AFK_REC_TARGET"; then
+  if fm_afk_launch_terminal_absent "$FM_AFK_REC_BACKEND" "$FM_AFK_REC_TARGET" \
+    "${FM_AFK_REC_WORKSPACE:-}" "${FM_AFK_REC_TAB:-}" "${FM_AFK_REC_TERMINAL:-}"; then
     rm -f "$FM_AFK_LAUNCH_RECORD" || return 1
     [ "$close_result" -eq 0 ] || fm_afk_launch_log "terminal close command failed, but exact absence was confirmed"
     return 0
@@ -262,15 +328,27 @@ fm_afk_launch_close_recorded() {
 }
 
 fm_afk_launch_terminal_alive() {  # <backend> <target>
-  local backend=$1 target=$2 session pane
+  local backend=$1 target=$2 session pane presence presence_rc
   case "$backend" in
     herdr)
       session=${target%%:*}
       pane=${target#*:}
-      [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
-      fm_backend_herdr_cli "$session" pane get "$pane" >/dev/null 2>&1
+      fm_backend_source herdr "AFK terminal liveness" "$session" || return 1
+      [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] \
+        && [ -n "${FM_AFK_REC_WORKSPACE:-}" ] && [ -n "${FM_AFK_REC_TAB:-}" ] \
+        && [ -n "${FM_AFK_REC_TERMINAL:-}" ] || return 2
+      FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID=$FM_AFK_REC_TERMINAL
+      if presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane" \
+        "$FM_AFK_REC_WORKSPACE" "$FM_AFK_REC_TAB" "$FM_AFK_REC_TERMINAL"); then
+        :
+      else
+        presence_rc=$?
+        return "$presence_rc"
+      fi
+      [ "$presence" = present ]
       ;;
     tmux)
+      fm_afk_launch_allow_tmux || return 1
       tmux has-session -t "$target" 2>/dev/null
       ;;
     *) return 1 ;;
@@ -292,9 +370,9 @@ fm_afk_launch_wait_ready() {  # <backend> <target>
   return 1
 }
 
-fm_afk_launch_commit_terminal() {  # <backend> <target> <extra> [already-recorded]
-  local backend=$1 target=$2 extra=$3 already_recorded=${4:-0}
-  if [ "$already_recorded" -ne 1 ] && ! fm_afk_launch_record_write "$backend" "$target" "$extra"; then
+fm_afk_launch_commit_terminal() {  # <backend> <target> <workspace> [tab] [already-recorded]
+  local backend=$1 target=$2 workspace=$3 tab=${4:-} already_recorded=${5:-0}
+  if [ "$already_recorded" -ne 1 ] && ! fm_afk_launch_record_write "$backend" "$target" "$workspace" "$tab"; then
     fm_afk_launch_log "failed to persist daemon terminal record; closing $backend:$target"
     fm_afk_launch_close_terminal "$backend" "$target"
     return 1
@@ -309,33 +387,83 @@ fm_afk_launch_commit_terminal() {  # <backend> <target> <extra> [already-recorde
 }
 
 fm_afk_launch_herdr_recover_created() {  # <session> <label>
-  local session=$1 label=$2 workspaces ws_count wsid panes pane_count pane attempt=0
+  local session=$1 label=$2 workspaces ws_count wsid panes pane_count pane tab terminal attempt=0
+  local workspaces_rc panes_rc
   while [ "$attempt" -lt 20 ]; do
     attempt=$((attempt + 1))
-    workspaces=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || { sleep 0.05; continue; }
+    if workspaces=$(fm_backend_herdr_cli "$session" workspace list 2>&1); then
+      workspaces_rc=0
+    else
+      workspaces_rc=$?
+    fi
+    if [ "$workspaces_rc" -ne 0 ] || ! fm_backend_herdr_validate_workspace_list_response "$workspaces"; then
+      fm_backend_policy_refuse "AFK Herdr workspace recovery" herdr \
+        "The native Herdr workspace inventory failed or was malformed while recovering the daemon terminal. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+      return 2
+    fi
     ws_count=$(printf '%s' "$workspaces" | jq --arg want "$label" \
-      '[.result.workspaces[]? | select(.label == $want)] | length' 2>/dev/null) || { sleep 0.05; continue; }
+      '[.result.workspaces[] | select(.label == $want)] | length' 2>/dev/null) || {
+      fm_backend_policy_refuse "AFK Herdr workspace recovery" herdr \
+        "The native Herdr workspace inventory could not be parsed while recovering the daemon terminal. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+      return 2
+    }
     if [ "$ws_count" = 0 ]; then
       sleep 0.05
       continue
     fi
-    [ "$ws_count" = 1 ] || return 1
+    [ "$ws_count" = 1 ] || {
+      fm_backend_policy_refuse "AFK Herdr workspace recovery" herdr \
+        "The daemon terminal recovery matched multiple Herdr workspaces with the same label. Resolve the ambiguity, then verify the named session with 'herdr status --json'." || true
+      return 2
+    }
     wsid=$(printf '%s' "$workspaces" | jq -r --arg want "$label" \
-      '.result.workspaces[]? | select(.label == $want) | .workspace_id' 2>/dev/null) || return 1
-    [ -n "$wsid" ] || return 1
-    panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$wsid" 2>/dev/null) || { sleep 0.05; continue; }
-    pane_count=$(printf '%s' "$panes" | jq '[.result.panes[]?] | length' 2>/dev/null) || { sleep 0.05; continue; }
+      '.result.workspaces[] | select(.label == $want) | .workspace_id' 2>/dev/null) || {
+      fm_backend_policy_refuse "AFK Herdr workspace recovery" herdr \
+        "The native Herdr workspace identity could not be read while recovering the daemon terminal. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+      return 2
+    }
+    if panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$wsid" 2>&1); then
+      panes_rc=0
+    else
+      panes_rc=$?
+    fi
+    if [ "$panes_rc" -ne 0 ] || ! printf '%s' "$panes" | jq -e --arg workspace "$wsid" '
+      (.result.panes | type) == "array"
+      and all(.result.panes[]; (. | type) == "object"
+        and (.pane_id | type) == "string" and (.pane_id | length) > 0
+        and (.tab_id | type) == "string" and (.tab_id | length) > 0
+        and (.workspace_id | type) == "string" and (.workspace_id | length) > 0
+        and .workspace_id == $workspace)
+    ' >/dev/null 2>&1; then
+      fm_backend_policy_refuse "AFK Herdr pane recovery" herdr \
+        "The native Herdr pane inventory failed or was malformed while recovering the daemon terminal. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+      return 2
+    fi
+    pane_count=$(printf '%s' "$panes" | jq '[.result.panes[]] | length' 2>/dev/null) || {
+      fm_backend_policy_refuse "AFK Herdr pane recovery" herdr \
+        "The native Herdr pane inventory could not be parsed while recovering the daemon terminal. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+      return 2
+    }
     if [ "$pane_count" = 0 ]; then
       sleep 0.05
       continue
     fi
-    [ "$pane_count" = 1 ] || return 1
-    pane=$(printf '%s' "$panes" | jq -r '.result.panes[0].pane_id // empty' 2>/dev/null) || return 1
-    [ -n "$pane" ] || return 1
-    printf '%s\t%s' "$wsid" "$pane"
+    [ "$pane_count" = 1 ] || {
+      fm_backend_policy_refuse "AFK Herdr pane recovery" herdr \
+        "The daemon terminal recovery matched multiple Herdr panes in one workspace. Resolve the ambiguity, then verify the named session with 'herdr status --json'." || true
+      return 2
+    }
+    pane=$(printf '%s' "$panes" | jq -r '.result.panes[0].pane_id' 2>/dev/null) || return 2
+    tab=$(printf '%s' "$panes" | jq -r '.result.panes[0].tab_id' 2>/dev/null) || return 2
+    terminal=$(fm_backend_herdr_pane_get_checked "$session" "$wsid" "$tab" "$pane" 0 \
+      2>/dev/null | jq -r '.result.pane.terminal_id // empty' 2>/dev/null) || return 2
+    [ -n "$terminal" ] || return 2
+    printf '%s\t%s\t%s\t%s' "$wsid" "$tab" "$pane" "$terminal"
     return 0
   done
-  return 1
+  fm_backend_policy_refuse "AFK Herdr workspace recovery" herdr \
+    "The native Herdr daemon terminal did not become uniquely visible before recovery timed out. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+  return 2
 }
 
 # Reconcile a recorded-but-dead terminal: if a record exists and no live daemon
@@ -353,6 +481,29 @@ fm_afk_launch_reconcile() {
   elif [ "$read_result" -eq 2 ]; then
     return 1
   fi
+}
+
+fm_afk_launch_validate_herdr_identity() {  # <workspace-create-json>
+  jq -e '
+    (.result.workspace | type) == "object"
+    and (.result.workspace.workspace_id | type) == "string"
+    and (.result.workspace.workspace_id | length) > 0
+    and (.result.tab | type) == "object"
+    and (.result.tab.tab_id | type) == "string"
+    and (.result.tab.tab_id | length) > 0
+    and .result.tab.workspace_id == .result.workspace.workspace_id
+    and (.result.root_pane | type) == "object"
+    and (.result.root_pane.pane_id | type) == "string"
+    and (.result.root_pane.pane_id | length) > 0
+    and .result.root_pane.workspace_id == .result.workspace.workspace_id
+    and .result.root_pane.tab_id == .result.tab.tab_id
+    and (.result.root_pane.terminal_id | type) == "string"
+    and (.result.root_pane.terminal_id | length) > 0
+  ' <<< "$1" >/dev/null 2>&1 || {
+    fm_backend_policy_refuse "AFK Herdr terminal identity" herdr \
+      "The native Herdr workspace creation response did not prove the complete workspace, tab, pane, and terminal identity. Repair Herdr, then verify with 'herdr status --json'." || true
+    return 2
+  }
 }
 
 fm_afk_launch_restore_backup() {  # <backup> <had-afk>
@@ -382,24 +533,34 @@ fm_afk_launch_restore_backup() {  # <backup> <had-afk>
 # dedicated background workspace (--no-focus) holds exactly one tab/pane; it
 # never touches the captain's active tab. Prints the record line on success.
 fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
-  local captain_target=$1 captain_backend=$2 session out wsid pane entry cmd label recovered create_result
+  local captain_target=$1 captain_backend=$2 session out wsid tab pane terminal entry cmd label recovered create_result captain_workspace captain_tab captain_terminal
   session=${captain_target%%:*}
   if [ -z "$session" ] || [ "$session" = "$captain_target" ]; then
     fm_afk_launch_log "cannot derive herdr session from captain target '$captain_target'"
     return 1
   fi
-  fm_backend_source herdr || return 1
+  fm_backend_source herdr "AFK terminal creation" "$session" || return 1
+  fm_backend_herdr_target_ready "$captain_target" || return 2
+  captain_workspace=$FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID
+  captain_tab=$FM_BACKEND_HERDR_EXPECTED_TAB_ID
+  captain_terminal=$FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID
   fm_backend_herdr_server_ensure "$session" || { fm_afk_launch_log "herdr server not ready for session '$session'"; return 1; }
   label=${FM_AFK_LAUNCH_LABEL:-"$FM_AFK_LAUNCH_WS_LABEL-$$-${RANDOM:-0}-$(date '+%s')"}
   out=$(fm_backend_herdr_cli "$session" workspace create --cwd "$FM_HOME" --label "$label" --no-focus 2>/dev/null)
   create_result=$?
+  fm_afk_launch_validate_herdr_identity "$out" || return 2
   wsid=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
+  tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
+  terminal=$(printf '%s' "$out" | jq -r '.result.root_pane.terminal_id // empty' 2>/dev/null)
   if [ "$create_result" -ne 0 ] && [ -n "$wsid" ] && [ -n "$pane" ]; then
     fm_afk_launch_log "herdr create failed after returning exact ids; closing $session:$pane"
-    if fm_afk_launch_record_write herdr "$session:$pane" "$wsid"; then
+    if fm_afk_launch_record_write herdr "$session:$pane" "$wsid" "$tab" "$terminal"; then
       FM_AFK_REC_BACKEND=herdr
       FM_AFK_REC_TARGET="$session:$pane"
+      FM_AFK_REC_WORKSPACE=$wsid
+      FM_AFK_REC_TAB=$tab
+      FM_AFK_REC_TERMINAL=$terminal
       fm_afk_launch_close_recorded || true
     else
       fm_afk_launch_log "failed to persist exact id for failed herdr create"
@@ -408,36 +569,71 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
   fi
   if [ -z "$wsid" ] || [ -z "$pane" ]; then
     recovered=$(fm_afk_launch_herdr_recover_created "$session" "$label") || {
-      fm_afk_launch_log "herdr create did not yield a recoverable exact workspace/pane id"
-      return 1
+      return 2
     }
-    IFS=$'\t' read -r wsid pane <<< "$recovered"
+    IFS=$'\t' read -r wsid tab pane terminal <<< "$recovered"
+  fi
+  if [ -z "$wsid" ] || [ -z "$tab" ] || [ -z "$pane" ] || [ -z "$terminal" ]; then
+    fm_backend_policy_refuse "AFK Herdr terminal identity" herdr \
+      "The native Herdr daemon terminal response did not contain an exact workspace, tab, and pane identity. Repair Herdr, then verify the named session with 'herdr status --json'." || true
+    return 2
   fi
   entry=$(fm_afk_launch_entry_cmd)
-  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q %q' \
-    "$FM_HOME" "$captain_target" "$captain_backend" "$entry")
-  if ! fm_afk_launch_record_write herdr "$session:$pane" "$wsid"; then
+  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q HERDR_WORKSPACE_ID=%q HERDR_TAB_ID=%q HERDR_TERMINAL_ID=%q %q' \
+    "$FM_HOME" "$captain_target" "$captain_backend" "$captain_workspace" "$captain_tab" "$captain_terminal" "$entry")
+  if ! fm_afk_launch_record_write herdr "$session:$pane" "$wsid" "$tab" "$terminal"; then
     fm_afk_launch_log "failed to persist herdr daemon terminal record; closing $session:$pane"
+    FM_AFK_REC_WORKSPACE=$wsid
+    FM_AFK_REC_TAB=$tab
+    FM_AFK_REC_TERMINAL=$terminal
     fm_afk_launch_close_terminal herdr "$session:$pane"
     return 1
   fi
-  if ! fm_backend_herdr_cli "$session" pane run "$pane" "$cmd" >/dev/null 2>&1; then
+  FM_AFK_REC_BACKEND=herdr
+  FM_AFK_REC_TARGET="$session:$pane"
+  FM_AFK_REC_WORKSPACE=$wsid
+  FM_AFK_REC_TAB=$tab
+  FM_AFK_REC_TERMINAL=$terminal
+  FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID=$terminal
+  if ! fm_backend_herdr_stable_operation "$session" "$wsid" "$tab" "$pane" run "$cmd" >/dev/null; then
     fm_afk_launch_log "failed to run daemon in herdr pane $session:$pane; closing it"
     FM_AFK_REC_BACKEND=herdr
     FM_AFK_REC_TARGET="$session:$pane"
     fm_afk_launch_close_recorded || true
     return 1
   fi
-  fm_afk_launch_commit_terminal herdr "$session:$pane" "$wsid" 1 || return 1
+  fm_afk_launch_commit_terminal herdr "$session:$pane" "$wsid" "$tab" 1 || return 1
   fm_afk_launch_log "daemon launched in non-visible herdr workspace $wsid (pane $session:$pane), supervising $captain_target"
 }
 
-# Launch the daemon in a detached tmux session (never a split-window in the
-# captain's window). tmux pane ids are server-global, so the daemon reaches the
-# captain pane by its %id from this separate session.
+# Retained-adapter daemon launch for the repository's regression lane.
+fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
+  local captain_target=$1 captain_backend=$2 session entry cmd hash nonce
+  fm_afk_launch_allow_tmux || return 1
+  hash=$(printf '%s' "$FM_HOME" | cksum | cut -d' ' -f1)
+  nonce="$$-${RANDOM:-0}-$(date '+%s')"
+  session="fm-afk-daemon-$hash-$nonce"
+  entry=$(fm_afk_launch_entry_cmd)
+  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q %q' \
+    "$FM_HOME" "$captain_target" "$captain_backend" "$entry")
+  if ! fm_afk_launch_record_write tmux "$session" ""; then
+    fm_afk_launch_log "failed to persist planned tmux daemon session '$session'"
+    return 1
+  fi
+  if ! tmux new-session -d -s "$session" "$cmd" 2>/dev/null; then
+    fm_afk_launch_log "failed to create retained-lane tmux daemon session '$session'"
+    if ! rm -f "$FM_AFK_LAUNCH_RECORD"; then
+      fm_afk_launch_log "failed to remove planned tmux daemon record after creation failure"
+    fi
+    return 1
+  fi
+  fm_afk_launch_commit_terminal tmux "$session" "" "" 1 || return 1
+  fm_afk_launch_log "daemon launched in retained-lane tmux session '$session', supervising $captain_target"
+}
 
 fm_afk_launch_start() {
-  local captain_target captain_backend backup artifact had_afk=0 result afk_claim_held=0
+  local captain_target captain_backend backup artifact had_afk=0 result
+  fm_afk_launch_preflight || return 1
   if [ -e "$FM_AFK_LAUNCH_STATE/.afk-return-catchup" ]; then
     fm_afk_launch_log "return catch-up is still pending; run bin/fm-afk-return.sh check before re-entering away mode"
     return 1
@@ -447,6 +643,7 @@ fm_afk_launch_start() {
     fm_afk_launch_log "could not resolve the captain supervisor pane (set FM_SUPERVISOR_TARGET)"; return 1; }
   captain_backend=$(discover_supervisor_backend) || {
     fm_afk_launch_log "could not resolve the captain supervisor backend (set FM_SUPERVISOR_BACKEND)"; return 1; }
+  fm_backend_source "$captain_backend" "AFK launcher" || return 1
 
   mkdir -p "$FM_AFK_LAUNCH_STATE"
 
@@ -514,11 +711,7 @@ fm_afk_launch_start() {
     case "$captain_backend" in
       herdr) fm_afk_launch_create_herdr "$captain_target" "$captain_backend"; result=$? ;;
       *)
-        # Herdr is the only runtime that may host a daemon. There is deliberately
-        # no tmux launch primitive any more: it created a DETACHED session, which
-        # the runtime rule forbids outright, and a tmux-detected captain must get
-        # a refusal naming the remedy rather than a forbidden terminal.
-        fm_afk_launch_log "away mode needs a Herdr supervisor pane; backend '$captain_backend' cannot host a daemon. Start the captain session inside Herdr, or set FM_SUPERVISOR_BACKEND=herdr with FM_SUPERVISOR_TARGET=<session>:<pane-id>."
+        fm_afk_launch_log "no non-visible daemon-launch primitive for backend '$captain_backend'"
         result=1
         ;;
     esac
@@ -541,6 +734,7 @@ fm_afk_launch_start() {
 
 fm_afk_launch_start_native() {
   local backup artifact had_afk=0 result=0
+  fm_afk_launch_preflight || return 1
   mkdir -p "$FM_AFK_LAUNCH_STATE" || return 1
   if [ -e "$FM_AFK_LAUNCH_STATE/.afk-return-catchup" ]; then
     fm_afk_launch_log "return catch-up is still pending; run bin/fm-afk-return.sh check before re-entering away mode"
@@ -590,6 +784,17 @@ fm_afk_launch_stop() {
     fm_afk_launch_log "malformed daemon terminal record; refusing to stop away mode"
     return 1
   fi
+  if ! fm_backend_policy_legacy_lane; then
+    if [ "$FM_AFK_REC_BACKEND" = herdr ]; then
+      fm_backend_herdr_capability_preflight "AFK stop" "${FM_AFK_REC_TARGET%%:*}" || return 1
+    else
+      local target session
+      target=$(discover_supervisor_target) || return 1
+      session=${target%%:*}
+      [ -n "$session" ] || return 1
+      fm_backend_herdr_capability_preflight "AFK stop" "$session" || return 1
+    fi
+  fi
   # (1) SIGTERM the daemon so its cleanup trap flushes buffered escalations
   # WHILE state/.afk is still present (the exit-ordering fix: clearing .afk
   # first would make that flush a no-op via inject_msg's presence gate).
@@ -637,7 +842,7 @@ fm_afk_launch_stop() {
 }
 
 fm_afk_launch_main() {
-  local result
+  local result preflight_rc
   # Traps first, lock second. Acquiring before the handlers exist leaves a
   # window where a signal terminates this process by default action and leaks
   # the lock directory, which then blocks the next away-mode launch until the
@@ -646,6 +851,24 @@ fm_afk_launch_main() {
   trap fm_afk_launch_lock_release EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  case "${1:-start}" in
+    start|start-native)
+      if fm_afk_launch_preflight; then
+        :
+      else
+        preflight_rc=$?
+        return "$preflight_rc"
+      fi
+      ;;
+    stop|reconcile)
+      if fm_afk_launch_stop_preflight; then
+        :
+      else
+        preflight_rc=$?
+        return "$preflight_rc"
+      fi
+      ;;
+  esac
   fm_afk_launch_lock_acquire || return 1
   case "${1:-start}" in
     start) fm_afk_launch_start ;;
