@@ -186,6 +186,10 @@ printf '# scratch secondmate home AGENTS.md placeholder\n' > "$SM2_HOME/AGENTS.m
 printf '%s\n' "$SM2_ID" > "$SM2_HOME/.fm-secondmate-home"
 printf 'trivial e2e secondmate charter: nothing to do.\n' > "$SM2_HOME/data/charter.md"
 
+PRES_HOME="$TMP_ROOT/presentation-home"
+mkdir -p "$PRES_HOME/state" "$PRES_HOME/config"
+: > "$PRES_HOME/config/herdr-presentation-spaces"
+
 for id in uniqA uniqB dupC dupD staleF smE presU presD; do
   write_exempt_brief "$PRIMARY_HOME" "$id"
   write_exempt_brief "$SM_HOME" "$id"
@@ -193,21 +197,10 @@ for id in uniqA uniqB dupC dupD staleF smE presU presD; do
 done
 write_exempt_brief "$PRIMARY_HOME" "$SM2_ID"
 
-# A third primary-shaped home that keeps presentation spaces ON through the
-# historical empty opt-in file, so the default-on migration is exercised against
-# real Herdr while the opted-out homes above assert the flat layout in isolation.
-PRES_HOME="$TMP_ROOT/presentation-home"
-mkdir -p "$PRES_HOME/state" "$PRES_HOME/config"
-: > "$PRES_HOME/config/herdr-presentation-spaces"
-
 for id in uniqA uniqB dupC dupD staleF smE presU presD; do
   mkdir -p "$PRIMARY_HOME/data/$id" "$SM_HOME/data/$id" "$PRES_HOME/data/$id"
-  printf 'trivial launcher-placement brief: nothing to do.\n' > "$PRIMARY_HOME/data/$id/brief.md"
-  printf 'trivial launcher-placement brief: nothing to do.\n' > "$SM_HOME/data/$id/brief.md"
-  printf 'trivial launcher-placement brief: nothing to do.\n' > "$PRES_HOME/data/$id/brief.md"
 done
 mkdir -p "$PRIMARY_HOME/data/$SM2_ID"
-printf 'trivial secondmate charter brief: nothing to do.\n' > "$PRIMARY_HOME/data/$SM2_ID/brief.md"
 
 PROJ="$TMP_ROOT/scratch-project"; make_scratch_project "$PROJ"
 

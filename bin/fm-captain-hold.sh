@@ -313,7 +313,6 @@ update_intake_owner_record() {  # <task-id> <owner-token> <hold-reason> <phase> 
 hold_generation_from_show() {  # <task-id> <show-output>
   local id=$1 show=$2
   sha256_text "task_id=$id
-state=$(show_field "$show" state)
 hold_kind=$(show_field_value "$show" hold_kind)
 hold_reason=$(show_field_value "$show" hold_reason)
 hold_until=$(show_field_value "$show" hold_until)"
@@ -969,7 +968,7 @@ command_intake_resolution() {
     captain)
       current_generation=$(hold_generation_from_show "$id" "$show")
       [ "$current_generation" = "$owner_generation" ] || return 1
-      return 1
+      [ "$state" = done ] && [ "$phase" = released ] || return 1
       ;;
     *) return 1 ;;
   esac
