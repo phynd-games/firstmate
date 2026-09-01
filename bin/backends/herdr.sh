@@ -1820,8 +1820,8 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace> [<launcher-
 
 # fm_backend_herdr_pane_presence_state: classify one exact pane get response
 # as dead|present|unknown from its JSON body, never from process exit status.
-fm_backend_herdr_pane_presence_state() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 out code pid
+fm_backend_herdr_pane_presence_state() {  # <session> <pane_id> [workspace] [tab]
+  local session=$1 pane_id=$2 expected_workspace=${3:-} expected_tab=${4:-} out code pid
   out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>&1)
   code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
   if [ -n "$code" ]; then
@@ -1829,7 +1829,15 @@ fm_backend_herdr_pane_presence_state() {  # <session> <pane_id>
     return 0
   fi
   pid=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
-  [ "$pid" = "$pane_id" ] && printf 'present' || printf 'unknown'
+  [ "$pid" = "$pane_id" ] || { printf 'unknown'; return 0; }
+  if [ -n "$expected_workspace" ] || [ -n "$expected_tab" ]; then
+    printf '%s' "$out" | jq -e --arg workspace "$expected_workspace" --arg tab "$expected_tab" '
+      (.result.pane | type == "object")
+      and (if $workspace == "" then true else .result.pane.workspace_id == $workspace end)
+      and (if $tab == "" then true else .result.pane.tab_id == $tab end)
+    ' >/dev/null 2>&1 || { printf 'unknown'; return 0; }
+  fi
+  printf 'present'
 }
 
 fm_backend_herdr_workspace_presence_state() {  # <session> <workspace_id>
@@ -2507,8 +2515,21 @@ fm_backend_herdr_parse_target() {  # <target>
   [ -n "$FM_BACKEND_HERDR_SESSION" ] && [ -n "$FM_BACKEND_HERDR_PANE" ] && [ "$FM_BACKEND_HERDR_PANE" != "$target" ]
 }
 
+fm_backend_herdr_target_shape_valid() {  # <target>
+  local target=$1 session pane
+  fm_backend_herdr_parse_target "$target" || return 1
+  session=$FM_BACKEND_HERDR_SESSION
+  pane=$FM_BACKEND_HERDR_PANE
+  [[ "$session" =~ ^[[:alnum:]_.-]+$ ]] || return 1
+  [[ "$pane" =~ ^w[[:alnum:]_.-]+:p[[:alnum:]_.-]+$ ]]
+}
+
 fm_backend_herdr_target_ready() {  # <target>
   fm_backend_herdr_parse_target "$1" || return 1
+  if [ "${FM_BACKEND_NO_SERVER_START:-0}" = 1 ]; then
+    [ "$(fm_backend_herdr_pane_presence_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")" = present ]
+    return
+  fi
   fm_backend_herdr_server_ensure "$FM_BACKEND_HERDR_SESSION" || return 1
 }
 

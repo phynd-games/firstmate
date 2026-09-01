@@ -92,6 +92,8 @@ EOF
     "worktree=$home/projects/alpha-worktree" \
     "project=alpha" \
     "harness=claude" \
+    "model=opus" \
+    "effort=xhigh" \
     "kind=ship" \
     "mode=ship" \
     "yolo=off" \
@@ -169,7 +171,14 @@ test_fixture_snapshot_json() {
       and .backlog.body_excerpt == "Preserve this detail for bearings."
       and .hints.pending_decision == false
       and .paths.status_log.kind == "event_history"
-  ' >/dev/null || fail "ship task state, PR, body, and stale event hints wrong"
+      and .harness == "claude"
+      and .model == "opus"
+      and .effort == "xhigh"
+  ' >/dev/null || fail "ship task state, PR, body, dispatch record, or stale event hints wrong"
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "cmux-task")
+    | .model == null and .effort == null
+  ' >/dev/null || fail "a spawn that recorded no model or effort must report null, not an empty string"
   printf '%s' "$out" | jq -e '
     .tasks[] | select(.id == "scout-task")
     | .paths.report.present == true

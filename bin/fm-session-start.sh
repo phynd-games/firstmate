@@ -49,6 +49,11 @@
 #                       read-only, always runs.
 #   7. network checks - the result of the deferred network stage started back at
 #                       step 1, harvested WITHOUT waiting for it.
+#  7b. dashboard     - bring up the local read-only dashboard in a tracked Herdr
+#                       pane and print its proven URL. Local-only and bounded,
+#                       so it stays in the synchronous digest; never fails the
+#                       session start; a read-only session reports without
+#                       starting. bin/fm-dashboard-start.sh owns the contract.
 #   8. context digest - data/projects.md, data/secondmates.md, data/captain.md,
 #                       data/captain-shared.md, data/learnings.md: read-only,
 #                       always safe, always runs.
@@ -253,7 +258,7 @@ done
 # The ordered stage list is the contract behind the truncation banner: the child
 # names the stage it is entering, and the parent reports every stage at or after
 # that one as never emitted. Keep it in the exact order the digest prints.
-SESSION_START_STAGES='lock bootstrap wake-queue supervision-instructions read-once fleet-state network-checks context next-step'
+SESSION_START_STAGES='lock bootstrap wake-queue supervision-instructions read-once fleet-state network-checks dashboard context next-step'
 
 stage() {  # <stage-name>: breadcrumb for the parent's truncation banner
   [ -n "${FM_SESSION_START_STAGE_FILE:-}" ] || return 0
@@ -885,6 +890,28 @@ if [ "$READ_ONLY" -eq 1 ]; then
   printf 'has no action they would gate. The session holding the lock runs them.\n'
 else
   "$SCRIPT_DIR/fm-startup-network.sh" harvest --pid $$ 2>&1 || true
+fi
+
+# --- 7b. dashboard ---------------------------------------------------------
+# The read-only control-plane dashboard, brought up as a tracked Herdr pane by
+# bin/fm-dashboard-start.sh, which owns idempotency, owner identity, port
+# collision, readiness, and the no-false-URL rule. It runs here and not in the
+# deferred network stage because it is purely local: it makes no network call,
+# and its URL belongs in the digest the session actually reads.
+#
+# It never fails the session start. A dashboard that cannot be proven ready
+# prints its own DASHBOARD_BLOCKED line and leaves a durable diagnostic; the
+# session continues either way, because supervision does not depend on it.
+#
+# A read-only session starts nothing - it has no mutation authority - but it
+# still reports an already-running dashboard, which is a read-only question.
+stage dashboard
+section "DASHBOARD"
+if [ "$READ_ONLY" -eq 1 ]; then
+  printf 'not started (read-only session) - bringing the dashboard up needs the fleet lock.\n'
+  "$SCRIPT_DIR/fm-dashboard-start.sh" status-read-only 2>&1 || true
+else
+  "$SCRIPT_DIR/fm-dashboard-start.sh" ensure 2>&1 || true
 fi
 
 # --- 8. context digest -----------------------------------------------------

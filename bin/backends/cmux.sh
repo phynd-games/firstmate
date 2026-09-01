@@ -372,11 +372,20 @@ fm_backend_cmux_create_task() {  # <label> <cwd>
 # fm_backend_cmux_parse_target: split "<workspace_uuid>:<surface_uuid>" on the
 # FIRST colon (neither UUID contains a colon, so this is unambiguous). Sets
 # FM_BACKEND_CMUX_WORKSPACE and FM_BACKEND_CMUX_SURFACE for the caller.
+fm_backend_cmux_uuid_valid() {  # <value>
+  printf '%s\n' "$1" \
+    | grep -Eq '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+}
+
 fm_backend_cmux_parse_target() {  # <target>
   local target=$1
+  case "$target" in
+    ''|:*|*:|*:*:*|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+  esac
   FM_BACKEND_CMUX_WORKSPACE=${target%%:*}
   FM_BACKEND_CMUX_SURFACE=${target#*:}
-  [ -n "$FM_BACKEND_CMUX_WORKSPACE" ] && [ -n "$FM_BACKEND_CMUX_SURFACE" ] && [ "$FM_BACKEND_CMUX_SURFACE" != "$target" ]
+  fm_backend_cmux_uuid_valid "$FM_BACKEND_CMUX_WORKSPACE" \
+    && fm_backend_cmux_uuid_valid "$FM_BACKEND_CMUX_SURFACE"
 }
 
 # fm_backend_cmux_surface_exists: does <surface_id> currently appear as one of
@@ -397,10 +406,26 @@ fm_backend_cmux_parse_target() {  # <target>
 # instead - mirroring zellij's own pane_exists check
 # (fm_backend_zellij_pane_exists) rather than the design sketch's original
 # read-screen-based suggestion.
+fm_backend_cmux_panes_shape_valid() {
+  jq -e '
+    (.panes | type) == "array"
+    and all(.panes[];
+      type == "object"
+      and (.surface_ids | type) == "array"
+      and all(.surface_ids[];
+        type == "string"
+        and test("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
+      )
+    )
+  ' >/dev/null 2>&1
+}
+
 fm_backend_cmux_surface_exists() {  # <workspace_id> <surface_id>
-  local wsid=$1 sfid=$2
-  fm_backend_cmux_cli list-panes --workspace "$wsid" --json --id-format uuids 2>/dev/null \
-    | jq -e --arg s "$sfid" '[.panes[]? | select(.surface_ids // [] | index($s))] | length > 0' >/dev/null 2>&1
+  local wsid=$1 sfid=$2 panes
+  panes=$(fm_backend_cmux_cli list-panes --workspace "$wsid" --json --id-format uuids 2>/dev/null) || return 1
+  printf '%s' "$panes" | fm_backend_cmux_panes_shape_valid || return 1
+  printf '%s' "$panes" | jq -e --arg s "$sfid" \
+    '[.panes[] | select(.surface_ids | index($s))] | length > 0' >/dev/null 2>&1
 }
 
 # fm_backend_cmux_target_ready: parse the target and verify it is live via

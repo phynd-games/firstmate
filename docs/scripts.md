@@ -18,6 +18,13 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-fleet-view.sh`       | Render the fleet snapshot as a human Markdown view                                   |
 | `fm-bearings-snapshot.sh` | Project the fleet snapshot to the compact TOON bearings view; local-only unless `--include-prs` |
 | `fm-bearings-board.sh`   | Build and arm the stable interactive `/bearings lavish` fleet board                  |
+| `fm-dashboard.sh`        | Collect this home's read-only evidence, and serve the control-plane dashboard ([dashboard.md](dashboard.md)) |
+| `fm-dashboard-build.sh`  | Build or verify the committed React dashboard client in `assets/dashboard` |
+| `fm-dashboard-start.sh`  | Bring the dashboard up idempotently in a tracked Herdr pane and print its proven localhost URL |
+| `fm-dashboard-read.py`   | Read one record through a bounded, contained, descriptor-backed handle, reporting both its recorded and resolved paths |
+| `fm_dashboard_io.py`     | The descriptor-anchored read boundary every dashboard reader shares, plus the bounded freshness fingerprint |
+| `fm_dashboard_server.py` | The read-only versioned API and static client server `fm-dashboard.sh serve` runs |
+| `fm-dashboard-log.py`    | Append and trim the startup diagnostics record through one anchored descriptor, refusing a swapped or special file |
 | `fm-secondmate-reconcile.sh` | Ask each secondmate to reconcile an inventory mismatch through its durable inbox, limited by a per-home cooldown |
 | `fm-update.sh`           | Fast-forward-only self-update of firstmate and local or remote secondmate homes       |
 | `fm-on.sh`               | Execute one tracked Firstmate command in a configured remote secondmate home, using its job worker except for the doctor bootstrap |
@@ -35,7 +42,6 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-install-treehouse.sh`| Install CI's exact-version Treehouse pin for real-Herdr E2E that needs spawn worktrees |
 | `fm-herdr-ci-cleanup.sh` | Snapshot and tear down only job-owned `fm-lab-*` sessions in the Herdr CI lane       |
 | `fm-test-run.sh`         | Behavior-test runner: selection, portable lanes, proven-isolated `--jobs`, coverage guard, timing/JSON |
-| `fm-factory-manifest.py` | Validate immutable factory source and normalized execution-manifest artifacts; print bundled versioned schemas |
 | `fm-test-isolation-proof.sh` | Concurrent isolation proof and proven-isolated candidate set owner |
 | `fm-ensure-agents-md.sh` | Ensure a project's real `AGENTS.md`, its `CLAUDE.md` `@AGENTS.md` pointer, and the canonical self-governance section |
 | `fm-guard.sh`            | Warn on primary-checkout tangles, pending queued wakes, and unhealthy supervision    |
