@@ -31,6 +31,7 @@ cat > "$fakebin/lavish-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = end ]; then
   printf '%s\n' "$*" >> "${FM_LAVISH_CALLS:?FM_LAVISH_CALLS unset}"
+  [ "${FM_LAVISH_FAIL_END:-0}" = 1 ] && exit 1
   exit 0
 fi
 if [ "${1:-}" = poll ]; then
@@ -634,6 +635,36 @@ test_start_failure_rolls_back_only_new_state() {
   pass "Lavish intake: failed setup rolls back only state created by the attempt"
 }
 
+test_start_end_failure_preserves_ownership_state() {
+  local home artifact artifact_real sid out rc
+  home=$(make_home end-rollback)
+  add_task "$home" end-rollback-a1
+  artifact=$home/intake.html
+  artifact_real=$(CDPATH='' cd -- "$(dirname "$artifact")" && pwd -P)/$(basename "$artifact")
+  run_intake "$home" template end-rollback-a1 --output "$artifact" >/dev/null
+  sid=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
+  set +e
+  out=$(FM_LAVISH_FAIL_OPEN=1 FM_LAVISH_FAIL_END=1 \
+    run_intake "$home" start end-rollback-a1 --artifact "$artifact" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "failed Lavish cleanup unexpectedly succeeded"
+  assert_contains "$out" "preserving intake ownership state" \
+    "failed Lavish cleanup did not report retryable ownership state"
+  (cd "$home" && tasks-axi show end-rollback-a1 --full) | grep -Fq 'hold_kind: captain' \
+    || fail "failed Lavish cleanup released the captain hold"
+  assert_present "$home/state/end-rollback-a1.lavish-intake-session" \
+    "failed Lavish cleanup discarded the session ownership marker"
+  assert_present "$home/state/end-rollback-a1.lavish-intake-hold" \
+    "failed Lavish cleanup discarded the hold ownership marker"
+  assert_present "$home/state/decision-bindings/$sid.origin" \
+    "failed Lavish cleanup discarded the source binding"
+  assert_contains "$(cat "$home/lavish.calls")" "end $artifact_real" \
+    "failed Lavish cleanup did not attempt to end the session"
+  pass "Lavish intake: failed session cleanup preserves retryable ownership"
+}
+
 test_arm_failure_rolls_back_only_new_state() {
   local home artifact artifact_real out rc sid
   home=$(make_home arm-rollback)
@@ -774,7 +805,7 @@ test_successful_captured_feedback_and_followup() {
 }
 
 test_record_resumes_after_release_failure() {
-  local home artifact sid result out rc pending
+  local home artifact sid result out rc pending hold_reason
   home=$(make_home record-retry)
   add_task "$home" retry-a1
   artifact=$home/intake.html
@@ -801,14 +832,27 @@ test_record_resumes_after_release_failure() {
   if (cd "$home" && tasks-axi show retry-a1 --full) | grep -Fq 'hold_kind: captain'; then
     fail "release recovery unexpectedly retained a captain hold"
   fi
+  hold_reason=$(sed -n 's/^hold_reason=//p' \
+    "$home/state/retry-a1.lavish-intake-owner" | head -1)
+  (cd "$home" && tasks-axi hold retry-a1 --kind captain --reason "$hold_reason" >/dev/null) \
+    || fail "could not create the ambiguous newer captain hold"
   (cd "$home" && tasks-axi done retry-a1 >/dev/null) \
     || fail "could not close task while testing release recovery"
   rm -f "$home/state/procevent-inbox/$sid.1.handled"
-  out=$(run_intake "$home" record retry-a1 --artifact "$artifact" --result "$result")
-  assert_contains "$out" "recorded:" "resumed intake completion did not produce evidence"
-  assert_absent "$home/state/retry-a1.lavish-intake-owner" \
-    "completed intake left authoritative owner state behind"
-  pass "Lavish intake: released completions resume without replaying answers"
+  set +e
+  out=$(run_intake "$home" record retry-a1 --artifact "$artifact" --result "$result" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "ambiguous done-state recovery unexpectedly succeeded"
+  assert_contains "$out" "matching captain release evidence" \
+    "ambiguous done-state refusal was unclear"
+  assert_contains "$(cat "$pending")" "phase=released" \
+    "ambiguous done-state recovery changed pending evidence"
+  assert_absent "$home/state/retry-a1.lavish-intake" \
+    "ambiguous done-state recovery produced intake evidence"
+  assert_present "$home/state/retry-a1.lavish-intake-owner" \
+    "ambiguous done-state recovery discarded pending ownership evidence"
+  pass "Lavish intake: ambiguous done-state recovery stays pending"
 }
 
 test_pending_release_requires_durable_resolution() {
@@ -934,6 +978,7 @@ test_intake_flag_rejects_exemption
 test_verified_exemption_revalidates_reason
 test_contractless_compatibility_requires_existing_endpoint
 test_start_failure_rolls_back_only_new_state
+test_start_end_failure_preserves_ownership_state
 test_arm_failure_rolls_back_only_new_state
 test_ordinary_rearm_refuses_stale_intake_ownership
 test_artifact_replacement_refused

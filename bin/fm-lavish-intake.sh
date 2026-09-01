@@ -776,7 +776,18 @@ start_cleanup() {
   fi
   [ -z "$START_SESSION_TMP" ] || rm -f -- "$START_SESSION_TMP"
   if [ "$START_LAVISH_SESSION_CREATED" -eq 1 ]; then
-    lavish-axi end "$START_ARTIFACT" >/dev/null 2>&1 || true
+    if ! lavish-axi end "$START_ARTIFACT" >/dev/null 2>&1; then
+      printf 'fm-lavish-intake: could not end the Lavish intake session; preserving intake ownership state for retry\n' >&2
+      if [ "$START_LOCK_HELD" -eq 1 ]; then
+        fm_lock_release "$START_LOCK_PATH" || true
+        START_LOCK_HELD=0
+      fi
+      if [ "$START_SOURCE_LOCK_HELD" -eq 1 ]; then
+        fm_lock_release "$START_SOURCE_LOCK_PATH" || true
+        START_SOURCE_LOCK_HELD=0
+      fi
+      return "$status"
+    fi
   fi
   if [ "$START_SESSION_CREATED" -eq 1 ]; then
     rm -f -- "$(session_path "$START_TASK")"
