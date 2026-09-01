@@ -24,9 +24,11 @@
 #   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release]
 #   fm-captain-hold.sh release <task-id>
 #   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] [--exact] --source <provenance>   (keyed answers on stdin)
-#   fm-captain-hold.sh bind <source-id> [<legacy-origin> | --any-origin]
+#   fm-captain-hold.sh bind <source-id> [<legacy-origin> | --any-origin] [--intake]
 #   fm-captain-hold.sh unbind <source-id>
 #   fm-captain-hold.sh binding <source-id>
+#   fm-captain-hold.sh binding-intake <source-id>
+#   fm-captain-hold.sh intake-owner <task-id> <owner-token> <hold-reason>
 #   fm-captain-hold.sh complete <origin-id> (--none | <task-id>...)
 #   fm-captain-hold.sh verify <origin-id>
 #   fm-captain-hold.sh diverged
@@ -146,10 +148,26 @@ CAPTAIN_META_LOCK=
 CAPTAIN_META_LOCK_HELD=0
 CAPTAIN_TASK_LOCK=
 CAPTAIN_TASK_LOCK_HELD=0
+CAPTAIN_BINDING_LOCK=
+CAPTAIN_BINDING_LOCK_HELD=0
+CAPTAIN_INTAKE_OWNER_RECORD=
+CAPTAIN_INTAKE_OWNER_TOKEN=
+CAPTAIN_INTAKE_OWNER_RECORD_CREATED=0
 captain_hold_cleanup() {
+  if [ "$CAPTAIN_INTAKE_OWNER_RECORD_CREATED" = 1 ] \
+    && [ -f "$CAPTAIN_INTAKE_OWNER_RECORD" ] \
+    && [ ! -L "$CAPTAIN_INTAKE_OWNER_RECORD" ] \
+    && [ "$(sed -n 's/^owner_token=//p' "$CAPTAIN_INTAKE_OWNER_RECORD" | head -1)" = "$CAPTAIN_INTAKE_OWNER_TOKEN" ]; then
+    rm -f -- "$CAPTAIN_INTAKE_OWNER_RECORD"
+    CAPTAIN_INTAKE_OWNER_RECORD_CREATED=0
+  fi
   if [ "$CAPTAIN_TASK_LOCK_HELD" = 1 ]; then
     fm_lock_release "$CAPTAIN_TASK_LOCK" || true
     CAPTAIN_TASK_LOCK_HELD=0
+  fi
+  if [ "$CAPTAIN_BINDING_LOCK_HELD" = 1 ]; then
+    fm_lock_release "$CAPTAIN_BINDING_LOCK" || true
+    CAPTAIN_BINDING_LOCK_HELD=0
   fi
   if [ "$CAPTAIN_META_LOCK_HELD" = 1 ]; then
     fm_lock_release "$CAPTAIN_META_LOCK" || true
@@ -178,13 +196,44 @@ validate_slug() {  # <label> <value>
   esac
 }
 
-intake_owner_matches_reason() {  # <hold-reason> <owner-token>
-  local reason=$1 owner=$2 embedded
-  case "$reason" in
-    *' intake-owner-token='*) embedded=${reason##* intake-owner-token=} ;;
-    *) return 1 ;;
-  esac
-  [ "$embedded" = "$owner" ]
+intake_owner_path() { printf '%s/%s.lavish-intake-owner\n' "$STATE" "$1"; }
+
+intake_owner_record_matches() {  # <task-id> <owner-token> [<hold-reason>]
+  local id=$1 owner=$2 reason=${3-} path key
+  path=$(intake_owner_path "$id")
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  for key in version task_id owner_token hold_reason; do
+    [ "$(grep -c "^${key}=" "$path" 2>/dev/null || true)" -eq 1 ] || return 1
+  done
+  [ "$(sed -n 's/^version=//p' "$path" | head -1)" = 1 ] \
+    && [ "$(sed -n 's/^task_id=//p' "$path" | head -1)" = "$id" ] \
+    && [ "$(sed -n 's/^owner_token=//p' "$path" | head -1)" = "$owner" ] \
+    && { [ "$#" -lt 3 ] || [ "$(sed -n 's/^hold_reason=//p' "$path" | head -1)" = "$reason" ]; }
+}
+
+write_intake_owner_record() {  # <task-id> <owner-token> <hold-reason>
+  local id=$1 owner=$2 reason=$3 path tmp
+  path=$(intake_owner_path "$id")
+  mkdir -p "$STATE" || fail "cannot create captain-hold state directory"
+  tmp=$(umask 077; mktemp "$STATE/.lavish-intake-owner.XXXXXX") \
+    || fail "cannot stage intake ownership"
+  if ! {
+    printf 'version=1\ntask_id=%s\nowner_token=%s\nhold_reason=%s\n' \
+      "$id" "$owner" "$reason" > "$tmp"
+    chmod 0600 "$tmp"
+    mv -f -- "$tmp" "$path"
+  }; then
+    rm -f -- "$tmp"
+    fail "cannot record intake ownership"
+  fi
+}
+
+remove_intake_owner_record() {  # <task-id> <owner-token> <hold-reason>
+  local id=$1 owner=$2 reason=$3 path
+  path=$(intake_owner_path "$id")
+  if intake_owner_record_matches "$id" "$owner" "$reason"; then
+    rm -f -- "$path"
+  fi
 }
 
 validate_one_line() {  # <label> <value>
@@ -393,7 +442,7 @@ resolve_entry() {  # <origin-or-empty> <entry>; prints the resolved id or fails
 }
 
 command_hold() {
-  local id=${1:-} title='' reason='' repo='' origin='' until='' intake_owner='' show state existing_title body='' hold_kind
+  local id=${1:-} title='' reason='' repo='' origin='' until='' intake_owner='' owner_token='' show state existing_title body='' hold_kind owner_record
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -406,6 +455,7 @@ command_hold() {
       --intake-owner)
         [ "$#" -ge 2 ] || fail "--intake-owner requires a value"
         shift; intake_owner=$1
+        [ -n "$intake_owner" ] || fail "--intake-owner requires a non-empty value"
         ;;
       *) usage >&2; exit 2 ;;
     esac
@@ -465,6 +515,14 @@ command_hold() {
         || fail "could not create task $id"
     fi
   fi
+  if [ -n "$intake_owner" ]; then
+    owner_token="${BASHPID:-$$}.$RANDOM.$RANDOM"
+    owner_record=$(intake_owner_path "$id")
+    write_intake_owner_record "$id" "$owner_token" "$reason"
+    CAPTAIN_INTAKE_OWNER_RECORD=$owner_record
+    CAPTAIN_INTAKE_OWNER_TOKEN=$owner_token
+    CAPTAIN_INTAKE_OWNER_RECORD_CREATED=1
+  fi
   if [ -n "$until" ]; then
     tasks_axi hold "$id" --reason "$reason" --kind captain --until "$until" >/dev/null \
       || fail "could not hold task $id for the captain"
@@ -475,7 +533,13 @@ command_hold() {
   show=$(task_show "$id") || fail "task $id disappeared while holding it"
   hold_kind=$(show_field_value "$show" hold_kind)
   [ "$hold_kind" = captain ] || fail "task $id did not retain its captain hold"
+  if [ -n "$intake_owner" ]; then
+    intake_owner_record_matches "$id" "$owner_token" "$reason" \
+      || fail "task $id did not retain its intake ownership record"
+    CAPTAIN_INTAKE_OWNER_RECORD_CREATED=0
+  fi
   printf '%s\n' "$id"
+  [ -z "$intake_owner" ] || printf 'intake-owner=%s\n' "$owner_token"
 }
 
 # Record a resolution block at the top of the task body, preserving the
@@ -607,6 +671,7 @@ command_release() {
       --intake-owner)
         [ "$#" -ge 2 ] || fail "--intake-owner requires a value"
         shift; intake_owner=$1
+        [ -n "$intake_owner" ] || fail "--intake-owner requires a non-empty value"
         ;;
       *) usage >&2; exit 2 ;;
     esac
@@ -626,10 +691,13 @@ command_release() {
   [ "$state" != done ] || fail "task $id is already closed"
   [ "$hold_kind" = captain ] || fail "task $id is not held for the captain"
   if [ -n "$intake_owner" ]; then
-    intake_owner_matches_reason "$(show_field "$show" hold_reason)" "$intake_owner" \
+    intake_owner_record_matches "$id" "$intake_owner" "$(show_field "$show" hold_reason)" \
       || fail "task $id is not held by this intake owner"
   fi
   tasks_axi unhold "$id" >/dev/null || fail "could not release captain-held task $id"
+  if [ -n "$intake_owner" ]; then
+    remove_intake_owner_record "$id" "$intake_owner" "$(show_field "$show" hold_reason)"
+  fi
   printf 'released: %s\n' "$id"
 }
 
@@ -666,23 +734,38 @@ read_binding() {  # <source-id>
 }
 
 command_bind() {
-  local source=${1:-} origin=${2:-} dest tmp
-  [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 2; }
+  local source=${1:-} origin='' dest tmp intake=0
+  [ "$#" -ge 1 ] || { usage >&2; exit 2; }
+  shift
   validate_source_id "$source"
-  if [ -z "$origin" ] || [ "$origin" = --any-origin ]; then
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --intake) intake=1 ;;
+      --any-origin) origin=$BINDING_ANY ;;
+      *) [ -z "$origin" ] || { usage >&2; exit 2; }; origin=$1 ;;
+    esac
+    shift
+  done
+  if [ -z "$origin" ]; then
     origin=$BINDING_ANY
-  else
+  elif [ "$origin" != "$BINDING_ANY" ]; then
     validate_slug legacy-origin "$origin"
   fi
+  mkdir -p "$STATE" || fail "cannot create captain-hold state directory"
+  CAPTAIN_BINDING_LOCK="$STATE/.captain-binding-$source.lock"
+  fm_lock_acquire_wait "$CAPTAIN_BINDING_LOCK" || fail "could not lock decision binding for $source"
+  CAPTAIN_BINDING_LOCK_HELD=1
   (umask 077; mkdir -p "$BINDING_DIR") || fail "cannot create $BINDING_DIR"
   [ -d "$BINDING_DIR" ] && [ ! -L "$BINDING_DIR" ] || fail "decision binding dir is unsafe: $BINDING_DIR"
   dest=$(binding_path "$source")
   tmp=$(umask 077; mktemp "$BINDING_DIR/.origin.XXXXXX") || fail "cannot stage the decision binding"
-  if ! { printf 'schema=%s\norigin=%s\n' "$BINDING_SCHEMA" "$origin" > "$tmp" \
+  if ! { printf 'schema=%s\norigin=%s\nintake=%s\n' "$BINDING_SCHEMA" "$origin" "$intake" > "$tmp" \
     && chmod 0600 "$tmp" && mv -f -- "$tmp" "$dest"; }; then
     rm -f -- "$tmp"
     fail "cannot record the decision binding for $source"
   fi
+  fm_lock_release "$CAPTAIN_BINDING_LOCK"
+  CAPTAIN_BINDING_LOCK_HELD=0
   printf 'bound: %s -> %s\n' "$source" "$origin"
 }
 
@@ -690,7 +773,13 @@ command_unbind() {
   local source=${1:-}
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
   validate_source_id "$source"
+  mkdir -p "$STATE" || fail "cannot create captain-hold state directory"
+  CAPTAIN_BINDING_LOCK="$STATE/.captain-binding-$source.lock"
+  fm_lock_acquire_wait "$CAPTAIN_BINDING_LOCK" || fail "could not lock decision binding for $source"
+  CAPTAIN_BINDING_LOCK_HELD=1
   rm -f -- "$(binding_path "$source")"
+  fm_lock_release "$CAPTAIN_BINDING_LOCK"
+  CAPTAIN_BINDING_LOCK_HELD=0
   printf 'unbound: %s\n' "$source"
 }
 
@@ -701,6 +790,31 @@ command_binding() {
   origin=$(read_binding "$source") || exit 1
   [ -n "$origin" ] || return 1
   printf '%s\n' "$origin"
+}
+
+command_binding_intake() {
+  local source=${1:-} path
+  [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+  validate_source_id "$source"
+  path=$(binding_path "$source")
+  read_binding "$source" >/dev/null || return 1
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  grep -qx 'intake=1' "$path"
+}
+
+command_intake_owner() {
+  local id=${1:-} owner=${2:-} reason=${3:-} show hold_kind state
+  [ "$#" -eq 3 ] || { usage >&2; exit 2; }
+  validate_slug task-id "$id"
+  validate_slug intake-owner "$owner"
+  validate_one_line reason "$reason"
+  require_tasks_axi
+  show=$(task_show "$id") || return 1
+  state=$(show_field "$show" state)
+  hold_kind=$(show_field_value "$show" hold_kind)
+  [ "$state" != done ] && [ "$hold_kind" = captain ] \
+    && [ "$(show_field "$show" hold_reason)" = "$reason" ] \
+    && intake_owner_record_matches "$id" "$owner" "$reason"
 }
 
 # The durable captain decision one keyed answer records. Pure function of its
@@ -735,6 +849,7 @@ command_answers() {
       --intake-owner)
         [ "$#" -ge 2 ] || fail "--intake-owner requires a value"
         shift; intake_owner=$1
+        [ -n "$intake_owner" ] || fail "--intake-owner requires a non-empty value"
         ;;
       --*) usage >&2; exit 2 ;;
       *)
@@ -828,7 +943,7 @@ command_answers() {
         skipped=$((skipped + 1))
         continue
       }
-      intake_owner_matches_reason "$(show_field "$show" hold_reason)" "$intake_owner" || {
+      intake_owner_record_matches "$id" "$intake_owner" "$(show_field "$show" hold_reason)" || {
         printf 'skipped: %s (intake captain-hold ownership is no longer proven)\n' "$id"
         skipped=$((skipped + 1))
         continue
@@ -861,6 +976,9 @@ command_answers() {
     fi
     # shellcheck disable=SC2086  # release_flag is empty or a single literal flag.
     if "$0" answer "$id" --decision-file "$tmp" $release_flag </dev/null >/dev/null 2>"$err"; then
+      if [ -n "$intake_owner" ]; then
+        remove_intake_owner_record "$id" "$intake_owner" "$(show_field "$show" hold_reason)"
+      fi
       printf 'closed: %s\n' "$id"
       closed=$((closed + 1))
     else
@@ -1102,6 +1220,8 @@ case "${1:-}" in
   bind) shift; command_bind "$@" ;;
   unbind) shift; command_unbind "$@" ;;
   binding) shift; command_binding "$@" ;;
+  binding-intake) shift; command_binding_intake "$@" ;;
+  intake-owner) shift; command_intake_owner "$@" ;;
   complete) shift; command_complete "$@" ;;
   verify) shift; command_verify "$@" ;;
   diverged) shift; command_diverged "$@" ;;

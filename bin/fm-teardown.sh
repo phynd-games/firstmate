@@ -2847,7 +2847,7 @@ rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.reconcile-nudged" \
   "$STATE/$ID.lavish-intake" "$STATE/$ID.lavish-intake-session" \
   "$STATE/$ID.lavish-intake-classification" "$STATE/$ID.lavish-intake-hold" \
-  "$STATE/$ID.lavish-intake-pending"
+  "$STATE/$ID.lavish-intake-pending" "$STATE/$ID.lavish-intake-owner"
 # The steering inbox (bin/fm-task-inbox-lib.sh) is runtime state for the
 # retired endpoint; teardown only runs after landing is confirmed, so any
 # leftover unhandled steer here is moot rather than unlanded work.

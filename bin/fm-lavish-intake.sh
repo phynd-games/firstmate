@@ -191,7 +191,7 @@ result_is_captured_feedback() {
   fi
   [ "$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$sid" 2>/dev/null || true)" = "$task" ] \
     || fail "Lavish source is not bound to task $task"
-  answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers "$result") \
+  answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers --intake "$result") \
     || fail "captured feedback could not be read"
   while IFS=$'\t' read -r key answer label close; do
     [ -n "${key:-}" ] || continue
@@ -347,7 +347,7 @@ start_marker_matches() {
 }
 
 intake_hold_matches() {
-  local task=$1 marker show state hold_kind hold_reason owner_token
+  local task=$1 marker hold_reason owner_token
   marker=$(intake_hold_path "$task")
   [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
   [ "$(meta_value "$marker" task_id)" = "$task" ] || return 1
@@ -355,26 +355,12 @@ intake_hold_matches() {
   hold_reason=$(meta_value "$marker" hold_reason)
   [ -n "$owner_token" ] && [ -n "$hold_reason" ] || return 1
   case "$owner_token" in *[!A-Za-z0-9._-]*) return 1 ;; esac
-  show=$(cd "$FM_HOME" && tasks-axi show "$task" --full 2>/dev/null || true)
-  [ -n "$show" ] || return 1
-  state=$(printf '%s\n' "$show" | sed -n 's/^  state: //p' | head -1)
-  hold_kind=$(printf '%s\n' "$show" | sed -n 's/^  hold_kind: //p' | head -1)
-  [ "$state" != done ] && [ "$hold_kind" = captain ] \
-    && [ "$(printf '%s\n' "$show" | sed -n 's/^  hold_reason: //p' | head -1)" = "$hold_reason" ]
+  "$SCRIPT_DIR/fm-captain-hold.sh" intake-owner "$task" "$owner_token" "$hold_reason" >/dev/null 2>&1
 }
 
 start_task_has_owned_captain_hold() {
-  local show state hold_kind hold_reason
-  show=$(cd "$FM_HOME" && tasks-axi show "$START_TASK" --full 2>/dev/null || true)
-  [ -n "$show" ] || return 1
-  state=$(printf '%s\n' "$show" | sed -n 's/^  state: //p' | head -1)
-  hold_kind=$(printf '%s\n' "$show" | sed -n 's/^  hold_kind: //p' | head -1)
-  hold_reason=$(printf '%s\n' "$show" | sed -n 's/^  hold_reason: //p' | head -1)
-  case "$hold_kind" in
-    ''|null|\"null\"|-|\"-\") hold_kind= ;;
-  esac
-  [ "$state" != done ] && [ "$hold_kind" = captain ] \
-    && [ "$hold_reason" = "$START_HOLD_REASON" ]
+  "$SCRIPT_DIR/fm-captain-hold.sh" intake-owner "$START_TASK" \
+    "$START_OWNER_TOKEN" "$START_HOLD_REASON" >/dev/null 2>&1
 }
 
 write_start_marker() {
@@ -551,7 +537,7 @@ EOF
 }
 
 cmd_start() {
-  local task=${1-} artifact='' reason='' sid mapping tmp task_show state hold_kind hold_reason sequence_floor
+  local task=${1-} artifact='' reason='' sid mapping tmp task_show state hold_kind sequence_floor hold_output canonical_owner
   local existing_binding source_path
   shift || true
   validate_task_id "$task"
@@ -570,7 +556,7 @@ cmd_start() {
   validate_one_line reason "$reason"
   START_TASK=$task
   START_OWNER_TOKEN="${BASHPID:-$$}.$RANDOM"
-  START_HOLD_REASON="$reason intake-owner-token=$START_OWNER_TOKEN"
+  START_HOLD_REASON="$reason"
   START_ARTIFACT=
   START_SID=
   START_SESSION_TMP=
@@ -612,23 +598,21 @@ cmd_start() {
     write_start_marker
     fm_lock_release "$START_LOCK_PATH"
     START_LOCK_HELD=0
-    "$SCRIPT_DIR/fm-captain-hold.sh" hold "$task" --reason "$START_HOLD_REASON" \
-      --intake-owner "$START_OWNER_TOKEN" >/dev/null \
-      || fail "could not hold task for Lavish intake"
+    if ! hold_output=$("$SCRIPT_DIR/fm-captain-hold.sh" hold "$task" --reason "$START_HOLD_REASON" \
+      --intake-owner "$START_OWNER_TOKEN"); then
+      fail "could not hold task for Lavish intake"
+    fi
+    canonical_owner=$(printf '%s\n' "$hold_output" | sed -n 's/^intake-owner=//p' | head -1)
+    case "$canonical_owner" in
+      ''|*[!A-Za-z0-9._-]*) fail "could not establish authoritative intake ownership" ;;
+    esac
+    START_OWNER_TOKEN=$canonical_owner
+    START_HOLD_CREATED=1
+    write_start_marker
     fm_lock_acquire_wait "$START_LOCK_PATH" || fail "could not relock intake task $task"
     START_LOCK_HELD=1
-    task_show=$(cd "$FM_HOME" && tasks-axi show "$task" --full 2>/dev/null || true)
-    state=$(printf '%s\n' "$task_show" | sed -n 's/^  state: //p' | head -1)
-    hold_kind=$(printf '%s\n' "$task_show" | sed -n 's/^  hold_kind: //p' | head -1)
-    hold_reason=$(printf '%s\n' "$task_show" | sed -n 's/^  hold_reason: //p' | head -1)
-    case "$hold_kind" in
-      ''|null|\"null\"|-|\"-\") hold_kind= ;;
-    esac
-    [ "$state" != done ] && [ "$hold_kind" = captain ] \
-      && [ "$hold_reason" = "$START_HOLD_REASON" ] \
+    intake_hold_matches "$task" \
       || fail "could not prove intake captain-hold ownership"
-    write_start_marker
-    START_HOLD_CREATED=1
   fi
   if lavish-axi "$artifact"; then
     :
@@ -647,14 +631,11 @@ cmd_start() {
     fail "Lavish source is already registered: $sid"
   fi
   existing_binding=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$sid" 2>/dev/null || true)
-  if [ -n "$existing_binding" ] && [ "$existing_binding" != "$task" ]; then
-    fail "Lavish source is already bound to task $existing_binding"
-  fi
-  if [ -z "$existing_binding" ]; then
-    "$SCRIPT_DIR/fm-captain-hold.sh" bind "$sid" "$task" >/dev/null \
-      || fail "could not bind Lavish source to task $task"
-    START_BINDING_CREATED=1
-  fi
+  [ -z "$existing_binding" ] \
+    || fail "Lavish source is already bound to task $existing_binding"
+  "$SCRIPT_DIR/fm-captain-hold.sh" bind "$sid" "$task" --intake >/dev/null \
+    || fail "could not bind Lavish source to task $task"
+  START_BINDING_CREATED=1
   sequence_floor=$(captured_sequence_floor "$sid")
   mapping=$(session_path "$task")
   tmp=$(mktemp "$STATE/.lavish-intake-session.XXXXXX") || fail "cannot stage intake session"
@@ -753,7 +734,7 @@ cmd_record() {
     fi
     fm_lock_release "$RECORD_LOCK_PATH"
     RECORD_LOCK_HELD=0
-    answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers "$result")
+    answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers --intake "$result")
     if [ "$owner_route" -eq 1 ]; then
       out=$(printf '%s\n' "$answer_rows" \
         | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$task" --exact \
@@ -769,7 +750,7 @@ cmd_record() {
   else
     fm_lock_release "$RECORD_LOCK_PATH"
     RECORD_LOCK_HELD=0
-    answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers "$result")
+    answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers --intake "$result")
     out=$(printf '%s\n' "$answer_rows" \
       | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$task" --exact \
           --source "the captured result $sid sequence $seq" 2>&1) \

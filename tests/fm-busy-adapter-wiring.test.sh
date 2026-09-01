@@ -18,6 +18,12 @@ set -u
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-busy-adapter-wiring)
 
+write_exempt_brief() {
+  local home=$1 id=$2 reason="fixture is testing busy adapter wiring"
+  printf 'brief for %s\nLavish intake contract: not-applicable\nLavish intake reason: %s\n' "$id" "$reason" > "$home/data/$id/brief.md"
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-lavish-intake.sh" exempt "$id" --reason "$reason" >/dev/null
+}
+
 make_spawn_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -51,7 +57,7 @@ make_spawn_case() {  # <name> <harness> <id>
   fm_git_worktree "$proj" "$wt" "wt-$name"
   touch "$home/state/.last-watcher-beat"
   mkdir -p "$home/data/$id"
-  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  write_exempt_brief "$home" "$id"
   printf '%s\n' "$case_dir|$home|$proj|$wt|$fakebin"
 }
 

@@ -6,7 +6,7 @@
 #   fm-procevent-lavish.sh classify <result-file>
 #   fm-procevent-lavish.sh terminal <result-file>
 #   fm-procevent-lavish.sh silent <result-file>
-#   fm-procevent-lavish.sh answers <result-file>
+#   fm-procevent-lavish.sh answers [--intake] <result-file>
 #   fm-procevent-lavish.sh intake <result-file> <task-id>
 #   fm-procevent-lavish.sh source-id <artifact.html>
 #   fm-procevent-lavish.sh retire <artifact.html>
@@ -401,15 +401,30 @@ cmd_silent() {
 # `<origin>-decision-<key>` identities pre-collapse decks still carry; the
 # security property is the slug SHAPE, which is unchanged.
 cmd_answers() {
-  local file=${1-} source expected='' session_source session_file intake_marker marker_task intake_registration=0 result_intake_marker
+  local file='' source expected='' session_source session_file intake_marker marker_task intake_registration=0 result_intake_marker intake=0 intake_binding=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --intake) intake=1 ;;
+      *) [ -z "$file" ] || usage; file=$1 ;;
+    esac
+    shift
+  done
   [ -n "$file" ] || usage
   [ -f "$file" ] && [ ! -L "$file" ] || die "result file does not exist: $file"
   source=$(fm_procevent_result_source_id "$file" 2>/dev/null || true)
+  [ "$intake" -eq 0 ] || [ -n "$source" ] || die "Lavish intake result has no source identity"
   if [ -n "$source" ]; then
     intake_marker="$STATE/procevent/$source.intake"
     intake_registration="$STATE/procevent/$source.source"
     result_intake_marker="${file%.result}.intake"
-    if { [ -f "$intake_registration" ] && [ ! -L "$intake_registration" ] \
+    if "$SCRIPT_DIR/fm-captain-hold.sh" binding-intake "$source" >/dev/null 2>&1; then
+      intake_binding=1
+    fi
+    if [ "$intake" -eq 1 ] && [ "$intake_binding" -ne 1 ]; then
+      die "Lavish result is not bound to an intake source"
+    fi
+    if [ "$intake_binding" -eq 1 ] \
+      || { [ -f "$intake_registration" ] && [ ! -L "$intake_registration" ] \
       && grep -qx 'intake=1' "$intake_registration"; } \
       || [ -e "$intake_marker" ] || [ -L "$intake_marker" ] \
       || [ -e "$result_intake_marker" ] || [ -L "$result_intake_marker" ]; then
@@ -429,6 +444,8 @@ cmd_answers() {
       session_source=$(sed -n 's/^source_id=//p' "$session_file" | head -1)
       [ "$source" = "$session_source" ] \
         || die "captured result source does not match the active intake session"
+    elif [ "$intake" -eq 1 ]; then
+      die "Lavish intake source has no exact binding"
     else
       expected=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$source" 2>/dev/null || true)
       if [ -n "$expected" ] && [ "$expected" != "(any)" ]; then
@@ -444,7 +461,7 @@ cmd_answers() {
   fi
   perl -MJSON::PP -e '
     use strict; use warnings;
-    my ($path, $expected) = @ARGV;
+    my ($path, $expected, $intake) = @ARGV;
     my $strict = defined($expected) && length($expected) && $expected ne "(any)";
     open my $fh, "<", $path or exit 1;
     my (@fields, $want, @rows);
@@ -461,6 +478,7 @@ cmd_answers() {
     }
     close $fh;
     my %seen;
+    my %raw_seen;
     my $matched = 0;
     my @out;
     for my $row (@rows) {
@@ -487,6 +505,10 @@ cmd_answers() {
       next unless ref($data) eq "HASH";
       my $key = $data->{question};
       my $answer = $data->{answer};
+      if ($intake && $strict && defined($key) && !ref($key) && $key eq $expected) {
+        $raw_seen{$key}++;
+        die "captured result contains more than one raw keyed answer\n" if $raw_seen{$key} > 1;
+      }
       next if !defined($key) || ref($key) || !defined($answer) || ref($answer);
       my $mode = "";
       if (exists $data->{close}) {
@@ -512,7 +534,7 @@ cmd_answers() {
     die "captured result does not contain exactly one answer for its bound task\n"
       if $strict && $matched != 1;
     print "$_\n" for grep { defined } @out;
-  ' "$file" "$expected"
+  ' "$file" "$expected" "$intake"
 }
 
 cmd_intake() {
