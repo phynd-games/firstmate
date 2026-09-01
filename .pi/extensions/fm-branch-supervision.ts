@@ -592,7 +592,7 @@ export default function (pi: ExtensionAPI) {
     silent: boolean,
   ): boolean {
     if (!actingAsOwner(expectedGeneration)) return false;
-    let noteReserved = false;
+    let noteReservationToken: string | null = null;
     if (verdict === "captain") {
       const message = {
         customType: "fm-branch-merge",
@@ -613,12 +613,15 @@ export default function (pi: ExtensionAPI) {
       // never toward silence.
       let display = !(task === "fleet" && silent);
       if (display && task !== "fleet") {
-        const gate = runOutcomeScript(["note-reserve", "--task", task]);
+        const gate = runOutcomeScript(["note-reserve", "--task", task, "--generation", String(expectedGeneration)]);
         if (gate.ok && gate.stdout.startsWith("coalesce")) display = false;
-        else if (gate.ok && gate.stdout === "render") noteReserved = true;
+        else if (gate.ok && gate.stdout.startsWith("render ")) {
+          const token = gate.stdout.slice("render ".length).trim();
+          if (token) noteReservationToken = token;
+        }
       }
       if (!actingAsOwner(expectedGeneration)) {
-        if (noteReserved && !runOutcomeScript(["note-rollback", "--task", task]).ok) return false;
+        if (noteReservationToken && !runOutcomeScript(["note-rollback", "--task", task, "--generation", String(expectedGeneration), "--token", noteReservationToken]).ok) return false;
         return false;
       }
       const message = { customType: "fm-branch-merge", content: `${MERGE_NOTE_BOAT} ${task}: ${summary}`, display };
@@ -629,10 +632,10 @@ export default function (pi: ExtensionAPI) {
           pi.sendMessage(message, {});
         }
       } catch {
-        if (noteReserved && !runOutcomeScript(["note-rollback", "--task", task]).ok) return false;
+        if (noteReservationToken && !runOutcomeScript(["note-rollback", "--task", task, "--generation", String(expectedGeneration), "--token", noteReservationToken]).ok) return false;
         return false;
       }
-      if (noteReserved && !runOutcomeScript(["note-commit", "--task", task]).ok) return false;
+      if (noteReservationToken && !runOutcomeScript(["note-commit", "--task", task, "--generation", String(expectedGeneration), "--token", noteReservationToken]).ok) return false;
     }
     if (/^[0-9]+$/.test(seq)) {
       if (!actingAsOwner(expectedGeneration)) return false;

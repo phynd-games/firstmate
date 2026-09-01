@@ -147,7 +147,7 @@ test_outcome_startup_replay_preserves_silence() {
 # a new failure, decision, terminal result, PR/CI change, or validation-loop
 # stop renders again. The durable store append path is untouched by the gate.
 test_routine_note_coalescing() {
-  local home out ev
+  local home out ev reservation token marker_before token2 fakebin
   home="$TMP_ROOT/note-coalesce-home"
   mkdir -p "$home/state"
   gate() { FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-render --task "$1"; }
@@ -157,16 +157,51 @@ test_routine_note_coalescing() {
   # Duplicate stale/turn-ended/status handling with no state change: coalesced.
   [ "$(gate task-c)" != render ] || fail "an unchanged task rendered a duplicate routine note"
   printf 'failed: pending delivery\n' > "$home/state/task-pending.status"
-  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending)" = render ] \
-    || fail "a new routine note was not reserved for delivery"
+  reservation=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 7)
+  case "$reservation" in render\ *) ;; *) fail "a new routine note was not reserved for delivery" ;; esac
+  token=${reservation#render }
   grep -q '^pending$' "$home/state/.branch-note-sig-task-pending" \
     || fail "a routine note reservation was not marked pending"
-  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending)" = render ] \
-    || fail "a pending routine note was coalesced before delivery"
-  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-commit --task task-pending)" = committed ] \
+  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 8)" = render-unreserved ] \
+    || fail "a concurrent generation mutated an existing reservation"
+  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-commit --task task-pending --generation 8 --token "$token")" != committed ] \
+    || fail "a different generation committed another reservation"
+  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-commit --task task-pending --generation 7 --token "$token")" = committed ] \
     || fail "a delivered routine note reservation was not committed"
-  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending)" != render ] \
+  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 7)" != render ] \
     || fail "a committed routine note was not coalesced"
+  marker_before=$(cat "$home/state/.branch-note-sig-task-pending")
+  printf 'failed: second delivery\n' > "$home/state/task-pending.status"
+  reservation=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 9)
+  case "$reservation" in render\ *) ;; *) fail "a changed routine note was not reserved for rollback" ;; esac
+  token2=$(printf '%s\n' "$reservation" | sed 's/^render //')
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-rollback --task task-pending --generation 9 --token "$token2" \
+    || fail "an authenticated reservation did not roll back"
+  [ "$(cat "$home/state/.branch-note-sig-task-pending")" = "$marker_before" ] \
+    || fail "rollback did not restore the prior committed marker"
+  printf 'failed: pending delivery\n' > "$home/state/task-pending.status"
+  rm -f "$home/state/task-pending.meta"
+  mkdir "$home/state/task-pending.meta"
+  marker_before=$(cat "$home/state/.branch-note-sig-task-pending")
+  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 10)" = render-unreserved ] \
+    || fail "a read failure was treated as an owned reservation"
+  [ "$(cat "$home/state/.branch-note-sig-task-pending")" = "$marker_before" ] \
+    || fail "a read failure mutated the committed marker"
+  rmdir "$home/state/task-pending.meta"
+  printf 'failed: mktemp path\n' > "$home/state/task-pending.status"
+  fakebin="$home/fakebin"
+  mkdir "$fakebin"
+  cat > "$fakebin/mktemp" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *.owner.*) exec /usr/bin/mktemp "$@" ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin/mktemp"
+  [ "$(PATH="$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 11)" = render-unreserved ] \
+    || fail "mktemp failure did not fail toward an unreserved render"
+  [ ! -e "$home/state/.branch-outcomes.lock" ] || fail "mktemp failure stranded the outcome lock"
   printf 'working: still implementing\n' >> "$home/state/task-c.status"
   [ "$(gate task-c)" != render ] \
     || fail "a routine working: append (not a failure/decision/terminal change) re-rendered"

@@ -69,7 +69,7 @@ CURSOR="$STATE/.branch-outcomes-cursor"
 LOCK="$STATE/.branch-outcomes.lock"
 
 usage() {
-  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | list [--recent <n>] | startup-replay | note-render|note-reserve|note-commit --task <id> | note-rollback --task <id>" >&2
+  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | list [--recent <n>] | startup-replay | note-render --task <id> | note-reserve --task <id> --generation <n> | note-commit|note-rollback --task <id> --generation <n> --token <token>" >&2
   exit 2
 }
 
@@ -177,9 +177,34 @@ advance_cursor() { # <seq>
   local through=$1 cursor tmp
   cursor=$(read_cursor)
   [ "$through" -gt "$cursor" ] || return 0
-  tmp=$(mktemp "$STATE/.branch-outcomes-cursor.XXXXXX")
-  printf '%s\n' "$through" > "$tmp"
-  mv -f -- "$tmp" "$CURSOR"
+  if ! tmp=$(mktemp "$STATE/.branch-outcomes-cursor.XXXXXX"); then
+    return 1
+  fi
+  if ! printf '%s\n' "$through" > "$tmp"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  if ! mv -f -- "$tmp" "$CURSOR"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+
+note_marker_pending() {
+  case "$1" in pending$'\n'*) return 0 ;; *) return 1 ;; esac
+}
+
+note_pending_field() { # <marker-content> <field>
+  printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1
+}
+
+note_pending_block() { # <marker-content> <begin> <end>
+  printf '%s\n' "$1" | awk -v begin="$2" -v end="$3" '
+    $0 == begin { capture = 1; found = 1; next }
+    $0 == end { capture = 0; closed = 1; next }
+    capture { print }
+    END { if (!found || !closed) exit 1 }
+  '
 }
 
 CMD=${1:-}
@@ -231,7 +256,10 @@ case "$CMD" in
     case "$THROUGH" in ''|*[!0-9]*) usage ;; esac
     [ "$#" -eq 2 ] || usage
     fm_lock_acquire_wait "$LOCK"
-    advance_cursor "$THROUGH"
+    if ! advance_cursor "$THROUGH"; then
+      fm_lock_release "$LOCK"
+      exit 1
+    fi
     fm_lock_release "$LOCK"
     ;;
   list)
@@ -256,7 +284,10 @@ case "$CMD" in
         printf '%s\n' "$VISIBLE"
       fi
       LAST=$(record_seq "$(printf '%s\n' "$UNREAD" | tail -n 1)")
-      [ -z "$LAST" ] || advance_cursor "$LAST"
+      if [ -n "$LAST" ] && ! advance_cursor "$LAST"; then
+        fm_lock_release "$LOCK"
+        exit 1
+      fi
     fi
     fm_lock_release "$LOCK"
     ;;
@@ -274,9 +305,9 @@ case "$CMD" in
         ;;
     esac
     MARKER="$STATE/.branch-note-sig-$TASK"
+    fm_lock_acquire_wait "$LOCK"
     marker_present=0
     if [ -e "$MARKER" ] || [ -L "$MARKER" ]; then marker_present=1; fi
-    fm_lock_acquire_wait "$LOCK"
     if ! SIG=$(note_novelty_signature "$TASK" "$marker_present"); then
       fm_lock_release "$LOCK"
       printf 'render\n'
@@ -293,9 +324,11 @@ case "$CMD" in
         printf 'render\n'
         exit 0
       }
-      case "$LAST" in
-        pending$'\n'*) LAST='' ;;
-      esac
+      if note_marker_pending "$LAST"; then
+        fm_lock_release "$LOCK"
+        printf 'render\n'
+        exit 0
+      fi
     else
       LAST=''
     fi
@@ -304,46 +337,65 @@ case "$CMD" in
       printf 'coalesce duplicate routine outcome for %s: no new failure, decision, terminal result, PR/CI change, or validation-loop stop since the last rendered note\n' "$TASK"
       exit 0
     fi
-    TMP=$(mktemp "$STATE/.branch-note-sig.XXXXXX")
-    printf '%s\n' "$SIG" > "$TMP"
-    mv -f -- "$TMP" "$MARKER"
+    if ! TMP=$(mktemp "$STATE/.branch-note-sig.XXXXXX"); then
+      fm_lock_release "$LOCK"
+      printf 'render\n'
+      exit 0
+    fi
+    if ! printf '%s\n' "$SIG" > "$TMP"; then
+      rm -f -- "$TMP"
+      fm_lock_release "$LOCK"
+      printf 'render\n'
+      exit 0
+    fi
+    if ! mv -f -- "$TMP" "$MARKER"; then
+      rm -f -- "$TMP"
+      fm_lock_release "$LOCK"
+      printf 'render\n'
+      exit 0
+    fi
     fm_lock_release "$LOCK"
     printf 'render\n'
     ;;
   note-reserve)
     [ "${1:-}" = --task ] || usage
     TASK=${2:-}
-    [ "$#" -eq 2 ] || usage
+    [ "${3:-}" = --generation ] || usage
+    GENERATION=${4:-}
+    [ "$#" -eq 4 ] || usage
     [ -n "$TASK" ] || usage
+    case "$GENERATION" in ''|*[!0-9]*) usage ;; esac
     case "$TASK" in
       fleet|*[!A-Za-z0-9._-]*)
-        printf 'render\n'
+        printf 'render-unreserved\n'
         exit 0
         ;;
     esac
     MARKER="$STATE/.branch-note-sig-$TASK"
+    fm_lock_acquire_wait "$LOCK"
     marker_present=0
     if [ -e "$MARKER" ] || [ -L "$MARKER" ]; then marker_present=1; fi
-    fm_lock_acquire_wait "$LOCK"
     if ! SIG=$(note_novelty_signature "$TASK" "$marker_present"); then
       fm_lock_release "$LOCK"
-      printf 'render\n'
+      printf 'render-unreserved\n'
       exit 0
     fi
     if [ -e "$MARKER" ] || [ -L "$MARKER" ]; then
       [ -f "$MARKER" ] && [ ! -L "$MARKER" ] || {
         fm_lock_release "$LOCK"
-        printf 'render\n'
+        printf 'render-unreserved\n'
         exit 0
       }
       LAST=$(cat "$MARKER" 2>/dev/null) || {
         fm_lock_release "$LOCK"
-        printf 'render\n'
+        printf 'render-unreserved\n'
         exit 0
       }
-      case "$LAST" in
-        pending$'\n'*) LAST='' ;;
-      esac
+      if note_marker_pending "$LAST"; then
+        fm_lock_release "$LOCK"
+        printf 'render-unreserved\n'
+        exit 0
+      fi
     else
       LAST=''
     fi
@@ -352,17 +404,46 @@ case "$CMD" in
       printf 'coalesce duplicate routine outcome for %s: no new failure, decision, terminal result, PR/CI change, or validation-loop stop since the last rendered note\n' "$TASK"
       exit 0
     fi
-    TMP=$(mktemp "$STATE/.branch-note-sig.XXXXXX")
-    printf 'pending\n%s\n' "$SIG" > "$TMP"
-    mv -f -- "$TMP" "$MARKER"
+    if ! TMP=$(mktemp "$STATE/.branch-note-sig.XXXXXX"); then
+      fm_lock_release "$LOCK"
+      printf 'render-unreserved\n'
+      exit 0
+    fi
+    TOKEN=${TMP##*/}
+    if ! {
+      printf 'pending\n'
+      printf 'generation=%s\n' "$GENERATION"
+      printf 'token=%s\n' "$TOKEN"
+      printf 'previous-begin\n'
+      [ -z "$LAST" ] || printf '%s\n' "$LAST"
+      printf 'previous-end\n'
+      printf 'signature-begin\n%s\nsignature-end\n' "$SIG"
+    } > "$TMP"; then
+      rm -f -- "$TMP"
+      fm_lock_release "$LOCK"
+      printf 'render-unreserved\n'
+      exit 0
+    fi
+    if ! mv -f -- "$TMP" "$MARKER"; then
+      rm -f -- "$TMP"
+      fm_lock_release "$LOCK"
+      printf 'render-unreserved\n'
+      exit 0
+    fi
     fm_lock_release "$LOCK"
-    printf 'render\n'
+    printf 'render %s\n' "$TOKEN"
     ;;
   note-commit)
     [ "${1:-}" = --task ] || usage
     TASK=${2:-}
-    [ "$#" -eq 2 ] || usage
+    [ "${3:-}" = --generation ] || usage
+    GENERATION=${4:-}
+    [ "${5:-}" = --token ] || usage
+    TOKEN=${6:-}
+    [ "$#" -eq 6 ] || usage
     [ -n "$TASK" ] || usage
+    case "$GENERATION" in ''|*[!0-9]*) usage ;; esac
+    [ -n "$TOKEN" ] || usage
     case "$TASK" in
       fleet|*[!A-Za-z0-9._-]*)
         printf 'committed\n'
@@ -379,20 +460,31 @@ case "$CMD" in
       fm_lock_release "$LOCK"
       exit 1
     }
-    case "$CURRENT" in
-      pending$'\n'*) CURRENT=${CURRENT#pending$'\n'} ;;
-      *)
-        fm_lock_release "$LOCK"
-        printf 'committed\n'
-        exit 0
-        ;;
-    esac
-    [ -n "$CURRENT" ] || {
+    note_marker_pending "$CURRENT" || {
       fm_lock_release "$LOCK"
       exit 1
     }
-    TMP=$(mktemp "$STATE/.branch-note-sig.XXXXXX")
-    printf '%s\n' "$CURRENT" > "$TMP"
+    [ "$(note_pending_field "$CURRENT" generation)" = "$GENERATION" ] || {
+      fm_lock_release "$LOCK"
+      exit 1
+    }
+    [ "$(note_pending_field "$CURRENT" token)" = "$TOKEN" ] || {
+      fm_lock_release "$LOCK"
+      exit 1
+    }
+    if ! SIGNATURE=$(note_pending_block "$CURRENT" signature-begin signature-end); then
+      fm_lock_release "$LOCK"
+      exit 1
+    fi
+    if ! TMP=$(mktemp "$STATE/.branch-note-sig.XXXXXX"); then
+      fm_lock_release "$LOCK"
+      exit 1
+    fi
+    if ! printf '%s\n' "$SIGNATURE" > "$TMP"; then
+      rm -f -- "$TMP"
+      fm_lock_release "$LOCK"
+      exit 1
+    fi
     if ! mv -f -- "$TMP" "$MARKER"; then
       rm -f -- "$TMP"
       fm_lock_release "$LOCK"
@@ -404,8 +496,14 @@ case "$CMD" in
   note-rollback)
     [ "${1:-}" = --task ] || usage
     TASK=${2:-}
-    [ "$#" -eq 2 ] || usage
+    [ "${3:-}" = --generation ] || usage
+    GENERATION=${4:-}
+    [ "${5:-}" = --token ] || usage
+    TOKEN=${6:-}
+    [ "$#" -eq 6 ] || usage
     [ -n "$TASK" ] || usage
+    case "$GENERATION" in ''|*[!0-9]*) usage ;; esac
+    [ -n "$TOKEN" ] || usage
     case "$TASK" in
       fleet|*[!A-Za-z0-9._-]*)
         printf 'rolled-back\n'
@@ -414,7 +512,46 @@ case "$CMD" in
     esac
     MARKER="$STATE/.branch-note-sig-$TASK"
     fm_lock_acquire_wait "$LOCK"
-    if ! rm -f -- "$MARKER"; then
+    [ -f "$MARKER" ] && [ ! -L "$MARKER" ] || {
+      fm_lock_release "$LOCK"
+      exit 1
+    }
+    CURRENT=$(cat "$MARKER") || {
+      fm_lock_release "$LOCK"
+      exit 1
+    }
+    note_marker_pending "$CURRENT" || {
+      fm_lock_release "$LOCK"
+      exit 1
+    }
+    [ "$(note_pending_field "$CURRENT" generation)" = "$GENERATION" ] || {
+      fm_lock_release "$LOCK"
+      exit 1
+    }
+    [ "$(note_pending_field "$CURRENT" token)" = "$TOKEN" ] || {
+      fm_lock_release "$LOCK"
+      exit 1
+    }
+    if ! PREVIOUS=$(note_pending_block "$CURRENT" previous-begin previous-end); then
+      fm_lock_release "$LOCK"
+      exit 1
+    fi
+    if [ -n "$PREVIOUS" ]; then
+      if ! TMP=$(mktemp "$STATE/.branch-note-sig.XXXXXX"); then
+        fm_lock_release "$LOCK"
+        exit 1
+      fi
+      if ! printf '%s\n' "$PREVIOUS" > "$TMP"; then
+        rm -f -- "$TMP"
+        fm_lock_release "$LOCK"
+        exit 1
+      fi
+      if ! mv -f -- "$TMP" "$MARKER"; then
+        rm -f -- "$TMP"
+        fm_lock_release "$LOCK"
+        exit 1
+      fi
+    elif ! rm -f -- "$MARKER"; then
       fm_lock_release "$LOCK"
       exit 1
     fi

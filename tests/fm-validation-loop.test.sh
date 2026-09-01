@@ -644,6 +644,16 @@ test_initial_scope_manifest_is_authenticated() {
     stop*"validation change-set manifest is invalid or untrusted"*) ;;
     *) fail "an initial manifest superset authorized a later path: '$v'" ;;
   esac
+  state2="$dir/state-malformed"; ev2="$dir/ev-malformed"; mkdir -p "$state2"
+  ev_running "$ev2" 03RUN running pending
+  sed -i.bak "s/^  head: \"abc1234\"/  head: \"$allowed_head\"/" "$ev2" && rm -f "$ev2.bak"
+  printf 'base: "%s"\nchanges[2]{path}:\n  file\nchanges[1]{path}:\n  file\n' "$base_head" >> "$ev2"
+  fold "$state2" malformed-scope "$ev2" 1200 "$repo"
+  v=$(verdict_at "$state2" malformed-scope 1210)
+  case "$v" in
+    stop*"validation change-set manifest is invalid or untrusted"*) ;;
+    *) fail "a contradictory manifest remained continuable: '$v'" ;;
+  esac
   pass "initial scope: the first base-to-head diff must match the authenticated manifest"
 }
 

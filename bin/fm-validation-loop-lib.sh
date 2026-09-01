@@ -180,20 +180,60 @@ _fm_vloop_outcome_valid() {  # <status> <outcome>
 }
 
 _fm_vloop_scope_paths() {  # <evidence>
-  local content=$1 table rows row path
-  for table in changes change_set changed_files; do
-    rows=$(_fm_vloop_block_rows "$content" "$table")
-    [ -n "$rows" ] || continue
-    while IFS= read -r row; do
-      path=${row%%,*}
-      path=$(fm_nm_trim "$path")
-      [ -n "$path" ] || return 1
-      printf '%s\n' "$path"
-    done <<EOF
-$rows
-EOF
-    return 0
-  done
+  local content=$1
+  printf '%s\n' "$content" | awk '
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+    function known_line(value) {
+      return value ~ /^[[:space:]]*(changes|change_set|changed_files)(\[|:|[[:space:]])/
+    }
+    function valid_header(value) {
+      return value ~ /^[[:space:]]*(changes|change_set|changed_files)\[[0-9]+\]\{[^}]+\}:[[:space:]]*$/
+    }
+    known_line($0) {
+      if (!valid_header($0)) { invalid = 1; next }
+      table_count++
+      if (table_count > 1) { invalid = 1; next }
+      header = $0
+      sub(/^[[:space:]]*/, "", header)
+      declared = header
+      sub(/^[^[]*\[/, "", declared)
+      sub(/\].*/, "", declared)
+      fields = header
+      sub(/^[^{]*\{/, "", fields)
+      sub(/\}.*/, "", fields)
+      field_count = split(fields, field_values, ",")
+      for (i = 1; i <= field_count; i++) {
+        field_values[i] = trim(field_values[i])
+        if (field_values[i] == "" || seen_fields[field_values[i]]) invalid = 1
+        seen_fields[field_values[i]] = 1
+        if (field_values[i] == "path") path_field = i
+      }
+      if (!path_field) invalid = 1
+      in_table = 1
+      next
+    }
+    in_table && $0 ~ /^[[:space:]]+[^[:space:]].*$/ {
+      row = $0
+      sub(/^[[:space:]]+/, "", row)
+      row_count++
+      value_count = split(row, row_values, ",")
+      if (value_count != field_count || !path_field) invalid = 1
+      path = trim(row_values[path_field])
+      if (path == "") invalid = 1
+      paths[row_count] = path
+      next
+    }
+    in_table { in_table = 0 }
+    END {
+      if (table_count == 0) exit 0
+      if (invalid || declared !~ /^[0-9]+$/ || row_count != declared) exit 1
+      for (i = 1; i <= row_count; i++) print paths[i]
+    }
+  '
 }
 
 _fm_vloop_scope_valid() {  # <worktree> <base> <head> <paths>
@@ -555,11 +595,17 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   findings_sig=$(_fm_vloop_findings_sig "$content")
   steps_sig=$(_fm_vloop_steps_sig "$content")
   evidence_base=$(fm_nm_strip_quotes "$(fm_nm_field "$content" base)")
-  evidence_paths=$(_fm_vloop_scope_paths "$content" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  if ! evidence_paths=$(_fm_vloop_scope_paths "$content"); then
+    stop_reason="validation change-set manifest is invalid or untrusted for run $run_id"
+    evidence_paths=''
+  fi
+  evidence_paths=$(printf '%s\n' "$evidence_paths" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   if [ -n "$evidence_base" ] || [ -n "$evidence_paths" ]; then
-    _fm_vloop_scope_valid "$worktree" "$evidence_base" "$head" "$evidence_paths" || {
+    if ! _fm_vloop_scope_valid "$worktree" "$evidence_base" "$head" "$evidence_paths"; then
       stop_reason="validation change-set manifest is invalid or untrusted for run $run_id"
-    }
+      evidence_base=''
+      evidence_paths=''
+    fi
   fi
 
   fix_rounds=$s_fix_rounds
