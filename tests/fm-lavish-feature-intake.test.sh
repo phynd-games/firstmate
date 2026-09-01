@@ -798,6 +798,9 @@ test_record_resumes_after_release_failure() {
     "release failure did not persist exact owner resolution"
   (cd "$home" && tasks-axi show retry-a1 --full) | grep -Fq 'state: queued' \
     || fail "release failure did not leave the task queued"
+  if (cd "$home" && tasks-axi show retry-a1 --full) | grep -Fq 'hold_kind: captain'; then
+    fail "release recovery unexpectedly retained a captain hold"
+  fi
   (cd "$home" && tasks-axi done retry-a1 >/dev/null) \
     || fail "could not close task while testing release recovery"
   rm -f "$home/state/procevent-inbox/$sid.1.handled"
