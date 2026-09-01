@@ -218,6 +218,16 @@ SH
     coalesce\ *) ;;
     *) fail "a successfully delivered note was duplicated after commit failure" ;;
   esac
+  printf 'failed: genuinely new outcome\n' >> "$home/state/task-pending.status"
+  reservation=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 14)
+  case "$reservation" in render\ *) ;; *) fail "a new outcome stayed suppressed behind a failed commit" ;; esac
+  token3=${reservation#render }
+  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-commit --task task-pending --generation 14 --token "$token3")" = committed ] \
+    || fail "a recovered note reservation did not commit"
+  case "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 15)" in
+    coalesce\ *) ;;
+    *) fail "a recovered routine note rendered its unchanged novelty twice" ;;
+  esac
   printf 'failed: strict marker\n' > "$home/state/task-strict.status"
   if out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-render --task task-strict --strict); then
     rc=0

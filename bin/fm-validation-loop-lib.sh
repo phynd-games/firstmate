@@ -194,6 +194,7 @@ _fm_vloop_scope_paths() {  # <evidence>
       return value ~ /^[[:space:]]*(changes|change_set|changed_files)\[[0-9]+\]\{[^}]+\}:[[:space:]]*$/
     }
     known_line($0) {
+      saw_known = 1
       if (!valid_header($0)) { invalid = 1; next }
       table_count++
       if (table_count > 1) { invalid = 1; next }
@@ -229,10 +230,20 @@ _fm_vloop_scope_paths() {  # <evidence>
     }
     in_table { in_table = 0 }
     END {
-      if (table_count == 0) exit 0
+      if (table_count == 0) {
+        if (saw_known) exit 1
+        exit 0
+      }
       if (invalid || declared !~ /^[0-9]+$/ || row_count != declared) exit 1
       for (i = 1; i <= row_count; i++) print paths[i]
     }
+  '
+}
+
+_fm_vloop_scope_evidence_present() {  # <evidence>
+  printf '%s\n' "$1" | awk '
+    /^[[:space:]]*base:/ || /^[[:space:]]*(changes|change_set|changed_files)(\[|:|[[:space:]])/ { found = 1 }
+    END { exit !found }
   '
 }
 
@@ -547,6 +558,7 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   local run_id status outcome head phase findings_sig steps_sig progress_sig
   local s_run s_phase s_findings_sig s_progress_sig s_fix_rounds s_themes s_last_progress s_status s_stop_reason s_head s_heads
   local s_scope_base s_scope_head s_scope_paths scope_base scope_head scope_paths evidence_base evidence_paths
+  local scope_evidence_present
   local fix_rounds themes heads last_progress active stop_reason='' max_fix max_theme theme_max tmp
   local head_transition=0
   [ -n "$state" ] && [ -d "$state" ] || return 0
@@ -587,7 +599,8 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
       # counters and run identity stay untouched.
       status=$(fm_nm_trim "${first#coarse:}")
       [ -n "$status" ] || return 2
-      last_progress=$now
+      last_progress=$s_last_progress
+      [ "$status" = "$s_status" ] || last_progress=$now
       case "$status" in
         completed|failed|cancelled) active=0 ;;
         *) active=1 ;;
@@ -642,7 +655,12 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
     evidence_paths=''
   fi
   evidence_paths=$(printf '%s\n' "$evidence_paths" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-  if [ -n "$evidence_base" ] || [ -n "$evidence_paths" ]; then
+  if _fm_vloop_scope_evidence_present "$content"; then
+    scope_evidence_present=1
+  else
+    scope_evidence_present=0
+  fi
+  if [ "$scope_evidence_present" = 1 ]; then
     if ! _fm_vloop_scope_valid "$worktree" "$evidence_base" "$head" "$evidence_paths"; then
       stop_reason="validation change-set manifest is invalid or untrusted for run $run_id"
       evidence_base=''

@@ -602,6 +602,12 @@ test_coarse_evidence_does_not_enforce_stall() {
   printf 'coarse: running\n' > "$ev"
   FM_VLOOP_STALL_SECS=1 FM_VLOOP_EVIDENCE_MAX_AGE_SECS=99999 \
     fold "$state" coarse "$ev" 2000
+  grep -q '^last_progress=1000$' "$state/coarse.validation-loop" \
+    || fail "an identical coarse read refreshed the progress clock"
+  FM_VLOOP_STALL_SECS=1 FM_VLOOP_EVIDENCE_MAX_AGE_SECS=99999 \
+    fold "$state" coarse "$ev" 3000
+  grep -q '^last_progress=1000$' "$state/coarse.validation-loop" \
+    || fail "repeated identical coarse reads refreshed the progress clock"
   [ "$(FM_VLOOP_STALL_SECS=1 FM_VLOOP_EVIDENCE_MAX_AGE_SECS=99999 verdict_at "$state" coarse 3000)" = continue ] \
     || fail "coarse evidence inherited a running-phase stall bound"
   pass "coarse evidence: fallback status never enforces the running/fixing stall bound"
@@ -698,6 +704,26 @@ test_initial_scope_manifest_is_authenticated() {
     stop*"validation change-set manifest is invalid or untrusted"*) ;;
     *) fail "a contradictory manifest remained continuable: '$v'" ;;
   esac
+  state2="$dir/state-malformed-line"; ev2="$dir/ev-malformed-line"; mkdir -p "$state2"
+  ev_running "$ev2" 04RUN running pending
+  sed -i.bak "s/^  head: \"abc1234\"/  head: \"$allowed_head\"/" "$ev2" && rm -f "$ev2.bak"
+  printf 'base: "%s"\nchanges: garbage\n' "$base_head" >> "$ev2"
+  fold "$state2" malformed-line "$ev2" 1300 "$repo"
+  v=$(verdict_at "$state2" malformed-line 1310)
+  case "$v" in
+    stop*"validation change-set manifest is invalid or untrusted"*) ;;
+    *) fail "malformed manifest syntax remained scope-inapplicable: '$v'" ;;
+  esac
+  state2="$dir/state-empty-base"; ev2="$dir/ev-empty-base"; mkdir -p "$state2"
+  ev_running "$ev2" 05RUN running pending
+  sed -i.bak "s/^  head: \"abc1234\"/  head: \"$allowed_head\"/" "$ev2" && rm -f "$ev2.bak"
+  printf 'base:\nchanges[1]{path}:\n  file\n' >> "$ev2"
+  fold "$state2" empty-base "$ev2" 1400 "$repo"
+  v=$(verdict_at "$state2" empty-base 1410)
+  case "$v" in
+    stop*"validation change-set manifest is invalid or untrusted"*) ;;
+    *) fail "an explicit empty base remained scope-inapplicable: '$v'" ;;
+  esac
   pass "initial scope: the first base-to-head diff must match the authenticated manifest"
 }
 
@@ -790,6 +816,17 @@ test_threshold_overrides_cannot_disable_bounds() {
 }
 
 # --- watcher integration: the surfaced reason names the breach -----------------
+ack_wake_cycle() {
+  local state=$1 err sequence generation
+  err="$state/.test-drain.err"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2> "$err" || true
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
+  rm -f "$err"
+  [ -n "$sequence" ] && [ -n "$generation" ] || return 1
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation"
+}
+
 test_watcher_surfaces_validation_loop_limit() {
   local dir state fakebin out drain_out capture_file window key pane_hash ev pid
   dir=$(make_case vloop-watcher); state="$dir/state"; fakebin="$dir/fakebin"
@@ -832,6 +869,50 @@ test_watcher_surfaces_validation_loop_limit() {
     || fail "the durable queue record did not carry the limit reason"
   unset FM_FAKE_CREW_STATE
   pass "watcher: a limit-stopped crew surfaces once with the recorded breach in the durable wake reason"
+}
+
+test_watcher_surfaces_limit_after_generic_stale() {
+  local dir state fakebin first_out out capture_file window key pane_hash ev pid
+  dir=$(make_case vloop-watcher-stale-then-limit); state="$dir/state"; fakebin="$dir/fakebin"
+  first_out="$dir/first.out"; out="$dir/second.out"; capture_file="$dir/pane.txt"
+  window="test:fm-stale-then-limit"
+  printf 'static validation pane' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/loopy.meta"
+  printf 'done: prior validation result\n' > "$state/loopy.status"
+  prime_status_seen "$state" "$state/loopy.status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text 'static validation pane')
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$first_out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not surface the initial generic stale wake"
+  grep -Fx "stale: $window" "$first_out" >/dev/null \
+    || fail "the initial stale wake was not generic: $(cat "$first_out")"
+  ! grep -F "validation loop limit:" "$first_out" >/dev/null \
+    || fail "the initial stale wake was mislabeled a validation limit"
+  ack_wake_cycle "$state" || fail "could not acknowledge the initial generic stale wake"
+  ev="$dir/ev"
+  ev_running "$ev" 01RUN running pending; FM_VLOOP_MAX_FIX_ROUNDS=1 fold "$state" loopy "$ev" 1000
+  ev_fixing  "$ev" 01RUN;                 FM_VLOOP_MAX_FIX_ROUNDS=1 fold "$state" loopy "$ev" 1010
+  ev_running "$ev" 01RUN running rerun;    FM_VLOOP_MAX_FIX_ROUNDS=1 fold "$state" loopy "$ev" 1020
+  ev_fixing  "$ev" 01RUN;                 FM_VLOOP_MAX_FIX_ROUNDS=1 fold "$state" loopy "$ev" 1030
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not surface a limit after generic stale"
+  grep -F "validation loop limit:" "$out" >/dev/null \
+    || fail "a newly reached limit was suppressed by the generic stale hash: $(cat "$out")"
+  grep -F "fix rounds 2 exceeded bound 1" "$out" >/dev/null \
+    || fail "the stale-then-limit wake lost its recorded breach: $(cat "$out")"
+  [ "$(cat "$state/.stale-limit-$key" 2>/dev/null || true)" = "$pane_hash" ] \
+    || fail "the limit-specific stale suppressor was not advanced"
+  pass "watcher: a validation limit surfaces after the same hash was generically stale"
 }
 
 test_watcher_surfaces_signal_validation_loop_limit() {
@@ -886,4 +967,5 @@ test_head_change_set_allows_authenticated_addition
 test_head_transition_is_coherent
 test_threshold_overrides_cannot_disable_bounds
 test_watcher_surfaces_validation_loop_limit
+test_watcher_surfaces_limit_after_generic_stale
 test_watcher_surfaces_signal_validation_loop_limit

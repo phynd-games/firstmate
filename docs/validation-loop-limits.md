@@ -17,7 +17,8 @@ Repetition and staleness are decided from a durable per-task journal (`state/<id
 
 A threshold breach is never rendered as routine progress: the journal records the verdict durably, `fm-crew-state.sh` decorates its working detail with the recorded stop, and the watcher's surfaced wake reason carries the breach text.
 
-Head advance is accepted only when the run evidence carries a `base:` commit and an exact `changes[N]{path}:` manifest whose paths remain unchanged for that run.
+When the run evidence carries a `base:` commit and an exact `changes[N]{path}:` manifest, head advance is accepted only when that authenticated path set remains unchanged for the run.
+Evidence with neither `base:` nor a change-path manifest is scope-inapplicable, and head advance still requires coherent ancestry and the bounded transition checks.
 The manifest is bound to the recorded base and first run head, permits authenticated new files, and rejects every changed path outside that set.
 Changing the manifest requires the supported same-copy recovery handoff rather than an implicit scope expansion.
 

@@ -702,7 +702,7 @@ clear_pause_tracking() {  # <window-key>
   local key=$1
   clear_pause_state "$key"
   clear_write_tracking "$key"
-  rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
+  rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.stale-limit-$key" "$STATE/.wedge-escalations-$key"
 }
 
 # Reconcile a declared pause or captain-held status with authoritative crew state.
@@ -786,7 +786,7 @@ surface_nonterminal_stale() {  # <window> <hash> [reason]
 }
 
 surface_validation_limit() {  # <window> <hash> <task>
-  local win=$1 h=$2 task=$3 reason verdict
+  local win=$1 h=$2 task=$3 reason verdict key
   reason=$(fm_vloop_reason "$STATE" "$task")
   if [ -z "$reason" ]; then
     verdict=$(fm_vloop_verdict "$STATE" "$task" 2>/dev/null || true)
@@ -795,6 +795,8 @@ surface_validation_limit() {  # <window> <hash> <task>
     esac
   fi
   [ -n "$reason" ] || reason="automatic continuation limit reached"
+  key=$(window_key "$win")
+  printf '%s' "$h" > "$STATE/.stale-limit-$key"
   surface_nonterminal_stale "$win" "$h" \
     "stale: $win (validation loop limit: $reason - automatic continuation stopped deterministically; branch and run custody preserved; inspect and recover in the same copy via stuck-crewmate-recovery, never a duplicate worker or a skipped check)"
 }
@@ -1445,6 +1447,7 @@ EOF
     cf="$STATE/.count-$key"
     sf="$STATE/.stale-$key"
     ssf="$STATE/.stale-since-$key"
+    lsf="$STATE/.stale-limit-$key"
     ewf="$STATE/.wedge-escalations-$key"
     pf="$STATE/.paused-$key"   # flag: this key's stale is using the bounded pause cadence
     prev=$(cat "$hf" 2>/dev/null || true)
@@ -1473,7 +1476,7 @@ EOF
             wake "stale: $w"
           fi
         elif validation_loop_stopped "$task"; then
-          if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ] || [ -e "$ssf" ]; then
+          if [ "$(cat "$lsf" 2>/dev/null || true)" != "$h" ]; then
             surface_validation_limit "$w" "$h" "$task"
           fi
         elif stale_is_terminal "$w" "$STATE"; then

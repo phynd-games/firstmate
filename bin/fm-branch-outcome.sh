@@ -393,9 +393,17 @@ case "$CMD" in
         exit 0
       }
       if note_marker_pending "$LAST"; then
-        fm_lock_release "$LOCK"
-        printf 'coalesce pending routine outcome for %s: another delivery owns this novelty reservation\n' "$TASK"
-        exit 0
+        if ! PENDING_SIGNATURE=$(note_pending_block "$LAST" signature-begin signature-end 2>/dev/null); then
+          fm_lock_release "$LOCK"
+          printf 'render-unreserved\n'
+          exit 0
+        fi
+        if [ -z "$PENDING_SIGNATURE" ] || [ "$SIG" = "$PENDING_SIGNATURE" ]; then
+          fm_lock_release "$LOCK"
+          printf 'coalesce pending routine outcome for %s: another delivery owns this novelty reservation\n' "$TASK"
+          exit 0
+        fi
+        LAST=$(note_pending_block "$LAST" previous-begin previous-end 2>/dev/null || true)
       fi
     else
       LAST=''
