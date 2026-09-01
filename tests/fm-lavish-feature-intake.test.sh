@@ -26,9 +26,13 @@ make_home() {
 
 ## Done
 EOF
-  fakebin=$home/fakebin
-  cat > "$fakebin/lavish-axi" <<'SH'
+fakebin=$home/fakebin
+cat > "$fakebin/lavish-axi" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = end ]; then
+  printf '%s\n' "$*" >> "${FM_LAVISH_CALLS:?FM_LAVISH_CALLS unset}"
+  exit 0
+fi
 if [ "${1:-}" = poll ]; then
   [ -n "${FM_LAVISH_FIXTURE:-}" ] && cat "$FM_LAVISH_FIXTURE"
   exit 0
@@ -46,6 +50,7 @@ run_intake() {
   PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" FM_PROCEVENT_CLAIM_ROOT="$home/claims" \
+    FM_LAVISH_CALLS="$home/lavish.calls" \
     FM_LAVISH_FIXTURE="$home/lavish-poll.txt" \
     "$INTAKE" "$@"
 }
@@ -171,6 +176,71 @@ test_required_categories_and_static_refusal() {
   pass "Lavish intake: required categories and static artifacts are enforced"
 }
 
+test_template_submit_is_single_use() {
+  local home artifact
+  home=$(make_home submit-once)
+  artifact=$home/intake.html
+  run_intake "$home" template submit-once-a1 --output "$artifact" >/dev/null
+  node - "$artifact" <<'NODE'
+const fs = require("fs");
+const vm = require("vm");
+const html = fs.readFileSync(process.argv[2], "utf8");
+const script = html.match(/<script>\n([\s\S]*?)\n<\/script>/)[1];
+const fields = "product_goal intended_users use_cases scope non_goals constraints visual_product_references key_choices acceptance_criteria open_questions".split(" ");
+let handler;
+let calls = 0;
+const button = { disabled: false };
+const form = {
+  elements: Object.fromEntries(fields.map((field) => [field, { value: "filled" }])),
+  querySelector: () => button,
+  addEventListener: (event, callback) => { if (event === "submit") handler = callback; },
+};
+const status = {};
+vm.runInNewContext(script, {
+  document: { querySelector: (selector) => selector === "#feature-intake" ? form : status },
+  window: { lavish: { queuePrompt: () => { calls += 1; } } },
+});
+handler({ preventDefault() {} });
+if (!button.disabled) throw new Error("submit control stayed enabled");
+if (!button.disabled) handler({ preventDefault() {} });
+if (calls !== 1) throw new Error(`queued ${calls} submissions`);
+NODE
+  pass "Lavish intake: submit control queues only one answer"
+}
+
+test_start_rejects_closed_task() {
+  local home artifact out rc
+  home=$(make_home closed-task)
+  add_task "$home" closed-a1
+  (cd "$home" && tasks-axi done closed-a1 >/dev/null)
+  artifact=$home/intake.html
+  run_intake "$home" template closed-a1 --output "$artifact" >/dev/null
+  set +e
+  out=$(run_intake "$home" start closed-a1 --artifact "$artifact" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "closed task opened an intake session"
+  assert_contains "$out" "already closed" "closed-task refusal was unclear"
+  assert_absent "$home/lavish.calls" "closed task opened an external Lavish session"
+  pass "Lavish intake: closed tasks cannot start external setup"
+}
+
+test_artifact_task_mismatch_refused() {
+  local home artifact out rc
+  home=$(make_home artifact-mismatch)
+  add_task "$home" artifact-a1
+  artifact=$home/other.html
+  run_intake "$home" template artifact-b2 --output "$artifact" >/dev/null
+  set +e
+  out=$(run_intake "$home" start artifact-a1 --artifact "$artifact" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "artifact for another task started an intake"
+  assert_contains "$out" "no keyed intake question" "artifact mismatch refusal was unclear"
+  assert_absent "$home/lavish.calls" "artifact mismatch opened an external Lavish session"
+  pass "Lavish intake: artifacts are bound to their exact task"
+}
+
 # No flag is an ambiguous classification: the brief carries an explicit required
 # gate, and the dispatch boundary refuses it before backend creation.
 test_ambiguous_classification_refuses_dispatch() {
@@ -210,15 +280,21 @@ test_explicit_exemptions_require_reason() {
   set -e
   [ "$rc" -ne 0 ] || fail "empty exemption reason was accepted"
   assert_contains "$out" "must not be empty" "empty exemption refusal lacked reason"
-  run_intake "$home" exempt exemption-a1 --reason 'documentation-only update' >/dev/null
+  set +e
+  out=$(run_intake "$home" exempt exemption-skip --reason 'skip' 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "generic exemption bypass was accepted"
+  assert_contains "$out" "must use" "generic exemption refusal was unclear"
+  run_intake "$home" exempt exemption-a1 --reason 'documentation: update the intake exemption coverage' >/dev/null
   assert_contains "$(run_intake "$home" verify exemption-a1)" "not-applicable" \
     "valid exemption did not verify"
   run_brief "$home" exemption-a1 firstmate --mode no-mistakes \
-    --not-applicable 'documentation-only update' >/dev/null 2>&1 && \
+    --not-applicable 'documentation: update the intake exemption coverage' >/dev/null 2>&1 && \
     fail "brief overwrote existing exemption evidence"
 
   run_brief "$home" exemption-b2 firstmate --mode no-mistakes \
-    --not-applicable 'dependency pin update with no behavior change' >/dev/null
+    --not-applicable 'dependency: pin test dependency: no behavior change' >/dev/null
   brief=$home/data/exemption-b2/brief.md
   [ "$(run_intake "$home" check-brief exemption-b2 "$brief" | sed -n 's/^status=//p')" = not-applicable ] \
     || fail "valid exemption brief did not preserve its classification"
@@ -229,7 +305,7 @@ import sys
 path = Path(sys.argv[1])
 text = path.read_text()
 text = text.replace(
-    "Lavish intake reason: dependency pin update with no behavior change",
+    "Lavish intake reason: dependency: pin test dependency: no behavior change",
     "Lavish intake reason: altered exemption reason",
 )
 path.write_text(text)
@@ -325,7 +401,7 @@ test_intake_flag_rejects_exemption() {
   local home receipt out rc
   home=$(make_home intake-classification)
   add_task "$home" classification-a1
-  run_intake "$home" exempt classification-a1 --reason 'documentation-only update' >/dev/null
+  run_intake "$home" exempt classification-a1 --reason 'documentation: update the classification test' >/dev/null
   receipt=$home/state/classification-a1.lavish-intake
   set +e
   out=$(run_brief "$home" classification-a1 firstmate --mode no-mistakes --intake "$receipt" 2>&1)
@@ -379,12 +455,13 @@ test_start_failure_rolls_back_only_new_state() {
 }
 
 test_arm_failure_rolls_back_only_new_state() {
-  local home artifact out rc sid
+  local home artifact artifact_real out rc sid
   home=$(make_home arm-rollback)
   add_task "$home" arm-rollback-a1
   artifact=$home/intake.html
+  artifact_real=$(CDPATH='' cd -- "$(dirname "$artifact")" && pwd -P)/$(basename "$artifact")
   run_intake "$home" template arm-rollback-a1 --output "$artifact" >/dev/null
-  printf 'not-a-directory\n' > "$home/state/procevent"
+  printf 'not-a-directory\n' > "$home/claims"
   set +e
   out=$(run_intake "$home" start arm-rollback-a1 --artifact "$artifact" 2>&1)
   rc=$?
@@ -396,6 +473,7 @@ test_arm_failure_rolls_back_only_new_state() {
     || fail "failed process-event arm left the task held"
   assert_absent "$home/state/arm-rollback-a1.lavish-intake-session" "failed arm left a session marker"
   assert_absent "$home/state/decision-bindings/$sid.origin" "failed arm left a source binding"
+  assert_contains "$(cat "$home/lavish.calls")" "end $artifact_real" "failed arm left the Lavish session open"
   pass "Lavish intake: failed process-event arm rolls back partial setup"
 }
 
@@ -430,6 +508,35 @@ test_successful_captured_feedback_and_followup() {
   run_intake "$home" record feature-a1 --artifact "$artifact" --result "$result" >/dev/null \
     || fail "retrying recorded captured feedback was not idempotent"
   pass "Lavish intake: captured feedback releases work and supports exact follow-up"
+}
+
+test_record_resumes_after_release_failure() {
+  local home artifact sid result out rc pending
+  home=$(make_home record-retry)
+  add_task "$home" retry-a1
+  artifact=$home/intake.html
+  run_intake "$home" template retry-a1 --output "$artifact" >/dev/null
+  run_intake "$home" start retry-a1 --artifact "$artifact" >/dev/null
+  sid=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
+  fixture_for "$home" retry-a1
+  run_process_event "$home" "$sid" >/dev/null
+  result=$home/state/procevent-inbox/$sid.1.result
+  ln -s /dev/null "$home/state/procevent-inbox/$sid.1.handled"
+  set +e
+  out=$(run_intake "$home" record retry-a1 --artifact "$artifact" --result "$result" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "handled acknowledgement failure unexpectedly succeeded"
+  pending=$home/state/retry-a1.lavish-intake-pending
+  assert_contains "$(cat "$pending")" "phase=released" \
+    "release failure did not persist the resumable completion phase"
+  (cd "$home" && tasks-axi show retry-a1 --full) | grep -Fq 'state: queued' \
+    || fail "release failure did not leave the task queued"
+  rm -f "$home/state/procevent-inbox/$sid.1.handled"
+  out=$(run_intake "$home" record retry-a1 --artifact "$artifact" --result "$result")
+  assert_contains "$out" "recorded:" "resumed intake completion did not produce evidence"
+  pass "Lavish intake: released completions resume without replaying answers"
 }
 
 test_start_rejects_unrelated_captain_hold() {
@@ -491,6 +598,9 @@ test_firstmate_self_work_gets_same_gate() {
 }
 
 test_required_categories_and_static_refusal
+test_template_submit_is_single_use
+test_start_rejects_closed_task
+test_artifact_task_mismatch_refused
 test_ambiguous_classification_refuses_dispatch
 test_explicit_exemptions_require_reason
 test_absent_and_closed_without_feedback_refused
@@ -503,5 +613,6 @@ test_arm_failure_rolls_back_only_new_state
 test_start_rejects_unrelated_captain_hold
 test_extra_keyed_feedback_refused
 test_successful_captured_feedback_and_followup
+test_record_resumes_after_release_failure
 test_firstmate_self_work_gets_same_gate
 printf '# all fm-lavish-feature-intake tests passed\n'

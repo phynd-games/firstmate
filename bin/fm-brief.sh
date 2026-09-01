@@ -45,6 +45,9 @@
 # report rather than a merge, and a charter is not a delivery contract.
 # --intake and --not-applicable are mutually exclusive. A new ship or scout
 # brief without either carries a required gate and cannot be dispatched.
+# --not-applicable requires a reason in the form <class>: <bounded scope>,
+# where the class is bug-fix, dependency, configuration, documentation, or
+# behavior-preserving refactor.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
 # a spawn-time and firstmate-side input only (AGENTS.md section 7).
 # Every scaffold's status protocol distinguishes the configured

@@ -5,7 +5,7 @@
 #   fm-lavish-intake.sh template <task-id> --output <artifact.html>
 #   fm-lavish-intake.sh start <task-id> --artifact <artifact.html> [--reason <text>]
 #   fm-lavish-intake.sh record <task-id> --artifact <artifact.html> --result <result>
-#   fm-lavish-intake.sh exempt <task-id> --reason <text>
+#   fm-lavish-intake.sh exempt <task-id> --reason '<class>: <bounded scope>'
 #   fm-lavish-intake.sh verify <task-id> [--evidence <receipt>]
 #   fm-lavish-intake.sh check-brief <task-id> <brief.md>
 #
@@ -87,6 +87,11 @@ real_dir() {
   printf '%s\n' "$real"
 }
 
+brief_value() {
+  local prefix=$1 file=$2
+  awk -v prefix="$prefix" 'index($0, prefix) == 1 { print substr($0, length(prefix) + 1); exit }' "$file"
+}
+
 sha256_file() {
   if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$1" | awk '{print $1}'
@@ -118,19 +123,34 @@ require_unique_meta() {
 }
 
 artifact_fields_present() {
-  local artifact=$1 field
+  local artifact=$1 task=$2 field
   grep -Fq 'data-lavish-intake="v1"' "$artifact" \
     || fail "artifact is not a Lavish intake v1 surface"
   grep -Fq 'data-lavish-intake-submit="true"' "$artifact" \
     || fail "artifact has no explicit intake submit control"
   grep -Fq 'window.lavish.queuePrompt' "$artifact" \
     || fail "artifact has no captured Lavish feedback call"
-  grep -Fq 'data-lavish-question=' "$artifact" \
+  grep -Fq "data-lavish-question=\"$task\"" "$artifact" \
     || fail "artifact has no keyed intake question"
   for field in $FIELDS; do
     grep -Fq "data-lavish-intake-field=\"$field\"" "$artifact" \
       || fail "artifact is missing required field: $field"
   done
+}
+
+validate_exemption_reason() {
+  local reason=$1 detail
+  validate_one_line "exemption reason" "$reason"
+  case "$reason" in
+    bug-fix:*|dependency:*|configuration:*|documentation:*|"behavior-preserving refactor":*) ;;
+    *) fail "exemption reason must use bug-fix, dependency, configuration, documentation, or behavior-preserving refactor" ;;
+  esac
+  detail=${reason#*:}
+  printf '%s' "$detail" | grep -Eq '[^[:space:]]' \
+    || fail "exemption reason must include a bounded scope after its classification"
+  case "${detail//[[:space:]]/}" in
+    skip|none|na|not-applicable|notapplicable) fail "exemption reason must name a bounded scope, not a generic bypass" ;;
+  esac
 }
 
 validate_intake_payload() {
@@ -246,7 +266,7 @@ write_receipt() {
 }
 
 write_pending() {
-  local task=$1 artifact=$2 result=$3 sid=$4 seq=$5 owner_token=$6 dest tmp
+  local task=$1 artifact=$2 result=$3 sid=$4 seq=$5 owner_token=$6 phase=${7:-held} dest tmp
   dest=$(pending_path "$task")
   tmp=$(mktemp "$STATE/.lavish-intake-pending.XXXXXX") || fail "cannot stage pending intake completion"
   {
@@ -257,9 +277,21 @@ write_pending() {
     printf 'source_id=%s\n' "$sid"
     printf 'sequence=%s\n' "$seq"
     printf 'owner_token=%s\n' "$owner_token"
+    printf 'phase=%s\n' "$phase"
   } > "$tmp"
   chmod 0600 "$tmp"
   mv -f -- "$tmp" "$dest"
+}
+
+update_pending_phase() {
+  local pending=$1 phase=$2
+  write_pending \
+    "$(meta_value "$pending" task_id)" \
+    "$(meta_value "$pending" artifact)" \
+    "$(meta_value "$pending" result)" \
+    "$(meta_value "$pending" source_id)" \
+    "$(meta_value "$pending" sequence)" \
+    "$(meta_value "$pending" owner_token)" "$phase"
 }
 
 pending_matches() {
@@ -271,7 +303,11 @@ pending_matches() {
     && [ "$(meta_value "$pending" result)" = "$result" ] \
     && [ "$(meta_value "$pending" source_id)" = "$sid" ] \
     && [ "$(meta_value "$pending" sequence)" = "$seq" ] \
-    && [ -n "$(meta_value "$pending" owner_token)" ]
+    && [ -n "$(meta_value "$pending" owner_token)" ] || return 1
+  case "$(meta_value "$pending" phase)" in
+    ''|held|released) ;;
+    *) return 1 ;;
+  esac
 }
 
 captured_sequence_floor() {
@@ -314,6 +350,7 @@ START_HOLD_REASON=
 START_HOLD_CREATED=0
 START_BINDING_CREATED=0
 START_SESSION_CREATED=0
+START_LAVISH_SESSION_OPENED=0
 START_SOURCE_PREEXISTING=0
 START_SOURCE_MARKER_CREATED=0
 START_SOURCE_LOCK_PATH=
@@ -418,6 +455,9 @@ start_cleanup() {
     return "$status"
   fi
   [ -z "$START_SESSION_TMP" ] || rm -f -- "$START_SESSION_TMP"
+  if [ "$START_LAVISH_SESSION_OPENED" -eq 1 ]; then
+    lavish-axi end "$START_ARTIFACT" >/dev/null 2>&1 || true
+  fi
   if [ "$START_SESSION_CREATED" -eq 1 ]; then
     rm -f -- "$(session_path "$START_TASK")"
   fi
@@ -512,6 +552,7 @@ EOF
   const fields = "$FIELDS".split(" ");
   const form = document.querySelector("#feature-intake");
   const status = document.querySelector("#intake-status");
+  const submit = form.querySelector('[data-lavish-intake-submit="true"]');
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const intake = Object.fromEntries(fields.map((field) => [field, form.elements[field].value.trim()]));
@@ -519,13 +560,19 @@ EOF
       status.textContent = "Complete every field before queueing.";
       return;
     }
-    window.lavish.queuePrompt("Feature intake submitted", {
-      tag: "choice",
-      text: "Feature intake submitted",
-      element: form,
-      data: { question: task, answer: "submitted", close: "release", submitted: true, intake }
-    });
-    status.textContent = "Queued. Send this answer to the agent in Lavish.";
+    submit.disabled = true;
+    try {
+      window.lavish.queuePrompt("Feature intake submitted", {
+        tag: "choice",
+        text: "Feature intake submitted",
+        element: form,
+        data: { question: task, answer: "submitted", close: "release", submitted: true, intake }
+      });
+      status.textContent = "Queued. Send this answer to the agent in Lavish.";
+    } catch (error) {
+      submit.disabled = false;
+      status.textContent = "Could not queue the intake. Try again.";
+    }
   });
 })();
 </script>
@@ -566,6 +613,7 @@ cmd_start() {
   START_HOLD_CREATED=0
   START_BINDING_CREATED=0
   START_SESSION_CREATED=0
+  START_LAVISH_SESSION_OPENED=0
   START_SOURCE_PREEXISTING=0
   START_SOURCE_MARKER_CREATED=0
   START_OK=0
@@ -581,7 +629,7 @@ cmd_start() {
     || fail "intake ownership already exists for task $task"
   artifact=$(real_file "$artifact") || fail "artifact is not a regular file: $artifact"
   START_ARTIFACT=$artifact
-  artifact_fields_present "$artifact"
+  artifact_fields_present "$artifact" "$task"
   command -v lavish-axi >/dev/null 2>&1 || fail "lavish-axi is not installed"
   task_show=$(cd "$FM_HOME" && tasks-axi show "$task" --full 2>/dev/null || true)
   [ -n "$task_show" ] || fail "task $task is not present in the active backlog"
@@ -590,6 +638,7 @@ cmd_start() {
   case "$hold_kind" in
     ''|null|\"null\"|-|\"-\") hold_kind= ;;
   esac
+  [ "$state" != done ] || fail "task $task is already closed"
   if [ "$state" != done ] && [ "$hold_kind" = captain ]; then
     fail "task $task already carries an unrelated captain hold"
   elif [ "$state" != done ] && [ -n "$hold_kind" ] && [ "$hold_kind" != - ]; then
@@ -613,11 +662,6 @@ cmd_start() {
     START_LOCK_HELD=1
     intake_hold_matches "$task" \
       || fail "could not prove intake captain-hold ownership"
-  fi
-  if lavish-axi "$artifact"; then
-    :
-  else
-    fail "could not establish the Lavish intake session"
   fi
   sid=$("$SCRIPT_DIR/fm-procevent-lavish.sh" source-id "$artifact") \
     || fail "could not derive the Lavish source id"
@@ -651,6 +695,11 @@ cmd_start() {
   START_SESSION_TMP=
   START_SESSION_CREATED=1
   write_source_marker
+  if lavish-axi "$artifact"; then
+    START_LAVISH_SESSION_OPENED=1
+  else
+    fail "could not establish the Lavish intake session"
+  fi
   "$SCRIPT_DIR/fm-procevent-lavish.sh" arm "$artifact" --intake >/dev/null \
     || fail "could not arm captured Lavish feedback"
   START_OK=1
@@ -659,8 +708,8 @@ cmd_start() {
 }
 
 cmd_record() {
-  local task=${1-} artifact='' result='' answer_rows result_identity sid seq receipt pending out owner_token
-  local receipt_existing=0 pending_existing=0 owner_route=0 show state hold_kind
+  local task=${1-} artifact='' result='' answer_rows result_identity sid seq receipt pending out owner_token pending_phase
+  local owner_route=0 show state hold_kind
   shift || true
   validate_task_id "$task"
   RECORD_LOCK_PATH=$(intake_lock_path "$task")
@@ -680,7 +729,7 @@ cmd_record() {
   [ -n "$artifact" ] || fail "record requires --artifact <artifact.html>"
   [ -n "$result" ] || fail "record requires --result <captured-result>"
   artifact=$(real_file "$artifact") || fail "artifact is not a regular file: $artifact"
-  artifact_fields_present "$artifact"
+  artifact_fields_present "$artifact" "$task"
   result=$(real_file "$result") || fail "captured result is not a regular file: $result"
   receipt=$(receipt_path "$task")
   if [ -e "$receipt" ] || [ -L "$receipt" ]; then
@@ -701,28 +750,28 @@ cmd_record() {
   result_identity=$(result_is_captured_feedback "$result" "$artifact" "$task")
   sid=${result_identity%%$'\t'*}
   seq=${result_identity#*$'\t'}
-  receipt_existing=0
-  if [ "$receipt_existing" -eq 0 ]; then
-    pending=$(pending_path "$task")
-    if [ -e "$pending" ] || [ -L "$pending" ]; then
-      pending_matches "$pending" "$task" "$artifact" "$result" "$sid" "$seq" \
-        || fail "pending intake completion belongs to a different captured result"
-      pending_existing=1
-    else
-      intake_hold_matches "$task" \
-        || fail "intake captain-hold ownership is no longer proven"
-      owner_token=$(meta_value "$(intake_hold_path "$task")" owner_token)
-      write_pending "$task" "$artifact" "$result" "$sid" "$seq" "$owner_token"
-      owner_route=1
-    fi
-    if [ "$pending_existing" -eq 1 ]; then
-      show=$(cd "$FM_HOME" && tasks-axi show "$task" --full 2>/dev/null || true)
-      [ -n "$show" ] || fail "pending intake completion task $task is absent"
-      state=$(printf '%s\n' "$show" | sed -n 's/^  state: //p' | head -1)
-      hold_kind=$(printf '%s\n' "$show" | sed -n 's/^  hold_kind: //p' | head -1)
-      case "$hold_kind" in
-        ''|null|\"null\"|-|\"-\") hold_kind= ;;
-      esac
+  pending=$(pending_path "$task")
+  if [ -e "$pending" ] || [ -L "$pending" ]; then
+    pending_matches "$pending" "$task" "$artifact" "$result" "$sid" "$seq" \
+      || fail "pending intake completion belongs to a different captured result"
+    pending_phase=$(meta_value "$pending" phase)
+    [ -n "$pending_phase" ] || pending_phase=held
+  else
+    intake_hold_matches "$task" \
+      || fail "intake captain-hold ownership is no longer proven"
+    owner_token=$(meta_value "$(intake_hold_path "$task")" owner_token)
+    write_pending "$task" "$artifact" "$result" "$sid" "$seq" "$owner_token" held
+    pending_phase=held
+  fi
+  show=$(cd "$FM_HOME" && tasks-axi show "$task" --full 2>/dev/null || true)
+  [ -n "$show" ] || fail "pending intake completion task $task is absent"
+  state=$(printf '%s\n' "$show" | sed -n 's/^  state: //p' | head -1)
+  hold_kind=$(printf '%s\n' "$show" | sed -n 's/^  hold_kind: //p' | head -1)
+  case "$hold_kind" in
+    ''|null|\"null\"|-|\"-\") hold_kind= ;;
+  esac
+  case "$pending_phase" in
+    held)
       if [ "$state" != done ] && [ "$hold_kind" = captain ]; then
         intake_hold_matches "$task" \
           || fail "intake captain-hold ownership is no longer proven"
@@ -730,36 +779,32 @@ cmd_record() {
         owner_route=1
       elif [ "$state" != done ] && [ -n "$hold_kind" ]; then
         fail "pending intake completion task $task carries another active hold"
+      else
+        update_pending_phase "$pending" released
+        pending_phase=released
       fi
-    fi
-    fm_lock_release "$RECORD_LOCK_PATH"
-    RECORD_LOCK_HELD=0
-    answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers --intake "$result")
-    if [ "$owner_route" -eq 1 ]; then
-      out=$(printf '%s\n' "$answer_rows" \
-        | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$task" --exact \
-            --intake-owner "$owner_token" \
-            --source "the captured result $sid sequence $seq" 2>&1) \
-        || fail "captured intake could not release held task: $out"
-    else
-      out=$(printf '%s\n' "$answer_rows" \
-        | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$task" --exact \
-            --source "the captured result $sid sequence $seq" 2>&1) \
-        || fail "captured intake retry could not settle held task: $out"
-    fi
-  else
+      ;;
+    released)
+      [ "$state" = done ] || [ -z "$hold_kind" ] \
+        || fail "pending intake completion task $task carries another active hold"
+      ;;
+    *) fail "pending intake completion has an unknown phase" ;;
+  esac
+  if [ "$owner_route" -eq 1 ]; then
     fm_lock_release "$RECORD_LOCK_PATH"
     RECORD_LOCK_HELD=0
     answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers --intake "$result")
     out=$(printf '%s\n' "$answer_rows" \
       | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$task" --exact \
+          --intake-owner "$owner_token" \
           --source "the captured result $sid sequence $seq" 2>&1) \
-      || fail "captured intake retry could not settle held task: $out"
+      || fail "captured intake could not release held task: $out"
+    fm_lock_acquire_wait "$RECORD_LOCK_PATH" || fail "could not relock intake task $task"
+    RECORD_LOCK_HELD=1
+    printf '%s\n' "$out" | grep -Eq 'closed:|answered:' \
+      || fail "captured intake did not close through captain-hold: $out"
+    update_pending_phase "$pending" released
   fi
-  fm_lock_acquire_wait "$RECORD_LOCK_PATH" || fail "could not relock intake task $task"
-  RECORD_LOCK_HELD=1
-  printf '%s\n' "$out" | grep -Eq 'closed:|answered:' \
-    || fail "captured intake did not close through captain-hold: $out"
   "$SCRIPT_DIR/fm-procevent.sh" handled "$sid" "$seq" >/dev/null \
     || fail "could not acknowledge captured Lavish result"
   if [ ! -e "$receipt" ] && [ ! -L "$receipt" ]; then
@@ -788,7 +833,7 @@ cmd_exempt() {
       *) fail "unknown exempt argument: $1" ;;
     esac
   done
-  validate_one_line reason "$reason"
+  validate_exemption_reason "$reason"
   artifact="$STATE/$task.lavish-intake-classification"
   receipt=$(receipt_path "$task")
   mkdir -p "$STATE"
@@ -840,7 +885,7 @@ verify_receipt() {
     printf 'status=not-applicable\nreason=%s\n' "$reason"
     return 0
   fi
-  artifact_fields_present "$artifact"
+  artifact_fields_present "$artifact" "$task"
   result=$(require_unique_meta "$receipt" result)
   result=$(real_file "$result") || fail "captured intake result is missing or unsafe: $result"
   expected_result=$(require_unique_meta "$receipt" result_sha256)
@@ -882,7 +927,7 @@ cmd_check_brief() {
   [ "$#" -eq 2 ] || fail "check-brief requires <task-id> <brief.md>"
   validate_task_id "$task"
   brief=$(real_file "$brief") || fail "brief is not a regular file: $brief"
-  contract=$(awk -F': ' '/^Lavish intake contract: / { print $2; exit }' "$brief")
+  contract=$(brief_value 'Lavish intake contract: ' "$brief")
   if [ -z "$contract" ]; then
     legacy_task_is_in_flight "$task" || fail "brief has no intake contract and task has no existing in-flight endpoint record"
     printf 'status=legacy\n'
@@ -890,12 +935,12 @@ cmd_check_brief() {
   fi
   case "$contract" in
     submitted)
-      evidence=$(awk -F': ' '/^Lavish intake evidence: / { print $2; exit }' "$brief")
+      evidence=$(brief_value 'Lavish intake evidence: ' "$brief")
       [ -n "$evidence" ] || fail "submitted brief has no intake evidence"
       verify_receipt "$task" "$evidence"
       ;;
     not-applicable)
-      reason=$(awk -F': ' '/^Lavish intake reason: / { print $2; exit }' "$brief")
+      reason=$(brief_value 'Lavish intake reason: ' "$brief")
       [ -n "$reason" ] || fail "not-applicable brief has no concrete reason"
       receipt=$(receipt_path "$task")
       receipt_reason=$(require_unique_meta "$receipt" reason)

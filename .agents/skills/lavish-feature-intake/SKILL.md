@@ -21,8 +21,8 @@ The only exemptions are bounded bug fixes, dependency or configuration updates, 
 An exact follow-up keeps its accepted intake only while goal, users, use cases, scope, constraints, and acceptance criteria remain materially unchanged.
 A bug report that expands behavior, changes product intent, or leaves classification uncertain is significant.
 
-Record an exemption with `bin/fm-lavish-intake.sh exempt <task-id> --reason <concrete reason>`.
-The reason must identify the bounded exemption, such as `documentation-only` or `dependency pin update with no behavior change`.
+Record an exemption with `bin/fm-lavish-intake.sh exempt <task-id> --reason '<class>: <bounded scope>'`.
+The class must be one of `bug-fix`, `dependency`, `configuration`, `documentation`, or `behavior-preserving refactor`, and the scope must be concrete rather than a generic bypass.
 Never infer not-applicable from a missing artifact, a small diff, a file path, or a familiar task name.
 
 ## Required intake
