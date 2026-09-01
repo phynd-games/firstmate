@@ -365,9 +365,15 @@ fm_backend_zellij_create_task() {  # <session> <label> <cwd>
 # FM_BACKEND_ZELLIJ_SESSION and FM_BACKEND_ZELLIJ_PANE for the caller.
 fm_backend_zellij_parse_target() {  # <target>
   local target=$1
+  case "$target" in
+    ''|:*|*:|*:*:*|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+  esac
   FM_BACKEND_ZELLIJ_SESSION=${target%%:*}
   FM_BACKEND_ZELLIJ_PANE=${target#*:}
-  [ -n "$FM_BACKEND_ZELLIJ_SESSION" ] && [ -n "$FM_BACKEND_ZELLIJ_PANE" ] && [ "$FM_BACKEND_ZELLIJ_PANE" != "$target" ]
+  case "$FM_BACKEND_ZELLIJ_PANE" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ -n "$FM_BACKEND_ZELLIJ_SESSION" ] && [ "$FM_BACKEND_ZELLIJ_PANE" != "$target" ]
 }
 
 # fm_backend_zellij_target_ready: parse the target and verify its session and

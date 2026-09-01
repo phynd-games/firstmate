@@ -15,3 +15,5 @@ config/*
 !config/backend
 !config/crew-dispatch.json
 !config/herdr-presentation-spaces
+ui/node_modules/
+ui/test/.render-built.mjs

@@ -1828,7 +1828,7 @@ EOF
   assert_contains "$out" "RUNTIME BOUND" "the truncation banner did not name the bound it hit"
   assert_contains "$out" 'stopped during the "bootstrap" stage' "the truncation banner did not name the incomplete stage"
   assert_contains "$out" "RECONCILE these stages" "the truncation banner did not tell the agent what to reconcile"
-  assert_contains "$out" "wake-queue supervision-instructions read-once fleet-state network-checks context next-step" \
+  assert_contains "$out" "wake-queue supervision-instructions read-once fleet-state network-checks dashboard context next-step" \
     "the truncation banner did not list every stage that never ran"
   assert_not_contains "$out" "NEXT STEP" "a truncated digest claimed to have reached its closing reminder"
   assert_absent "$home/state/.session-start-complete" \
@@ -2456,7 +2456,137 @@ EOF
   pass "session start rejects Pi loaded markers from previous sessions"
 }
 
+# --- the DASHBOARD section (bin/fm-dashboard-start.sh) ----------------------
+# The dashboard is a local read-only viewer, so its whole contract inside the
+# digest is: report a URL only when it was proven, never report one when it was
+# not, and never take the session start down with it.
+
+# Every other world in this file deliberately leaves herdr and jq off PATH, so
+# the dashboard blocks there and never contacts a real Herdr session. Only the
+# world below adds a doubled herdr on purpose.
+dashboard_world_path() {  # <fakebin>
+  local jq_dir
+  jq_dir=$(dirname "$(command -v jq 2>/dev/null || echo /nonexistent/jq)")
+  printf '%s' "$1:$jq_dir:$BASE_PATH"
+}
+
+dashboard_containment_available() {
+  case "$(uname -s)" in
+    Linux)
+      command -v unshare >/dev/null 2>&1 || return 1
+      unshare --pid --fork --mount-proc --kill-child=9 true >/dev/null 2>&1
+      ;;
+    Darwin)
+      command -v sandbox-exec >/dev/null 2>&1 || return 1
+      if sandbox-exec -p '(version 1) (allow default) (deny network-inbound)' \
+        python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0))' \
+        >/dev/null 2>&1; then
+        return 1
+      fi
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+reclaim_dashboard_panes() {  # <herdr-state-dir>
+  local pidfile pid
+  for pidfile in "$1"/panes/*.pid; do
+    [ -e "$pidfile" ] || continue
+    pid=$(cat "$pidfile" 2>/dev/null || true)
+    [ -n "$pid" ] || continue
+    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  done
+}
+
+test_session_start_brings_up_the_dashboard_and_prints_a_proven_url() {
+  local rec root home fakebin out url port herdr_state
+  command -v jq >/dev/null 2>&1 || { pass "skip: jq not found (dashboard startup)"; return 0; }
+  command -v python3 >/dev/null 2>&1 || { pass "skip: python3 not found (dashboard startup)"; return 0; }
+  command -v curl >/dev/null 2>&1 || { pass "skip: curl not found (dashboard startup)"; return 0; }
+  dashboard_containment_available || {
+    pass "skip: dashboard serve process containment unavailable on this host"
+    return 0
+  }
+  rec=$(new_world dashboard-up)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  cp "$ROOT/tests/assets/fake-herdr.sh" "$fakebin/herdr"
+  chmod +x "$fakebin/herdr"
+  herdr_state="$home/herdr"
+  mkdir -p "$herdr_state"
+  port=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+
+  out=$(FAKE_HERDR_STATE="$herdr_state" FM_DASHBOARD_PORT="$port" \
+    run_session_start "$home" "$root" "$(dashboard_world_path "$fakebin")")
+
+  assert_contains "$out" "DASHBOARD" "the digest has no dashboard section"
+  url=$(printf '%s\n' "$out" | sed -n 's/^FIRSTMATE_DASHBOARD_URL=//p')
+  [ "$url" = "http://127.0.0.1:$port/" ] \
+    || { reclaim_dashboard_panes "$herdr_state"; fail "session start did not print the proven URL: $out"; }
+  curl -fsS --max-time 5 "${url}healthz" | jq -e --arg home "$home" '.home == $home' >/dev/null \
+    || { reclaim_dashboard_panes "$herdr_state"; fail "the URL the digest printed does not serve this home"; }
+  reclaim_dashboard_panes "$herdr_state"
+  pass "session start brings the dashboard up and prints a URL that actually answers"
+}
+
+test_a_dashboard_that_cannot_start_never_fails_the_session_start() {
+  local rec root home fakebin out
+  rec=$(new_world dashboard-blocked)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  # No herdr anywhere on PATH: the dashboard cannot be started at all.
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" "DASHBOARD_BLOCKED" "a dashboard that cannot start did not say so"
+  printf '%s\n' "$out" | grep -q '^FIRSTMATE_DASHBOARD_URL=' \
+    && fail "a URL was printed although the dashboard could not start: $out"
+  assert_contains "$out" "NEXT STEP" "a blocked dashboard cut the digest short"
+  pass "a dashboard that cannot start blocks loudly and still leaves a complete digest"
+}
+
+test_a_read_only_session_reports_the_dashboard_without_starting_one() {
+  local rec root home fakebin out
+  rec=$(new_world dashboard-read-only)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  cp "$ROOT/tests/assets/fake-herdr.sh" "$fakebin/herdr"
+  chmod +x "$fakebin/herdr"
+  mkdir -p "$home/herdr"
+  # A live holder for the session lock, exactly as the lock-refusal test does,
+  # so this start runs with no mutation authority.
+  sleep 300 &
+  local holder_pid=$!
+  printf '%s\n' "$holder_pid" > "$home/state/.lock"
+
+  out=$(FAKE_HERDR_STATE="$home/herdr" \
+    run_session_start "$home" "$root" "$(dashboard_world_path "$fakebin")")
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  assert_contains "$out" "not started (read-only session)" \
+    "a read-only session did not say it left the dashboard alone"
+  printf '%s\n' "$out" | grep -q '^FIRSTMATE_DASHBOARD_URL=' \
+    && fail "a read-only session reported a dashboard URL it never proved: $out"
+  [ ! -e "$home/herdr/panes" ] || [ -z "$(find "$home/herdr/panes" -name '*.state' 2>/dev/null)" ] \
+    || fail "a read-only session created a dashboard pane"
+  pass "a read-only session reports the dashboard without starting one"
+}
+
 test_context_digest_absent_empty_present
+test_session_start_brings_up_the_dashboard_and_prints_a_proven_url
+test_a_dashboard_that_cannot_start_never_fails_the_session_start
+test_a_read_only_session_reports_the_dashboard_without_starting_one
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
 test_trace_context_effective_state_is_frozen_after_lock
