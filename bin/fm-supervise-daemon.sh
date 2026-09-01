@@ -1171,7 +1171,7 @@ inject_msg() {  # <message> [state]
   # discovery.
   backend="${FM_SUPERVISOR_BACKEND:-$FM_SUPERVISOR_BACKEND_DEFAULT}"
   fm_backend_target_exists "$backend" "$target" "" \
-    "${HERDR_WORKSPACE_ID:-}" "${HERDR_TAB_ID:-}" || return 1
+    "${HERDR_WORKSPACE_ID:-}" "${HERDR_TAB_ID:-}" "${HERDR_TERMINAL_ID:-}" || return 1
   # (3) Busy-guard: never inject into an in-use supervisor pane.
   if pane_is_busy "$target" "$backend"; then
     log "inject deferred: supervisor pane busy (agent mid-turn)"
@@ -1392,7 +1392,7 @@ fm_super_main() {
     FM_SUPERVISOR_BACKEND="$preflight_backend"
     FM_SUPERVISOR_TARGET="$preflight_target"
     fm_backend_target_exists "$preflight_backend" "$preflight_target" "" \
-      "${HERDR_WORKSPACE_ID:-}" "${HERDR_TAB_ID:-}" || exit 1
+      "${HERDR_WORKSPACE_ID:-}" "${HERDR_TAB_ID:-}" "${HERDR_TERMINAL_ID:-}" || exit 1
   fi
   mkdir -p "$STATE"
 
@@ -1499,7 +1499,7 @@ fm_super_main() {
   # backend=tmux this runs the exact same `tmux display-message -p -t "$TARGET"
   # '#{pane_id}'` call as before.
   if fm_backend_target_exists "$BACKEND" "$TARGET" "" \
-    "${HERDR_WORKSPACE_ID:-}" "${HERDR_TAB_ID:-}"; then
+    "${HERDR_WORKSPACE_ID:-}" "${HERDR_TAB_ID:-}" "${HERDR_TERMINAL_ID:-}"; then
     :
   else
     target_rc=$?
@@ -1575,7 +1575,7 @@ fm_super_main() {
     # Catch-up signals persist in state/*.status and flow on the next run, so
     # this delays rather than loses work.
     if fm_backend_target_exists "$BACKEND" "$TARGET" "" \
-      "${HERDR_WORKSPACE_ID:-}" "${HERDR_TAB_ID:-}"; then
+      "${HERDR_WORKSPACE_ID:-}" "${HERDR_TAB_ID:-}" "${HERDR_TERMINAL_ID:-}"; then
       :
     else
       target_rc=$?

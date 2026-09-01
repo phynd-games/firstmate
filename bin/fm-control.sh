@@ -440,7 +440,8 @@ verify_interrupt_running() {
   local proof after target_rc
   if fm_backend_target_exists "$BACKEND" "$T" "$LABEL" \
     "${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}" \
-    "${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}"; then
+    "${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}" \
+    "${FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID:-}"; then
     :
   else
     target_rc=$?

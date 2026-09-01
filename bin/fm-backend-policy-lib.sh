@@ -38,11 +38,16 @@ FM_BACKEND_ACTIVE="herdr"
 FM_BACKEND_RETAINED_LEGACY="tmux zellij orca cmux"
 
 fm_backend_policy_legacy_lane() {
+  local trust_file trust_value
   [ "${FM_BACKEND_LEGACY_TEST_LANE:-}" = 1 ] || return 1
   [ "${FM_BACKEND_TEST_HARNESS:-}" = 1 ] || return 1
   [ "${FM_GATE_REFUSE_BYPASS:-}" = 1 ] || return 1
-  [ -n "${FM_STATE_OVERRIDE:-}" ] || [ -n "${FM_CONFIG_OVERRIDE:-}" ] \
-    || [ -n "${FM_ROOT_OVERRIDE:-}" ]
+  [ -n "${FM_STATE_OVERRIDE:-}" ] || return 1
+  trust_file=${FM_BACKEND_TEST_TRUST_FILE:-$FM_STATE_OVERRIDE/.fm-backend-legacy-test-runner}
+  [ "$trust_file" = "$FM_STATE_OVERRIDE/.fm-backend-legacy-test-runner" ] || return 1
+  [ -f "$trust_file" ] || return 1
+  trust_value=$(cat "$trust_file" 2>/dev/null) || return 1
+  [ "$trust_value" = firstmate-herdr-legacy-test-runner-v1 ]
 }
 
 fm_backend_policy_legacy_adapter_allowed() {

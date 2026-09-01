@@ -68,8 +68,8 @@ if [ "${1:-} ${2:-}" = "pane get" ] && [ ! -f "$RESP/$next.exit" ]; then
     pane=${3:-}
     workspace=${pane%%:*}
     tab_number=${pane##*:}
-    printf '{"result":{"pane":{"pane_id":"%s","workspace_id":"%s","tab_id":"%s:t%s"}}}\n' \
-      "$pane" "$workspace" "$workspace" "${tab_number#p}"
+    printf '{"result":{"pane":{"pane_id":"%s","workspace_id":"%s","tab_id":"%s:t%s","terminal_id":"term_%s"}}}\n' \
+      "$pane" "$workspace" "$workspace" "${tab_number#p}" "$pane"
     exit 0
   fi
 fi
@@ -167,7 +167,7 @@ case "$cmd $sub" in
     printf '{"sessions":[{"name":"%s","running":true,"socket_path":"/tmp/fm-herdr-%s.sock"}]}\n' "${HERDR_SESSION:-default}" "${HERDR_SESSION:-default}"
     ;;
   "workspace list")
-    jq_state '{result:{workspaces:.workspaces}}'
+    jq_state '{result:{type:"workspace_list",workspaces:.workspaces}}'
     ;;
   "workspace create")
     n=$(jq_state -r '.next'); wsid="w$n"; dn=$((n + 1))
@@ -178,8 +178,8 @@ case "$cmd $sub" in
        | (.tabs |= map(.focused = false))
        | .tabs += [{tab_id:$tabid, label:"1", workspace_id:$wsid, pane_id:$paneid, focused:true}]
        | .next = (.next + 2)' | save
-    printf '{"result":{"workspace":{"workspace_id":"%s","label":"%s"},"tab":{"tab_id":"%s","workspace_id":"%s"},"root_pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s"}}}\n' \
-      "$wsid" "$label" "$wsid:t$dn" "$wsid" "$wsid:p$dn" "$wsid:t$dn" "$wsid"
+    printf '{"result":{"workspace":{"workspace_id":"%s","label":"%s"},"tab":{"tab_id":"%s","workspace_id":"%s"},"root_pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s","terminal_id":"term_%s"}}}\n' \
+      "$wsid" "$label" "$wsid:t$dn" "$wsid" "$wsid:p$dn" "$wsid:t$dn" "$wsid" "$wsid:p$dn"
     ;;
   "tab list")
     jq_state --arg w "$ws" '{result:{tabs:[.tabs[]|select(.workspace_id==$w)]}}'
@@ -191,7 +191,7 @@ case "$cmd $sub" in
        | .tabs += [{tab_id:$tabid, label:$wlabel, workspace_id:$w, pane_id:$paneid, focused:($focused == 0)}]
        | if $focused == 0 then .workspaces |= map(if .workspace_id == $w then .focused = true | .active_tab_id = $tabid else . end) else . end
        | .next = (.next + 1)' | save
-    printf '{"result":{"tab":{"tab_id":"%s","workspace_id":"%s"},"root_pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s"}}}\n' "$tabid" "$ws" "$paneid" "$tabid" "$ws"
+    printf '{"result":{"tab":{"tab_id":"%s","workspace_id":"%s"},"root_pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s","terminal_id":"term_%s"}}}\n' "$tabid" "$ws" "$paneid" "$tabid" "$ws" "$paneid"
     ;;
   "pane list")
     jq_state --arg w "$ws" '{result:{panes:[.tabs[]|select(.workspace_id==$w)|{pane_id:.pane_id, tab_id:.tab_id, workspace_id:.workspace_id}]}}'
@@ -203,7 +203,7 @@ case "$cmd $sub" in
     else
       jq_state --arg p "$pane" '
         ([.tabs[] | select(.pane_id == $p)][0]) as $tab
-        | {result:{pane:{pane_id:$tab.pane_id,tab_id:$tab.tab_id,workspace_id:$tab.workspace_id}}}
+        | {result:{pane:{pane_id:$tab.pane_id,tab_id:$tab.tab_id,workspace_id:$tab.workspace_id,terminal_id:("term_" + $tab.pane_id)}}}
       '
     fi
     ;;

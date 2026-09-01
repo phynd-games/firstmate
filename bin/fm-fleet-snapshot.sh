@@ -617,7 +617,8 @@ task_json_lines() {
       if [ -n "$target" ]; then
         if fm_backend_target_exists "$backend" "$target" "fm-$id" \
           "${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}" \
-          "${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}"; then
+          "${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}" \
+          "${FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID:-}"; then
           endpoint_exists=true
           endpoint_status=alive
         else

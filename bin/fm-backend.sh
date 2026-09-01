@@ -529,8 +529,8 @@ fm_backend_endpoint_atom_valid() {  # <value>
 }
 
 fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
-  local meta=$1 id=$2 backend_count backend window worktree project binding_count binding
-  local session pane recorded_session workspace tab terminal worktree_id surface identity_rc
+  local meta=$1 id=$2 backend_count backend window worktree project binding_count binding terminal
+  local session pane recorded_session workspace tab worktree_id surface identity_rc
   FM_BACKEND_VALIDATED_BACKEND=
   FM_BACKEND_VALIDATED_TARGET=
   # shellcheck disable=SC2034
@@ -539,6 +539,7 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=
   # shellcheck disable=SC2034
   FM_BACKEND_HERDR_EXPECTED_TAB_ID=
+  FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID=
   [ -f "$meta" ] && [ ! -L "$meta" ] || {
     fm_backend_policy_refuse "task $id endpoint record" "" \
       "Repair or explicitly migrate this task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
@@ -650,7 +651,8 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
       workspace=$(fm_backend_meta_exact_value "$meta" herdr_workspace_id) || workspace=
       tab=$(fm_backend_meta_exact_value "$meta" herdr_tab_id) || tab=
       pane=$(fm_backend_meta_exact_value "$meta" herdr_pane_id) || pane=
-      if [ -z "$recorded_session" ] || [ -z "$workspace" ] || [ -z "$tab" ] || [ -z "$pane" ] \
+      terminal=$(fm_backend_meta_exact_value "$meta" herdr_terminal_id) || terminal=
+      if [ -z "$recorded_session" ] || [ -z "$workspace" ] || [ -z "$tab" ] || [ -z "$pane" ] || [ -z "$terminal" ] \
         || [ "$window" != "$recorded_session:$pane" ] \
         || ! fm_backend_endpoint_atom_valid "$recorded_session" \
         || ! fm_backend_endpoint_atom_valid "$workspace" \
@@ -663,6 +665,7 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
       if ! fm_backend_policy_legacy_lane; then
         fm_backend_source herdr "task $id endpoint identity" "$recorded_session" || return 2
         identity_rc=0
+        FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID=$terminal
         fm_backend_herdr_endpoint_identity "$recorded_session" "$workspace" "$tab" "$pane" || identity_rc=$?
         case "$identity_rc" in
           0) ;;
@@ -684,6 +687,8 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
       FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=$workspace
       # shellcheck disable=SC2034
       FM_BACKEND_HERDR_EXPECTED_TAB_ID=$tab
+      # shellcheck disable=SC2034
+      FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID=$terminal
       ;;
     zellij)
       [ "$binding" = "$id" ] || {
@@ -1238,8 +1243,8 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # Mirrors fm-crew-state.sh's pane_readable check; exists here as one shared
 # primitive so callers that only need a fast alive/dead read (recovery
 # digests, the session-start fleet digest) do not re-derive it inline.
-fm_backend_target_exists() {  # <backend> <target> [expected-label] [expected-workspace] [expected-tab]
-  local backend=$1 target=$2 expected_label=${3:-} session pane pane_out pane_rc expected_workspace=${4:-} expected_tab=${5:-} identity identity_rc=0 validate_rc=0
+fm_backend_target_exists() {  # <backend> <target> [expected-label] [expected-workspace] [expected-tab] [expected-terminal]
+  local backend=$1 target=$2 expected_label=${3:-} session pane pane_out pane_rc expected_workspace=${4:-} expected_tab=${5:-} expected_terminal=${6:-${FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID:-}} validate_rc=0
   # The tmux arm below calls the tmux CLI directly rather than through
   # fm_backend_source, so the invariant is enforced here explicitly: a retained
   # legacy backend is refused before any runtime command runs.
@@ -1258,28 +1263,11 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label] [expected-wo
       pane=${target#*:}
       [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 1
       fm_backend_herdr_capability_preflight "target existence check" "$session" || return 2
-      if [ -z "$expected_workspace" ] || [ -z "$expected_tab" ]; then
-        if identity=$(fm_backend_herdr_pane_get_checked "$session" "" "" "$pane" 0); then
-          :
-        else
-          identity_rc=$?
-        fi
-        if [ "$identity_rc" -ne 0 ]; then
-          fm_backend_policy_refuse "Herdr target $target" herdr \
-            "The native Herdr target identity could not be resolved. Repair Herdr, then verify the named session with 'herdr status --json'."
-          return 2
-        fi
-        expected_workspace=$(printf '%s' "$identity" | jq -er '.result.pane.workspace_id' 2>/dev/null) || {
-          fm_backend_policy_refuse "Herdr target $target" herdr \
-            "The native Herdr target response omitted its workspace identity. Repair Herdr, then verify the named session with 'herdr status --json'."
-          return 2
-        }
-        expected_tab=$(printf '%s' "$identity" | jq -er '.result.pane.tab_id' 2>/dev/null) || {
-          fm_backend_policy_refuse "Herdr target $target" herdr \
-            "The native Herdr target response omitted its tab identity. Repair Herdr, then verify the named session with 'herdr status --json'."
-          return 2
-        }
-      fi
+      [ -n "$expected_workspace" ] && [ -n "$expected_tab" ] && [ -n "$expected_terminal" ] || {
+        fm_backend_policy_refuse "Herdr target $target" herdr \
+          "The recorded Herdr target lacks its complete workspace, tab, and terminal identity. Recreate or explicitly migrate the endpoint, then verify with 'herdr status --json'."
+        return 2
+      }
       # fm_backend_herdr_cli (not a raw HERDR_SESSION-only call): verified
       # empirically (docs/herdr-backend.md "Session targeting") that the bare
       # env var alone is NOT reliably honored once another herdr server is
@@ -1288,7 +1276,7 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label] [expected-wo
       # flag on top, so this check is correctly scoped even when the caller's
       # own ambient session (e.g. the primary firstmate's default session) is
       # a DIFFERENT one than the target's.
-      if pane_out=$(fm_backend_herdr_pane_presence_state "$session" "$pane" "$expected_workspace" "$expected_tab"); then
+      if pane_out=$(fm_backend_herdr_pane_presence_state "$session" "$pane" "$expected_workspace" "$expected_tab" "$expected_terminal"); then
         [ "$pane_out" = present ] && return 0
         [ "$pane_out" = dead ] && return 1
       else

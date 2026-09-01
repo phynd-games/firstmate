@@ -709,6 +709,7 @@ HERDR_PROJECTION_ABORT_CLEANUP=0
 HERDR_PROJECTION_ABORT_SESSION=
 HERDR_PROJECTION_ABORT_TASK_PANE=
 HERDR_PROJECTION_ABORT_SEEDED_PANE=
+HERDR_TERMINAL_ID=
 HERDR_PRESENTATION_ORDER_LOCK=
 HERDR_PRESENTATION_ORDER_LOCK_HELD=0
 SPAWN_TASK_LOCK=
@@ -1138,6 +1139,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     HERDR_WORKSPACE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_workspace_id)
     HERDR_TAB_ID=$(fm_meta_get "$RELAUNCH_META" herdr_tab_id)
     HERDR_PANE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_pane_id)
+    HERDR_TERMINAL_ID=$(fm_meta_get "$RELAUNCH_META" herdr_terminal_id)
   fi
   # With no explicit harness, a relaunch reuses the harness already recorded
   # for this task. It must NOT fall through to the fresh-spawn config
@@ -2087,6 +2089,7 @@ case "$BACKEND" in
               HERDR_SEEDED_DEFAULT_TAB_ID=""
               HERDR_TAB_ID=$FM_BACKEND_HERDR_PROJECTION_TAB_ID
               HERDR_PANE_ID=$FM_BACKEND_HERDR_PROJECTION_PANE_ID
+              HERDR_TERMINAL_ID=$FM_BACKEND_HERDR_PROJECTION_TERMINAL_ID
               HERDR_PROJECTION_ABORT_CLEANUP=1
               HERDR_PROJECTION_ABORT_SESSION=$HERDR_SES
               HERDR_PROJECTION_ABORT_TASK_PANE=$HERDR_PANE_ID
@@ -2127,8 +2130,13 @@ case "$BACKEND" in
           set -e
           case "$HERDR_LAUNCHER_STATUS" in
             0) HERDR_PARENT_WORKSPACE_ID=$FM_BACKEND_HERDR_LAUNCHER_WORKSPACE_ID ;;
-            2) HERDR_PARENT_WORKSPACE_ID=$(fm_backend_herdr_projection_parent_workspace_exact \
-                 "$HERDR_SES" "$HERDR_PARENT_LABEL" 2>/dev/null || true) ;;
+            2)
+              HERDR_PARENT_WORKSPACE_ID=$(fm_backend_herdr_projection_parent_workspace_exact \
+                "$HERDR_SES" "$HERDR_PARENT_LABEL") || {
+                spawn_herdr_presentation_order_lock_release
+                exit 2
+              }
+              ;;
             *) spawn_herdr_presentation_order_lock_release; exit 1 ;;
           esac
           if [ -z "$HERDR_PARENT_WORKSPACE_ID" ]; then
@@ -2153,6 +2161,7 @@ case "$BACKEND" in
             HERDR_SEEDED_DEFAULT_TAB_ID=$FM_BACKEND_HERDR_PROJECTION_SEEDED_TAB_ID
             HERDR_TAB_ID=$FM_BACKEND_HERDR_PROJECTION_TAB_ID
             HERDR_PANE_ID=$FM_BACKEND_HERDR_PROJECTION_PANE_ID
+            HERDR_TERMINAL_ID=$FM_BACKEND_HERDR_PROJECTION_TERMINAL_ID
             HERDR_PROJECTION_ABORT_CLEANUP=1
             HERDR_PROJECTION_ABORT_SESSION=$HERDR_SES
             HERDR_PROJECTION_ABORT_TASK_PANE=$HERDR_PANE_ID
@@ -2192,7 +2201,7 @@ case "$BACKEND" in
       HERDR_SES=${CONTAINER%%:*}
       HERDR_WORKSPACE_ID=${CONTAINER#*:}
       HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$PROJ_ABS" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
-      read -r HERDR_TAB_ID HERDR_PANE_ID <<EOF
+      read -r HERDR_TAB_ID HERDR_PANE_ID HERDR_TERMINAL_ID <<EOF
 $HERDR_TASK_IDS
 EOF
     fi
@@ -2796,7 +2805,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id herdr_terminal_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2826,6 +2835,7 @@ preserve_relaunch_meta() {
     echo "herdr_workspace_id=$HERDR_WORKSPACE_ID"
     echo "herdr_tab_id=$HERDR_TAB_ID"
     echo "herdr_pane_id=$HERDR_PANE_ID"
+    echo "herdr_terminal_id=$HERDR_TERMINAL_ID"
   fi
   if [ "$BACKEND" = zellij ]; then
     echo "zellij_session=$ZELLIJ_SES"

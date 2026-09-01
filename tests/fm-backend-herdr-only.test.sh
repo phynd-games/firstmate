@@ -121,9 +121,11 @@ test_legacy_lane_requires_test_world() {
 
 test_legacy_lane_runs_only_in_test_world() {
   local home="$TMP_ROOT/trusted-lane-home"
-  mkdir -p "$home/config"
+  mkdir -p "$home/config" "$home/state"
   printf 'tmux\n' > "$home/config/backend"
+  printf '%s' firstmate-herdr-legacy-test-runner-v1 > "$home/state/.fm-backend-legacy-test-runner"
   run_capture trusted-lane lib_probe "FM_HOME=$home" FM_ROOT_OVERRIDE="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_BACKEND_TEST_TRUST_FILE="$home/state/.fm-backend-legacy-test-runner" \
     FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_HARNESS=1 -- 'fm_backend_policy_permits tmux'
   [ "$RC" -eq 0 ] || fail "the selected legacy lane must permit retained adapters in a test world: rc=$RC out=$OUT err=$ERR"
   [ -z "$OUT" ] || fail "the legacy lane predicate should not print output"
@@ -312,7 +314,7 @@ test_endpoint_identity_mismatch_refuses() {
   local id=identity-mismatch-z1 state="$TMP_ROOT/identity-state" wt="$TMP_ROOT/identity-wt"
   mkdir -p "$state" "$wt"
   fm_write_meta "$state/$id.meta" "window=default:w1:p1" "endpoint_task_id=$id" "worktree=$wt" "project=$wt" \
-    "backend=herdr" "herdr_session=default" "herdr_workspace_id=w1" "herdr_tab_id=w1:t1" "herdr_pane_id=w1:p1"
+    "backend=herdr" "herdr_session=default" "herdr_workspace_id=w1" "herdr_tab_id=w1:t1" "herdr_pane_id=w1:p1" "herdr_terminal_id=term-w1-p1"
   run_capture endpoint-identity-mismatch lib_probe -- "fm_backend_source() { return 0; }; fm_backend_herdr_endpoint_identity() { return 1; }; fm_backend_validate_task_endpoint '$state/$id.meta' '$id'"
   assert_refusal "mismatched Herdr endpoint identity" "Herdr target identity" "Task state is preserved"
   pass "mismatched native Herdr workspace or tab identity refuses before operation"
@@ -385,14 +387,14 @@ test_shared_pane_identity_boundary_is_typed_and_fail_closed() {
     case "$case_name" in
       healthy)
         expected_rc=0
-        expected_output='{"result":{"pane":{"pane_id":"pane1","workspace_id":"ws1","tab_id":"tab1"}}}'
+        expected_output='{"result":{"pane":{"pane_id":"pane1","workspace_id":"ws1","tab_id":"tab1","terminal_id":"term-pane1"}}}'
         body="$expected_output"
         cli_rc=0
         ;;
       failed-body)
         expected_rc=2
         expected_output=
-        body='{"result":{"pane":{"pane_id":"pane1","workspace_id":"ws1","tab_id":"tab1"}}}'
+        body='{"result":{"pane":{"pane_id":"pane1","workspace_id":"ws1","tab_id":"tab1","terminal_id":"term-pane1"}}}'
         cli_rc=1
         ;;
       malformed)
@@ -411,7 +413,7 @@ test_shared_pane_identity_boundary_is_typed_and_fail_closed() {
         expected_rc=1
         expected_output=
         body='{"error":{"code":"pane_not_found"}}'
-        cli_rc=0
+        cli_rc=1
         ;;
     esac
     run_capture "identity-preflight-$case_name" lib_probe "BOUNDARY_BODY=$body" "BOUNDARY_CLI_RC=$cli_rc" -- '
@@ -426,8 +428,8 @@ test_shared_pane_identity_boundary_is_typed_and_fail_closed() {
     [ "$OUT" = "$expected_output" ] || fail "shared identity boundary $case_name returned unexpected stdout: $OUT"
   done
   run_capture identity-preflight-gone-required lib_probe -- '
-    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
-    fm_backend_herdr_cli() { printf '''{"error":{"code":"pane_not_found"}}'''; }
+      . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() { printf '''{"error":{"code":"pane_not_found"}}'''; return 1; }
     fm_backend_herdr_pane_get_checked fmtest ws1 tab1 pane1 0
   '
   [ "$RC" -eq 2 ] && [ -z "$OUT" ] || fail "pane_not_found without explicit absence permission must refuse: rc=$RC out=$OUT"
@@ -550,6 +552,18 @@ test_projection_recovery_inventory_failure_refuses() {
   pass "projection recovery refuses native inventory failure before flat fallback"
 }
 
+test_projection_parent_inventory_failure_refuses_before_flat_layout() {
+  run_capture projection-parent-inventory-failure lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() { return 1; }
+    fm_backend_herdr_projection_parent_workspace_exact fmtest firstmate
+  '
+  [ "$RC" -eq 2 ] && [ -z "$OUT" ] \
+    || fail "projection parent inventory failure must refuse without a parent id: rc=$RC out=$OUT"
+  assert_refusal "projection parent inventory failure" "Herdr presentation parent inventory" "workspace inventory failed"
+  pass "projection parent inventory failures preserve the Herdr blocker"
+}
+
 test_send_preserves_empty_native_failure_status() {
   run_capture send-empty-native-failure lib_probe -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
@@ -570,6 +584,7 @@ test_pane_presence_not_found_is_idempotently_dead() {
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
     fm_backend_herdr_cli() {
       printf "%s" '\''{"error":{"code":"pane_not_found"}}'\''
+      return 1
     }
     fm_backend_herdr_pane_presence_state fmtest pane1 ws1 tab1
   '
@@ -577,12 +592,12 @@ test_pane_presence_not_found_is_idempotently_dead() {
   run_capture pane-presence-not-found-failed lib_probe -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
     fm_backend_herdr_cli() {
-      printf "%s" '\''{"error":{"code":"pane_not_found"}}'\''
+      printf "%s" '\''{"error":{"code":"internal_error"}}'\''
       return 1
     }
     fm_backend_herdr_pane_presence_state fmtest pane1 ws1 tab1
   '
-  [ "$RC" -eq 2 ] && [ -z "$OUT" ] || fail "failed pane_not_found must remain a typed refusal: rc=$RC out=$OUT"
+  [ "$RC" -eq 2 ] && [ -z "$OUT" ] || fail "failed native pane error must remain a typed refusal: rc=$RC out=$OUT"
   pass "explicit Herdr pane absence remains idempotently dead"
 }
 
@@ -647,13 +662,25 @@ test_workspace_presence_rejects_duplicate_identity() {
   run_capture duplicate-workspace-inventory lib_probe -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
     fm_backend_herdr_cli() {
-      printf "%s" '\''{"result":{"workspaces":[{"workspace_id":"ws1"},{"workspace_id":"ws1"}]}}'\''
+      printf "%s" '\''{"result":{"type":"workspace_list","workspaces":[{"workspace_id":"ws1","label":"firstmate"},{"workspace_id":"ws1","label":"firstmate"}]}}'\''
     }
     fm_backend_herdr_workspace_presence_state fmtest ws1
   '
   [ "$RC" -eq 2 ] && [ -z "$OUT" ] \
     || fail "duplicate workspace identities must refuse without a state: rc=$RC out=$OUT"
   pass "workspace presence refuses duplicate Herdr identities"
+}
+
+test_live_inventory_rejects_duplicate_workspace_labels() {
+  run_capture duplicate-live-workspace-label lib_probe -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_workspace_find_all() { printf "ws1\nws2\n"; }
+    fm_backend_herdr_list_live fmtest
+  '
+  [ "$RC" -eq 2 ] && [ -z "$OUT" ] \
+    || fail "live inventory must refuse duplicate workspace labels without selecting one: rc=$RC out=$OUT"
+  assert_refusal "duplicate live workspace labels" "Herdr live-task inventory"
+  pass "Herdr live-task discovery refuses duplicate workspace labels"
 }
 
 test_live_inventory_failure_remains_typed() {
@@ -803,9 +830,9 @@ test_recovery_agent_failures_refuse_before_replacement() {
     }
     fm_backend_herdr_cli() {
       case "$*" in
-        *"tab create"*) printf "%s" '\''{"result":{"tab":{"tab_id":"tab2","workspace_id":"ws1"},"root_pane":{"pane_id":"pane2","workspace_id":"ws1","tab_id":"tab2"}}}'\'' ;;
+        *"tab create"*) printf "%s" '\''{"result":{"tab":{"tab_id":"tab2","workspace_id":"ws1"},"root_pane":{"pane_id":"pane2","workspace_id":"ws1","tab_id":"tab2","terminal_id":"term-pane2"}}}'\'' ;;
         *"tab get"*) printf "%s" '\''{"result":{"tab":{"tab_id":"tab2","workspace_id":"ws1"}}}'\'' ;;
-        *"pane get"*) printf "%s" '\''{"result":{"pane":{"pane_id":"pane2","tab_id":"tab2","workspace_id":"ws1"}}}'\'' ;;
+        *"pane get"*) printf "%s" '\''{"result":{"pane":{"pane_id":"pane2","tab_id":"tab2","workspace_id":"ws1","terminal_id":"term-pane2"}}}'\'' ;;
       esac
     }
     fm_backend_herdr_projection_reclaim_task fmtest journal task /tmp/reclaim-home ws1 tab1 pane1 parent task /tmp
@@ -820,7 +847,7 @@ test_recovery_agent_failures_refuse_before_replacement() {
     fm_backend_herdr_server_ensure() { return 0; }
     fm_backend_herdr_cli() {
       case "$*" in
-        *"workspace list"*) printf "%s" '\''{"result":{"workspaces":[{"workspace_id":"ws1","label":"firstmate/task · p:token"}]}}'\'' ;;
+        *"workspace list"*) printf "%s" '\''{"result":{"type":"workspace_list","workspaces":[{"workspace_id":"ws1","label":"firstmate/task · p:token"}]}}'\'' ;;
         *"pane list"*) printf "%s" '\''{"result":{"panes":[{"pane_id":"pane1","workspace_id":"ws1","tab_id":"ws1:tab1"}]}}'\'' ;;
       esac
     }
@@ -836,12 +863,12 @@ test_recovery_agent_failures_refuse_before_replacement() {
     fm_backend_herdr_server_ensure() { return 0; }
     fm_backend_herdr_cli() {
       case "$*" in
-        *"workspace list"*) printf "%s" '\''{"result":{"workspaces":[{"label":"firstmate/task · p:token"}]}}'\'' ;;
+        *"workspace list"*) printf "%s" '\''{"result":{"type":"workspace_list","workspaces":[{"label":"firstmate/task · p:token"}]}}'\'' ;;
       esac
     }
     fm_backend_herdr_projection_recovery_allows_flat fmtest journal task
   '
-  assert_refusal "quarantine workspace identity" "quarantined Herdr presentation inspection" "malformed quarantined presentation identity"
+  assert_refusal "quarantine workspace identity" "quarantined Herdr presentation inspection" "workspace list response was malformed"
 
   run_capture quarantine-pane-id-failure lib_probe -- '
     . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
@@ -849,7 +876,7 @@ test_recovery_agent_failures_refuse_before_replacement() {
     fm_backend_herdr_server_ensure() { return 0; }
     fm_backend_herdr_cli() {
       case "$*" in
-        *"workspace list"*) printf "%s" '\''{"result":{"workspaces":[{"workspace_id":"ws1","label":"firstmate/task · p:token"}]}}'\'' ;;
+        *"workspace list"*) printf "%s" '\''{"result":{"type":"workspace_list","workspaces":[{"workspace_id":"ws1","label":"firstmate/task · p:token"}]}}'\'' ;;
         *"pane list"*) printf "%s" '\''{"result":{"panes":[{}]}}'\'' ;;
       esac
     }
@@ -1241,7 +1268,7 @@ test_herdr_record_and_endpoint_pass_every_boundary() {
   mkdir -p "$state" "$wt"
   fm_write_meta "$state/$id.meta" "window=default:w2:p3" "endpoint_task_id=$id" "worktree=$wt" "project=$wt" \
     "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off" "backend=herdr" "herdr_session=default" \
-    "herdr_workspace_id=w2" "herdr_tab_id=w2:t1" "herdr_pane_id=w2:p3"
+    "herdr_workspace_id=w2" "herdr_tab_id=w2:t1" "herdr_pane_id=w2:p3" "herdr_terminal_id=term-w2-p3"
   run_capture herdr-of-meta lib_probe -- "fm_backend_of_meta '$state/$id.meta'"
   [ "$RC" -eq 0 ] && [ "$OUT" = herdr ] && [ -z "$ERR" ] || fail "herdr record must resolve silently: rc=$RC out=$OUT err=$ERR"
   run_capture herdr-endpoint lib_probe -- "fm_backend_source() { return 0; }; fm_backend_herdr_endpoint_identity() { return 0; }; fm_backend_validate_task_endpoint '$state/$id.meta' '$id' && printf '%s|%s' \"\$FM_BACKEND_VALIDATED_BACKEND\" \"\$FM_BACKEND_VALIDATED_TARGET\""
@@ -1295,6 +1322,7 @@ test_idle_shell_proof_requires_native_endpoint_identity
 test_malformed_herdr_targets_are_typed_failures
 test_task_creation_refuses_malformed_tab_inventory
 test_task_creation_refuses_unbound_create_response
+test_projection_parent_inventory_failure_refuses_before_flat_layout
 test_projection_recovery_inventory_failure_refuses
 test_send_preserves_empty_native_failure_status
 test_pane_presence_not_found_is_idempotently_dead
@@ -1302,6 +1330,7 @@ test_agent_state_rejects_rebound_identity_and_failed_body
 test_seeded_tab_inventory_failure_refuses_before_prune
 test_workspace_presence_rejects_malformed_inventory
 test_workspace_presence_rejects_duplicate_identity
+test_live_inventory_rejects_duplicate_workspace_labels
 test_live_inventory_failure_remains_typed
 test_native_read_failures_do_not_parse_success_bodies
 test_target_ready_rechecks_recorded_native_identity

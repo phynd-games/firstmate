@@ -1737,6 +1737,8 @@ else
           export FM_BACKEND_TEST_HARNESS=1
           export FM_GATE_REFUSE_BYPASS=1
           mkdir -p "$FM_STATE_OVERRIDE"
+          printf '%s' firstmate-herdr-legacy-test-runner-v1 > "$FM_STATE_OVERRIDE/.fm-backend-legacy-test-runner"
+          chmod 0600 "$FM_STATE_OVERRIDE/.fm-backend-legacy-test-runner"
           ;;
       esac
       cd "$ROOT" || exit 1
