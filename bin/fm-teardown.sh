@@ -2823,14 +2823,16 @@ if [ -e "$INTAKE_SESSION" ] || [ -L "$INTAKE_SESSION" ]; then
   INTAKE_SOURCE=$(sed -n 's/^source_id=//p' "$INTAKE_SESSION" | head -1)
   fm_procevent_source_id_valid "$INTAKE_SOURCE" \
     || { echo "error: Lavish intake source identity is invalid for $ID; preserving task records" >&2; exit 1; }
+  INTAKE_REGISTRATION="$STATE/procevent/$INTAKE_SOURCE.source"
+  INTAKE_MARKER="$STATE/procevent/$INTAKE_SOURCE.intake"
   INTAKE_BOUND=$($FM_ROOT/bin/fm-captain-hold.sh binding "$INTAKE_SOURCE" 2>/dev/null || true)
-  [ -z "$INTAKE_BOUND" ] || [ "$INTAKE_BOUND" = "$ID" ] \
-    || { echo "error: Lavish intake source is bound to another task; preserving task records" >&2; exit 1; }
-  "$FM_ROOT/bin/fm-procevent-lavish.sh" retire "$INTAKE_ARTIFACT" >/dev/null \
-    || { echo "error: could not retire Lavish intake source $INTAKE_SOURCE; preserving task records" >&2; exit 1; }
-  "$FM_ROOT/bin/fm-captain-hold.sh" unbind "$INTAKE_SOURCE" >/dev/null \
-    || { echo "error: could not unbind Lavish intake source $INTAKE_SOURCE; preserving task records" >&2; exit 1; }
-  rm -f "$STATE/procevent/$INTAKE_SOURCE.intake"
+  if [ -e "$INTAKE_REGISTRATION" ] || [ -L "$INTAKE_REGISTRATION" ] \
+    || [ -e "$INTAKE_MARKER" ] || [ -L "$INTAKE_MARKER" ] \
+    || [ -n "$INTAKE_BOUND" ]; then
+    "$FM_ROOT/bin/fm-procevent-lavish.sh" retire "$INTAKE_ARTIFACT" --expect-intake-task "$ID" >/dev/null \
+      || { echo "error: could not retire Lavish intake source $INTAKE_SOURCE; preserving task records" >&2; exit 1; }
+    rm -f "$INTAKE_MARKER"
+  fi
 fi
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.

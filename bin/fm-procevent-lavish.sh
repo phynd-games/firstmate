@@ -9,7 +9,7 @@
 #   fm-procevent-lavish.sh answers [--intake] <result-file>
 #   fm-procevent-lavish.sh intake <result-file> <task-id>
 #   fm-procevent-lavish.sh source-id <artifact.html>
-#   fm-procevent-lavish.sh retire <artifact.html>
+#   fm-procevent-lavish.sh retire <artifact.html> [--expect-intake-task <task-id>]
 #   fm-procevent-lavish.sh poll <artifact.html>
 #
 # classify   Print the lifecycle state a handler should act on: feedback, ended,
@@ -156,10 +156,21 @@ cmd_arm() {
 }
 
 cmd_retire() {
-  local artifact=${1-} id
+  local artifact=${1-} id expected_task=''
   [ -n "$artifact" ] || usage
+  shift || true
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --expect-intake-task) [ "$#" -ge 2 ] || die "--expect-intake-task requires a task id"; expected_task=$2; shift 2 ;;
+      *) die "unknown retire argument: $1" ;;
+    esac
+  done
   id=$(cmd_source_id "$artifact") || exit 1
-  "$SCRIPT_DIR/fm-procevent.sh" retire "$id"
+  if [ -n "$expected_task" ]; then
+    "$SCRIPT_DIR/fm-procevent.sh" retire "$id" --expect-intake-task "$expected_task"
+  else
+    "$SCRIPT_DIR/fm-procevent.sh" retire "$id"
+  fi
 }
 
 # The bounded quiet retry described in the header. The bound is a constant

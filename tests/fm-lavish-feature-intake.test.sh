@@ -289,6 +289,7 @@ test_explicit_exemptions_require_reason() {
   assert_contains "$out" "must use" "generic exemption refusal was unclear"
   invalid_reasons=(
     'exemption-invalid-bug-fix|bug-fix: fix'
+    'exemption-invalid-vague-bug-fix|bug-fix: fix the broken code in this project'
     'exemption-invalid-configuration|configuration: no'
     'exemption-invalid-documentation|documentation: update thing here now'
   )
@@ -332,6 +333,27 @@ PY
   [ "$rc" -ne 0 ] || fail "edited exemption reason passed check-brief"
   assert_contains "$out" "does not match intake evidence" "exemption mismatch refusal was unclear"
   pass "Lavish intake: exemptions require and retain concrete reasons"
+}
+
+test_exemption_rejects_active_intake() {
+  local home artifact out rc
+  home=$(make_home active-exemption)
+  add_task "$home" active-a1
+  artifact=$home/intake.html
+  run_intake "$home" template active-a1 --output "$artifact" >/dev/null
+  run_intake "$home" start active-a1 --artifact "$artifact" >/dev/null
+  set +e
+  out=$(run_intake "$home" exempt active-a1 \
+    --reason 'documentation: update active intake setup instructions' 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "active intake accepted a not-applicable exemption"
+  assert_contains "$out" "intake is active" "active-intake exemption refusal was unclear"
+  assert_present "$home/state/active-a1.lavish-intake-session" \
+    "active-intake exemption removed the in-progress session"
+  assert_absent "$home/state/active-a1.lavish-intake" \
+    "active-intake exemption published bypass evidence"
+  pass "Lavish intake: active sessions cannot be replaced by exemptions"
 }
 
 # A live session without submitted feedback, or a closed session carrying no
@@ -644,6 +666,7 @@ test_start_rejects_closed_task
 test_artifact_task_mismatch_refused
 test_ambiguous_classification_refuses_dispatch
 test_explicit_exemptions_require_reason
+test_exemption_rejects_active_intake
 test_absent_and_closed_without_feedback_refused
 test_malformed_captured_feedback_refused
 test_missing_intake_session_fails_closed

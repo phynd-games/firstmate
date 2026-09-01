@@ -102,6 +102,28 @@ sha256_file() {
   fi
 }
 
+lavish_session_state_path() {
+  printf '%s/state.json\n' "${LAVISH_AXI_STATE_DIR:-$HOME/.lavish-axi}"
+}
+
+lavish_session_active() {
+  local artifact=$1 state_dir state_file session_key
+  state_dir=${LAVISH_AXI_STATE_DIR:-$HOME/.lavish-axi}
+  state_file=$(lavish_session_state_path)
+  [ -d "$state_dir" ] || return 1
+  [ ! -L "$state_dir" ] || return 2
+  [ -f "$state_file" ] && [ ! -L "$state_file" ] || return 1
+  session_key=$(sha256_file "$artifact" | cut -c1-16)
+  perl -MJSON::PP -e '
+    my ($key) = @ARGV;
+    local $/;
+    my $state = eval { decode_json(<STDIN>) };
+    exit 2 unless ref($state) eq "HASH" && ref($state->{sessions}) eq "HASH";
+    my $session = $state->{sessions}{$key};
+    exit !(ref($session) eq "HASH" && ($session->{status} || "") =~ /^(?:open|feedback)$/);
+  ' "$session_key" < "$state_file"
+}
+
 receipt_path() { printf '%s/%s.lavish-intake\n' "$STATE" "$1"; }
 session_path() { printf '%s/%s.lavish-intake-session\n' "$STATE" "$1"; }
 intake_hold_path() { printf '%s/%s.lavish-intake-hold\n' "$STATE" "$1"; }
@@ -109,6 +131,36 @@ pending_path() { printf '%s/%s.lavish-intake-pending\n' "$STATE" "$1"; }
 intake_lock_path() { printf '%s/.captain-task-%s.lock\n' "$STATE" "$1"; }
 intake_source_path() { printf '%s/procevent/%s.intake\n' "$STATE" "$1"; }
 intake_source_lock_path() { printf '%s/.lavish-intake-source-%s.lock\n' "$STATE" "$1"; }
+
+intake_state_active_for_task() {
+  local task=$1 path source bound registration_task
+  for path in "$(session_path "$task")" "$(intake_hold_path "$task")" "$STATE/$task.lavish-intake-owner"; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    return 0
+  done
+  for path in "$STATE/procevent"/*.intake; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    [ -f "$path" ] && [ ! -L "$path" ] || return 0
+    [ "$(meta_value "$path" task_id)" = "$task" ] && return 0
+  done
+  for path in "$STATE/procevent"/*.source; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    [ -f "$path" ] && [ ! -L "$path" ] || return 0
+    [ "$(meta_value "$path" intake)" = 1 ] || continue
+    registration_task=$(meta_value "$path" task_id)
+    [ "$registration_task" = "$task" ] && return 0
+  done
+  for path in "$STATE/decision-bindings"/*.origin; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    source=${path##*/}
+    source=${source%.origin}
+    bound=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$source" 2>/dev/null || true)
+    if [ "$bound" = "$task" ] && "$SCRIPT_DIR/fm-captain-hold.sh" binding-intake "$source" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 meta_value() {
   local file=$1 key=$2
@@ -139,21 +191,37 @@ artifact_fields_present() {
 }
 
 validate_exemption_reason() {
-  local reason=$1 detail normalized word_count
+  local reason=$1 detail normalized first_word action target word_count meaningful_count
   validate_one_line "exemption reason" "$reason"
   case "$reason" in
     bug-fix:*|dependency:*|configuration:*|documentation:*|"behavior-preserving refactor":*) ;;
     *) fail "exemption reason must use bug-fix, dependency, configuration, documentation, or behavior-preserving refactor" ;;
   esac
   detail=${reason#*:}
+  detail=$(printf '%s' "$detail" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
   normalized=$(printf '%s' "$detail" | tr '[:upper:]' '[:lower:]')
   word_count=$(printf '%s\n' "$detail" | awk '{print NF}')
   [ "$word_count" -ge 4 ] \
     || fail "exemption reason must name a concrete target and action"
   [ "${#detail}" -ge 24 ] \
     || fail "exemption reason must name a bounded scope with sufficient detail"
-  printf '%s' "$normalized" | grep -Eiq '(^|[[:space:];,])(add|adjust|align|configure|correct|cover|disable|document|enable|exercise|fix|limit|migrate|pin|preserve|record|refactor|remove|replace|test|update|use|validate)($|[[:space:];,.])' \
-    || fail "exemption reason must name a concrete action"
+  first_word=$(printf '%s\n' "$detail" | awk '{print $1}')
+  action=$(printf '%s' "$first_word" | tr '[:upper:]' '[:lower:]')
+  case "$action" in
+    add|adjust|align|configure|correct|cover|disable|document|enable|exercise|fix|limit|migrate|pin|preserve|record|refactor|remove|replace|test|update|use|validate) ;;
+    *) fail "exemption reason must start with a concrete action" ;;
+  esac
+  target=${detail#"$first_word"}
+  meaningful_count=$(printf '%s\n' "$target" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '\n' | awk '
+    BEGIN {
+      split("a an all any and area broken change code every fix here in item misc no none of on or problem project same something stuff task that the thing this to update various whatever work", words)
+      for (i in words) ignored[words[i]]=1
+    }
+    !ignored[$0] { count++ }
+    END { print count + 0 }
+  ')
+  [ "$meaningful_count" -ge 2 ] \
+    || fail "exemption reason must name a concrete target"
   printf '%s' "$normalized" | grep -Eiq '(^|[[:space:];,])(thing|stuff|something|whatever|misc|various|item|area)($|[[:space:];,.])' \
     && fail "exemption reason must name a concrete target"
   case "${normalized//[[:space:]]/}" in
@@ -366,6 +434,7 @@ START_SOURCE_MARKER_CREATED=0
 START_SOURCE_LOCK_PATH=
 START_SOURCE_LOCK_HELD=0
 START_OK=0
+START_LAVISH_SESSION_CREATED=0
 
 RECORD_LOCK_PATH=
 RECORD_LOCK_HELD=0
@@ -476,7 +545,7 @@ start_cleanup() {
     return "$status"
   fi
   [ -z "$START_SESSION_TMP" ] || rm -f -- "$START_SESSION_TMP"
-  if [ "$START_LAVISH_SESSION_OPENED" -eq 1 ]; then
+  if [ "$START_LAVISH_SESSION_CREATED" -eq 1 ]; then
     lavish-axi end "$START_ARTIFACT" >/dev/null 2>&1 || true
   fi
   if [ "$START_SESSION_CREATED" -eq 1 ]; then
@@ -634,7 +703,7 @@ cmd_start() {
   START_HOLD_CREATED=0
   START_BINDING_CREATED=0
   START_SESSION_CREATED=0
-  START_LAVISH_SESSION_OPENED=0
+  START_LAVISH_SESSION_CREATED=0
   START_SOURCE_PREEXISTING=0
   START_SOURCE_MARKER_CREATED=0
   START_OK=0
@@ -718,8 +787,16 @@ cmd_start() {
   START_SESSION_TMP=
   START_SESSION_CREATED=1
   write_source_marker
+  if lavish_session_active "$artifact"; then
+    START_LAVISH_SESSION_CREATED=0
+  else
+    case "$?" in
+      1) START_LAVISH_SESSION_CREATED=1 ;;
+      *) fail "cannot safely determine whether the Lavish session already exists" ;;
+    esac
+  fi
   if lavish-axi "$artifact"; then
-    START_LAVISH_SESSION_OPENED=1
+    :
   else
     fail "could not establish the Lavish intake session"
   fi
@@ -865,6 +942,8 @@ cmd_exempt() {
   artifact="$STATE/$task.lavish-intake-classification"
   receipt=$(receipt_path "$task")
   mkdir -p "$STATE"
+  intake_state_active_for_task "$task" \
+    && fail "cannot record an exemption while Lavish intake is active for task $task"
   if [ -e "$receipt" ] || [ -L "$receipt" ]; then
     [ -f "$receipt" ] && [ ! -L "$receipt" ] \
       || fail "intake evidence is unsafe: $receipt"

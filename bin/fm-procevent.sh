@@ -8,7 +8,7 @@
 #   fm-procevent.sh start <source-id>
 #   fm-procevent.sh reconcile
 #   fm-procevent.sh handled <source-id> <sequence>
-#   fm-procevent.sh retire <source-id>
+#   fm-procevent.sh retire <source-id> [--expect-intake-task <task-id>]
 #   fm-procevent.sh sweep-home [--preflight]
 #   fm-procevent.sh list
 #
@@ -757,9 +757,36 @@ cmd_handled() {
 }
 
 cmd_retire() {
-  local id=${1-} owner='' pid='' token='' identity='' stop_state
+  local id=${1-} owner='' pid='' token='' identity='' stop_state expected_task='' registration marker bound unbound=0
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
+  shift || true
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --expect-intake-task)
+        [ "$#" -ge 2 ] || die "--expect-intake-task requires a task id"
+        expected_task=$2
+        fm_task_id_path_safe "$expected_task" || die "expected intake task is not path-safe: $expected_task"
+        shift 2
+        ;;
+      *) die "unknown retire argument: $1" ;;
+    esac
+  done
   fm_procevent_source_lock_acquire "$id" || die "cannot lock source: $id"
+  if [ -n "$expected_task" ]; then
+    registration=$(source_file "$id")
+    marker="$STATE/procevent/$id.intake"
+    [ -f "$registration" ] && [ ! -L "$registration" ] \
+      && [ "$(awk -F= '$1 == "adapter" { print $2; exit }' "$registration")" = lavish ] \
+      && [ "$(awk -F= '$1 == "intake" { print $2; exit }' "$registration")" = 1 ] \
+      || { fm_procevent_source_lock_release "$id"; die "current source registration is not an intake source for task $expected_task"; }
+    [ -f "$marker" ] && [ ! -L "$marker" ] \
+      && [ "$(awk -F= '$1 == "task_id" { print substr($0, length($1) + 2); exit }' "$marker")" = "$expected_task" ] \
+      && [ "$(awk -F= '$1 == "source_id" { print substr($0, length($1) + 2); exit }' "$marker")" = "$id" ] \
+      || { fm_procevent_source_lock_release "$id"; die "current intake marker is not owned by task $expected_task"; }
+    bound=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$id" 2>/dev/null || true)
+    [ "$bound" = "$expected_task" ] \
+      || { fm_procevent_source_lock_release "$id"; die "current source binding is not owned by task $expected_task"; }
+  fi
   if [ -e "$(fm_procevent_claim_path "$id")" ]; then
     if ! fm_procevent_claim_load_locked "$id" 2>/dev/null; then
       fm_procevent_source_lock_release "$id"
@@ -783,13 +810,18 @@ cmd_retire() {
       rm -f -- "$(staging_file "$id" "$token")"
     fi
   fi
+  if [ -n "$expected_task" ]; then
+    "$SCRIPT_DIR/fm-captain-hold.sh" unbind "$id" >/dev/null 2>&1 \
+      || { fm_procevent_source_lock_release "$id"; die "cannot unbind intake source: $id"; }
+    unbound=1
+  fi
   rm -f -- "$(source_file "$id")"
   rm -f -- "$(runner_file "$id")"
   fm_procevent_source_lock_release "$id"
   # A retired source produces no further answer, so drop any decision binding it
   # carried. Generic and idempotent: the binding owner is asked to forget this
   # source id, and an unbound source is unaffected.
-  "$SCRIPT_DIR/fm-captain-hold.sh" unbind "$id" >/dev/null 2>&1 || true
+  [ "$unbound" -eq 1 ] || "$SCRIPT_DIR/fm-captain-hold.sh" unbind "$id" >/dev/null 2>&1 || true
   printf 'retired: %s\n' "$id"
 }
 

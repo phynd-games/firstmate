@@ -152,14 +152,32 @@ CAPTAIN_BINDING_LOCK=
 CAPTAIN_BINDING_LOCK_HELD=0
 CAPTAIN_INTAKE_OWNER_RECORD=
 CAPTAIN_INTAKE_OWNER_TOKEN=
+CAPTAIN_INTAKE_OWNER_TASK=
+CAPTAIN_INTAKE_OWNER_REASON=
+CAPTAIN_INTAKE_OWNER_HOLD_SUCCEEDED=0
 CAPTAIN_INTAKE_OWNER_RECORD_CREATED=0
 captain_hold_cleanup() {
+  local owner_show owner_hold_kind owner_hold_reason
   if [ "$CAPTAIN_INTAKE_OWNER_RECORD_CREATED" = 1 ] \
     && [ -f "$CAPTAIN_INTAKE_OWNER_RECORD" ] \
     && [ ! -L "$CAPTAIN_INTAKE_OWNER_RECORD" ] \
     && [ "$(sed -n 's/^owner_token=//p' "$CAPTAIN_INTAKE_OWNER_RECORD" | head -1)" = "$CAPTAIN_INTAKE_OWNER_TOKEN" ]; then
-    rm -f -- "$CAPTAIN_INTAKE_OWNER_RECORD"
-    CAPTAIN_INTAKE_OWNER_RECORD_CREATED=0
+    if owner_show=$(task_show "$CAPTAIN_INTAKE_OWNER_TASK" 2>/dev/null); then
+      owner_hold_kind=$(show_field_value "$owner_show" hold_kind)
+      owner_hold_reason=$(show_field "$owner_show" hold_reason)
+      if [ "$CAPTAIN_INTAKE_OWNER_HOLD_SUCCEEDED" = 1 ] \
+        && [ "$owner_hold_kind" = captain ] \
+        && [ "$owner_hold_reason" = "$CAPTAIN_INTAKE_OWNER_REASON" ] \
+        && intake_owner_record_matches "$CAPTAIN_INTAKE_OWNER_TASK" "$CAPTAIN_INTAKE_OWNER_TOKEN" "$CAPTAIN_INTAKE_OWNER_REASON"; then
+        if tasks_axi unhold "$CAPTAIN_INTAKE_OWNER_TASK" >/dev/null 2>&1; then
+          rm -f -- "$CAPTAIN_INTAKE_OWNER_RECORD"
+          CAPTAIN_INTAKE_OWNER_RECORD_CREATED=0
+        fi
+      elif [ "$owner_hold_kind" != captain ] || [ "$owner_hold_reason" != "$CAPTAIN_INTAKE_OWNER_REASON" ]; then
+        rm -f -- "$CAPTAIN_INTAKE_OWNER_RECORD"
+        CAPTAIN_INTAKE_OWNER_RECORD_CREATED=0
+      fi
+    fi
   fi
   if [ "$CAPTAIN_TASK_LOCK_HELD" = 1 ]; then
     fm_lock_release "$CAPTAIN_TASK_LOCK" || true
@@ -518,17 +536,25 @@ command_hold() {
   if [ -n "$intake_owner" ]; then
     owner_token="${BASHPID:-$$}.$RANDOM.$RANDOM"
     owner_record=$(intake_owner_path "$id")
+    CAPTAIN_INTAKE_OWNER_TASK=$id
+    CAPTAIN_INTAKE_OWNER_REASON=$reason
     write_intake_owner_record "$id" "$owner_token" "$reason"
     CAPTAIN_INTAKE_OWNER_RECORD=$owner_record
     CAPTAIN_INTAKE_OWNER_TOKEN=$owner_token
     CAPTAIN_INTAKE_OWNER_RECORD_CREATED=1
   fi
   if [ -n "$until" ]; then
-    tasks_axi hold "$id" --reason "$reason" --kind captain --until "$until" >/dev/null \
-      || fail "could not hold task $id for the captain"
+    if tasks_axi hold "$id" --reason "$reason" --kind captain --until "$until" >/dev/null; then
+      CAPTAIN_INTAKE_OWNER_HOLD_SUCCEEDED=1
+    else
+      fail "could not hold task $id for the captain"
+    fi
   else
-    tasks_axi hold "$id" --reason "$reason" --kind captain >/dev/null \
-      || fail "could not hold task $id for the captain"
+    if tasks_axi hold "$id" --reason "$reason" --kind captain >/dev/null; then
+      CAPTAIN_INTAKE_OWNER_HOLD_SUCCEEDED=1
+    else
+      fail "could not hold task $id for the captain"
+    fi
   fi
   show=$(task_show "$id") || fail "task $id disappeared while holding it"
   hold_kind=$(show_field_value "$show" hold_kind)

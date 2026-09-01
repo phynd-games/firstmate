@@ -23,7 +23,8 @@ A bug report that expands behavior, changes product intent, or leaves classifica
 
 Record an exemption with `bin/fm-lavish-intake.sh exempt <task-id> --reason '<class>: <bounded scope>'`.
 The class must be one of `bug-fix`, `dependency`, `configuration`, `documentation`, or `behavior-preserving refactor`, and the scope must be concrete rather than a generic bypass.
-The scope must name a target and an action with sufficient detail, such as `documentation: update setup section for intake command; no behavior change`.
+The scope must start with a concrete action and name at least two specific target terms with sufficient detail, such as `documentation: update setup section for intake command; no behavior change`.
+Do not use vague targets such as "the broken code", "this project", "various work", or "skip" in an exemption reason.
 Never infer not-applicable from a missing artifact, a small diff, a file path, or a familiar task name.
 
 ## Required intake
