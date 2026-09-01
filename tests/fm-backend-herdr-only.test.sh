@@ -118,6 +118,17 @@ test_legacy_lane_requires_test_world() {
   pass "retained-adapter activation requires a test-world override"
 }
 
+test_legacy_lane_runs_only_in_test_world() {
+  local home="$TMP_ROOT/trusted-lane-home"
+  mkdir -p "$home/config"
+  printf 'tmux\n' > "$home/config/backend"
+  run_capture trusted-lane lib_probe "FM_HOME=$home" FM_ROOT_OVERRIDE="$home" \
+    FM_BACKEND_LEGACY_TEST_LANE=1 -- 'fm_backend_policy_permits tmux'
+  [ "$RC" -eq 0 ] || fail "the selected legacy lane must permit retained adapters in a test world: rc=$RC out=$OUT err=$ERR"
+  [ -z "$OUT" ] || fail "the legacy lane predicate should not print output"
+  pass "retained-adapter conformance is reachable only in the selected test world"
+}
+
 test_name_refuses_absent_or_empty_config() {
   local config="$TMP_ROOT/absent-config"
   mkdir -p "$config"
@@ -445,6 +456,34 @@ test_stable_operation_uses_supported_command() {
   [ "$RC" -eq 0 ] || fail "supported Herdr pane operation should succeed: rc=$RC out=$OUT err=$ERR"
   [ "$OUT" = "pane send-text pane1" ] || fail "stable operation invoked an unsupported or malformed command: $OUT"
   pass "stable Herdr operations use the documented pane command"
+}
+
+test_malformed_herdr_targets_are_typed_failures() {
+  local operation
+  for operation in agent_state composer_state; do
+    run_capture "malformed-$operation" lib_probe -- \
+      ". \"\$FM_BACKEND_LIB_DIR/backends/herdr.sh\"; fm_backend_herdr_$operation malformed"
+    [ "$RC" -eq 2 ] && [ -z "$OUT" ] \
+      || fail "$operation must refuse a malformed target without neutral output: rc=$RC out=$OUT"
+  done
+  run_capture malformed-send-submit lib_probe -- \
+    '. "$FM_BACKEND_LIB_DIR/backends/herdr.sh"; fm_backend_herdr_send_text_submit malformed text 1 0 0'
+  [ "$RC" -eq 2 ] && [ -z "$OUT" ] \
+    || fail "send_text_submit must refuse a malformed target without neutral output: rc=$RC out=$OUT"
+  pass "malformed Herdr targets fail closed across agent, composer, and submit paths"
+}
+
+test_task_creation_refuses_malformed_tab_inventory() {
+  local marker="$TMP_ROOT/task-tab-inventory"
+  run_capture malformed-task-tabs lib_probe "TASK_MARKER=$marker" -- '
+    . "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+    fm_backend_herdr_cli() { : > "$TASK_MARKER"; printf "%s" "{\"result\":{\"tabs\":[{\"tab_id\":7}]}}"; }
+    fm_backend_herdr_create_task fmtest:w1 fm-task /tmp
+  '
+  [ "$RC" -eq 2 ] && [ -z "$OUT" ] || fail "malformed task tab inventory must refuse before creation: rc=$RC out=$OUT"
+  [ -e "$marker" ] || fail "task inventory fixture did not run"
+  assert_contains "$ERR" "REFUSED: " "malformed task inventory must preserve the policy refusal"
+  pass "task creation refuses malformed Herdr tab inventory before mutation"
 }
 
 test_projection_recovery_inventory_failure_refuses() {
@@ -1156,6 +1195,7 @@ test_bootstrap_reports_the_policy_diagnostic() {
 
 test_known_sets_are_herdr_only
 test_legacy_lane_requires_test_world
+test_legacy_lane_runs_only_in_test_world
 test_name_refuses_absent_or_empty_config
 test_name_refuses_every_non_herdr_config_value
 test_name_refuses_every_non_herdr_fm_backend_value
@@ -1174,6 +1214,8 @@ test_pane_presence_requires_complete_identity
 test_shared_pane_identity_boundary_is_typed_and_fail_closed
 test_stable_operation_refuses_when_identity_precheck_fails
 test_stable_operation_uses_supported_command
+test_malformed_herdr_targets_are_typed_failures
+test_task_creation_refuses_malformed_tab_inventory
 test_projection_recovery_inventory_failure_refuses
 test_send_preserves_empty_native_failure_status
 test_pane_presence_not_found_is_idempotently_dead

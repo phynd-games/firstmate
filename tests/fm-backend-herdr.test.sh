@@ -1625,7 +1625,8 @@ SH
 }
 
 death_process_info_fixture() {  # <pane> <pid>
-  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"zsh","argv0":"zsh"}]}}}\n' "$1" "$2" "$2" "$2"
+  local workspace=${1%%:*} tab_number=${1##*:}
+  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","workspace_id":"%s","tab_id":"%s:t%s","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"zsh","argv0":"zsh"}]}}}\n' "$1" "$workspace" "$workspace" "${tab_number#p}" "$2" "$2" "$2"
 }
 
 test_projection_close_emptying_after_focus_uses_pane_death_without_move() {
@@ -1926,7 +1927,7 @@ test_projection_close_busy_pane_falls_back_to_plain_close() {
   cp "$resp/1.out" "$resp/6.out"
   sleep 300 & bgpid=$!
   # The pane still has a foreground agent, so the idle-shell proof refuses.
-  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p2","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"zsh","argv0":"zsh"},{"pid":99999,"name":"pi","argv0":"pi"}]}}}\n' "$bgpid" "$bgpid" "$bgpid" > "$resp/7.out"
+  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p2","workspace_id":"w2","tab_id":"w2:t2","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"zsh","argv0":"zsh"},{"pid":99999,"name":"pi","argv0":"pi"}]}}}\n' "$bgpid" "$bgpid" "$bgpid" > "$resp/7.out"
   cp "$resp/3.out" "$resp/8.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/10.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/11.out"
@@ -1961,7 +1962,7 @@ test_projection_close_transient_prompt_helper_settles_then_uses_pane_death() {
   sleep 300 & bgpid=$!
   # Sample 1: the shell is transiently redrawing its prompt (real 0.7.5 shape:
   # a helper such as starship rides along as a second foreground process).
-  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p2","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":99998,"name":"starship","argv":["/usr/local/bin/starship","prompt","--continuation"]},{"pid":%s,"name":"zsh","argv0":"zsh"}]}}}\n' "$bgpid" "$bgpid" "$bgpid" > "$resp/7.out"
+  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p2","workspace_id":"w2","tab_id":"w2:t2","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":99998,"name":"starship","argv":["/usr/local/bin/starship","prompt","--continuation"]},{"pid":%s,"name":"zsh","argv0":"zsh"}]}}}\n' "$bgpid" "$bgpid" "$bgpid" > "$resp/7.out"
   # Sample 2: the helper finished; the shell is provably alone and idle.
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/8.out"
   cp "$resp/3.out" "$resp/9.out"
@@ -2117,14 +2118,7 @@ test_projection_close_death_never_sigkills_a_reused_pid() {
   death_process_info_fixture w2:p2 "$bgpid" > "$resp/9.out"
   cp "$resp/3.out" "$resp/10.out"  # SIGHUP poll 1: pane still present
   cp "$resp/3.out" "$resp/11.out"  # SIGHUP poll 2: pane still present
-  cp "$resp/3.out" "$resp/12.out"  # strict pane recheck before escalation
-  cp "$resp/3.out" "$resp/13.out"  # escalation presence proof
-  death_process_info_fixture w2:p2 99997 > "$resp/14.out"
-  cp "$resp/3.out" "$resp/15.out" # fallback explicit close: exact pane precheck
-  : > "$resp/16.out"
-  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/17.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/18.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/19.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/12.out" # rebound pane fails exact proof
   make_death_lab "$dir" "$bgpid"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -2139,9 +2133,9 @@ test_projection_close_death_never_sigkills_a_reused_pid() {
     fail "the SIGKILL escalation signaled a pid the exact pane no longer owns"
   fi
   kill -KILL "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
-  [ "$status" -eq 0 ] || fail "the refused escalation should fall back to the plain close: $out"
-  assert_contains "$(cat "$log")" $'pane\x1fclose\x1fw2:p2' "the refused escalation did not fall back to the plain close"
-  pass "herdr presentation cleanup: SIGKILL never reaches a pid the exact pane no longer owns"
+  [ "$status" -ne 0 ] || fail "a rebound pane must refuse escalation: $out"
+  assert_not_contains "$(cat "$log")" $'pane\x1fclose\x1fw2:p2' "the refused escalation fell through to an explicit close"
+  pass "herdr presentation cleanup: rebound pane identity refuses SIGKILL before mutation"
 }
 
 assert_projection_close_failed_removal_rolls_back_the_reposition() {

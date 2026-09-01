@@ -19,7 +19,7 @@
 #                                   stay on disk but are unreachable for the
 #                                   active runtime (removal plan:
 #                                   docs/architecture.md "Runtime session backends")
-#   fm_backend_policy_legacy_lane   always-disabled retained-adapter predicate
+#   fm_backend_policy_legacy_lane   hermetic retained-adapter predicate
 #   fm_backend_policy_permits       whether <name> may be dispatched here
 #   fm_backend_policy_is_retained   whether <name> is a retained legacy adapter
 #   fm_backend_policy_refuse        the one refusal diagnostic
@@ -38,7 +38,9 @@ FM_BACKEND_ACTIVE="herdr"
 FM_BACKEND_RETAINED_LEGACY="tmux zellij orca cmux"
 
 fm_backend_policy_legacy_lane() {
-  return 1
+  [ "${FM_BACKEND_LEGACY_TEST_LANE:-}" = 1 ] || return 1
+  [ -n "${FM_STATE_OVERRIDE:-}" ] || [ -n "${FM_CONFIG_OVERRIDE:-}" ] \
+    || [ -n "${FM_ROOT_OVERRIDE:-}" ]
 }
 
 fm_backend_policy_legacy_adapter_allowed() {
