@@ -23,7 +23,7 @@ A bug report that expands behavior, changes product intent, or leaves classifica
 
 Record an exemption with `bin/fm-lavish-intake.sh exempt <task-id> --reason '<class>: target=<path-like subject>; action=<specific multiword change>'`.
 The class must be one of `bug-fix`, `dependency`, `configuration`, `documentation`, or `behavior-preserving refactor`, and the scope must be concrete rather than a generic bypass.
-The target must include a bounded path-like subject and at least three meaningful terms, and the action must contain at least three meaningful terms describing a specific change, such as `documentation: target=docs/lavish-feature-intake.md setup section; action=update intake command instructions`.
+The target must include a bounded path-like subject and at least three meaningful terms, and the action must contain multiple meaningful non-stopword terms describing a specific change, such as `documentation: target=docs/lavish-feature-intake.md setup section; action=update intake command instructions`.
 Do not use vague or placeholder targets such as "the broken code", "this project", "foo", "bar", "stuff", "now", "safely", "various work", or "skip" in an exemption reason.
 Never infer not-applicable from a missing artifact, a small diff, a file path, or a familiar task name.
 

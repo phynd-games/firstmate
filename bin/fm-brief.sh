@@ -46,7 +46,8 @@
 # --intake and --not-applicable are mutually exclusive. A new ship or scout
 # brief without either carries a required gate and cannot be dispatched.
 # --not-applicable requires a reason in the form <class>: target=<path-like
-# subject>; action=<specific multiword change>, such as "documentation:
+# subject>; action=<specific concrete change with multiple meaningful terms>,
+# such as "documentation:
 # target=docs/lavish-feature-intake.md setup section; action=update intake
 # command instructions",
 # where the class is bug-fix, dependency, configuration, documentation, or

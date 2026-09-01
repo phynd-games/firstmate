@@ -5,7 +5,7 @@
 #   fm-lavish-intake.sh template <task-id> --output <artifact.html>
 #   fm-lavish-intake.sh start <task-id> --artifact <artifact.html> [--reason <text>]
 #   fm-lavish-intake.sh record <task-id> --artifact <artifact.html> --result <result>
-#   fm-lavish-intake.sh exempt <task-id> --reason '<class>: target=<path-like subject>; action=<specific multiword change>'
+#   fm-lavish-intake.sh exempt <task-id> --reason '<class>: target=<path-like subject>; action=<specific concrete change>'
 #   fm-lavish-intake.sh verify <task-id> [--evidence <receipt>]
 #   fm-lavish-intake.sh check-brief <task-id> <brief.md>
 #
@@ -272,8 +272,25 @@ $html =~ s/<!--.*?-->//gs;
 $html =~ /<html\b[^>]*\bdata-lavish-intake\s*=\s*[\"']v1[\"']/i
   or reject 'artifact is not a Lavish intake v1 surface';
 
+my $active_html = '';
+my $inert_depth = 0;
+my $cursor = 0;
+while ($html =~ m{<template\b[^>]*>|</template\s*>|<noscript\b[^>]*>|</noscript\s*>}gis) {
+  my $token = lc($&);
+  my ($start, $end) = ($-[0], $+[0]);
+  if ($token =~ m{^<(?:template|noscript)\b}) {
+    $active_html .= substr($html, $cursor, $start - $cursor) if $inert_depth == 0;
+    $inert_depth++;
+    $cursor = $end;
+  } elsif ($inert_depth > 0) {
+    $inert_depth--;
+    $cursor = $end;
+  }
+}
+$active_html .= substr($html, $cursor) if $inert_depth == 0;
+
 my @forms;
-while ($html =~ m{<form\b([^>]*)>(.*?)</form\s*>}gis) {
+while ($active_html =~ m{<form\b([^>]*)>(.*?)</form\s*>}gis) {
   my ($attrs, $body) = ($1, $2);
   next unless attr_equals($attrs, 'id', 'feature-intake');
   next unless attr_equals($attrs, 'data-lavish-question', $task);
@@ -407,7 +424,7 @@ NODE
 }
 
 validate_exemption_reason() {
-  local reason=$1 detail normalized target action action_detail first_word target_words action_words meaningful_count
+  local reason=$1 detail normalized target action action_detail first_word target_words action_words meaningful_count action_meaningful_count
   validate_one_line "exemption reason" "$reason"
   case "$reason" in
     bug-fix:*|dependency:*|configuration:*|documentation:*|"behavior-preserving refactor":*) ;;
@@ -431,6 +448,16 @@ validate_exemption_reason() {
   action_words=$(printf '%s\n' "$action_detail" | awk '{print NF}')
   [ "$target_words" -ge 2 ] && [ "$action_words" -ge 3 ] \
     || fail "exemption reason must name a concrete target and action"
+  action_meaningful_count=$(printf '%s\n' "$action_detail" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '\n' | awk '
+    BEGIN {
+      split("a an and are as at by for from in into is it no not of on or promptly safely skip the this to update with without behavior code docs documentation fix project stuff", words)
+      for (i in words) ignored[words[i]]=1
+    }
+    !ignored[$0] { count++ }
+    END { print count + 0 }
+  ')
+  [ "$action_meaningful_count" -ge 2 ] \
+    || fail "exemption reason must name a specific action with multiple meaningful terms"
   first_word=$(printf '%s\n' "$action_detail" | awk '{print $1}')
   action=$(printf '%s' "$first_word" | tr '[:upper:]' '[:lower:]')
   case "$action" in

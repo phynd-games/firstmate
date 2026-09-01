@@ -204,6 +204,27 @@ PY
   [ "$rc" -ne 0 ] || fail "dead intake markers were accepted"
   assert_contains "$out" "executable intake" \
     "dead intake markers did not fail semantic validation"
+  for inert in template noscript; do
+    candidate=$home/inert-$inert-form.html
+    python3 - "$artifact" "$candidate" "$inert" <<'PY'
+from pathlib import Path
+import sys
+
+source, output, mode = sys.argv[1:]
+html = Path(source).read_text()
+start = html.index('<form id="feature-intake"')
+end = html.index('</form>', start) + len('</form>')
+html = html[:start] + f'<{mode}>' + html[start:end] + f'</{mode}>' + html[end:]
+Path(output).write_text(html)
+PY
+    set +e
+    out=$(run_intake "$home" start feature-a1 --artifact "$candidate" 2>&1)
+    rc=$?
+    set -e
+    [ "$rc" -ne 0 ] || fail "inert $inert intake form was accepted"
+    assert_contains "$out" "no keyed intake question" \
+      "inert $inert form refusal was unclear"
+  done
   for inert in text-plain template; do
     candidate=$home/inert-$inert.html
     python3 - "$artifact" "$candidate" "$inert" <<'PY'
@@ -374,6 +395,7 @@ test_explicit_exemptions_require_reason() {
     'exemption-invalid-documentation|documentation: update thing here now'
     'exemption-invalid-placeholders|configuration: target=foo bar; action=update now safely'
     'exemption-invalid-generic-target|configuration: target=backend behavior; action=update source'
+    'exemption-invalid-generic-action|documentation: target=docs/api README section; action=update the docs'
   )
   for entry in "${invalid_reasons[@]}"; do
     id=${entry%%|*}
