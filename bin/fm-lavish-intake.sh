@@ -187,19 +187,82 @@ require_unique_meta() {
 }
 
 artifact_fields_present() {
-  local artifact=$1 task=$2 field
-  grep -Fq 'data-lavish-intake="v1"' "$artifact" \
-    || fail "artifact is not a Lavish intake v1 surface"
-  grep -Fq 'data-lavish-intake-submit="true"' "$artifact" \
-    || fail "artifact has no explicit intake submit control"
-  grep -Fq 'window.lavish.queuePrompt' "$artifact" \
-    || fail "artifact has no captured Lavish feedback call"
-  grep -Fq "data-lavish-question=\"$task\"" "$artifact" \
-    || fail "artifact has no keyed intake question"
-  for field in $FIELDS; do
-    grep -Fq "data-lavish-intake-field=\"$field\"" "$artifact" \
-      || fail "artifact is missing required field: $field"
-  done
+  local artifact=$1 task=$2 contract_error
+  if ! contract_error=$(perl - "$artifact" "$task" "$FIELDS" 2>&1 <<'PERL'
+use strict;
+use warnings;
+
+my ($path, $task, $field_text) = @ARGV;
+open my $handle, '<', $path or do {
+  print STDERR "cannot read intake artifact\n";
+  exit 1;
+};
+local $/;
+my $html = <$handle>;
+
+sub reject {
+  print STDERR "$_[0]\n";
+  exit 1;
+}
+
+sub attr_equals {
+  my ($attrs, $name, $value) = @_;
+  return $attrs =~ /(?:^|\s)\Q$name\E\s*=\s*[\"']\Q$value\E[\"']/i;
+}
+
+sub attr_present {
+  my ($attrs, $name) = @_;
+  return $attrs =~ /(?:^|\s)\Q$name\E(?:\s|=|$)/i;
+}
+
+$html =~ s/<!--.*?-->//gs;
+$html =~ /<html\b[^>]*\bdata-lavish-intake\s*=\s*[\"']v1[\"']/i
+  or reject 'artifact is not a Lavish intake v1 surface';
+
+my @forms;
+while ($html =~ m{<form\b([^>]*)>(.*?)</form\s*>}gis) {
+  my ($attrs, $body) = ($1, $2);
+  next unless attr_equals($attrs, 'id', 'feature-intake');
+  next unless attr_equals($attrs, 'data-lavish-question', $task);
+  push @forms, $body;
+}
+@forms == 1 or reject 'artifact has no keyed intake question';
+my $form = $forms[0];
+
+my @submit_controls;
+while ($form =~ m{<(?:button|input)\b([^>]*)>}gis) {
+  my $attrs = $1;
+  next unless attr_equals($attrs, 'data-lavish-intake-submit', 'true');
+  next unless attr_equals($attrs, 'type', 'submit');
+  push @submit_controls, $attrs;
+}
+@submit_controls == 1 or reject 'artifact has no explicit intake submit control';
+
+my @textareas = ($form =~ m{<textarea\b([^>]*)>}gis);
+for my $field (split /\s+/, $field_text) {
+  my @matches = grep {
+    attr_equals($_, 'name', $field)
+      && attr_equals($_, 'data-lavish-intake-field', $field)
+      && attr_present($_, 'required')
+  } @textareas;
+  @matches == 1 or reject "artifact is missing required field: $field";
+}
+
+my @scripts = ($html =~ m{<script\b[^>]*>(.*?)</script\s*>}gis);
+my $script = join "\n", @scripts;
+$script =~ s{/\*.*?\*/}{}gs;
+$script =~ s{//[^\r\n]*}{}g;
+$script =~ /document\s*\.\s*querySelector\s*\(\s*[\"']#feature-intake[\"']\s*\)/s
+  or reject 'artifact has no executable intake form binding';
+$script =~ /form\s*\.\s*addEventListener\s*\(\s*[\"']submit[\"']\s*,.*?
+  event\s*\.\s*preventDefault\s*\(\s*\).*?
+  window\s*\.\s*lavish\s*\.\s*queuePrompt\s*\(.*?
+  data\s*:\s*\{/sx
+  or reject 'artifact has no executable intake submit listener';
+PERL
+  ); then
+    fail "$contract_error"
+  fi
 }
 
 validate_exemption_reason() {
@@ -243,8 +306,8 @@ validate_exemption_reason() {
   ')
   [ "$meaningful_count" -ge 2 ] \
     || fail "exemption reason must name a concrete target"
-  normalized=$(printf '%s %s' "$target" "$action_detail" | tr '[:upper:]' '[:lower:]')
-  printf '%s' "$normalized" | grep -Eiq '(^|[[:space:];,])(foo|bar|code|project|stuff|now|safely|thing|something|whatever|misc|various|item|area)($|[[:space:];,.])' \
+  normalized=$(printf '%s %s' "$target" "$action_detail" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' ' ')
+  printf '%s' "$normalized" | grep -Eiq '(^|[[:space:]])(foo|bar|code|project|stuff|now|safely|thing|something|whatever|misc|various|item|area)($|[[:space:]])' \
     && fail "exemption reason must name a concrete target"
   case "${normalized//[[:space:]]/}" in
     skip|none|na|n/a|not-applicable|notapplicable|todo|tbd|placeholder|nothing|something|whatever|misc|various) \

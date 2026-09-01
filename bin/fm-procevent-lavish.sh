@@ -367,20 +367,14 @@ lavish_intake_result() {
 }
 
 cmd_terminal() {
-  local file=${1-} classification content_rc
+  local file=${1-} classification
   [ -n "$file" ] || usage
   [ -f "$file" ] || die "result file does not exist: $file"
   classification=$(cmd_classify "$file")
   if lavish_intake_result "$file"; then
     case "$classification" in
       feedback) return 1 ;;
-      ended)
-        result_has_queued_content "$file"
-        content_rc=$?
-        if [ "$content_rc" -eq 0 ] || [ "$content_rc" -eq 2 ]; then
-          return 1
-        fi
-        ;;
+      ended) return 1 ;;
       missing) return 0 ;;
       *) return 1 ;;
     esac
@@ -433,6 +427,7 @@ cmd_silent() {
   local file=${1-} content_rc
   [ -n "$file" ] || usage
   [ -f "$file" ] && [ ! -L "$file" ] || die "result file does not exist: $file"
+  lavish_intake_result "$file" && return 1
   [ "$(cmd_classify "$file")" = ended ] || return 1
   result_has_queued_content "$file"
   content_rc=$?

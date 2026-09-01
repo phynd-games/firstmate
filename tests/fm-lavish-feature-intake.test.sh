@@ -132,13 +132,13 @@ fields = "product_goal intended_users use_cases scope non_goals constraints visu
 parts = [
     '<!doctype html>',
     '<html data-lavish-intake="v1"><body>',
-    f'<form data-lavish-question="{task}">',
+    f'<form id="feature-intake" data-lavish-question="{task}">',
 ]
 for field in fields:
     if field != missing:
-        parts.append(f'<textarea data-lavish-intake-field="{field}"></textarea>')
+        parts.append(f'<textarea name="{field}" data-lavish-intake-field="{field}" required></textarea>')
 parts.extend([
-    '<button data-lavish-intake-submit="true"></button>',
+    '<button type="submit" data-lavish-intake-submit="true"></button>',
     '<script>window.lavish.queuePrompt("fixture");</script>',
     '</form></body></html>',
 ])
@@ -173,6 +173,34 @@ test_required_categories_and_static_refusal() {
   set -e
   [ "$rc" -ne 0 ] || fail "static HTML started as intake"
   assert_contains "$out" "not a Lavish intake v1 surface" "static refusal did not identify missing intake surface"
+  candidate=$home/dead-markers.html
+  python3 - "$candidate" <<'PY'
+from pathlib import Path
+import sys
+
+output = Path(sys.argv[1])
+fields = "product_goal intended_users use_cases scope non_goals constraints visual_product_references key_choices acceptance_criteria open_questions".split()
+parts = [
+    '<html data-lavish-intake="v1"><body>',
+    '<!-- data-lavish-intake-submit="true" window.lavish.queuePrompt -->',
+    '<form id="feature-intake" data-lavish-question="feature-a1">',
+]
+for field in fields:
+    parts.append(f'<textarea name="{field}" data-lavish-intake-field="{field}" required></textarea>')
+parts.extend([
+    '<button type="submit" data-lavish-intake-submit="true">Submit</button>',
+    '<script>const unused = "form.addEventListener submit event.preventDefault window.lavish.queuePrompt data: {";</script>',
+    '</form></body></html>',
+])
+output.write_text("\n".join(parts) + "\n")
+PY
+  set +e
+  out=$(run_intake "$home" start feature-a1 --artifact "$candidate" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "dead intake markers were accepted"
+  assert_contains "$out" "executable intake" \
+    "dead intake markers did not fail semantic validation"
   pass "Lavish intake: required categories and static artifacts are enforced"
 }
 
@@ -401,6 +429,10 @@ test_absent_and_closed_without_feedback_refused() {
     "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
   fixture_for "$home" feature-a1 ended
   run_process_event "$home" "$sid" >/dev/null
+  assert_present "$home/state/procevent/$sid.source" \
+    "empty ended intake source was retired before valid feedback"
+  assert_absent "$home/state/procevent-inbox/$sid.1.handled" \
+    "empty ended intake was silently acknowledged"
   set +e
   out=$(run_intake "$home" record feature-a1 --artifact "$artifact" \
     --result "$home/state/procevent-inbox/$sid.1.result" 2>&1)
