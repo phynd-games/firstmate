@@ -47,6 +47,14 @@ write_brief() {  # <home> <id> [<recorded-mode>]
     printf 'You are a crewmate.\n\n# Definition of done\n'
     [ -z "$mode" ] || printf 'Delivery contract: mode=%s\n' "$mode"
   } > "$home/data/$id/brief.md"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-lavish-intake.sh" exempt "$id" \
+      --reason 'delivery contract behavior test fixture' >/dev/null
+  cat >> "$home/data/$id/brief.md" <<EOF
+Lavish intake contract: not-applicable
+Lavish intake evidence: $home/state/$id.lavish-intake
+Lavish intake reason: delivery contract behavior test fixture
+EOF
 }
 
 run_spawn() {  # <home> <fakebin> <spawn-args...>
@@ -207,7 +215,9 @@ test_promote_requires_and_records_the_delivery_contract() {
   meta="$home/state/promote-d1.meta"
 
   write_scout_meta() {
-    printf 'window=fm-promote-d1\nkind=scout\nworktree=/tmp/wt\n' > "$meta"
+    mkdir -p "$home/data/promote-d1"
+    printf 'legacy scout brief\n' > "$home/data/promote-d1/brief.md"
+    printf 'window=fm-promote-d1\nendpoint_task_id=promote-d1\nkind=scout\nworktree=/tmp/wt\nproject=/tmp/project\nharness=claude\n' > "$meta"
   }
 
   write_scout_meta
@@ -226,6 +236,13 @@ test_promote_requires_and_records_the_delivery_contract() {
   status=$?
   [ "$status" -ne 0 ] || fail "promotion on a conditional policy should exit non-zero"
   assert_contains "$out" "classify this task's surface" "promote did not refuse the conditional policy as a task mode"
+
+  rm -f "$home/data/promote-d1/brief.md"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-d1 --mode direct-PR --yolo on 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "promotion without a brief should exit non-zero"
+  assert_contains "$out" "brief is missing" "missing-brief promotion refusal was unclear"
+  write_scout_meta
 
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-d1 --mode direct-PR --yolo on 2>&1)
   status=$?

@@ -4,7 +4,7 @@
 # durable wakes.
 #
 # Usage:
-#   fm-procevent.sh register <adapter> <source-id> -- <argv>...
+#   fm-procevent.sh register <adapter> <source-id> [--intake] -- <argv>...
 #   fm-procevent.sh start <source-id>
 #   fm-procevent.sh reconcile
 #   fm-procevent.sh handled <source-id> <sequence>
@@ -224,6 +224,13 @@ lavish_intake_source_marker() {
   [ -e "$marker" ] || [ -L "$marker" ]
 }
 
+lavish_intake_registration() {
+  [ "$1" = lavish ] || return 1
+  local registration="$REG/$2.source"
+  [ -f "$registration" ] && [ ! -L "$registration" ] || return 1
+  grep -qx 'intake=1' "$registration"
+}
+
 read_adapter() {  # <source-id>
   local f; f=$(source_file "$1")
   [ -f "$f" ] && [ ! -L "$f" ] || return 1
@@ -247,8 +254,15 @@ read_argv() {  # <source-id>
 }
 
 cmd_register() {
-  local adapter=${1-} id=${2-} sep=${3-}
-  shift 3 2>/dev/null || usage
+  local adapter=${1-} id=${2-} sep intake=0
+  [ "$#" -ge 3 ] || usage
+  shift 2
+  if [ "${1:-}" = --intake ]; then
+    intake=1
+    shift
+  fi
+  sep=${1-}
+  shift
   fm_procevent_adapter_valid "$adapter" || die "adapter name must be lowercase alphanumeric or dash: $adapter"
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe and at most 64 characters: $id"
   [ "$sep" = -- ] || usage
@@ -259,7 +273,7 @@ cmd_register() {
   done
   [ -f "$(adapter_script "$adapter")" ] || die "no installed adapter for: $adapter"
   fm_procevent_source_lock_acquire "$id" || die "cannot lock the source"
-  if ! fm_procevent_registration_publish_locked "$STATE" "$adapter" "$id" "$@"; then
+  if ! fm_procevent_registration_publish_locked "$STATE" "$adapter" "$id" "$intake" "$@"; then
     fm_procevent_source_lock_release "$id"
     die "cannot publish the registration"
   fi
@@ -465,7 +479,8 @@ cmd_start() {
 
   # Independent of publication and acknowledgement, so it runs once per capture
   # for every adapter and cannot change what the handler receives.
-  if lavish_intake_source_marker "$adapter" "$id"; then
+  if lavish_intake_registration "$adapter" "$id" \
+    || lavish_intake_source_marker "$adapter" "$id"; then
     :
   elif feed_keyed_answers "$adapter" "$id" "$durable"; then
     printf 'answers-fed: %s\n' "$id"

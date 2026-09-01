@@ -306,6 +306,7 @@ test_missing_intake_session_fails_closed() {
     "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
   fixture_for "$home" missing-session-a1
   rm -f "$home/state/missing-session-a1.lavish-intake-session"
+  rm -f "$home/state/procevent/$sid.intake"
   run_process_event "$home" "$sid" >/dev/null
   result=$home/state/procevent-inbox/$sid.1.result
   set +e
@@ -314,7 +315,7 @@ test_missing_intake_session_fails_closed() {
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "missing intake session fell back to legacy answer routing"
-  assert_contains "$out" "no active session" "missing-session refusal was unclear"
+  assert_contains "$out" "source marker is missing" "missing-marker refusal was unclear"
   (cd "$home" && tasks-axi show missing-session-a1 --full) | grep -Fq 'hold_kind: captain' \
     || fail "missing intake session released the held task"
   pass "Lavish intake: missing sessions fail closed"

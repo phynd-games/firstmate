@@ -2162,7 +2162,10 @@ test_secondmate_promotion_uses_teardown_parent_resolution() {
     "$stale/state/public-followup/registry/pf-stale"
 
   fm_write_meta "$child/state/promote-conflict.meta" \
-    "window=firstmate:fm-promote-conflict" "kind=scout"
+    "window=firstmate:fm-promote-conflict" "endpoint_task_id=promote-conflict" \
+    "kind=scout" "worktree=/tmp/promote-conflict" "project=/tmp/promote-conflict" "harness=claude"
+  mkdir -p "$child/data/promote-conflict"
+  printf 'legacy scout brief\n' > "$child/data/promote-conflict/brief.md"
   out=$(PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
     FM_STATE_OVERRIDE="$child/state" FM_PUBLIC_FOLLOWUP_PRIMARY_HOME="$parent" \
     "$PROMOTE" promote-conflict --mode local-only --yolo off 2>&1) \
@@ -2176,7 +2179,10 @@ test_secondmate_promotion_uses_teardown_parent_resolution() {
 
   rm -f "$child/.fm-secondmate-parent"
   fm_write_meta "$child/state/promote-legacy.meta" \
-    "window=firstmate:fm-promote-legacy" "kind=scout"
+    "window=firstmate:fm-promote-legacy" "endpoint_task_id=promote-legacy" \
+    "kind=scout" "worktree=/tmp/promote-legacy" "project=/tmp/promote-legacy" "harness=claude"
+  mkdir -p "$child/data/promote-legacy"
+  printf 'legacy scout brief\n' > "$child/data/promote-legacy/brief.md"
   out=$(PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
     FM_STATE_OVERRIDE="$child/state" FM_PUBLIC_FOLLOWUP_PRIMARY_HOME="$parent" \
     "$PROMOTE" promote-legacy --mode local-only --yolo off 2>&1) \
@@ -2192,7 +2198,10 @@ test_secondmate_promotion_uses_teardown_parent_resolution() {
     > "$remote_child/.fm-secondmate-parent"
   printf 'FMX_PAIRING_TOKEN=child-local-token\n' > "$remote_child/.env"
   fm_write_meta "$remote_child/state/promote-remote.meta" \
-    "window=firstmate:fm-promote-remote" "kind=scout"
+    "window=firstmate:fm-promote-remote" "endpoint_task_id=promote-remote" \
+    "kind=scout" "worktree=/tmp/promote-remote" "project=/tmp/promote-remote" "harness=claude"
+  mkdir -p "$remote_child/data/promote-remote"
+  printf 'legacy scout brief\n' > "$remote_child/data/promote-remote/brief.md"
   out=$(PATH="$remote_child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$remote_child" \
     FM_STATE_OVERRIDE="$remote_child/state" \
     "$PROMOTE" promote-remote --mode local-only --yolo off 2>&1) \

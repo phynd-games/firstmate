@@ -114,10 +114,10 @@ META_LOCK_HELD=1
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
 BRIEF="$FM_HOME/data/$ID/brief.md"
-if [ -f "$BRIEF" ]; then
-  "$FM_ROOT/bin/fm-lavish-intake.sh" check-brief "$ID" "$BRIEF" >/dev/null \
-    || { echo "error: scout $ID cannot be promoted: Lavish intake contract is not satisfied" >&2; exit 1; }
-fi
+[ -f "$BRIEF" ] && [ ! -L "$BRIEF" ] \
+  || { echo "error: scout $ID cannot be promoted: brief is missing" >&2; exit 1; }
+"$FM_ROOT/bin/fm-lavish-intake.sh" check-brief "$ID" "$BRIEF" >/dev/null \
+  || { echo "error: scout $ID cannot be promoted: Lavish intake contract is not satisfied" >&2; exit 1; }
 
 TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
 grep -v -e '^kind=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"

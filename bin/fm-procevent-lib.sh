@@ -93,9 +93,10 @@ fm_procevent_source_lock_release() {
   fm_lock_release "$(fm_procevent_source_lock_path "$1")"
 }
 
-fm_procevent_registration_publish_locked() {  # <state> <adapter> <source-id> <argv...>
-  local state=$1 adapter=$2 id=$3 reg dest tmp arg
-  shift 3
+fm_procevent_registration_publish_locked() {  # <state> <adapter> <source-id> <intake> <argv...>
+  local state=$1 adapter=$2 id=$3 intake=$4 reg dest tmp arg
+  shift 4
+  case "$intake" in 0|1) ;; *) return 1 ;; esac
   fm_procevent_adapter_valid "$adapter" || return 1
   fm_procevent_source_id_valid "$id" || return 1
   [ "$#" -ge 1 ] || return 1
@@ -109,6 +110,7 @@ fm_procevent_registration_publish_locked() {  # <state> <adapter> <source-id> <a
   tmp=$(umask 077; mktemp "$reg/.source.XXXXXX") || return 1
   if {
     printf 'adapter=%s\n' "$adapter"
+    printf 'intake=%s\n' "$intake"
     printf 'argc=%s\n' "$#"
     printf 'argv:\n'
     printf '%s\n' "$@"
@@ -313,7 +315,7 @@ fm_procevent_claim_release_locked() {
 # rename is the commit point; nothing referencing this result may be published
 # before it returns successfully.
 fm_procevent_capture() {
-  local state=$1 id=$2 adapter=$3 src=$4 inbox seq dest tmp adapter_dest adapter_tmp
+  local state=$1 id=$2 adapter=$3 src=$4 inbox seq dest tmp adapter_dest adapter_tmp intake_dest intake_tmp intake=0 registration marker
   fm_procevent_source_id_valid "$id" || return 1
   fm_procevent_adapter_valid "$adapter" || return 1
   inbox=$(fm_procevent_inbox_dir "$state")
@@ -322,12 +324,38 @@ fm_procevent_capture() {
   while [ -e "$inbox/$id.$seq.result" ]; do seq=$((seq + 1)); done
   dest="$inbox/$id.$seq.result"
   adapter_dest="$inbox/$id.$seq.adapter"
+  registration="$state/procevent/$id.source"
+  marker="$state/procevent/$id.intake"
+  if { [ -f "$registration" ] && [ ! -L "$registration" ] && grep -qx 'intake=1' "$registration"; } \
+    || { [ -f "$marker" ] && [ ! -L "$marker" ]; }; then
+    intake=1
+    intake_dest="$inbox/$id.$seq.intake"
+  fi
   tmp=$(umask 077; mktemp "$inbox/.capture.XXXXXX") || return 1
   adapter_tmp=$(umask 077; mktemp "$inbox/.adapter.XXXXXX") || { rm -f -- "$tmp"; return 1; }
-  if ! cat "$src" > "$tmp"; then rm -f -- "$tmp" "$adapter_tmp"; return 1; fi
-  if ! printf '%s\n' "$adapter" > "$adapter_tmp"; then rm -f -- "$tmp" "$adapter_tmp"; return 1; fi
-  if ! chmod 0600 "$tmp" "$adapter_tmp"; then rm -f -- "$tmp" "$adapter_tmp"; return 1; fi
+  if [ "$intake" -eq 1 ]; then
+    intake_tmp=$(umask 077; mktemp "$inbox/.intake.XXXXXX") || { rm -f -- "$tmp" "$adapter_tmp"; return 1; }
+  fi
+  if ! cat "$src" > "$tmp"; then rm -f -- "$tmp" "$adapter_tmp" "$intake_tmp"; return 1; fi
+  if ! printf '%s\n' "$adapter" > "$adapter_tmp"; then rm -f -- "$tmp" "$adapter_tmp" "$intake_tmp"; return 1; fi
+  if [ "$intake" -eq 1 ] && ! printf 'intake=1\n' > "$intake_tmp"; then
+    rm -f -- "$tmp" "$adapter_tmp" "$intake_tmp"
+    return 1
+  fi
+  if [ "$intake" -eq 1 ]; then
+    if ! chmod 0600 "$tmp" "$adapter_tmp" "$intake_tmp"; then
+      rm -f -- "$tmp" "$adapter_tmp" "$intake_tmp"
+      return 1
+    fi
+  elif ! chmod 0600 "$tmp" "$adapter_tmp"; then
+    rm -f -- "$tmp" "$adapter_tmp"
+    return 1
+  fi
   if ! mv -f -- "$adapter_tmp" "$adapter_dest"; then rm -f -- "$tmp" "$adapter_tmp"; return 1; fi
+  if [ "$intake" -eq 1 ] && ! mv -f -- "$intake_tmp" "$intake_dest"; then
+    rm -f -- "$tmp" "$adapter_dest" "$intake_tmp"
+    return 1
+  fi
   if ! mv -f -- "$tmp" "$dest"; then rm -f -- "$tmp" "$adapter_dest"; return 1; fi
   printf '%s\n' "$dest"
 }

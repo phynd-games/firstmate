@@ -23,7 +23,7 @@
 #     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD]
 #   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release]
 #   fm-captain-hold.sh release <task-id>
-#   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance>   (keyed answers on stdin)
+#   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] [--exact] --source <provenance>   (keyed answers on stdin)
 #   fm-captain-hold.sh bind <source-id> [<legacy-origin> | --any-origin]
 #   fm-captain-hold.sh unbind <source-id>
 #   fm-captain-hold.sh binding <source-id>
@@ -587,15 +587,35 @@ command_answer() {
 }
 
 command_release() {
-  local id=${1:-} show state hold_kind
-  [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+  local id=${1:-} show state hold_kind intake_owner=''
+  [ "$#" -ge 1 ] || { usage >&2; exit 2; }
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --intake-owner) shift; intake_owner=${1:-} ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift
+  done
   validate_slug task-id "$id"
+  if [ -n "$intake_owner" ]; then
+    validate_slug intake-owner "$intake_owner"
+    CAPTAIN_TASK_LOCK="$STATE/.captain-task-$id.lock"
+    fm_lock_acquire_wait "$CAPTAIN_TASK_LOCK" || fail "could not lock captain task $id"
+    CAPTAIN_TASK_LOCK_HELD=1
+  fi
   require_tasks_axi
   show=$(task_show "$id") || fail "captain-held task $id is absent from $FM_HOME/data/backlog.md"
   state=$(show_field "$show" state)
   hold_kind=$(show_field_value "$show" hold_kind)
   [ "$state" != done ] || fail "task $id is already closed"
   [ "$hold_kind" = captain ] || fail "task $id is not held for the captain"
+  if [ -n "$intake_owner" ]; then
+    case "$(show_field "$show" hold_reason)" in
+      *" intake-owner-$intake_owner") ;;
+      *) fail "task $id is not held by this intake owner" ;;
+    esac
+  fi
   tasks_axi unhold "$id" >/dev/null || fail "could not release captain-held task $id"
   printf 'released: %s\n' "$id"
 }
@@ -692,12 +712,14 @@ sanitize_field() {  # <text>
 }
 
 command_answers() {
-  local origin='' source='' row rest key answer label mode id show state hold_kind body digest legacy_digest legacy_key
+  local origin='' source='' exact=0 intake_owner='' row rest key answer label mode id show state hold_kind body digest legacy_digest legacy_key
   local recorded_digest recorded_mode tmp err closed=0 skipped=0 reason release_flag tab=$'\t'
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --source) shift; source=${1:-} ;;
       --any-origin) origin=$BINDING_ANY ;;
+      --exact) exact=1 ;;
+      --intake-owner) shift; intake_owner=${1:-} ;;
       --*) usage >&2; exit 2 ;;
       *)
         [ -z "$origin" ] || { usage >&2; exit 2; }
@@ -708,6 +730,14 @@ command_answers() {
   done
   if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
     validate_slug legacy-origin "$origin"
+  fi
+  if [ -n "$intake_owner" ]; then
+    [ "$exact" -eq 1 ] && [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ] \
+      || fail "--intake-owner requires one exact task origin"
+    validate_slug intake-owner "$intake_owner"
+    CAPTAIN_TASK_LOCK="$STATE/.captain-task-$origin.lock"
+    fm_lock_acquire_wait "$CAPTAIN_TASK_LOCK" || fail "could not lock captain task $origin"
+    CAPTAIN_TASK_LOCK_HELD=1
   fi
   [ -n "$source" ] || fail "--source provenance is required so the durable decision records where the answer came from"
   source=$(sanitize_field "$source")
@@ -739,7 +769,21 @@ command_answers() {
         continue
         ;;
     esac
-    if ! id=$(resolve_entry "$origin" "$key" 2>/dev/null); then
+    if [ "$exact" -eq 1 ]; then
+      [ "$key" = "$origin" ] || {
+        printf 'skipped: %s (exact intake answer names another task)\n' "$key"
+        skipped=$((skipped + 1))
+        continue
+      }
+      if task_show "$key" >/dev/null 2>&1; then
+        id=$key
+      else
+        id=''
+      fi
+    elif ! id=$(resolve_entry "$origin" "$key" 2>/dev/null); then
+      id=''
+    fi
+    if [ -z "$id" ]; then
       printf 'skipped: %s (no captain-held task with that id)\n' "$key"
       skipped=$((skipped + 1))
       continue
@@ -762,6 +806,21 @@ command_answers() {
     show=$(task_show "$id") || { printf 'skipped: %s (absent)\n' "$id"; skipped=$((skipped + 1)); continue; }
     state=$(show_field "$show" state)
     hold_kind=$(show_field_value "$show" hold_kind)
+    if [ -n "$intake_owner" ]; then
+      [ "$hold_kind" = captain ] || {
+        printf 'skipped: %s (intake captain hold is no longer active)\n' "$id"
+        skipped=$((skipped + 1))
+        continue
+      }
+      case "$(show_field "$show" hold_reason)" in
+        *" intake-owner-$intake_owner") ;;
+        *)
+          printf 'skipped: %s (intake captain-hold ownership is no longer proven)\n' "$id"
+          skipped=$((skipped + 1))
+          continue
+          ;;
+      esac
+    fi
     body=$(show_field "$show" body)
     recorded_digest=$(recorded_decision_digest "$body" || true)
     recorded_mode=$(recorded_resolution_mode "$body" || true)

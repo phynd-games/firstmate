@@ -275,6 +275,23 @@ start_marker_matches() {
     && [ "$(meta_value "$marker" owner_token)" = "$START_OWNER_TOKEN" ]
 }
 
+intake_hold_matches() {
+  local task=$1 marker show state hold_kind hold_reason owner_token
+  marker=$(intake_hold_path "$task")
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  [ "$(meta_value "$marker" task_id)" = "$task" ] || return 1
+  owner_token=$(meta_value "$marker" owner_token)
+  hold_reason=$(meta_value "$marker" hold_reason)
+  [ -n "$owner_token" ] && [ -n "$hold_reason" ] || return 1
+  case "$owner_token" in *[!A-Za-z0-9._-]*) return 1 ;; esac
+  show=$(cd "$FM_HOME" && tasks-axi show "$task" --full 2>/dev/null || true)
+  [ -n "$show" ] || return 1
+  state=$(printf '%s\n' "$show" | sed -n 's/^  state: //p' | head -1)
+  hold_kind=$(printf '%s\n' "$show" | sed -n 's/^  hold_kind: //p' | head -1)
+  [ "$state" != done ] && [ "$hold_kind" = captain ] \
+    && [ "$(printf '%s\n' "$show" | sed -n 's/^  hold_reason: //p' | head -1)" = "$hold_reason" ]
+}
+
 start_task_has_owned_captain_hold() {
   local show state hold_kind hold_reason
   show=$(cd "$FM_HOME" && tasks-axi show "$START_TASK" --full 2>/dev/null || true)
@@ -297,6 +314,7 @@ write_start_marker() {
     printf 'version=1\n'
     printf 'task_id=%s\n' "$START_TASK"
     printf 'owner_token=%s\n' "$START_OWNER_TOKEN"
+    printf 'hold_reason=%s\n' "$START_HOLD_REASON"
   } > "$tmp"
   chmod 0600 "$tmp"
   mv -f -- "$tmp" "$marker"
@@ -353,7 +371,12 @@ start_cleanup() {
   fi
   if [ "$START_HOLD_CREATED" -eq 1 ] && start_marker_matches \
     && start_task_has_owned_captain_hold; then
-    "$SCRIPT_DIR/fm-captain-hold.sh" release "$START_TASK" >/dev/null 2>&1 || true
+    if [ "$START_LOCK_HELD" -eq 1 ]; then
+      fm_lock_release "$START_LOCK_PATH" || true
+      START_LOCK_HELD=0
+    fi
+    "$SCRIPT_DIR/fm-captain-hold.sh" release "$START_TASK" \
+      --intake-owner "$START_OWNER_TOKEN" >/dev/null 2>&1 || true
   fi
   if [ "$START_HOLD_MARKER_CREATED" -eq 1 ] && start_marker_matches \
     && ! start_task_has_owned_captain_hold; then
@@ -467,8 +490,8 @@ cmd_start() {
   [ -n "$reason" ] || reason="Captain review of required feature intake before implementation"
   validate_one_line reason "$reason"
   START_TASK=$task
-  START_HOLD_REASON=$reason
   START_OWNER_TOKEN="${BASHPID:-$$}.$RANDOM"
+  START_HOLD_REASON="$reason intake-owner-$START_OWNER_TOKEN"
   START_ARTIFACT=
   START_SID=
   START_SESSION_TMP=
@@ -507,9 +530,10 @@ cmd_start() {
   elif [ "$state" != done ] && [ -n "$hold_kind" ] && [ "$hold_kind" != - ]; then
     fail "task $task already carries a non-captain hold"
   else
+    write_start_marker
     fm_lock_release "$START_LOCK_PATH"
     START_LOCK_HELD=0
-    "$SCRIPT_DIR/fm-captain-hold.sh" hold "$task" --reason "$reason" \
+    "$SCRIPT_DIR/fm-captain-hold.sh" hold "$task" --reason "$START_HOLD_REASON" \
       --intake-owner "$START_OWNER_TOKEN" >/dev/null \
       || fail "could not hold task for Lavish intake"
     fm_lock_acquire_wait "$START_LOCK_PATH" || fail "could not relock intake task $task"
@@ -522,7 +546,7 @@ cmd_start() {
       ''|null|\"null\"|-|\"-\") hold_kind= ;;
     esac
     [ "$state" != done ] && [ "$hold_kind" = captain ] \
-      && [ "$hold_reason" = "$reason" ] \
+      && [ "$hold_reason" = "$START_HOLD_REASON" ] \
       || fail "could not prove intake captain-hold ownership"
     write_start_marker
     START_HOLD_CREATED=1
@@ -562,7 +586,7 @@ cmd_start() {
   START_SESSION_TMP=
   START_SESSION_CREATED=1
   write_source_marker
-  "$SCRIPT_DIR/fm-procevent-lavish.sh" arm "$artifact" >/dev/null \
+  "$SCRIPT_DIR/fm-procevent-lavish.sh" arm "$artifact" --intake >/dev/null \
     || fail "could not arm captured Lavish feedback"
   START_OK=1
   printf 'armed: %s\n' "$sid"
@@ -570,7 +594,7 @@ cmd_start() {
 }
 
 cmd_record() {
-  local task=${1-} artifact='' result='' answer_rows result_identity sid seq receipt out
+  local task=${1-} artifact='' result='' answer_rows result_identity sid seq receipt out owner_token receipt_existing=0
   shift || true
   validate_task_id "$task"
   while [ "$#" -gt 0 ]; do
@@ -597,17 +621,30 @@ cmd_record() {
   result=$(real_file "$result")
   receipt=$(receipt_path "$task")
   if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+    receipt_existing=1
     [ -f "$receipt" ] && [ ! -L "$receipt" ] || fail "intake evidence is unsafe: $receipt"
     [ "$(require_unique_meta "$receipt" result)" = "$result" ] \
       || fail "intake evidence belongs to a different captured result"
     verify_receipt "$task" "$receipt" allow-unhandled >/dev/null \
       || fail "existing intake evidence is not retryable"
   fi
-  answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers "$result")
-  out=$(printf '%s\n' "$answer_rows" \
-    | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$task" \
-        --source "the captured result $sid sequence $seq" 2>&1) \
-    || fail "captured intake could not release held task: $out"
+  if [ "$receipt_existing" -eq 0 ]; then
+    intake_hold_matches "$task" \
+      || fail "intake captain-hold ownership is no longer proven"
+    owner_token=$(meta_value "$(intake_hold_path "$task")" owner_token)
+    answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers "$result")
+    out=$(printf '%s\n' "$answer_rows" \
+      | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$task" --exact \
+          --intake-owner "$owner_token" \
+          --source "the captured result $sid sequence $seq" 2>&1) \
+      || fail "captured intake could not release held task: $out"
+  else
+    answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers "$result")
+    out=$(printf '%s\n' "$answer_rows" \
+      | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$task" --exact \
+          --source "the captured result $sid sequence $seq" 2>&1) \
+      || fail "captured intake retry could not settle held task: $out"
+  fi
   printf '%s\n' "$out" | grep -Eq 'closed:|answered:' \
     || fail "captured intake did not close through captain-hold: $out"
   "$SCRIPT_DIR/fm-procevent.sh" handled "$sid" "$seq" >/dev/null \

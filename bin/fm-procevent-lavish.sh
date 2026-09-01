@@ -126,9 +126,15 @@ cmd_source_id() {
 }
 
 cmd_arm() {
-  local artifact=${1-} id real
+  local artifact=${1-} id real intake=0
   [ -n "$artifact" ] || usage
-  [ "$#" -eq 1 ] || usage
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --intake) intake=1; shift ;;
+      *) usage ;;
+    esac
+  done
   command -v lavish-axi >/dev/null 2>&1 || die "lavish-axi is not installed"
   poll_retry_delay >/dev/null
   id=$(cmd_source_id "$artifact") || exit 1
@@ -138,8 +144,13 @@ cmd_arm() {
   # no --timeout-ms so completion is a server event, and absorbs only the exact
   # transient interruption. Registering raw poll output is what let that
   # interruption reach the runner as a captured result.
-  "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" \
-    -- "$SCRIPT_DIR/fm-procevent-lavish.sh" poll "$real" || exit 1
+  if [ "$intake" -eq 1 ]; then
+    "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" --intake \
+      -- "$SCRIPT_DIR/fm-procevent-lavish.sh" poll "$real" || exit 1
+  else
+    "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" \
+      -- "$SCRIPT_DIR/fm-procevent-lavish.sh" poll "$real" || exit 1
+  fi
   printf 'armed: %s\n' "$id"
   printf 'artifact: %s\n' "$real"
 }
@@ -390,13 +401,20 @@ cmd_silent() {
 # `<origin>-decision-<key>` identities pre-collapse decks still carry; the
 # security property is the slug SHAPE, which is unchanged.
 cmd_answers() {
-  local file=${1-} source expected='' session_source session_file intake_marker marker_task
+  local file=${1-} source expected='' session_source session_file intake_marker marker_task intake_registration=0 result_intake_marker
   [ -n "$file" ] || usage
   [ -f "$file" ] && [ ! -L "$file" ] || die "result file does not exist: $file"
   source=$(fm_procevent_result_source_id "$file" 2>/dev/null || true)
   if [ -n "$source" ]; then
     intake_marker="$STATE/procevent/$source.intake"
-    if [ -e "$intake_marker" ] || [ -L "$intake_marker" ]; then
+    intake_registration="$STATE/procevent/$source.source"
+    result_intake_marker="${file%.result}.intake"
+    if { [ -f "$intake_registration" ] && [ ! -L "$intake_registration" ] \
+      && grep -qx 'intake=1' "$intake_registration"; } \
+      || [ -e "$intake_marker" ] || [ -L "$intake_marker" ] \
+      || [ -e "$result_intake_marker" ] || [ -L "$result_intake_marker" ]; then
+      [ -e "$intake_marker" ] || [ -L "$intake_marker" ] \
+        || die "Lavish intake source marker is missing"
       [ -f "$intake_marker" ] && [ ! -L "$intake_marker" ] \
         || die "Lavish intake source marker is unsafe"
       expected=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$source" 2>/dev/null || true)
