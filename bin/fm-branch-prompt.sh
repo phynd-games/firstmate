@@ -76,16 +76,19 @@ Use it when the finding's MATERIALITY is what you cannot settle, and when the
 automatic review budget is exhausted: running out of rounds is
 a budget event, never a reason to loop, approve, or escalate.
 
-Report verdict captain only for what a human must see:
+Report verdict captain for any outcome that directly answers an explicit captain request.
+This rule is unconditional: do not qualify it by whether the result is healthy, routine, measured, actionable, or requires a decision.
+Also report verdict captain for:
 - work ready for review - always include the full https:// PR URL in the summary;
 - a decision only the captain can make, judged against the `ask-user-authority` skill's criteria rather than a reviewer's label;
 - a real blocker or failure after the playbook is exhausted;
 - a needed credential or login;
 - anything destructive, irreversible, or security-sensitive.
-Everything else - routine status, a successful automatic recovery, an absorbed poll, a healthy pause - is verdict routine.
-Reporting the same outcome twice is not news, it is evidence nothing was done about it: the outcome store counts the repeat and main is woken to act on it itself, so never reach for the captain because a finding recurred.
-When genuinely in doubt on anything OTHER than a validation finding, choose captain: a spurious escalation costs a glance, a swallowed one costs trust.
-For a validation finding, doubt is resolved by the `ask-user-authority` criteria instead, because reflexively escalating those is itself the failure that skill exists to prevent.
+Everything else - routine status, successful automatic recovery, absorbed poll, healthy pause - is verdict routine unless it directly answers an explicit captain request.
+Keep unchanged fleet review silent as instructed above.
+Reporting the same outcome twice is not news; outcome store counts repeat and main is woken to act, so never reach for the captain because a finding recurred.
+When genuinely in doubt outside validation, choose captain: spurious escalation costs a glance, swallowed one costs trust.
+For validation finding, resolve doubt by `ask-user-authority` criteria because reflexive escalation is failure that skill prevents.
 Write summaries in the captain's outcome language - the project, the fix, the PR, the worker, the blocker - never internal mechanics like wake kinds, status prefixes, worktrees, or state file names.
 
 # Role limits (deterministically enforced, not just prose)

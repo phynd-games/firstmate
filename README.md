@@ -106,20 +106,34 @@ bin/fm-peek.sh <task-id>
 
 ## Documentation
 
-- [Configuration](docs/configuration.md)
-- [Phynd governance skill](.agents/skills/phynd-governance/SKILL.md)
-- [Herdr backend](docs/herdr-backend.md)
-- [tmux backend](docs/tmux-backend.md)
-- [Zellij backend](docs/zellij-backend.md)
-- [Orca backend](docs/orca-backend.md)
-- [cmux backend](docs/cmux-backend.md)
-- [Remote secondmates](docs/remote-secondmates.md)
-- [Away-mode alarm](docs/wedge-alarm.md)
-- [Architecture](docs/architecture.md)
-- [Scripts](docs/scripts.md)
-- [Contributing](CONTRIBUTING.md)
-- [Always-loaded operating contract](AGENTS.md)
-- [Documentation audiences](docs/documentation-audiences.md)
+- [docs/architecture.md](docs/architecture.md) - maintainer architecture for the crew, supervision, worktrees, secondmates, and project modes.
+- [docs/configuration.md](docs/configuration.md) - environment variables, `FM_HOME`, runtime backend selection, optional Relay and its X and Discord setup steps, trusted external process-event adapter setup, the files you set, and harness support.
+- [docs/extension-bindings.md](docs/extension-bindings.md) - maintainer architecture for the narrow trusted external `process-event-adapter/1` package, binding, handshake, and evidence boundary.
+- [docs/remote-secondmates.md](docs/remote-secondmates.md) - current setup, routing, transfer, recovery, and safety behavior for whole-home remote second mates.
+- [docs/calm.md](docs/calm.md) - current Pi `/calm` behavior and supported presentation limits.
+- [docs/voice-relay.md](docs/voice-relay.md) - the optional spoken interface: setup on both machines, measured round-trip cost, what a spoken answer may read, and what this build does not do yet.
+- [docs/wedge-alarm.md](docs/wedge-alarm.md) - configure the active alert for an away-mode escalation delivery that gets stuck.
+- [docs/tmux-backend.md](docs/tmux-backend.md) - current setup and limits for the tmux reference backend.
+- [docs/herdr-backend.md](docs/herdr-backend.md) - current setup, safety boundaries, and limits for experimental Herdr backend.
+- [docs/dashboard.md](docs/dashboard.md) - local Firstmate control-plane dashboard.
+- [.agents/skills/phynd-governance/SKILL.md](.agents/skills/phynd-governance/SKILL.md) - Phynd product governance.
+- [docs/zellij-backend.md](docs/zellij-backend.md) - current setup and limits for experimental Zellij backend.
+- [docs/orca-backend.md](docs/orca-backend.md) - current setup and limits for the experimental Orca backend.
+- [docs/cmux-backend.md](docs/cmux-backend.md) - current setup, socket security, and limits for the experimental cmux backend.
+- [docs/codex-app-backend.md](docs/codex-app-backend.md) - the current blocked Codex App backend boundary and rollout contract.
+- [docs/verification/runtime-backends.md](docs/verification/runtime-backends.md) - active maintainer verification for runtime backend guarantees.
+- [docs/gitlab-merge-watch.md](docs/gitlab-merge-watch.md) - maintainer verification for watching and merging GitLab merge requests on arbitrary instances.
+- [docs/turnend-guard.md](docs/turnend-guard.md) - the primary session's current "no turn ends blind" backstop, scope, loop safety, and compatibility limits.
+- [docs/verification/supervision.md](docs/verification/supervision.md) - active maintainer verification for session-start, guard, continuity, and wedge integrations.
+- [docs/supervision-protocols/](docs/supervision-protocols/) - rendered primary-harness watcher protocols for Claude, Codex, OpenCode, Pi and `pi-signed`, Grok, Cursor, and unknown harness fallback.
+- [docs/scripts.md](docs/scripts.md) - the `bin/` toolbelt reference.
+- [docs/documentation-audiences.md](docs/documentation-audiences.md) - documentation audiences and the machine-checked placement boundary.
+- [`AGENTS.md`](AGENTS.md) - the distro's always-loaded operating contract and routing index for conditional procedures.
+- [CONTRIBUTING.md](CONTRIBUTING.md) - how to contribute, including the dev/test commands.
+
+## Contributing
+
+Contributions are welcome - see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow, repo conventions, and how to run the tests.
 
 ## License
 
