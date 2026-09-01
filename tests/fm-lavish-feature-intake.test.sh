@@ -710,6 +710,36 @@ test_artifact_replacement_refused() {
   pass "Lavish intake: recording rejects an artifact changed after start"
 }
 
+test_start_rejects_cross_task_stale_artifact_ownership() {
+  local home artifact sid result out rc
+  home=$(make_home stale-artifact-owner)
+  add_task "$home" stale-owner-a1
+  add_task "$home" stale-owner-b1
+  artifact=$home/intake.html
+  run_intake "$home" template stale-owner-a1 --output "$artifact" >/dev/null
+  run_intake "$home" start stale-owner-a1 --artifact "$artifact" >/dev/null
+  sid=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
+  fixture_for "$home" stale-owner-a1
+  run_process_event "$home" "$sid" >/dev/null
+  result=$home/state/procevent-inbox/$sid.1.result
+  run_intake "$home" record stale-owner-a1 --artifact "$artifact" --result "$result" >/dev/null
+  rm -f "$artifact"
+  run_intake "$home" template stale-owner-b1 --output "$artifact" >/dev/null
+  set +e
+  out=$(run_intake "$home" start stale-owner-b1 --artifact "$artifact" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "cross-task stale artifact ownership was reused"
+  assert_contains "$out" "already owned by task stale-owner-a1" \
+    "stale artifact ownership refusal was unclear"
+  assert_present "$home/state/stale-owner-a1.lavish-intake-session" \
+    "stale artifact refusal removed the original intake session"
+  (cd "$home" && tasks-axi show stale-owner-b1 --full) | grep -Fq 'hold_kind: captain' \
+    && fail "stale artifact refusal held the replacement task"
+  pass "Lavish intake: cross-task stale artifact ownership is preserved"
+}
+
 # The full capture path uses the existing Lavish adapter and captain-hold keyed
 # answer intake, then binds hashes and acknowledgement into durable evidence.
 test_successful_captured_feedback_and_followup() {
@@ -812,7 +842,7 @@ test_pending_release_requires_durable_resolution() {
   assert_absent "$home/state/pending-proof-a1.lavish-intake" \
     "unrelated unhold produced intake evidence"
   (cd "$home" && tasks-axi hold pending-proof-a1 --kind captain \
-    --reason 'newer captain decision' >/dev/null)
+    --reason "$(sed -n 's/^hold_reason=//p' "$home/state/pending-proof-a1.lavish-intake-owner" | head -1)" >/dev/null)
   (cd "$home" && tasks-axi done pending-proof-a1 >/dev/null)
   set +e
   out=$(run_intake "$home" record pending-proof-a1 --artifact "$artifact" --result "$result" 2>&1)
@@ -904,6 +934,7 @@ test_start_failure_rolls_back_only_new_state
 test_arm_failure_rolls_back_only_new_state
 test_ordinary_rearm_refuses_stale_intake_ownership
 test_artifact_replacement_refused
+test_start_rejects_cross_task_stale_artifact_ownership
 test_start_rejects_unrelated_captain_hold
 test_extra_keyed_feedback_refused
 test_successful_captured_feedback_and_followup

@@ -195,6 +195,50 @@ require_unique_meta() {
   meta_value "$file" "$key"
 }
 
+reject_existing_intake_ownership() {
+  local task=$1 sid=$2 artifact=$3 path owner_task owner_source owner_artifact marker_task marker_source bound
+  for path in "$STATE"/*.lavish-intake-session; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    [ -f "$path" ] && [ ! -L "$path" ] \
+      || fail "Lavish intake session state is unsafe: $path"
+    owner_source=$(meta_value "$path" source_id)
+    [ "$owner_source" = "$sid" ] || continue
+    owner_task=$(meta_value "$path" task_id)
+    fm_task_id_path_safe "$owner_task" \
+      || fail "Lavish intake session state has an unsafe task owner: $path"
+    [ "$owner_task" = "$task" ] \
+      || fail "Lavish intake source $sid is already owned by task $owner_task"
+    owner_artifact=$(meta_value "$path" artifact)
+    [ "$owner_artifact" = "$artifact" ] \
+      || fail "Lavish intake source $sid has stale ownership for task $task"
+    fail "Lavish intake source $sid already has active ownership for task $task"
+  done
+  path=$(intake_source_path "$sid")
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    [ -f "$path" ] && [ ! -L "$path" ] \
+      || fail "Lavish intake source marker is unsafe: $path"
+    [ "$(grep -c '^task_id=' "$path" 2>/dev/null || true)" -eq 1 ] \
+      && [ "$(grep -c '^source_id=' "$path" 2>/dev/null || true)" -eq 1 ] \
+      || fail "Lavish intake source marker is malformed: $path"
+    marker_task=$(meta_value "$path" task_id)
+    marker_source=$(meta_value "$path" source_id)
+    fm_task_id_path_safe "$marker_task" \
+      || fail "Lavish intake source marker has an unsafe task owner"
+    [ "$marker_source" = "$sid" ] \
+      || fail "Lavish intake source marker has the wrong source identity"
+    [ "$marker_task" = "$task" ] \
+      || fail "Lavish intake source $sid is already owned by task $marker_task"
+    fail "Lavish intake source $sid retains typed ownership for task $task"
+  fi
+  path="$STATE/decision-bindings/$sid.origin"
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    [ -f "$path" ] && [ ! -L "$path" ] \
+      || fail "Lavish intake source binding is unsafe: $path"
+    bound=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$sid" 2>/dev/null || true)
+    [ -z "$bound" ] || fail "Lavish intake source $sid is already bound to task $bound"
+  fi
+}
+
 artifact_fields_present() {
   local artifact=$1 task=$2 contract_error validation_nonce
   if ! contract_error=$(perl - "$artifact" "$task" "$FIELDS" 2>&1 <<'PERL'
@@ -911,6 +955,13 @@ cmd_start() {
   START_ARTIFACT=$artifact
   artifact_fields_present "$artifact" "$task"
   artifact_hash=$(sha256_file "$artifact")
+  sid=$("$SCRIPT_DIR/fm-procevent-lavish.sh" source-id "$artifact") \
+    || fail "could not derive the Lavish source id"
+  START_SID=$sid
+  START_SOURCE_LOCK_PATH=$(intake_source_lock_path "$sid")
+  fm_lock_acquire_wait "$START_SOURCE_LOCK_PATH" || fail "could not lock Lavish source setup: $sid"
+  START_SOURCE_LOCK_HELD=1
+  reject_existing_intake_ownership "$task" "$sid" "$artifact"
   command -v lavish-axi >/dev/null 2>&1 || fail "lavish-axi is not installed"
   task_show=$(cd "$FM_HOME" && tasks-axi show "$task" --full 2>/dev/null || true)
   [ -n "$task_show" ] || fail "task $task is not present in the active backlog"
@@ -945,12 +996,6 @@ cmd_start() {
     intake_hold_matches "$task" \
       || fail "could not prove intake captain-hold ownership"
   fi
-  sid=$("$SCRIPT_DIR/fm-procevent-lavish.sh" source-id "$artifact") \
-    || fail "could not derive the Lavish source id"
-  START_SID=$sid
-  START_SOURCE_LOCK_PATH=$(intake_source_lock_path "$sid")
-  fm_lock_acquire_wait "$START_SOURCE_LOCK_PATH" || fail "could not lock Lavish source setup: $sid"
-  START_SOURCE_LOCK_HELD=1
   source_path="$STATE/procevent/$sid.source"
   if [ -e "$source_path" ] || [ -L "$source_path" ]; then
     START_SOURCE_PREEXISTING=1
