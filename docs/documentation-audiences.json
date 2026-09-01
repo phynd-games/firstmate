@@ -277,6 +277,66 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/unlazy/CHANGELOG.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/unlazy/CONTRIBUTING.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/unlazy/README.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/unlazy/SECURITY.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/unlazy/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/unlazy/references/dispatch.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/unlazy/references/gates.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/unlazy/references/method.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/unlazy/references/orchestration.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/unlazy/references/parallel.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/unlazy/references/token-economy.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/unlazy/research/validation-protocol.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/unlazy/templates/PLAN.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/unlazy/templates/gates-leaf.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/unlazy/templates/gates-node.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".greptile/rules.md",
       "audience": "maintainer-architecture"
     },
