@@ -240,139 +240,164 @@ reject_existing_intake_ownership() {
 }
 
 artifact_fields_present() {
-  local artifact=$1 task=$2 contract_error validation_nonce
-  if ! contract_error=$(perl - "$artifact" "$task" "$FIELDS" 2>&1 <<'PERL'
-use strict;
-use warnings;
+  local artifact=$1 task=$2 contract_error contract_json validation_nonce
+  if ! contract_json=$(python3 - "$artifact" "$task" "$FIELDS" 2>&1 <<'PY'
+from html.parser import HTMLParser
+import json
+import sys
 
-my ($path, $task, $field_text) = @ARGV;
-open my $handle, '<', $path or do {
-  print STDERR "cannot read intake artifact\n";
-  exit 1;
-};
-local $/;
-my $html = <$handle>;
+path, task, field_text = sys.argv[1:]
+fields = field_text.split()
 
-sub reject {
-  print STDERR "$_[0]\n";
-  exit 1;
-}
 
-sub attr_equals {
-  my ($attrs, $name, $value) = @_;
-  return $attrs =~ /(?:^|\s)\Q$name\E\s*=\s*[\"']\Q$value\E[\"']/i;
-}
+class IntakeParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.forms = []
+        self.form = None
+        self.inert = []
+        self.script = None
+        self.scripts = []
+        self.root_count = 0
+        self.root_valid = False
+        self.error = None
 
-sub attr_present {
-  my ($attrs, $name) = @_;
-  return $attrs =~ /(?:^|\s)\Q$name\E(?:\s|=|$)/i;
-}
+    @staticmethod
+    def attributes(raw):
+        result = {}
+        for name, value in raw:
+            if name in result:
+                raise ValueError("artifact contains duplicate attributes")
+            result[name] = value
+        return result
 
-$html =~ s/<!--.*?-->//gs;
-$html =~ /<html\b[^>]*\bdata-lavish-intake\s*=\s*[\"']v1[\"']/i
-  or reject 'artifact is not a Lavish intake v1 surface';
+    def handle_starttag(self, tag, raw):
+        tag = tag.lower()
+        try:
+            attrs = self.attributes(raw)
+        except ValueError as error:
+            self.error = str(error)
+            return
+        if tag == "html":
+            self.root_count += 1
+            self.root_valid = attrs.get("data-lavish-intake") == "v1"
+        if tag in ("template", "noscript"):
+            self.inert.append(tag)
+            return
+        if self.inert:
+            return
+        if tag == "script":
+            self.script = {"attrs": attrs, "parts": []}
+            return
+        if tag == "form":
+            if self.form is not None:
+                self.error = "artifact contains nested intake forms"
+                return
+            self.form = {"attrs": attrs, "controls": [], "closed": False}
+            self.forms.append(self.form)
+            return
+        if self.form is not None and tag in ("textarea", "button", "input"):
+            self.form["controls"].append({"tag": tag, "attrs": attrs})
 
-my $active_html = '';
-my $inert_depth = 0;
-my $cursor = 0;
-while ($html =~ m{<template\b[^>]*>|</template\s*>|<noscript\b[^>]*>|</noscript\s*>}gis) {
-  my $token = lc($&);
-  my ($start, $end) = ($-[0], $+[0]);
-  if ($token =~ m{^<(?:template|noscript)\b}) {
-    $active_html .= substr($html, $cursor, $start - $cursor) if $inert_depth == 0;
-    $inert_depth++;
-    $cursor = $end;
-  } elsif ($inert_depth > 0) {
-    $inert_depth--;
-    $cursor = $end;
-  }
-}
-$active_html .= substr($html, $cursor) if $inert_depth == 0;
+    def handle_startendtag(self, tag, raw):
+        self.handle_starttag(tag, raw)
 
-my @forms;
-while ($active_html =~ m{<form\b([^>]*)>(.*?)</form\s*>}gis) {
-  my ($attrs, $body) = ($1, $2);
-  next unless attr_equals($attrs, 'id', 'feature-intake');
-  next unless attr_equals($attrs, 'data-lavish-question', $task);
-  push @forms, $body;
-}
-@forms == 1 or reject 'artifact has no keyed intake question';
-my $form = $forms[0];
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag == "script" and self.script is not None:
+            attrs = self.script["attrs"]
+            script_type = (attrs.get("type") or "").strip().lower()
+            if not script_type or script_type in {
+                "module",
+                "text/javascript",
+                "application/javascript",
+                "text/ecmascript",
+                "application/ecmascript",
+            }:
+                self.scripts.append("".join(self.script["parts"]))
+            self.script = None
+            return
+        if tag in ("template", "noscript"):
+            if not self.inert or self.inert[-1] != tag:
+                self.error = "artifact has mismatched inert elements"
+            else:
+                self.inert.pop()
+            return
+        if self.inert:
+            return
+        if tag == "form":
+            if self.form is None:
+                self.error = "artifact contains an unmatched form close"
+            else:
+                self.form["closed"] = True
+                self.form = None
 
-my @submit_controls;
-while ($form =~ m{<(?:button|input)\b([^>]*)>}gis) {
-  my $attrs = $1;
-  next unless attr_equals($attrs, 'data-lavish-intake-submit', 'true');
-  next unless attr_equals($attrs, 'type', 'submit');
-  push @submit_controls, $attrs;
-}
-@submit_controls == 1 or reject 'artifact has no explicit intake submit control';
+    def handle_data(self, data):
+        if self.script is not None:
+            self.script["parts"].append(data)
 
-my @textareas = ($form =~ m{<textarea\b([^>]*)>}gis);
-for my $field (split /\s+/, $field_text) {
-  my @matches = grep {
-    attr_equals($_, 'name', $field)
-      && attr_equals($_, 'data-lavish-intake-field', $field)
-      && attr_present($_, 'required')
-  } @textareas;
-  @matches == 1 or reject "artifact is missing required field: $field";
-}
-PERL
+
+parser = IntakeParser()
+try:
+    with open(path, encoding="utf-8") as handle:
+        parser.feed(handle.read())
+    parser.close()
+except (OSError, ValueError) as error:
+    print(str(error), file=sys.stderr)
+    raise SystemExit(1)
+
+if parser.error:
+    print(parser.error, file=sys.stderr)
+    raise SystemExit(1)
+if parser.root_count != 1 or not parser.root_valid:
+    print("artifact is not a Lavish intake v1 surface", file=sys.stderr)
+    raise SystemExit(1)
+if parser.inert or parser.script is not None or parser.form is not None:
+    print("artifact has an incomplete active DOM", file=sys.stderr)
+    raise SystemExit(1)
+identified = [form for form in parser.forms if form["attrs"].get("id") == "feature-intake"]
+if len(identified) != 1 or identified[0]["attrs"].get("data-lavish-question") != task:
+    print("artifact has no keyed intake question", file=sys.stderr)
+    raise SystemExit(1)
+form = identified[0]
+for field in fields:
+    matches = [
+        control for control in form["controls"]
+        if control["tag"] == "textarea"
+        and control["attrs"].get("name") == field
+        and control["attrs"].get("data-lavish-intake-field") == field
+        and "required" in control["attrs"]
+    ]
+    if len(matches) != 1:
+        print(f"artifact is missing required field: {field}", file=sys.stderr)
+        raise SystemExit(1)
+submits = [
+    control for control in form["controls"]
+    if control["tag"] in ("button", "input")
+    and control["attrs"].get("data-lavish-intake-submit") == "true"
+    and (control["attrs"].get("type") or "").lower() == "submit"
+]
+if len(submits) != 1:
+    print("artifact has no explicit intake submit control", file=sys.stderr)
+    raise SystemExit(1)
+print(json.dumps({"forms": parser.forms, "scripts": parser.scripts}, separators=(",", ":")))
+PY
   ); then
-    fail "$contract_error"
+    fail "$contract_json"
   fi
   validation_nonce=$(LC_ALL=C od -An -N16 -tx1 /dev/urandom | tr -d '[:space:]') \
     || fail "could not create an intake validation nonce"
   [ -n "$validation_nonce" ] || fail "could not create an intake validation nonce"
-  if ! contract_error=$(node - "$artifact" "$task" "$FIELDS" "$validation_nonce" 2>&1 <<'NODE'
+  if ! contract_error=$(node - "$task" "$FIELDS" "$validation_nonce" "$contract_json" 2>&1 <<'NODE'
 'use strict';
-const fs = require('fs');
 const vm = require('vm');
 
-const [path, task, fieldText, validationNonce] = process.argv.slice(2);
+const [task, fieldText, validationNonce, domJson] = process.argv.slice(2);
 const fields = fieldText.split(/\s+/);
-const html = fs.readFileSync(path, 'utf8').replace(/<!--[\s\S]*?-->/g, '');
-const scripts = [];
-const parsedForms = [];
-const tags = /<template\b[^>]*>|<\/template\s*>|<noscript\b[^>]*>|<\/noscript\s*>|<script\b([^>]*)>([\s\S]*?)<\/script\s*>|<form\b([^>]*)>|<\/form\s*>|<(textarea|button|input)\b([^>]*)>/gi;
-let inertDepth = 0;
-let activeForm = null;
-const attribute = (attrs, name) => {
-  const quote = String.fromCharCode(39);
-  const match = attrs.match(new RegExp("(?:^|\\s)" + name + "\\s*=\\s*(?:\"([^\"]*)\"|" + quote + "([^" + quote + "]*)" + quote + "|([^\\s>]+))", "i"));
-  return match ? (match[1] ?? match[2] ?? match[3]).trim() : null;
-};
-const hasAttribute = (attrs, name) => new RegExp("(?:^|\\s)" + name + "(?:\\s|=|$)", "i").test(attrs);
-for (const match of html.matchAll(tags)) {
-  const token = match[0].toLowerCase();
-  if (token.startsWith('<template') || token.startsWith('<noscript')) {
-    inertDepth += 1;
-    continue;
-  }
-  if (token.startsWith('</template') || token.startsWith('</noscript')) {
-    inertDepth = Math.max(0, inertDepth - 1);
-    continue;
-  }
-  if (token.startsWith('<script')) {
-    if (inertDepth > 0) continue;
-    const attrs = match[1] || '';
-    const type = (attribute(attrs, 'type') || '').toLowerCase();
-    if (!type || /^(?:text|application)\/(?:java|ecma)script$|^module$/.test(type)) scripts.push(match[2]);
-    continue;
-  }
-  if (inertDepth > 0) continue;
-  if (token.startsWith('<form')) {
-    activeForm = { attrs: match[3] || '', controls: [], closed: false };
-    parsedForms.push(activeForm);
-    continue;
-  }
-  if (token.startsWith('</form')) {
-    if (activeForm) activeForm.closed = true;
-    activeForm = null;
-    continue;
-  }
-  if (activeForm && match[4]) activeForm.controls.push({ tag: match[4].toLowerCase(), attrs: match[5] || '' });
-}
+const dom = JSON.parse(domJson);
+const scripts = dom.scripts;
+const attribute = (attrs, name) => Object.prototype.hasOwnProperty.call(attrs, name) ? attrs[name] : null;
+const hasAttribute = (attrs, name) => Object.prototype.hasOwnProperty.call(attrs, name);
 const fail = (message) => {
   process.stderr.write(`${message}\n`);
   process.exit(1);
@@ -380,8 +405,8 @@ const fail = (message) => {
 
 try {
   if (scripts.length === 0) fail('artifact has no executable intake script');
-  const matchingForms = parsedForms.filter((form) => form.closed && attribute(form.attrs, 'id') === 'feature-intake' && attribute(form.attrs, 'data-lavish-question') === task);
-  if (matchingForms.length !== 1) fail('artifact has no keyed intake question');
+  const matchingForms = dom.forms.filter((form) => attribute(form.attrs, 'id') === 'feature-intake');
+  if (matchingForms.length !== 1 || attribute(matchingForms[0].attrs, 'data-lavish-question') !== task) fail('artifact has no keyed intake question');
   const parsedForm = matchingForms[0];
   const elements = {};
   for (const field of fields) {

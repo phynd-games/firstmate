@@ -225,6 +225,26 @@ PY
   [ "$rc" -ne 0 ] || fail "form markup inside a script string was accepted"
   assert_contains "$out" "no keyed intake question" \
     "script-string form markup was treated as an active DOM form"
+  candidate=$home/style-form.html
+  python3 - "$artifact" "$candidate" <<'PY'
+from pathlib import Path
+import sys
+
+source, output = sys.argv[1:]
+html = Path(source).read_text()
+start = html.index('<form id="feature-intake"')
+end = html.index('</form>', start) + len('</form>')
+form = html[start:end]
+fake = '<style>\n' + form + '\n</style>'
+Path(output).write_text(html[:start] + fake + html[end:])
+PY
+  set +e
+  out=$(run_intake "$home" start feature-a1 --artifact "$candidate" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "form markup inside a style raw-text element was accepted"
+  assert_contains "$out" "no keyed intake question" \
+    "style raw-text form markup was treated as an active DOM form"
   for inert in template noscript; do
     candidate=$home/inert-$inert-form.html
     python3 - "$artifact" "$candidate" "$inert" <<'PY'
