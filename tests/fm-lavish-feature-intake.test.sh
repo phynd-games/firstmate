@@ -572,6 +572,27 @@ test_intake_flag_rejects_exemption() {
   pass "Lavish intake: --intake accepts only submitted evidence"
 }
 
+test_verified_exemption_revalidates_reason() {
+  local home receipt marker artifact_hash out rc
+  home=$(make_home verified-exemption)
+  add_task "$home" verified-exemption-a1
+  run_intake "$home" exempt verified-exemption-a1 \
+    --reason 'documentation: target=tests/fm-lavish-feature-intake.test.sh verification case; action=update exemption evidence coverage' \
+    >/dev/null
+  receipt=$home/state/verified-exemption-a1.lavish-intake
+  marker=$home/state/verified-exemption-a1.lavish-intake-classification
+  sed -i '' 's/^reason=.*/reason=skip/' "$receipt" "$marker"
+  artifact_hash=$(shasum -a 256 "$marker" | awk '{print $1}')
+  sed -i '' "s/^artifact_sha256=.*/artifact_sha256=$artifact_hash/" "$receipt"
+  set +e
+  out=$(run_intake "$home" verify verified-exemption-a1 --evidence "$receipt" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "forged exemption reason passed durable verification"
+  assert_contains "$out" "exemption reason must use" "forged exemption refusal was unclear"
+  pass "Lavish intake: durable exemption verification revalidates concrete reasons"
+}
+
 test_contractless_compatibility_requires_existing_endpoint() {
   local home brief out rc
   home=$(make_home legacy)
@@ -877,6 +898,7 @@ test_absent_and_closed_without_feedback_refused
 test_malformed_captured_feedback_refused
 test_missing_intake_session_fails_closed
 test_intake_flag_rejects_exemption
+test_verified_exemption_revalidates_reason
 test_contractless_compatibility_requires_existing_endpoint
 test_start_failure_rolls_back_only_new_state
 test_arm_failure_rolls_back_only_new_state

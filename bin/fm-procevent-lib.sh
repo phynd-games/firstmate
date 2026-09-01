@@ -315,7 +315,7 @@ fm_procevent_claim_release_locked() {
 # rename is the commit point; nothing referencing this result may be published
 # before it returns successfully.
 fm_procevent_capture() {
-  local state=$1 id=$2 adapter=$3 src=$4 inbox seq dest tmp adapter_dest adapter_tmp intake_dest intake_tmp intake=0 registration marker
+  local state=$1 id=$2 adapter=$3 src=$4 inbox seq dest tmp adapter_dest adapter_tmp intake_dest intake_tmp= intake=0 registration marker
   fm_procevent_source_id_valid "$id" || return 1
   fm_procevent_adapter_valid "$adapter" || return 1
   inbox=$(fm_procevent_inbox_dir "$state")

@@ -1204,6 +1204,7 @@ verify_receipt() {
       || fail "not-applicable classification marker has no unique reason"
     [ "$(meta_value "$artifact" reason)" = "$reason" ] \
       || fail "not-applicable reason does not match classification marker"
+    validate_exemption_reason "$reason"
     [ "$(require_unique_meta "$receipt" feedback)" = not-applicable ] \
       || fail "not-applicable evidence has wrong feedback marker"
     printf 'status=not-applicable\nreason=%s\n' "$reason"
