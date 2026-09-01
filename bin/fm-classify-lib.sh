@@ -1271,6 +1271,41 @@ signal_reason_is_actionable() {  # <file> ...
   return 1
 }
 
+FM_SIGNAL_CLASSIFICATION=''
+FM_SIGNAL_CLASSIFICATION_ARGS=''
+FM_SIGNAL_CLASSIFICATION_REUSE=0
+
+signal_classification_clear() {
+  FM_SIGNAL_CLASSIFICATION=''
+  FM_SIGNAL_CLASSIFICATION_ARGS=''
+  FM_SIGNAL_CLASSIFICATION_REUSE=0
+}
+
+signal_classify_tasks() {  # <file> ...
+  local f base task seen='' class reason
+  FM_SIGNAL_CLASSIFICATION=''
+  FM_SIGNAL_CLASSIFICATION_ARGS="$*"
+  FM_SIGNAL_LIMIT_REASON=''
+  for f in "$@"; do
+    base=${f##*/}
+    case "$base" in
+      *.status) task=${base%.status} ;;
+      *.turn-ended) task=${base%.turn-ended} ;;
+      *) continue ;;
+    esac
+    [ -n "$task" ] || continue
+    case " $seen " in *" $task "*) continue ;; esac
+    seen="$seen $task"
+    class=$(crew_absorb_class "$task")
+    FM_SIGNAL_CLASSIFICATION="$FM_SIGNAL_CLASSIFICATION $task=$class"
+    if [ "$class" = limit ] && [ -z "$FM_SIGNAL_LIMIT_REASON" ]; then
+      reason=$(fm_vloop_reason "${STATE:-${FM_STATE_OVERRIDE:-}}" "$task" 2>/dev/null || true)
+      FM_SIGNAL_LIMIT_REASON=${reason:-automatic continuation limit reached}
+    fi
+  done
+  [ -n "$seen" ]
+}
+
 # Classify WHY an idle/stale crew MIGHT be safely absorbed instead of surfaced,
 # from bin/fm-crew-state.sh's one authoritative current-state line
 # ("state: <s> · source: <src> · <detail>"). Prints exactly one token:
@@ -1459,8 +1494,13 @@ crew_worktree_written_since() {  # <id> <state> <anchor-file>
 # more current, not less deliverable. Scoped to .status files - a mate's bare
 # turn-ended ping still uses the ordinary provably-working absorb.
 signal_crew_provably_working() {  # <file> ...
-  local f base dir task seen="" class
-  FM_SIGNAL_LIMIT_REASON=''
+  local f base dir task seen="" class entry reuse=0
+  if [ "$FM_SIGNAL_CLASSIFICATION_REUSE" = 1 ] && [ "$FM_SIGNAL_CLASSIFICATION_ARGS" = "$*" ]; then
+    reuse=1
+  else
+    signal_classification_clear
+    FM_SIGNAL_LIMIT_REASON=''
+  fi
   for f in "$@"; do
     base=${f##*/}
     dir=${f%/*}
@@ -1474,43 +1514,51 @@ signal_crew_provably_working() {  # <file> ...
     case "$base" in
       *.status)
         if [ "$(grep '^kind=' "$dir/$task.meta" 2>/dev/null | tail -1 | cut -d= -f2-)" = secondmate ]; then
+          signal_classification_clear
           return 1
         fi
         ;;
     esac
     case " $seen " in *" $task "*) continue ;; esac
     seen="$seen $task"
-    class=$(crew_absorb_class "$task")
-    if [ "$class" = limit ]; then
-      FM_SIGNAL_LIMIT_REASON=$(fm_vloop_reason "${STATE:-${FM_STATE_OVERRIDE:-}}" "$task" 2>/dev/null || true)
-      [ -n "$FM_SIGNAL_LIMIT_REASON" ] || FM_SIGNAL_LIMIT_REASON="automatic continuation limit reached"
+    if [ "$reuse" = 1 ]; then
+      class=''
+      for entry in $FM_SIGNAL_CLASSIFICATION; do
+        case "$entry" in
+          "$task="*) class=${entry#*=}; break ;;
+        esac
+      done
+      [ -n "$class" ] || {
+        signal_classification_clear
+        return 1
+      }
+    else
+      class=$(crew_absorb_class "$task")
     fi
-    [ "$class" = working ] || return 1
+    if [ "$class" = limit ]; then
+      if [ -z "$FM_SIGNAL_LIMIT_REASON" ]; then
+        FM_SIGNAL_LIMIT_REASON=$(fm_vloop_reason "${STATE:-${FM_STATE_OVERRIDE:-}}" "$task" 2>/dev/null || true)
+        [ -n "$FM_SIGNAL_LIMIT_REASON" ] || FM_SIGNAL_LIMIT_REASON="automatic continuation limit reached"
+      fi
+    fi
+    if [ "$class" != working ]; then
+      signal_classification_clear
+      return 1
+    fi
   done
-  [ -n "$seen" ] || return 1
+  if [ -z "$seen" ]; then
+    signal_classification_clear
+    return 1
+  fi
+  signal_classification_clear
   return 0
 }
 
 signal_collect_limit_reason() {  # <file> ...
-  local f base task seen='' class reason
-  FM_SIGNAL_LIMIT_REASON=''
-  for f in "$@"; do
-    base=${f##*/}
-    case "$base" in
-      *.status) task=${base%.status} ;;
-      *.turn-ended) task=${base%.turn-ended} ;;
-      *) continue ;;
-    esac
-    [ -n "$task" ] || continue
-    case " $seen " in *" $task "*) continue ;; esac
-    seen="$seen $task"
-    class=$(crew_absorb_class "$task")
-    if [ "$class" = limit ] && [ -z "$FM_SIGNAL_LIMIT_REASON" ]; then
-      reason=$(fm_vloop_reason "${STATE:-${FM_STATE_OVERRIDE:-}}" "$task" 2>/dev/null || true)
-      FM_SIGNAL_LIMIT_REASON=${reason:-automatic continuation limit reached}
-    fi
-  done
-  [ -n "$FM_SIGNAL_LIMIT_REASON" ]
+  signal_classify_tasks "$@"
+  local rc=$?
+  FM_SIGNAL_CLASSIFICATION_REUSE=1
+  return "$rc"
 }
 
 # 0 (terminal/actionable) if a stale window's last status line is

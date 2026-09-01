@@ -1367,7 +1367,7 @@ EOF
     # classification runs before status short-circuiting so a limit reason is retained
     # when a batch also contains a captain verb.
     signal_actionable=0
-    FM_SIGNAL_LIMIT_REASON=''
+    signal_classification_clear
     signal_limit_reason=''
     # shellcheck disable=SC2086  # $files is a space-separated status-path list (ids carry no spaces)
     if afk_present; then
@@ -1377,6 +1377,7 @@ EOF
       signal_limit_reason=$FM_SIGNAL_LIMIT_REASON
     fi
     if [ "$signal_actionable" -eq 0 ] && signal_reason_is_actionable $files; then
+      signal_classification_clear
       signal_actionable=1
     elif [ "$signal_actionable" -eq 0 ] && signal_crew_provably_working $files; then
       :

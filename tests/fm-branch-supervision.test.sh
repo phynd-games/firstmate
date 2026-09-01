@@ -147,7 +147,7 @@ test_outcome_startup_replay_preserves_silence() {
 # a new failure, decision, terminal result, PR/CI change, or validation-loop
 # stop renders again. The durable store append path is untouched by the gate.
 test_routine_note_coalescing() {
-  local home out ev reservation token marker_before token2 fakebin
+  local home out ev reservation token marker_before token2 token3 fakebin rc
   home="$TMP_ROOT/note-coalesce-home"
   mkdir -p "$home/state"
   gate() { FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-render --task "$1"; }
@@ -162,8 +162,10 @@ test_routine_note_coalescing() {
   token=${reservation#render }
   grep -q '^pending$' "$home/state/.branch-note-sig-task-pending" \
     || fail "a routine note reservation was not marked pending"
-  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 8)" = render-unreserved ] \
-    || fail "a concurrent generation mutated an existing reservation"
+  case "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 8)" in
+    coalesce\ *) ;;
+    *) fail "a concurrent generation disturbed an existing reservation" ;;
+  esac
   [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-commit --task task-pending --generation 8 --token "$token")" != committed ] \
     || fail "a different generation committed another reservation"
   [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-commit --task task-pending --generation 7 --token "$token")" = committed ] \
@@ -202,6 +204,29 @@ SH
   [ "$(PATH="$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 11)" = render-unreserved ] \
     || fail "mktemp failure did not fail toward an unreserved render"
   [ ! -e "$home/state/.branch-outcomes.lock" ] || fail "mktemp failure stranded the outcome lock"
+  printf 'failed: commit persistence\n' > "$home/state/task-pending.status"
+  reservation=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 12)
+  case "$reservation" in render\ *) ;; *) fail "a changed routine note was not reserved before commit failure" ;; esac
+  token3=${reservation#render }
+  if PATH="$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-commit --task task-pending --generation 12 --token "$token3"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  [ "$rc" -ne 0 ] || fail "a note-commit persistence failure was hidden"
+  case "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-reserve --task task-pending --generation 13)" in
+    coalesce\ *) ;;
+    *) fail "a successfully delivered note was duplicated after commit failure" ;;
+  esac
+  printf 'failed: strict marker\n' > "$home/state/task-strict.status"
+  if out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" note-render --task task-strict --strict); then
+    rc=0
+  else
+    rc=$?
+  fi
+  [ "$rc" -ne 0 ] && [ "$out" = render ] \
+    || fail "strict marker persistence failure was not surfaced after delivery"
+  [ ! -e "$home/state/.branch-outcomes.lock" ] || fail "strict marker failure stranded the outcome lock"
   printf 'working: still implementing\n' >> "$home/state/task-c.status"
   [ "$(gate task-c)" != render ] \
     || fail "a routine working: append (not a failure/decision/terminal change) re-rendered"

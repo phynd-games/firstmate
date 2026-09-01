@@ -280,8 +280,28 @@ _fm_vloop_scope_contains() {  # <paths> <path>
   return 1
 }
 
+_fm_vloop_hash_sig_valid() {  # <signature>
+  case "$1" in
+    '') return 0 ;;
+    *) printf '%s\n' "$1" | grep -Eq '^[0-9a-fA-F]{32}$' ;;
+  esac
+}
+
+_fm_vloop_scalar_fields_valid() {  # <evidence-content>
+  printf '%s\n' "$1" | awk '
+    /^[[:space:]]*(id|branch|status|head|outcome|base|pr|gate|awaiting_agent):[[:space:]]*/ {
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      key = line
+      sub(/:.*/, "", key)
+      if (++seen[key] > 1) invalid = 1
+    }
+    END { exit invalid }
+  '
+}
+
 _fm_vloop_journal_valid() {  # <journal-content>
-  local stored=$1 key value version phase active scope_base scope_head scope_paths scope_count max_files
+  local stored=$1 key value version phase active scope_base scope_head scope_paths scope_count max_files themes seen_themes sig count
   for key in version run head status phase findings_sig progress_sig fix_rounds themes heads last_observed last_progress active stop_reason scope_base scope_head scope_paths; do
     printf '%s\n' "$stored" | grep -q "^$key=" || return 1
   done
@@ -330,6 +350,21 @@ _fm_vloop_journal_valid() {  # <journal-content>
   for key in last_observed last_progress; do
     value=$(_fm_vloop_journal_get "$stored" "$key")
     case "$value" in ''|*[!0-9]*) return 1 ;; esac
+  done
+  value=$(_fm_vloop_journal_get "$stored" findings_sig)
+  _fm_vloop_hash_sig_valid "$value" || return 1
+  value=$(_fm_vloop_journal_get "$stored" progress_sig)
+  _fm_vloop_hash_sig_valid "$value" || return 1
+  themes=$(_fm_vloop_journal_get "$stored" themes)
+  seen_themes=''
+  for value in $themes; do
+    sig=${value%%:*}
+    count=${value#*:}
+    [ "$sig" != "$value" ] || return 1
+    _fm_vloop_hash_sig_valid "$sig" && [ -n "$sig" ] || return 1
+    case "$count" in ''|0|*[!0-9]*) return 1 ;; esac
+    case " $seen_themes " in *" $sig "*) return 1 ;; esac
+    seen_themes="$seen_themes $sig"
   done
   if [ "$phase" != coarse ]; then
     for key in run head; do
@@ -394,6 +429,7 @@ fm_vloop_evidence_valid() {  # <content>
   local content=$1 first key value status outcome
   first=${content%%$'\n'*}
   [ "$first" = run: ] || return 1
+  _fm_vloop_scalar_fields_valid "$content" || return 1
   for key in id branch status head; do
     value=$(fm_nm_strip_quotes "$(fm_nm_field "$content" "$key")")
     [ -n "$value" ] || return 1
@@ -431,16 +467,17 @@ _fm_vloop_head_advance_valid() {  # <worktree> <old-head> <new-head> <scope-path
   change_count=$(printf '%s\n' "$change_files" | awk 'NF { count += 1 } END { print count + 0 }')
   max_files=$(_fm_vloop_bound "${FM_VLOOP_MAX_CHANGE_FILES:-}" "$FM_VLOOP_MAX_CHANGE_FILES_DEFAULT")
   [ "$change_count" -le "$max_files" ] || return 1
-  [ -n "$scope_paths" ] || return 1
-  while IFS= read -r change_file; do
-    [ -n "$change_file" ] || return 1
-    case "$change_file" in
-      /*|../*|*/../*) return 1 ;;
-    esac
-    _fm_vloop_scope_contains "$scope_paths" "$change_file" || return 1
-  done <<EOF
+  if [ -n "$scope_paths" ]; then
+    while IFS= read -r change_file; do
+      [ -n "$change_file" ] || return 1
+      case "$change_file" in
+        /*|../*|*/../*) return 1 ;;
+      esac
+      _fm_vloop_scope_contains "$scope_paths" "$change_file" || return 1
+    done <<EOF
 $change_files
 EOF
+  fi
 }
 
 _fm_vloop_record_stop() {  # <state> <id> <reason>
@@ -592,6 +629,11 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   outcome=$(fm_nm_strip_quotes "$(fm_nm_field "$content" outcome)")
   head=$(fm_nm_strip_quotes "$(fm_nm_field "$content" head)")
   phase=$(_fm_vloop_phase "$content" "$status" "$outcome")
+  if [ "$run_id" = "$s_run" ] && [ "$s_phase" = terminal ] && [ "$phase" != terminal ]; then
+    stop_reason="incoherent terminal-to-nonterminal transition for run $run_id"
+    _fm_vloop_record_stop "$state" "$id" "$stop_reason" || return 1
+    return 2
+  fi
   findings_sig=$(_fm_vloop_findings_sig "$content")
   steps_sig=$(_fm_vloop_steps_sig "$content")
   evidence_base=$(fm_nm_strip_quotes "$(fm_nm_field "$content" base)")
@@ -669,7 +711,9 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   fi
 
   if [ "$phase" = terminal ]; then active=0; else active=1; fi
-  [ -n "$stop_reason" ] || stop_reason=$s_stop_reason
+  if [ "$phase" != terminal ] && [ -z "$stop_reason" ]; then
+    stop_reason=$s_stop_reason
+  fi
 
   max_fix=$(_fm_vloop_bound "${FM_VLOOP_MAX_FIX_ROUNDS:-}" "$FM_VLOOP_MAX_FIX_ROUNDS_DEFAULT")
   max_theme=$(_fm_vloop_bound "${FM_VLOOP_MAX_SAME_THEME:-}" "$FM_VLOOP_MAX_SAME_THEME_DEFAULT")
@@ -728,13 +772,13 @@ fm_vloop_verdict() {  # <state> <id>
     return 1
   fi
   active=$(_fm_vloop_journal_get "$stored" active)
-  [ "$active" = 1 ] || { printf 'continue'; return 0; }
-  now=$(_fm_vloop_now)
   stop_reason=$(_fm_vloop_journal_get "$stored" stop_reason)
   if [ -n "$stop_reason" ]; then
     printf 'stop %s' "$stop_reason"
     return 0
   fi
+  [ "$active" = 1 ] || { printf 'continue'; return 0; }
+  now=$(_fm_vloop_now)
   stop_reason=$(_fm_vloop_time_stop_reason "$stored" "$now")
   if [ -n "$stop_reason" ]; then
     if ! _fm_vloop_record_stop "$state" "$id" "$stop_reason"; then

@@ -41,7 +41,7 @@
 #     true, and mark every unread row read. Prints nothing when nothing visible
 #     is unread, so a home that never ran the branch stays silent. Run it only
 #     when the session holds the lock (fm-session-start.sh owns the call site).
-#   fm-branch-outcome.sh note-render --task <id>
+#   fm-branch-outcome.sh note-render --task <id> [--strict]
 #     Deterministic duplicate coalescing for ROUTINE captain-facing merge
 #     notes, so a task main already owns cannot accumulate repeated no-change
 #     notes at the captain's tail. Prints "render" when the note carries new
@@ -69,7 +69,7 @@ CURSOR="$STATE/.branch-outcomes-cursor"
 LOCK="$STATE/.branch-outcomes.lock"
 
 usage() {
-  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | list [--recent <n>] | startup-replay | note-render --task <id> | note-reserve --task <id> --generation <n> | note-commit|note-rollback --task <id> --generation <n> --token <token>" >&2
+  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | list [--recent <n>] | startup-replay | note-render --task <id> [--strict] | note-reserve --task <id> --generation <n> | note-commit|note-rollback --task <id> --generation <n> --token <token>" >&2
   exit 2
 }
 
@@ -207,6 +207,15 @@ note_pending_block() { # <marker-content> <begin> <end>
   '
 }
 
+note_render_fail() {
+  fm_lock_release "$LOCK"
+  printf 'render\n'
+  if [ "${STRICT:-0}" = 1 ]; then
+    exit 1
+  fi
+  exit 0
+}
+
 CMD=${1:-}
 shift 2>/dev/null || true
 
@@ -294,7 +303,13 @@ case "$CMD" in
   note-render)
     [ "${1:-}" = --task ] || usage
     TASK=${2:-}
-    [ "$#" -eq 2 ] || usage
+    shift 2 || usage
+    STRICT=0
+    if [ "${1:-}" = --strict ]; then
+      STRICT=1
+      shift
+    fi
+    [ "$#" -eq 0 ] || usage
     [ -n "$TASK" ] || usage
     # Fleet-wide notes keep their own silent contract, and an id this gate
     # cannot safely use as a marker filename is never coalesced: both render.
@@ -309,25 +324,17 @@ case "$CMD" in
     marker_present=0
     if [ -e "$MARKER" ] || [ -L "$MARKER" ]; then marker_present=1; fi
     if ! SIG=$(note_novelty_signature "$TASK" "$marker_present"); then
-      fm_lock_release "$LOCK"
-      printf 'render\n'
-      exit 0
+      note_render_fail
     fi
     if [ -e "$MARKER" ] || [ -L "$MARKER" ]; then
       [ -f "$MARKER" ] && [ ! -L "$MARKER" ] || {
-        fm_lock_release "$LOCK"
-        printf 'render\n'
-        exit 0
+        note_render_fail
       }
       LAST=$(cat "$MARKER" 2>/dev/null) || {
-        fm_lock_release "$LOCK"
-        printf 'render\n'
-        exit 0
+        note_render_fail
       }
       if note_marker_pending "$LAST"; then
-        fm_lock_release "$LOCK"
-        printf 'render\n'
-        exit 0
+        note_render_fail
       fi
     else
       LAST=''
@@ -338,21 +345,15 @@ case "$CMD" in
       exit 0
     fi
     if ! TMP=$(mktemp "$STATE/.branch-note-sig.XXXXXX"); then
-      fm_lock_release "$LOCK"
-      printf 'render\n'
-      exit 0
+      note_render_fail
     fi
     if ! printf '%s\n' "$SIG" > "$TMP"; then
       rm -f -- "$TMP"
-      fm_lock_release "$LOCK"
-      printf 'render\n'
-      exit 0
+      note_render_fail
     fi
     if ! mv -f -- "$TMP" "$MARKER"; then
       rm -f -- "$TMP"
-      fm_lock_release "$LOCK"
-      printf 'render\n'
-      exit 0
+      note_render_fail
     fi
     fm_lock_release "$LOCK"
     printf 'render\n'
@@ -393,7 +394,7 @@ case "$CMD" in
       }
       if note_marker_pending "$LAST"; then
         fm_lock_release "$LOCK"
-        printf 'render-unreserved\n'
+        printf 'coalesce pending routine outcome for %s: another delivery owns this novelty reservation\n' "$TASK"
         exit 0
       fi
     else

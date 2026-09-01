@@ -250,6 +250,13 @@ test_malformed_evidence_stop() {
     || fail "malformed evidence created a continuation journal without a valid run"
   ev_running "$ev" 01RUN running pending
   fold "$state" malformed-outcome "$ev" 1000
+  printf 'status: bogus\n' >> "$ev"
+  if fm_vloop_observe "$state" malformed-outcome "$ev"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 2 ] || fail "duplicate scalar evidence fields were accepted"
+  [ "$(fm_vloop_reason "$state" malformed-outcome)" = \
+    'validation evidence malformed or incomplete for task malformed-outcome' ] \
+    || fail "duplicate scalar evidence fields did not stop with a recovery reason"
+  sed -i.bak '/^status: bogus$/d' "$ev" && rm -f "$ev.bak"
   printf 'outcome: garbage\n' >> "$ev"
   if fm_vloop_observe "$state" malformed-outcome "$ev"; then rc=0; else rc=$?; fi
   [ "$rc" -eq 2 ] || fail "an unrecognized run outcome was accepted"
@@ -278,7 +285,7 @@ head=abc1234
 status=bogus
 phase=running
 findings_sig=
-progress_sig=abc
+progress_sig=00000000000000000000000000000000
 fix_rounds=0
 themes=
 heads=abc1234
@@ -290,6 +297,15 @@ EOF
   [ "$(FM_VLOOP_NOW=2000 fm_vloop_verdict "$state" bogus 2>/dev/null || true)" = \
     'stop validation-loop journal unreadable or incomplete; recover in the same copy' ] \
     || fail "an unrecognized journal status continued"
+  sed 's/^progress_sig=.*/progress_sig=not-a-signature/' "$state/bogus.validation-loop" > "$state/malformed-signature.validation-loop"
+  [ "$(FM_VLOOP_NOW=2000 fm_vloop_verdict "$state" malformed-signature 2>/dev/null || true)" = \
+    'stop validation-loop journal unreadable or incomplete; recover in the same copy' ] \
+    || fail "a malformed progress signature continued"
+  sed 's/^progress_sig=.*/progress_sig=00000000000000000000000000000000/; s/^themes=.*/themes=not-a-theme/' \
+    "$state/bogus.validation-loop" > "$state/malformed-themes.validation-loop"
+  [ "$(FM_VLOOP_NOW=2000 fm_vloop_verdict "$state" malformed-themes 2>/dev/null || true)" = \
+    'stop validation-loop journal unreadable or incomplete; recover in the same copy' ] \
+    || fail "a malformed theme counter continued"
   cat > "$state/incoherent.validation-loop" <<'EOF'
 version=1
 run=01RUN
@@ -297,7 +313,7 @@ head=abc1234
 status=completed
 phase=terminal
 findings_sig=
-progress_sig=abc
+progress_sig=00000000000000000000000000000000
 fix_rounds=0
 themes=
 heads=abc1234
@@ -314,6 +330,34 @@ EOF
     || fail "an incoherent terminal journal state continued"
   unset FM_FAKE_CREW_STATE
   pass "malformed journal stop: incomplete and unrecognized loop state fails closed"
+}
+
+test_terminal_transition_stops_before_reactivation() {
+  local state ev dir rc v
+  dir=$(make_case vloop-terminal-transition); state="$dir/state"; ev="$dir/ev"
+  ev_running "$ev" 01RUN running pending
+  fold "$state" terminal "$ev" 1000
+  cat > "$ev" <<'EOF'
+run:
+  id: "01RUN"
+  branch: fm/loop
+  status: completed
+  head: "abc1234"
+  findings: none
+outcome: passed
+EOF
+  fold "$state" terminal "$ev" 1010
+  ev_running "$ev" 01RUN running pending
+  if fm_vloop_observe "$state" terminal "$ev"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 2 ] || fail "a terminal run reactivated instead of rejecting the transition"
+  v=$(fm_vloop_verdict "$state" terminal)
+  case "$v" in
+    stop*"incoherent terminal-to-nonterminal transition"*) ;;
+    *) fail "terminal-to-running transition lost its durable stop: '$v'" ;;
+  esac
+  grep -q '^active=0$' "$state/terminal.validation-loop" \
+    || fail "terminal-to-running rejection reactivated the journal"
+  pass "terminal transition: a completed run cannot reactivate under the same run id"
 }
 
 test_journal_state_matrix() {
@@ -335,7 +379,7 @@ head=abc1234
 status=$status
 phase=$phase
 findings_sig=
-progress_sig=abc
+progress_sig=00000000000000000000000000000000
 fix_rounds=0
 themes=
 heads=abc1234
@@ -362,7 +406,7 @@ head=abc1234
 status=running
 phase=running
 findings_sig=
-progress_sig=abc
+progress_sig=00000000000000000000000000000000
 fix_rounds=0
 themes=
 heads=abc1234
@@ -393,7 +437,7 @@ head=abc1234
 status=$status
 phase=$phase
 findings_sig=
-progress_sig=abc
+progress_sig=00000000000000000000000000000000
 fix_rounds=0
 themes=
 heads=abc1234
@@ -684,7 +728,7 @@ test_head_change_set_allows_authenticated_addition() {
 }
 
 test_head_transition_is_coherent() {
-  local state ev dir v repo old_head new_head latest_head
+  local state ev dir v repo old_head new_head latest_head state2
   dir=$(make_case vloop-head-transition); state="$dir/state"; ev="$dir/ev"; repo="$dir/repo"
   git init -q "$repo"
   git -C "$repo" config user.email test@example.com
@@ -714,6 +758,15 @@ test_head_transition_is_coherent() {
   esac
   grep -q '^stop_reason=incoherent head transition' "$state/head.validation-loop" \
     || fail "the incoherent head stop was not durable"
+  state2="$dir/state-no-scope"
+  mkdir -p "$state2"
+  ev_running "$ev" 02RUN running pending
+  sed -i.bak "s/^  head: \"abc1234\"/  head: \"$new_head\"/" "$ev" && rm -f "$ev.bak"
+  fold "$state2" head-no-scope "$ev" 1050 "$repo"
+  sed -i.bak "s/^  head: \"$new_head\"/  head: \"$latest_head\"/" "$ev" && rm -f "$ev.bak"
+  fold "$state2" head-no-scope "$ev" 1060 "$repo"
+  [ "$(verdict_at "$state2" head-no-scope 1070)" = continue ] \
+    || fail "a scope-inapplicable head advance was rejected"
   pass "head transition: repeated or regressed run heads stop instead of refreshing progress"
 }
 
@@ -819,6 +872,7 @@ test_repeated_finding_stop
 test_unknown_state_stop
 test_malformed_evidence_stop
 test_malformed_journal_stop
+test_terminal_transition_stops_before_reactivation
 test_journal_state_matrix
 test_journal_write_failure_stops_closed
 test_stale_pipeline_evidence
