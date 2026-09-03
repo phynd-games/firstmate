@@ -1,0 +1,89 @@
+{
+  "version": 2,
+  "file_explorer": {
+    "respect_gitignore": true,
+    "show_gitignored": true,
+    "show_hidden": false
+  },
+  "languages": {
+    "typescript": {
+      "extensions": ["ts", "tsx", "mts", "cts"],
+      "grammar": "typescript",
+      "comment_prefix": "//",
+      "auto_indent": true
+    },
+    "javascript": {
+      "extensions": ["js", "jsx", "mjs", "cjs"],
+      "grammar": "js",
+      "comment_prefix": "//",
+      "auto_indent": true
+    },
+    "rust": {
+      "extensions": ["rs"],
+      "grammar": "rs",
+      "comment_prefix": "//",
+      "auto_indent": true
+    },
+    "lua": {
+      "extensions": ["lua"],
+      "grammar": "Lua",
+      "comment_prefix": "--",
+      "auto_indent": true
+    },
+    "python": {
+      "extensions": ["py", "pyi"],
+      "grammar": "python",
+      "comment_prefix": "#",
+      "auto_indent": true
+    }
+  },
+  "lsp": {
+    "typescript": [
+      {
+        "command": "typescript-language-server",
+        "enabled": true,
+        "args": ["--stdio"],
+        "auto_start": true,
+        "root_markers": ["tsconfig.json", "jsconfig.json", "package.json", ".git"],
+        "language_id_overrides": {"tsx": "typescriptreact"}
+      }
+    ],
+    "javascript": [
+      {
+        "command": "typescript-language-server",
+        "enabled": true,
+        "args": ["--stdio"],
+        "auto_start": true,
+        "root_markers": ["tsconfig.json", "jsconfig.json", "package.json", ".git"],
+        "language_id_overrides": {"jsx": "javascriptreact"}
+      }
+    ],
+    "rust": [
+      {
+        "command": "rust-analyzer",
+        "enabled": true,
+        "args": [],
+        "auto_start": true,
+        "root_markers": ["Cargo.toml", "rust-project.json", ".git"]
+      }
+    ],
+    "lua": [
+      {
+        "command": "lua-language-server",
+        "enabled": true,
+        "args": [],
+        "auto_start": true,
+        "root_markers": [".luarc.json", ".luarc.jsonc", ".luacheckrc", ".stylua.toml", ".git"]
+      }
+    ],
+    "python": [
+      {
+        "command": "basedpyright-langserver",
+        "enabled": true,
+        "args": ["--stdio"],
+        "auto_start": true,
+        "root_markers": ["pyproject.toml", "setup.py", "setup.cfg", "pyrightconfig.json", ".git"]
+      }
+    ]
+  }
+}

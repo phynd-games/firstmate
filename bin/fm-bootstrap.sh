@@ -384,6 +384,7 @@ secondmate_sync() {
     done
     return 0
   fi
+  # shellcheck disable=SC2034 # Consumed by the sourced fast-forward helper.
   FF_NUDGE_WINDOWS=""
   FF_SEEN_HOMES=""
   SECOND_MATE_NUDGE_MESSAGE=$FM_SECOND_MATE_NUDGE_MESSAGE
@@ -399,6 +400,7 @@ secondmate_sync() {
     fm_secondmate_nudge_write "$STATE" "$id" "$home" "$commit" "$instr" "$message" "$remote"
   }
 
+  # shellcheck disable=SC2329 # Registered as a callback for the sourced helper.
   secondmate_send_nudge() {
     local id=$1 home=$2 commit=$3 instr=$4 selector marker out
     selector="fm-$id"
@@ -418,6 +420,7 @@ secondmate_sync() {
     fi
   }
 
+  # shellcheck disable=SC2329 # Registered as a callback for the sourced helper.
   fm_ff_after_instruction_update() {
     local id=$1 home=$2 _window=$3 instr=$4
     secondmate_send_nudge "$id" "$home" "$primary_head" "$instr"
@@ -1028,6 +1031,16 @@ secondmate_handoff_detect() {
 }
 
 install_cmd() {
+  if [ "${FM_BOOTSTRAP_OS_OVERRIDE:-$(uname -s)}" = Darwin ]; then
+    case "$1" in
+      tmux|node|git|gh|curl|jq|herdr|treehouse|no-mistakes|fresh|starship|\
+      rust-analyzer|lua-language-server|basedpyright|typescript-language-server|\
+      wezterm|opensuperwhisper|gh-axi|chrome-devtools-axi|lavish-axi|tasks-axi|quota-axi)
+        printf "'%s/phynd-dev' install-tool %s\n" "$FM_ROOT" "$1"
+        return 0
+        ;;
+    esac
+  fi
   case "$1" in
     tmux|node|git|gh|curl|jq|orca|zellij) echo "brew install $1  # or the platform's package manager" ;;
     cmux) echo "brew install --cask cmux  # or see https://cmux.com" ;;
@@ -1041,7 +1054,10 @@ install_cmd() {
 
 manual_install_url() {
   case "$1" in
-    herdr) echo "https://herdr.dev" ;;
+    herdr)
+      [ "${FM_BOOTSTRAP_OS_OVERRIDE:-$(uname -s)}" = Darwin ] && return 1
+      echo "https://herdr.dev"
+      ;;
     cursor-agent) echo "https://cursor.com/cli" ;;
     *) return 1 ;;
   esac

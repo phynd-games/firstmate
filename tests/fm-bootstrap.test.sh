@@ -29,6 +29,7 @@ set -u
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 TMP_ROOT=$(fm_test_tmproot fm-bootstrap-tests)
 export FM_BACKEND_CMUX_BUNDLE_BIN="$TMP_ROOT/no-bundled-cmux"
+export FM_BOOTSTRAP_OS_OVERRIDE=Linux
 
 # Hermetic runtime-backend detection. These cases pin the backend per-home via
 # config/backend; the dev shell's ambient runtime markers ($TMUX inside tmux,
@@ -536,12 +537,28 @@ test_retained_backends_refuse() {
 
 test_herdr_install_requires_manual_action() {
   local out status
-  out=$("$ROOT/bin/fm-bootstrap.sh" install herdr 2>&1)
+  out=$(FM_BOOTSTRAP_OS_OVERRIDE=Linux "$ROOT/bin/fm-bootstrap.sh" install herdr 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "install herdr should fail instead of evaluating its manual-install hint"
   [ "$out" = "error: herdr requires manual installation (instructions: https://herdr.dev)" ] \
     || fail "install herdr should return actionable manual-install guidance, got: $out"
   pass "bootstrap: Herdr manual-install guidance is never executed as a shell command"
+}
+
+test_darwin_missing_tool_routes_through_phynd_dev() {
+  local case_dir fakebin out expected
+  case_dir="$TMP_ROOT/darwin-install-route"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  mv "$fakebin/herdr" "$fakebin/herdr.present"
+  expected="MISSING: herdr (install: '$case_dir/home/phynd-dev' install-tool herdr)"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_BOOTSTRAP_OS_OVERRIDE=Darwin FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" "$expected" "Darwin Herdr remediation should route through phynd-dev"
+  assert_not_contains "$out" "MISSING_MANUAL: herdr" "Darwin Herdr should have an executable remediation"
+  pass "bootstrap: Darwin missing tools route through the repository phynd-dev entrypoint"
 }
 
 test_unknown_backend_reports_invalid_configuration() {
@@ -954,6 +971,35 @@ test_crew_dispatch_active_rules_are_verbose_bootstrap_info() {
   pass "bootstrap surfaces active crew-dispatch rules only as verbose BOOTSTRAP_INFO"
 }
 
+test_phynd_dispatch_defaults_are_effective_bootstrap_facts() {
+  local case_dir fakebin out
+  case_dir="$TMP_ROOT/dispatch-phynd-defaults"
+  mkdir -p "$case_dir/home"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  add_real_jq "$fakebin"
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" \
+    FM_ROOT_OVERRIDE="$case_dir/home" FM_CONFIG_OVERRIDE="$ROOT/config" \
+    FM_BOOTSTRAP_DETECT_ONLY=1 FM_BOOTSTRAP_NETWORK=skip \
+    FM_BOOTSTRAP_VERBOSE_FACTS=1 FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" \
+    "BOOTSTRAP_INFO: crew dispatch rule: The task produces a critical design or architecture plan and the work is on the most critical path or is materially ambiguous. -> claude/fable/xhigh" \
+    "most-critical-path design work should resolve to Claude Fable xhigh"
+  assert_contains "$out" \
+    "BOOTSTRAP_INFO: crew dispatch rule: The task produces a critical design or architecture plan, unless the more specific most-critical-path or materially-ambiguous rule applies. -> claude/fable/high" \
+    "ordinary design work should resolve to Claude Fable high"
+  assert_contains "$out" \
+    "BOOTSTRAP_INFO: crew dispatch rule: A critical design or architecture plan matched a Fable rule, but that preferred Fable route is concretely unavailable. -> pi/openai-codex/gpt-5.6-sol/xhigh" \
+    "unavailable Fable should resolve to Pi Sol xhigh"
+  assert_contains "$out" \
+    "BOOTSTRAP_INFO: crew dispatch rule: The task ports, wires, validates, repairs, or ships a phynd-cloud TypeScript Lambda from apps/Phynd-APIs into apps/Phynd-Rust-APIs. -> codex/default/xhigh" \
+    "the Rust migration should resolve to Codex xhigh"
+  assert_not_contains "$out" "crew dispatch default:" \
+    "the shipped Phynd rules must not be shadowed by a generic dispatch default"
+  pass "bootstrap validates and surfaces every shipped Phynd dispatch outcome"
+}
+
 test_crew_dispatch_validation() {
   local label body expect mode case_dir fakebin out n
   n=0
@@ -1046,6 +1092,7 @@ test_quota_axi_min_version
 test_git_is_required_with_supported_install_instruction
 test_retained_backends_refuse
 test_herdr_install_requires_manual_action
+test_darwin_missing_tool_routes_through_phynd_dev
 test_unknown_backend_reports_invalid_configuration
 test_fleet_sync_timeout_scales_with_origin_backed_project_count
 test_fleet_sync_timeout_floor_preserves_small_fleets
@@ -1059,4 +1106,5 @@ test_network_sweeps_recheck_lock_ownership
 test_network_phases_record_per_step_elapsed_times
 test_tasks_axi_verdict_handoff_is_consumed_once
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
+test_phynd_dispatch_defaults_are_effective_bootstrap_facts
 test_crew_dispatch_validation

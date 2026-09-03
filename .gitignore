@@ -15,5 +15,8 @@ config/*
 !config/backend
 !config/crew-dispatch.json
 !config/herdr-presentation-spaces
+!config/fresh/
+!config/fresh/config.json
+!config/starship.toml
 ui/node_modules/
 ui/test/.render-built.mjs
