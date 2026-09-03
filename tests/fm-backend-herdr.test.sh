@@ -63,7 +63,7 @@ if [ "${1:-} ${2:-}" = "pane get" ] && [ ! -f "$RESP/$next.exit" ]; then
     && [ -f "$RESP/$next.out" ] \
     && jq -e '(.result.pane | type) == "object"' "$RESP/$next.out" >/dev/null 2>&1; then
     echo "$next" > "$COUNT_FILE"
-    jq '.result.pane.terminal_id //= ("term_" + .result.pane.pane_id)' "$RESP/$next.out"
+    cat "$RESP/$next.out"
     exit 0
   fi
   if [ "${FM_HERDR_FAKE_CONSUME_PANE_GET:-0}" != 1 ] || [ ! -f "$RESP/$next.out" ]; then
@@ -81,18 +81,7 @@ if [ -f "$RESP/$n.exit" ]; then
   exit "$(cat "$RESP/$n.exit")"
 fi
   if [ -f "$RESP/$n.out" ]; then
-    if [ "${1:-} ${2:-}" = "workspace create" ] \
-      && jq -e '(.result.root_pane | type) == "object"' "$RESP/$n.out" >/dev/null 2>&1; then
-      jq '.result.tab.workspace_id //= .result.workspace.workspace_id
-        | .result.root_pane.terminal_id //= ("term_" + .result.root_pane.pane_id)' "$RESP/$n.out"
-    elif [ "${1:-} ${2:-}" = "tab create" ] \
-      && jq -e '(.result.root_pane | type) == "object"' "$RESP/$n.out" >/dev/null 2>&1; then
-      jq '.result.tab.workspace_id //= .result.root_pane.workspace_id
-        | .result.root_pane.terminal_id //= ("term_" + .result.root_pane.pane_id)' "$RESP/$n.out"
-    elif [ "${1:-} ${2:-}" = "workspace list" ] \
-      && jq -e '(.result.workspaces | type) == "array"' "$RESP/$n.out" >/dev/null 2>&1; then
-      jq '.result.type //= "workspace_list"' "$RESP/$n.out"
-    elif [ -f "$RESP/$n.normalize-pane" ] \
+    if [ -f "$RESP/$n.normalize-pane" ] \
       && [ "${1:-} ${2:-}" = "pane list" ] \
       && jq -e '(.result.panes | type) == "array"' "$RESP/$n.out" >/dev/null 2>&1; then
     workspace=${4:-}
