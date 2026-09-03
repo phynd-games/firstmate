@@ -39,6 +39,14 @@ ln -sfn "$PHYN_DEV_HOME/.local/state/phynd-dev/home-manager/phynd-dev" \
   "$PHYN_DEV_HOME/.local/bin/phynd-dev"
 SH
   chmod +x "$dir/nix" "$dir/darwin-rebuild"
+  cat > "$dir/brew" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = list ] && [ "${PHYN_TEST_MISSING_BREW_PACKAGE:-}" = "${3:-}" ]; then
+  exit 1
+fi
+exit 0
+SH
+  chmod +x "$dir/brew"
   for tool in actionlint basedpyright basedpyright-langserver fd fresh fzf gh git jq \
     lua-language-server node npm npx rg rust-analyzer shellcheck starship treehouse \
     typescript-language-server tmux curl; do
@@ -125,7 +133,14 @@ done
 SH
   chmod +x "$case_dir/fakebin/npm"
   mkdir -p "$case_dir/globalbin"
-  for tool in no-mistakes pi gnhf gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi; do
+  cat > "$case_dir/globalbin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' 'no-mistakes version v1.46.0 (fake)'
+fi
+SH
+  chmod +x "$case_dir/globalbin/no-mistakes"
+  for tool in pi gnhf gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi; do
     cat > "$case_dir/globalbin/$tool" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -167,6 +182,46 @@ test_root_entrypoint_resolves_itself() {
   assert_contains "$out" "checkout: $ROOT" "root entrypoint should identify its own checkout"
   assert_contains "$out" "system:   aarch64-darwin" "root entrypoint should resolve the host system"
   pass "root phynd-dev delegates to bin/phynd-dev independent of caller directory"
+}
+
+test_install_tool_repairs_outdated_no_mistakes() {
+  local case_dir fixture home xdg state npm_prefix nix_log rebuild_log marker out
+  case_dir="$TMP_ROOT/no-mistakes-repair"
+  fixture="$case_dir/repo"
+  home="$case_dir/home"
+  xdg="$home/.config"
+  state="$home/.local/state/phynd-dev"
+  npm_prefix="$home/.local/share/phynd-dev/npm"
+  nix_log="$case_dir/nix.log"
+  rebuild_log="$case_dir/rebuild.log"
+  marker="$case_dir/repaired"
+  mkdir -p "$home" "$case_dir/globalbin"
+  make_phynd_fixture "$ROOT" "$fixture"
+  make_fake_phynd_tools "$case_dir/fakebin"
+  PHYN_TEST_FAKEBIN="$case_dir/fakebin"
+  PHYN_TEST_GLOBALBIN="$case_dir/globalbin"
+  PHYN_TEST_SKIP_TOOLS=1
+  PHYN_DEV_NM_MARKER="$marker"
+  export PHYN_TEST_FAKEBIN PHYN_TEST_GLOBALBIN PHYN_TEST_SKIP_TOOLS PHYN_DEV_NM_MARKER
+  cat > "$case_dir/globalbin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' 'no-mistakes version v1.45.4 (fake)'
+fi
+SH
+  chmod +x "$case_dir/globalbin/no-mistakes"
+  cat > "$case_dir/fakebin/curl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'printf repaired > "${PHYN_DEV_NM_MARKER:?}"'
+SH
+  chmod +x "$case_dir/fakebin/curl"
+
+  out=$(phynd_env "$home" "$xdg" "$state" "$npm_prefix" "$nix_log" "$rebuild_log" \
+    "$fixture/phynd-dev" install-tool no-mistakes) \
+    || fail "outdated no-mistakes repair failed: $out"
+  [ "$(cat "$marker")" = repaired ] \
+    || fail "outdated no-mistakes should run the official installer"
+  pass "phynd-dev repairs outdated no-mistakes installations"
 }
 
 test_install_noop_update_and_safe_backup() {
@@ -214,6 +269,15 @@ test_install_noop_update_and_safe_backup() {
   count=$(wc -l < "$rebuild_log" | tr -d ' ')
   [ "$count" -eq 1 ] || fail "second install should not reactivate nix-darwin"
 
+  PHYN_TEST_MISSING_BREW_PACKAGE=herdr
+  export PHYN_TEST_MISSING_BREW_PACKAGE
+  out=$(phynd_env "$home" "$xdg" "$state" "$npm_prefix" \
+    "$nix_log" "$rebuild_log" "$fixture/phynd-dev" install) \
+    || fail "phynd-dev should repair missing Homebrew formula state: $out"
+  count=$(wc -l < "$rebuild_log" | tr -d ' ')
+  [ "$count" -eq 2 ] || fail "missing Homebrew formula should trigger activation"
+  unset PHYN_TEST_MISSING_BREW_PACKAGE
+
   system_profile="$case_dir/system-profile"
   mkdir -p "$system_profile"
   cp "$case_dir/fakebin/fresh" "$system_profile/fresh"
@@ -224,7 +288,7 @@ test_install_noop_update_and_safe_backup() {
     "$nix_log" "$rebuild_log" "$fixture/phynd-dev" install) \
     || fail "phynd-dev should repair a Home Manager package shadowed by system PATH: $out"
   count=$(wc -l < "$rebuild_log" | tr -d ' ')
-  [ "$count" -eq 2 ] || fail "a stale system package should not suppress Home Manager repair"
+  [ "$count" -eq 3 ] || fail "a stale system package should not suppress Home Manager repair"
   cp "$system_profile/fresh" "$case_dir/fakebin/fresh"
   chmod +x "$case_dir/fakebin/fresh"
 
@@ -240,7 +304,7 @@ test_install_noop_update_and_safe_backup() {
   assert_contains "$out" "applying pinned nix-darwin" \
     "a missing managed package should invalidate the activation no-op"
   count=$(wc -l < "$rebuild_log" | tr -d ' ')
-  [ "$count" -eq 3 ] || fail "missing managed package should trigger one reactivation"
+  [ "$count" -eq 4 ] || fail "missing managed package should trigger one reactivation"
   cat > "$case_dir/fakebin/starship" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' '❯'
@@ -253,7 +317,7 @@ SH
     || fail "phynd-dev update failed: $out"
   assert_contains "$out" "applying pinned nix-darwin" "changed configuration should reactivate"
   count=$(wc -l < "$rebuild_log" | tr -d ' ')
-  [ "$count" -eq 4 ] || fail "updated configuration should activate once more"
+  [ "$count" -eq 5 ] || fail "updated configuration should activate once more"
   pass "phynd-dev install, converged no-op, update, and safe backup paths are idempotent"
 }
 
@@ -378,6 +442,7 @@ test_starship_is_nix_managed_and_loaded_once() {
 
 test_root_entrypoint_resolves_itself
 test_npm_tools_ignore_stale_path_commands
+test_install_tool_repairs_outdated_no_mistakes
 test_install_noop_update_and_safe_backup
 test_flake_update_and_check_are_explicit
 test_fresh_effective_config_and_wezterm_load

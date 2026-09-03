@@ -226,6 +226,12 @@ managed_command_converged() {
   return 1
 }
 
+homebrew_package_converged() {
+  local kind=$1 name=$2
+  command -v brew >/dev/null 2>&1 || return 1
+  brew list "--$kind" "$name" >/dev/null 2>&1
+}
+
 npm_command_converged() {
   local tool=$1 path
   path=$(command -v "$tool" 2>/dev/null) || return 1
@@ -248,7 +254,10 @@ managed_activation_converged() {
   managed_link_converged "$DEV_XDG_CONFIG_HOME/wezterm/wezterm.lua" \
     "$DEV_ROOT/home/wezterm/wezterm.lua" || return 1
   managed_link_converged "$DEV_HOME/.local/bin/phynd-dev" \
-    "$DEV_ROOT/bin/phynd-dev"
+    "$DEV_ROOT/bin/phynd-dev" || return 1
+  homebrew_package_converged formula herdr || return 1
+  homebrew_package_converged cask wezterm || return 1
+  homebrew_package_converged cask opensuperwhisper
 }
 
 activate() {
@@ -340,8 +349,23 @@ install_npm_tool() {
   fi
 }
 
+no_mistakes_version_converged() {
+  local output version major minor patch
+  output=$(no-mistakes --version 2>/dev/null) || return 1
+  version=$(printf '%s\n' "$output" | sed -nE 's/.*[vV]?([0-9]+)\.([0-9]+)\.([0-9]+).*/\1 \2 \3/p' | head -n 1)
+  read -r major minor patch <<EOF
+$version
+EOF
+  [ -n "$major" ] && [ -n "$minor" ] && [ -n "$patch" ] || return 1
+  [ "$major" -gt 1 ] && return 0
+  [ "$major" -eq 1 ] || return 1
+  [ "$minor" -gt 46 ] && return 0
+  [ "$minor" -eq 46 ] || return 1
+  [ "$patch" -ge 0 ]
+}
+
 install_no_mistakes() {
-  if command -v no-mistakes >/dev/null 2>&1; then
+  if command -v no-mistakes >/dev/null 2>&1 && no_mistakes_version_converged; then
     say 'no-mistakes is already available'
     return 0
   fi
