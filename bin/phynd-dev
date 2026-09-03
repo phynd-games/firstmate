@@ -22,8 +22,20 @@ die() {
 }
 
 script_root() {
-  local root
-  root=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P) \
+  local source=${BASH_SOURCE[0]} source_dir target hops=0 root
+  while [ -L "$source" ]; do
+    hops=$((hops + 1))
+    [ "$hops" -le 40 ] || die 'cannot resolve the repository root: symlink chain is too deep'
+    source_dir=$(CDPATH='' cd -- "$(dirname -- "$source")" && pwd -P) \
+      || die 'cannot resolve the repository root'
+    target=$(readlink "$source") \
+      || die 'cannot resolve the repository root'
+    case "$target" in
+      /*) source=$target ;;
+      *) source="$source_dir/$target" ;;
+    esac
+  done
+  root=$(CDPATH='' cd -- "$(dirname -- "$source")/.." && pwd -P) \
     || die 'cannot resolve the repository root'
   [ -f "$root/flake.nix" ] \
     || die "repository root '$root' has no flake.nix"
@@ -161,6 +173,28 @@ activation_command() {
   fi
 }
 
+managed_link_converged() {
+  local target=$1 source=$2
+  [ -L "$target" ] \
+    && [ "$(readlink "$target" 2>/dev/null || true)" = "$source" ]
+}
+
+managed_activation_converged() {
+  local tool
+  for tool in \
+    actionlint basedpyright basedpyright-langserver fd fresh fzf gh git jq \
+    lua-language-server node npm npx rg rust-analyzer shellcheck starship \
+    treehouse typescript-language-server tmux curl; do
+    command -v "$tool" >/dev/null 2>&1 || return 1
+  done
+  managed_link_converged "$DEV_HOME/.config/fresh/config.json" \
+    "$DEV_ROOT/config/fresh/config.json" || return 1
+  managed_link_converged "$DEV_HOME/.config/wezterm/wezterm.lua" \
+    "$DEV_ROOT/home/wezterm/wezterm.lua" || return 1
+  managed_link_converged "$DEV_HOME/.local/bin/phynd-dev" \
+    "$DEV_ROOT/bin/phynd-dev"
+}
+
 activate() {
   local hash current
   PHYN_DEV_ACTIVATION_CHANGED=0
@@ -170,7 +204,7 @@ activate() {
   if [ -f "$DEV_ACTIVATION_STATE" ]; then
     current=$(sed -n '1p' "$DEV_ACTIVATION_STATE")
   fi
-  if [ "$current" = "$hash" ]; then
+  if [ "$current" = "$hash" ] && managed_activation_converged; then
     say 'nix-darwin and Home Manager are already converged'
     return 0
   fi

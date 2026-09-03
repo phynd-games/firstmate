@@ -10,7 +10,7 @@ TMP_ROOT=$(fm_test_tmproot phynd-dev-tests)
 REAL_PATH=$PATH
 
 make_fake_phynd_tools() {
-  local dir=$1
+  local dir=$1 tool
   mkdir -p "$dir"
   cat > "$dir/nix" <<'SH'
 #!/usr/bin/env bash
@@ -31,8 +31,19 @@ SH
   cat > "$dir/darwin-rebuild" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${PHYN_DEV_REBUILD_LOG:?}"
+mkdir -p "$PHYN_DEV_HOME/.local/bin"
+ln -sfn "$PHYN_DEV_ROOT/bin/phynd-dev" "$PHYN_DEV_HOME/.local/bin/phynd-dev"
 SH
   chmod +x "$dir/nix" "$dir/darwin-rebuild"
+  for tool in actionlint basedpyright basedpyright-langserver fd fresh fzf gh git jq \
+    lua-language-server node npm npx rg rust-analyzer shellcheck starship treehouse \
+    typescript-language-server tmux curl; do
+    cat > "$dir/$tool" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '❯'
+SH
+    chmod +x "$dir/$tool"
+  done
 }
 
 make_phynd_fixture() {
@@ -113,6 +124,13 @@ test_install_noop_update_and_safe_backup() {
   count=$(wc -l < "$rebuild_log" | tr -d ' ')
   [ "$count" -eq 1 ] || fail "initial install should activate exactly once"
 
+  out=$(cd /tmp && HOME="$home" PHYN_DEV_HOME="$home" \
+    PHYN_DEV_UNAME_S=Darwin PHYN_DEV_UNAME_M=arm64 \
+    "$home/.local/bin/phynd-dev" status) \
+    || fail "the Home Manager-installed phynd-dev command failed: $out"
+  assert_contains "$out" "checkout: $fixture" \
+    "the installed phynd-dev command should resolve its repository root"
+
   out=$(phynd_env "$home" "$xdg" "$state" "$npm_prefix" \
     "$nix_log" "$rebuild_log" "$fixture/phynd-dev" install) \
     || fail "second phynd-dev install failed: $out"
@@ -120,13 +138,27 @@ test_install_noop_update_and_safe_backup() {
   count=$(wc -l < "$rebuild_log" | tr -d ' ')
   [ "$count" -eq 1 ] || fail "second install should not reactivate nix-darwin"
 
+  rm "$case_dir/fakebin/starship"
+  out=$(phynd_env "$home" "$xdg" "$state" "$npm_prefix" \
+    "$nix_log" "$rebuild_log" "$fixture/phynd-dev" install) \
+    || fail "phynd-dev should repair missing Nix-managed packages: $out"
+  assert_contains "$out" "applying pinned nix-darwin" \
+    "a missing managed package should invalidate the activation no-op"
+  count=$(wc -l < "$rebuild_log" | tr -d ' ')
+  [ "$count" -eq 2 ] || fail "missing managed package should trigger one reactivation"
+  cat > "$case_dir/fakebin/starship" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '❯'
+SH
+  chmod +x "$case_dir/fakebin/starship"
+
   printf '\n# later repo configuration revision\n' >> "$fixture/config/starship.toml"
   out=$(phynd_env "$home" "$xdg" "$state" "$npm_prefix" \
     "$nix_log" "$rebuild_log" "$fixture/phynd-dev" update) \
     || fail "phynd-dev update failed: $out"
   assert_contains "$out" "applying pinned nix-darwin" "changed configuration should reactivate"
   count=$(wc -l < "$rebuild_log" | tr -d ' ')
-  [ "$count" -eq 2 ] || fail "updated configuration should activate once more"
+  [ "$count" -eq 3 ] || fail "updated configuration should activate once more"
   pass "phynd-dev install, converged no-op, update, and safe backup paths are idempotent"
 }
 
@@ -222,8 +254,9 @@ test_repo_starship_config_is_usable() {
 }
 
 test_starship_is_nix_managed_and_loaded_once() {
-  local shell_home init enabled
-  if [ "$(uname -s)" != Darwin ] || ! command -v nix >/dev/null 2>&1; then
+  local shell_home zsh_dir zshrc enabled out
+  if [ "$(uname -s)" != Darwin ] || ! command -v nix >/dev/null 2>&1 || \
+    ! command -v zsh >/dev/null 2>&1; then
     pass "Starship Nix activation validation skipped outside a Darwin host with Nix"
     return 0
   fi
@@ -233,14 +266,19 @@ test_starship_is_nix_managed_and_loaded_once() {
     "$ROOT#darwinConfigurations.phynd-dev.config.home-manager.users.phynd.programs.starship.enableZshIntegration") \
     || fail "Nix could not evaluate the generated Starship zsh integration setting"
   [ "$enabled" = true ] || fail "Home Manager should own Starship's zsh integration"
-  init=$(PHYN_DEV_HOME="$shell_home" \
+  zshrc=$(PHYN_DEV_HOME="$shell_home" \
     nix eval --impure --raw \
-    "$ROOT#darwinConfigurations.phynd-dev.config.home-manager.users.phynd.programs.zsh.initContent") \
-    || fail "Nix could not evaluate the generated Starship zsh integration"
-  HOME="$shell_home" TERM=xterm zsh -dfi -c "$init
-[[ -n \$PROMPT ]]" >/dev/null 2>&1 \
-    || fail "a fresh interactive zsh did not load the generated Starship prompt"
-  pass "Nix-managed Starship initializes exactly once in a fresh interactive zsh"
+    "$ROOT#darwinConfigurations.phynd-dev.config.home-manager.users.phynd.home.file.\".zshrc\".text") \
+    || fail "Nix could not evaluate the generated interactive zsh configuration"
+  zsh_dir="$shell_home/zsh"
+  mkdir -p "$zsh_dir"
+  printf '%s\n' "$zshrc" > "$zsh_dir/.zshrc"
+  out=$(HOME="$shell_home" ZDOTDIR="$zsh_dir" TERM=xterm PATH="$PATH" \
+    zsh -di -c 'print -P -- "$PROMPT"' 2>&1) \
+    || fail "a fresh interactive zsh could not load the generated configuration: $out"
+  assert_contains "$out" "❯" \
+    "a fresh interactive zsh should render the repo-owned Starship prompt"
+  pass "Nix-managed Starship renders through the generated interactive zsh configuration"
 }
 
 test_root_entrypoint_resolves_itself
