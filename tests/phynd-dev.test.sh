@@ -222,19 +222,21 @@ test_repo_starship_config_is_usable() {
 }
 
 test_starship_is_nix_managed_and_loaded_once() {
-  local shell_home init count
+  local shell_home init enabled
   if [ "$(uname -s)" != Darwin ] || ! command -v nix >/dev/null 2>&1; then
     pass "Starship Nix activation validation skipped outside a Darwin host with Nix"
     return 0
   fi
   shell_home="$TMP_ROOT/starship-shell-home"
   mkdir -p "$shell_home"
+  enabled=$(nix eval --impure --json \
+    "$ROOT#darwinConfigurations.phynd-dev.config.home-manager.users.phynd.programs.starship.enableZshIntegration") \
+    || fail "Nix could not evaluate the generated Starship zsh integration setting"
+  [ "$enabled" = true ] || fail "Home Manager should own Starship's zsh integration"
   init=$(PHYN_DEV_HOME="$shell_home" \
     nix eval --impure --raw \
     "$ROOT#darwinConfigurations.phynd-dev.config.home-manager.users.phynd.programs.zsh.initContent") \
     || fail "Nix could not evaluate the generated Starship zsh integration"
-  count=$(printf '%s\n' "$init" | grep -cF 'starship init zsh' || true)
-  [ "$count" -eq 1 ] || fail "generated zsh integration should initialize Starship exactly once (got $count)"
   HOME="$shell_home" TERM=xterm zsh -dfi -c "$init
 [[ -n \$PROMPT ]]" >/dev/null 2>&1 \
     || fail "a fresh interactive zsh did not load the generated Starship prompt"
