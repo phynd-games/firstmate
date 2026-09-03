@@ -49,9 +49,10 @@ SH
     chmod +x "$dir/$tool"
   done
   PHYN_TEST_NIX_PROFILE=$dir
+  PHYN_TEST_SYSTEM_PROFILE=$dir
   PHYN_TEST_GLOBALBIN=
   PHYN_TEST_SKIP_TOOLS=1
-  export PHYN_TEST_NIX_PROFILE PHYN_TEST_GLOBALBIN PHYN_TEST_SKIP_TOOLS
+  export PHYN_TEST_NIX_PROFILE PHYN_TEST_SYSTEM_PROFILE PHYN_TEST_GLOBALBIN PHYN_TEST_SKIP_TOOLS
 }
 
 make_phynd_fixture() {
@@ -89,6 +90,7 @@ phynd_env() {
   PHYN_DEV_NIX_LOG="$log" \
   PHYN_DEV_REBUILD_LOG="$rebuild_log" \
   PHYN_DEV_NIX_PROFILE="${PHYN_TEST_NIX_PROFILE:-$home/nix-profile/bin}" \
+  PHYN_DEV_SYSTEM_PROFILE="${PHYN_TEST_SYSTEM_PROFILE:-/run/current-system/sw/bin}" \
   PATH="$path" \
   "$@"
 }
@@ -142,11 +144,16 @@ SH
     "$fixture/phynd-dev" install) || fail "npm-tool reconciliation failed: $out"
   count=$(wc -l < "$npm_log" | tr -d ' ')
   [ "$count" -eq 7 ] || fail "initial install should reconcile each npm tool once"
+  rm -f "$home/.local/bin/ghf"
+  out=$(phynd_env "$home" "$xdg" "$state" "$npm_prefix" "$nix_log" "$rebuild_log" \
+    "$fixture/phynd-dev" install) || fail "ghf-link repair failed: $out"
+  count=$(wc -l < "$npm_log" | tr -d ' ')
+  [ "$count" -eq 14 ] || fail "missing ghf link should trigger gnhf repair"
   rm "$npm_prefix/bin/"*
   out=$(phynd_env "$home" "$xdg" "$state" "$npm_prefix" "$nix_log" "$rebuild_log" \
     "$fixture/phynd-dev" install) || fail "npm-tool repair failed: $out"
   count=$(wc -l < "$npm_log" | tr -d ' ')
-  [ "$count" -eq 14 ] || fail "stale global npm tools should not suppress repair"
+  [ "$count" -eq 21 ] || fail "stale global npm tools should not suppress repair"
   pass "npm-managed tools ignore stale commands outside the managed prefix"
 }
 
@@ -163,7 +170,7 @@ test_root_entrypoint_resolves_itself() {
 }
 
 test_install_noop_update_and_safe_backup() {
-  local case_dir fixture home xdg state npm_prefix nix_log rebuild_log out count
+  local case_dir fixture home xdg state npm_prefix nix_log rebuild_log system_profile out count
   case_dir="$TMP_ROOT/lifecycle"
   fixture="$case_dir/repo"
   home="$case_dir/home"
@@ -207,6 +214,20 @@ test_install_noop_update_and_safe_backup() {
   count=$(wc -l < "$rebuild_log" | tr -d ' ')
   [ "$count" -eq 1 ] || fail "second install should not reactivate nix-darwin"
 
+  system_profile="$case_dir/system-profile"
+  mkdir -p "$system_profile"
+  cp "$case_dir/fakebin/fresh" "$system_profile/fresh"
+  PHYN_TEST_SYSTEM_PROFILE="$system_profile"
+  export PHYN_TEST_SYSTEM_PROFILE
+  rm "$case_dir/fakebin/fresh"
+  out=$(phynd_env "$home" "$xdg" "$state" "$npm_prefix" \
+    "$nix_log" "$rebuild_log" "$fixture/phynd-dev" install) \
+    || fail "phynd-dev should repair a Home Manager package shadowed by system PATH: $out"
+  count=$(wc -l < "$rebuild_log" | tr -d ' ')
+  [ "$count" -eq 2 ] || fail "a stale system package should not suppress Home Manager repair"
+  cp "$system_profile/fresh" "$case_dir/fakebin/fresh"
+  chmod +x "$case_dir/fakebin/fresh"
+
   mkdir -p "$case_dir/globalbin"
   cp "$case_dir/fakebin/starship" "$case_dir/globalbin/starship"
   chmod +x "$case_dir/globalbin/starship"
@@ -219,7 +240,7 @@ test_install_noop_update_and_safe_backup() {
   assert_contains "$out" "applying pinned nix-darwin" \
     "a missing managed package should invalidate the activation no-op"
   count=$(wc -l < "$rebuild_log" | tr -d ' ')
-  [ "$count" -eq 2 ] || fail "missing managed package should trigger one reactivation"
+  [ "$count" -eq 3 ] || fail "missing managed package should trigger one reactivation"
   cat > "$case_dir/fakebin/starship" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' '❯'
@@ -232,7 +253,7 @@ SH
     || fail "phynd-dev update failed: $out"
   assert_contains "$out" "applying pinned nix-darwin" "changed configuration should reactivate"
   count=$(wc -l < "$rebuild_log" | tr -d ' ')
-  [ "$count" -eq 3 ] || fail "updated configuration should activate once more"
+  [ "$count" -eq 4 ] || fail "updated configuration should activate once more"
   pass "phynd-dev install, converged no-op, update, and safe backup paths are idempotent"
 }
 

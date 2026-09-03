@@ -1030,13 +1030,19 @@ secondmate_handoff_detect() {
   done
 }
 
+shell_quote() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
 install_cmd() {
   if [ "${FM_BOOTSTRAP_OS_OVERRIDE:-$(uname -s)}" = Darwin ]; then
     case "$1" in
       tmux|node|git|gh|curl|jq|herdr|treehouse|no-mistakes|fresh|starship|\
       rust-analyzer|lua-language-server|basedpyright|typescript-language-server|\
       wezterm|opensuperwhisper|gh-axi|chrome-devtools-axi|lavish-axi|tasks-axi|quota-axi)
-        printf "'%s/phynd-dev' install-tool %s\n" "$FM_ROOT" "$1"
+        printf "%s install-tool %s\n" "$(shell_quote "$FM_ROOT/phynd-dev")" "$1"
         return 0
         ;;
     esac

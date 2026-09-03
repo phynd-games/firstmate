@@ -61,6 +61,7 @@ configure_paths() {
   export PHYN_DEV_ROOT="$DEV_ROOT"
   export PHYN_DEV_USER="${PHYN_DEV_USER:-$(id -un)}"
   DEV_NIX_PROFILE=${PHYN_DEV_NIX_PROFILE:-/etc/profiles/per-user/$PHYN_DEV_USER/bin}
+  DEV_SYSTEM_PROFILE=${PHYN_DEV_SYSTEM_PROFILE:-/run/current-system/sw/bin}
   export PHYN_DEV_HOME="$DEV_HOME"
   export PHYN_DEV_SYSTEM="$DEV_SYSTEM"
   export NPM_CONFIG_PREFIX="$DEV_NPM_PREFIX"
@@ -69,7 +70,7 @@ configure_paths() {
 refresh_path() {
   local per_user_profile current_system
   per_user_profile="/etc/profiles/per-user/$PHYN_DEV_USER/bin"
-  current_system=/run/current-system/sw/bin
+  current_system=$DEV_SYSTEM_PROFILE
   PATH="$DEV_NPM_PREFIX/bin:$DEV_HOME/.local/bin:$DEV_NIX_PROFILE:$per_user_profile:$current_system:$PATH"
   export PATH
 }
@@ -196,14 +197,32 @@ managed_command_converged() {
   local tool=$1 path profile
   path=$(command -v "$tool" 2>/dev/null) || return 1
   [ -x "$path" ] || return 1
-  for profile in \
-    "$DEV_NIX_PROFILE" \
-    "/etc/profiles/per-user/$PHYN_DEV_USER/bin" \
-    /run/current-system/sw/bin; do
-    case "$path" in
-      "$profile"/*) return 0 ;;
-    esac
-  done
+  case "$tool" in
+    curl|git|tmux)
+      case "$path" in
+        "$DEV_SYSTEM_PROFILE"/*) return 0 ;;
+      esac
+      ;;
+    jq)
+      for profile in \
+        "$DEV_NIX_PROFILE" \
+        "/etc/profiles/per-user/$PHYN_DEV_USER/bin" \
+        "$DEV_SYSTEM_PROFILE"; do
+        case "$path" in
+          "$profile"/*) return 0 ;;
+        esac
+      done
+      ;;
+    *)
+      for profile in \
+        "$DEV_NIX_PROFILE" \
+        "/etc/profiles/per-user/$PHYN_DEV_USER/bin"; do
+        case "$path" in
+          "$profile"/*) return 0 ;;
+        esac
+      done
+      ;;
+  esac
   return 1
 }
 
@@ -438,7 +457,8 @@ reconcile() {
     ! npm_command_converged chrome-devtools-axi ||
     ! npm_command_converged lavish-axi ||
     ! npm_command_converged tasks-axi ||
-    ! npm_command_converged quota-axi
+    ! npm_command_converged quota-axi ||
+    ! managed_link_converged "$DEV_HOME/.local/bin/ghf" "$DEV_NPM_PREFIX/bin/gnhf"
   }; then
     install_firstmate_tools
   fi

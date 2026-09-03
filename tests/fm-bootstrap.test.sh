@@ -561,6 +561,24 @@ test_darwin_missing_tool_routes_through_phynd_dev() {
   pass "bootstrap: Darwin missing tools route through the repository phynd-dev entrypoint"
 }
 
+test_darwin_install_route_quotes_apostrophes() {
+  local case_dir log out
+  case_dir="$TMP_ROOT/darwin-install-captain's-home"
+  log="$case_dir/route.log"
+  mkdir -p "$case_dir/home"
+  cat > "$case_dir/home/phynd-dev" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "${FM_ROUTE_LOG:?}"
+SH
+  chmod +x "$case_dir/home/phynd-dev"
+  out=$(FM_BOOTSTRAP_OS_OVERRIDE=Darwin FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_ROUTE_LOG="$log" "$ROOT/bin/fm-bootstrap.sh" install herdr 2>&1) \
+    || fail "Darwin remediation command with apostrophe failed: $out"
+  [ "$(cat "$log")" = "install-tool herdr" ] \
+    || fail "Darwin remediation command with apostrophe invoked the wrong arguments"
+  pass "bootstrap quotes Darwin remediation paths before eval"
+}
+
 test_unknown_backend_reports_invalid_configuration() {
   local case_dir fakebin out
   case_dir="$TMP_ROOT/unknown-backend"
@@ -1093,6 +1111,7 @@ test_git_is_required_with_supported_install_instruction
 test_retained_backends_refuse
 test_herdr_install_requires_manual_action
 test_darwin_missing_tool_routes_through_phynd_dev
+test_darwin_install_route_quotes_apostrophes
 test_unknown_backend_reports_invalid_configuration
 test_fleet_sync_timeout_scales_with_origin_backed_project_count
 test_fleet_sync_timeout_floor_preserves_small_fleets
