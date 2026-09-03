@@ -5,6 +5,7 @@
   homeDirectory,
   repoRoot,
   treehouse,
+  lib,
   ...
 }:
 
@@ -47,13 +48,18 @@ in
     EDITOR = "fresh";
     FIRSTMATE_HOME = repoRoot;
     NPM_CONFIG_PREFIX = npmPrefix;
+    ZDOTDIR = "${homeDirectory}/.config/zsh";
   };
 
   programs.zsh = {
     enable = true;
+    dotDir = ".config/zsh";
     autosuggestion.enable = true;
     syntaxHighlighting.enable = true;
-    initContent = ''
+    initContent = lib.mkBefore ''
+      if [[ -r "$HOME/.zshrc" && "$HOME/.zshrc" != "$ZDOTDIR/.zshrc" ]]; then
+        source "$HOME/.zshrc"
+      fi
       bindkey '^f' autosuggest-accept
     '';
     shellAliases = {

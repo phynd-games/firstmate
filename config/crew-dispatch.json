@@ -34,6 +34,45 @@
         "effort": "xhigh"
       },
       "why": "The captain requires xhigh reasoning for every remaining phynd-cloud Rust Lambda migration lane. Switched from claude to codex on 2026-08-26 by captain instruction after the Claude spend window blocked the View Explorer delivery lane. No model is pinned, so Codex uses its current default model."
+    },
+    {
+      "when": "Reviewing open pull requests, auditing existing changes, or checking PRs for defects without implementing fixes.",
+      "use": {
+        "harness": "pi",
+        "model": "openai-codex/gpt-5.6-luna",
+        "effort": "xhigh"
+      },
+      "why": "Use a dedicated Luna worker at xhigh for bounded PR review and audit work so the captain session can remain responsive."
+    },
+    {
+      "when": "New feature design or architecture work, including selecting an approach before implementation.",
+      "use": {
+        "harness": "claude",
+        "model": "fable",
+        "effort": "high"
+      },
+      "why": "Use Claude Code with Fable for design and architecture decisions."
+    },
+    {
+      "when": "Ambiguous, high-risk, or difficult implementation work, or implementation that Luna could not complete.",
+      "use": [
+        {
+          "harness": "pi",
+          "model": "openai-codex/gpt-5.6-sol",
+          "effort": "high"
+        },
+        {
+          "harness": "claude",
+          "model": "opus-5",
+          "effort": "xhigh"
+        }
+      ],
+      "why": "Use Sol for hard coding, with Claude Code at xhigh as the stronger alternative."
     }
-  ]
+  ],
+  "default": {
+    "harness": "pi",
+    "model": "openai-codex/gpt-5.6-luna",
+    "effort": "xhigh"
+  }
 }

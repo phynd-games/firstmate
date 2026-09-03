@@ -62,6 +62,7 @@ configure_paths() {
   export PHYN_DEV_USER="${PHYN_DEV_USER:-$(id -un)}"
   DEV_NIX_PROFILE=${PHYN_DEV_NIX_PROFILE:-/etc/profiles/per-user/$PHYN_DEV_USER/bin}
   DEV_SYSTEM_PROFILE=${PHYN_DEV_SYSTEM_PROFILE:-/run/current-system/sw/bin}
+  DEV_HM_PROFILE_ROOT=${PHYN_DEV_HM_PROFILE_ROOT:-/etc/profiles/per-user/$PHYN_DEV_USER}
   export PHYN_DEV_HOME="$DEV_HOME"
   export PHYN_DEV_SYSTEM="$DEV_SYSTEM"
   export NPM_CONFIG_PREFIX="$DEV_NPM_PREFIX"
@@ -193,6 +194,28 @@ managed_link_converged() {
   [ "$current" = "$source" ]
 }
 
+home_manager_file_converged() {
+  local target=$1 current directory link hops=0
+  [ -L "$target" ] || return 1
+  current=$target
+  while [ -L "$current" ]; do
+    hops=$((hops + 1))
+    [ "$hops" -le 40 ] || return 1
+    directory=$(CDPATH='' cd -- "$(dirname -- "$current")" && pwd -P) || return 1
+    link=$(readlink "$current") || return 1
+    case "$link" in
+      /*) current=$link ;;
+      *) current="$directory/$link" ;;
+    esac
+  done
+  directory=$(CDPATH='' cd -- "$(dirname -- "$current")" && pwd -P) || return 1
+  current="$directory/$(basename -- "$current")"
+  case "$current" in
+    "$DEV_HM_PROFILE_ROOT"/*|/nix/store/*-home-manager-files/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 managed_command_converged() {
   local tool=$1 path profile
   path=$(command -v "$tool" 2>/dev/null) || return 1
@@ -255,6 +278,7 @@ managed_activation_converged() {
     "$DEV_ROOT/home/wezterm/wezterm.lua" || return 1
   managed_link_converged "$DEV_HOME/.local/bin/phynd-dev" \
     "$DEV_ROOT/bin/phynd-dev" || return 1
+  home_manager_file_converged "$DEV_HOME/.config/zsh/.zshrc" || return 1
   homebrew_package_converged formula herdr || return 1
   homebrew_package_converged cask wezterm || return 1
   homebrew_package_converged cask opensuperwhisper
@@ -281,12 +305,17 @@ activate() {
     say 'applying pinned nix-darwin and Home Manager configuration'
     activation_command
   fi
-  mkdir -p "$DEV_STATE_DIR"
-  printf '%s\n' "$hash" > "$DEV_ACTIVATION_STATE"
   PHYN_DEV_ACTIVATION_CHANGED=1
   export PHYN_DEV_ACTIVATION_CHANGED
-  say 'activation state recorded'
   return 0
+}
+
+record_activation_state() {
+  local hash
+  hash=$(desired_hash)
+  mkdir -p "$DEV_STATE_DIR"
+  printf '%s\n' "$hash" > "$DEV_ACTIVATION_STATE"
+  say 'activation state recorded'
 }
 
 backup_target() {
@@ -412,12 +441,12 @@ install_tool() {
 install_firstmate_tools() {
   local tool
   for tool in pi gnhf gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi; do
-    install_npm_tool "$tool"
+    install_npm_tool "$tool" || return 1
   done
-  install_no_mistakes
+  install_no_mistakes || return 1
   for tool in gh-axi chrome-devtools-axi lavish-axi; do
     if [ -x "$DEV_NPM_PREFIX/bin/$tool" ]; then
-      "$DEV_NPM_PREFIX/bin/$tool" setup hooks
+      "$DEV_NPM_PREFIX/bin/$tool" setup hooks || return 1
     fi
   done
 }
@@ -474,7 +503,7 @@ reconcile() {
   refresh_path
   if [ "${PHYN_DEV_SKIP_TOOLS:-0}" != 1 ] && {
     [ "${PHYN_DEV_ACTIVATION_CHANGED:-0}" = 1 ] ||
-    ! command -v no-mistakes >/dev/null 2>&1 ||
+    ! no_mistakes_version_converged ||
     ! npm_command_converged pi ||
     ! npm_command_converged gnhf ||
     ! npm_command_converged gh-axi ||
@@ -484,9 +513,11 @@ reconcile() {
     ! npm_command_converged quota-axi ||
     ! managed_link_converged "$DEV_HOME/.local/bin/ghf" "$DEV_NPM_PREFIX/bin/gnhf"
   }; then
-    install_firstmate_tools
+    install_firstmate_tools \
+      || die 'Firstmate tool reconciliation failed; activation state was not recorded'
   fi
   reconcile_repo_links
+  record_activation_state
   if [ "${PHYN_DEV_ACTIVATION_CHANGED:-0}" = 1 ]; then
     say 'environment is converged'
   fi
@@ -510,6 +541,7 @@ main() {
       activate
       refresh_path
       reconcile_repo_links
+      record_activation_state
       ;;
     flake-update) flake_update ;;
     flake-check) flake_check ;;
@@ -521,6 +553,7 @@ main() {
         shift
       done
       reconcile_repo_links
+      record_activation_state
       ;;
     launch) launch ;;
     status) status ;;

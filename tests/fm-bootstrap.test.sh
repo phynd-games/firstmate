@@ -1013,9 +1013,23 @@ test_phynd_dispatch_defaults_are_effective_bootstrap_facts() {
   assert_contains "$out" \
     "BOOTSTRAP_INFO: crew dispatch rule: The task ports, wires, validates, repairs, or ships a phynd-cloud TypeScript Lambda from apps/Phynd-APIs into apps/Phynd-Rust-APIs. -> codex/default/xhigh" \
     "the Rust migration should resolve to Codex xhigh"
-  assert_not_contains "$out" "crew dispatch default:" \
-    "the shipped Phynd rules must not be shadowed by a generic dispatch default"
-  pass "bootstrap validates and surfaces every shipped Phynd dispatch outcome"
+  assert_contains "$out" \
+    "BOOTSTRAP_INFO: crew dispatch default: pi/openai-codex/gpt-5.6-luna/xhigh" \
+    "the preserved generic default should remain available after Phynd-specific rules"
+  jq -e '
+    (.rules | length) == 7 and
+    .rules[0].use.harness == "claude" and .rules[0].use.model == "fable" and .rules[0].use.effort == "xhigh" and
+    .rules[1].use.harness == "claude" and .rules[1].use.model == "fable" and .rules[1].use.effort == "high" and
+    .rules[2].use.harness == "pi" and .rules[2].use.model == "openai-codex/gpt-5.6-sol" and
+    .rules[3].use.harness == "codex" and .rules[3].use.effort == "xhigh" and
+    .rules[4].when == "Reviewing open pull requests, auditing existing changes, or checking PRs for defects without implementing fixes." and
+    .rules[5].when == "New feature design or architecture work, including selecting an approach before implementation." and
+    .rules[6].when == "Ambiguous, high-risk, or difficult implementation work, or implementation that Luna could not complete." and
+    .rules[6].use[0].model == "openai-codex/gpt-5.6-sol" and
+    .default.harness == "pi" and .default.model == "openai-codex/gpt-5.6-luna"
+  ' "$ROOT/config/crew-dispatch.json" >/dev/null \
+    || fail "shipped dispatch rules did not preserve Phynd precedence and Firstmate fallbacks"
+  pass "bootstrap validates and semantically checks shipped Phynd dispatch precedence"
 }
 
 test_crew_dispatch_validation() {

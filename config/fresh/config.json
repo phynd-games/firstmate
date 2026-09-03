@@ -38,52 +38,42 @@
     }
   },
   "lsp": {
-    "typescript": [
-      {
+    "typescript": {
         "command": "typescript-language-server",
         "enabled": true,
         "args": ["--stdio"],
         "auto_start": true,
         "root_markers": ["tsconfig.json", "jsconfig.json", "package.json", ".git"],
         "language_id_overrides": {"tsx": "typescriptreact"}
-      }
-    ],
-    "javascript": [
-      {
+      },
+    "javascript": {
         "command": "typescript-language-server",
         "enabled": true,
         "args": ["--stdio"],
         "auto_start": true,
         "root_markers": ["tsconfig.json", "jsconfig.json", "package.json", ".git"],
         "language_id_overrides": {"jsx": "javascriptreact"}
-      }
-    ],
-    "rust": [
-      {
+      },
+    "rust": {
         "command": "rust-analyzer",
         "enabled": true,
         "args": [],
         "auto_start": true,
         "root_markers": ["Cargo.toml", "rust-project.json", ".git"]
-      }
-    ],
-    "lua": [
-      {
+      },
+    "lua": {
         "command": "lua-language-server",
         "enabled": true,
         "args": [],
         "auto_start": true,
         "root_markers": [".luarc.json", ".luarc.jsonc", ".luacheckrc", ".stylua.toml", ".git"]
-      }
-    ],
-    "python": [
-      {
+      },
+    "python": {
         "command": "basedpyright-langserver",
         "enabled": true,
         "args": ["--stdio"],
         "auto_start": true,
         "root_markers": ["pyproject.toml", "setup.py", "setup.cfg", "pyrightconfig.json", ".git"]
       }
-    ]
   }
 }
