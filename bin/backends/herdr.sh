@@ -2606,6 +2606,7 @@ EOF
       "The native Herdr tab creation response omitted a complete tab, pane, or terminal identity. Repair Herdr, then verify with 'herdr status --json'." || true
     return 2
   fi
+  # shellcheck disable=SC2034 # caller reads the created terminal identity after this function returns.
   FM_BACKEND_HERDR_CREATED_TERMINAL_ID=$terminal_id
   if [ -n "$seeded_tab_id" ]; then
     if fm_backend_herdr_workspace_prune_seeded_default_tab "$session" "$wsid" "$seeded_tab_id"; then
