@@ -1863,20 +1863,9 @@ fm_backend_herdr_stable_operation() {  # <session> <workspace> <tab> <pane> <ope
     fi
     return 2
   fi
-  if [ "$operation" = read ] && ! printf '%s' "$out" | jq -e \
-    --arg workspace "$expected_workspace" --arg tab "$expected_tab" --arg pane "$pane_id" '
-    (.result | type) == "object"
-    and .result.pane_id == $pane
-    and .result.workspace_id == $workspace
-    and .result.tab_id == $tab
-    and (.result.text | type) == "string"
-  ' >/dev/null 2>&1; then
-    if declare -F fm_backend_policy_refuse >/dev/null 2>&1; then
-      fm_backend_policy_refuse "Herdr pane $operation" herdr \
-        "The native Herdr read returned no exact workspace, tab, and pane identity proof. Repair Herdr, then verify the named session with 'herdr status --json'." || true
-    fi
-    return 2
-  fi
+  # Herdr 0.8.2 writes terminal text directly for `pane read`. Identity was
+  # already proven above with `pane get`, including the expected terminal when
+  # one is recorded, so never reinterpret terminal text as JSON here.
   [ -z "$out" ] || printf '%s' "$out"
   return 0
 }
@@ -3552,14 +3541,7 @@ fm_backend_herdr_capture() {  # <target> <lines>
     [ "$native_rc" -eq 1 ] && return 1
     return "$native_rc"
   fi
-  if [ -n "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ]; then
-    fm_backend_herdr_native_failure_rc "$out"
-    native_rc=$?
-    [ "$native_rc" -eq 1 ] && return 1
-    return 2
-  fi
-  printf '%s' "$out" | jq -er '.result.text | type == "string"' >/dev/null 2>&1 || return 2
-  printf '%s' "$out" | jq -j '.result.text' | tail -n "$lines"
+  printf '%s' "$out" | tail -n "$lines"
 }
 
 fm_backend_herdr_capture_ansi() {  # <target> <lines>
@@ -3580,14 +3562,7 @@ fm_backend_herdr_capture_ansi() {  # <target> <lines>
     [ "$native_rc" -eq 1 ] && return 1
     return "$native_rc"
   fi
-  if [ -n "$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)" ]; then
-    fm_backend_herdr_native_failure_rc "$out"
-    native_rc=$?
-    [ "$native_rc" -eq 1 ] && return 1
-    return 2
-  fi
-  printf '%s' "$out" | jq -er '.result.text | type == "string"' >/dev/null 2>&1 || return 2
-  printf '%s' "$out" | jq -j '.result.text' | tail -n "$lines"
+  printf '%s' "$out" | tail -n "$lines"
 }
 
 # --- herdr composer capture and capability primitives -----------------------

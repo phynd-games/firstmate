@@ -63,7 +63,7 @@ if [ "${1:-} ${2:-}" = "pane get" ] && [ ! -f "$RESP/$next.exit" ]; then
     && [ -f "$RESP/$next.out" ] \
     && jq -e '(.result.pane | type) == "object"' "$RESP/$next.out" >/dev/null 2>&1; then
     echo "$next" > "$COUNT_FILE"
-    cat "$RESP/$next.out"
+    jq '.result.pane.terminal_id //= ("term_" + .result.pane.pane_id)' "$RESP/$next.out"
     exit 0
   fi
   if [ "${FM_HERDR_FAKE_CONSUME_PANE_GET:-0}" != 1 ] || [ ! -f "$RESP/$next.out" ]; then
@@ -81,7 +81,18 @@ if [ -f "$RESP/$n.exit" ]; then
   exit "$(cat "$RESP/$n.exit")"
 fi
   if [ -f "$RESP/$n.out" ]; then
-    if [ -f "$RESP/$n.normalize-pane" ] \
+    if [ "${1:-} ${2:-}" = "workspace create" ] \
+      && jq -e '(.result.root_pane | type) == "object"' "$RESP/$n.out" >/dev/null 2>&1; then
+      jq '.result.tab.workspace_id //= .result.workspace.workspace_id
+        | .result.root_pane.terminal_id //= ("term_" + .result.root_pane.pane_id)' "$RESP/$n.out"
+    elif [ "${1:-} ${2:-}" = "tab create" ] \
+      && jq -e '(.result.root_pane | type) == "object"' "$RESP/$n.out" >/dev/null 2>&1; then
+      jq '.result.tab.workspace_id //= .result.root_pane.workspace_id
+        | .result.root_pane.terminal_id //= ("term_" + .result.root_pane.pane_id)' "$RESP/$n.out"
+    elif [ "${1:-} ${2:-}" = "workspace list" ] \
+      && jq -e '(.result.workspaces | type) == "array"' "$RESP/$n.out" >/dev/null 2>&1; then
+      jq '.result.type //= "workspace_list"' "$RESP/$n.out"
+    elif [ -f "$RESP/$n.normalize-pane" ] \
       && [ "${1:-} ${2:-}" = "pane list" ] \
       && jq -e '(.result.panes | type) == "array"' "$RESP/$n.out" >/dev/null 2>&1; then
     workspace=${4:-}
@@ -96,13 +107,6 @@ fi
     jq --arg pane "$pane" --arg workspace "$workspace" --arg tab "$workspace:t${tab_number#p}" \
       '.result.agent |= (. + {pane_id:(.pane_id // $pane), workspace_id:(.workspace_id // $workspace), tab_id:(.tab_id // $tab)})' \
       "$RESP/$n.out"
-  elif [ "${1:-} ${2:-}" = "pane read" ] \
-    && ! jq -e '(.result | type) == "object"' "$RESP/$n.out" >/dev/null 2>&1; then
-    pane=${3:-}
-    workspace=${pane%%:*}
-    tab_number=${pane##*:}
-    jq -Rs --arg pane "$pane" --arg workspace "$workspace" --arg tab "$workspace:t${tab_number#p}" \
-      '{result:{pane_id:$pane, workspace_id:$workspace, tab_id:$tab, text:.}}' "$RESP/$n.out"
   else
     cat "$RESP/$n.out"
   fi
@@ -3077,8 +3081,8 @@ test_normalize_key() {
 test_capture_calls_pane_read() {
   local dir log resp fb out
   dir="$TMP_ROOT/capture"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '%s\n' '{"result":{"pane":{"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p2"}}}' > "$resp/1.out"
-  printf '%s\n' '{"result":{"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p2","text":"line one\nline two\nline three\n"}}' > "$resp/2.out"
+  printf '%s\n' '{"result":{"pane":{"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p2","terminal_id":"term_w1:p2"}}}' > "$resp/1.out"
+  printf 'line one\nline two\nline three\n' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
   # Requesting 250 (already >= the 200 floor) passes straight through as the
   # fetch bound; the adapter then trims to the caller's requested 250 lines
@@ -3099,8 +3103,8 @@ test_capture_works_around_small_lines_bug() {
   # last N lines. The adapter must never ask herdr for a small --lines bound -
   # it always fetches >= 200 and trims locally with tail.
   dir="$TMP_ROOT/capture-small"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '%s\n' '{"result":{"pane":{"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p2"}}}' > "$resp/1.out"
-  printf '%s\n' '{"result":{"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p2","text":"a\nb\nc\nd\ne\n"}}' > "$resp/2.out"
+  printf '%s\n' '{"result":{"pane":{"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p2","terminal_id":"term_w1:p2"}}}' > "$resp/1.out"
+  printf 'a\nb\nc\nd\ne\n' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_FAKE_CONSUME_PANE_GET=1 \
@@ -3114,7 +3118,7 @@ test_capture_works_around_small_lines_bug() {
 test_capture_preserves_pane_read_failure() {
   local dir log resp fb out status
   dir="$TMP_ROOT/capture-fail"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2"}}}\n' > "$resp/1.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2","terminal_id":"term_w1:p2"}}}\n' > "$resp/1.out"
   cp "$resp/1.out" "$resp/2.out"
   printf '1\n' > "$resp/3.exit"
   fb=$(make_herdr_fakebin "$dir")
