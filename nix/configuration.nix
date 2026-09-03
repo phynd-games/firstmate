@@ -8,6 +8,8 @@
 {
   determinateNix.enable = true;
 
+  nix.channel.enable = false;
+
   nixpkgs.config.allowUnfree = true;
   system.primaryUser = user;
   users.users.${user}.home = homeDirectory;
