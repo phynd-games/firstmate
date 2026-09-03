@@ -517,6 +517,7 @@ test_repo_starship_config_is_usable() {
 
 test_starship_is_nix_managed_and_loaded_once() {
   local shell_home zsh_dir zshrc zshenv zprofile zlogin enabled out call_log
+  local hm_session_vars autosuggestions syntax_highlighting
   if [ "$(uname -s)" != Darwin ] || ! command -v nix >/dev/null 2>&1 || \
     ! command -v zsh >/dev/null 2>&1; then
     pass "Starship Nix activation validation skipped outside a Darwin host with Nix"
@@ -527,6 +528,7 @@ test_starship_is_nix_managed_and_loaded_once() {
   printf '%s\n' 'export PHYN_EXISTING_ENV=preserved' > "$shell_home/.zshenv"
   printf '%s\n' 'export PHYN_EXISTING_PROFILE=preserved' > "$shell_home/.zprofile"
   printf '%s\n' 'export PHYN_EXISTING_LOGIN=preserved' > "$shell_home/.zlogin"
+  # shellcheck disable=SC2016 # The fixture must contain a literal command substitution.
   printf '%s\n' 'eval "$(starship init zsh)"' > "$shell_home/.zshrc"
   call_log="$shell_home/starship-calls.log"
   cat > "$shell_home/bin/starship" <<'SH'
@@ -557,6 +559,18 @@ SH
     nix eval --impure --raw \
     "$ROOT#darwinConfigurations.phynd-dev.config.home-manager.users.phynd.home.file.\".config/zsh/.zlogin\".text") \
     || fail "Nix could not evaluate the generated zlogin configuration"
+  hm_session_vars="$shell_home/hm-session-vars.sh"
+  autosuggestions="$shell_home/zsh-autosuggestions.zsh"
+  syntax_highlighting="$shell_home/zsh-syntax-highlighting.zsh"
+  : > "$hm_session_vars"
+  : > "$autosuggestions"
+  : > "$syntax_highlighting"
+  zshenv=$(printf '%s\n' "$zshenv" | sed -E \
+    "s|/nix/store/[^\"]+-hm-session-vars\\.sh/etc/profile\\.d/hm-session-vars\\.sh|$hm_session_vars|g")
+  zshrc=$(printf '%s\n' "$zshrc" | sed -E \
+    -e "s|/nix/store/[^[:space:]]+-zsh-autosuggestions-[^[:space:]]+/share/zsh-autosuggestions/zsh-autosuggestions\\.zsh|$autosuggestions|g" \
+    -e "s|/nix/store/[^[:space:]]+-starship-[^[:space:]]+/bin/starship|$shell_home/bin/starship|g" \
+    -e "s|/nix/store/[^[:space:]]+-zsh-syntax-highlighting-[^[:space:]]+/share/zsh-syntax-highlighting/zsh-syntax-highlighting\\.zsh|$syntax_highlighting|g")
   zsh_dir="$shell_home/.config/zsh"
   mkdir -p "$zsh_dir"
   printf '%s\n' "$zshenv" > "$zsh_dir/.zshenv"

@@ -215,6 +215,7 @@ run_bootstrap_timeout_case() {
     export -f sleep
     export -f git
     if [ "$override" = __unset__ ]; then
+      # shellcheck disable=SC2034,SC2153 # Variables and ROOT are consumed by the bootstrap subprocess.
       PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$fake_root" \
         FM_FAKE_FLEET_SYNC_STARTED_MARKER="$started_marker" \
         FM_FAKE_GIT_SYNC_STARTED_RECORD="$git_record" \

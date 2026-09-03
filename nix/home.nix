@@ -77,7 +77,7 @@ in
     '';
     initContent = lib.mkBefore ''
       starship() {
-        if [[ "${1-}:${2-}" == "init:zsh" ]]; then
+        if [[ "''${1-}:''${2-}" == "init:zsh" ]]; then
           return 0
         fi
         command starship "$@"

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2100 # Profile IDs are opaque strings, not arithmetic expressions.
 # Behavior tests for fm-spawn.sh concrete dispatch profile flags.
 #
 # These tests drive fm-spawn through meta writing and launch construction with a
@@ -14,7 +15,9 @@ SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-dispatch-profile)
 
 write_exempt_brief() {
-  local home=$1 id=$2 reason="configuration: task=$id; target=tests/fm-spawn-dispatch-profile.test.sh dispatch profile fixture; action=exercise wiring without product change"
+  local home=$1 id=$2
+  local reason="configuration: task=$id; target=tests/fm-spawn-dispatch-profile.test.sh dispatch profile fixture; action=exercise wiring without product change"
+  fm_test_spawn_brief "$home" "$id"
   printf 'brief for %s\nLavish intake contract: not-applicable\nLavish intake reason: %s\n' "$id" "$reason" > "$home/data/$id/brief.md"
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-lavish-intake.sh" exempt "$id" --reason "$reason" >/dev/null
 }
@@ -59,7 +62,7 @@ SH
 }
 
 make_spawn_case() {
-  local name=$1 harness=$2 case_dir home proj wt fakebin launchlog id
+  local name=$1 harness=$2 case_dir home proj wt fakebin launchlog id base_ref base_sha
   shift 2
   case_dir="$TMP_ROOT/$name"
   home="$case_dir/home"
@@ -68,9 +71,15 @@ make_spawn_case() {
   launchlog="$case_dir/launch.log"
   fakebin=$(make_spawn_fakebin "$case_dir/fake")
   fm_test_spawn_home "$home" "$harness"
+  printf '%s' firstmate-herdr-legacy-test-runner-v1 \
+    > "$home/state/.fm-backend-legacy-test-runner"
   fm_git_worktree "$proj" "$wt" "wt-$name"
+  base_ref=$(git -C "$proj" symbolic-ref --short HEAD)
+  base_sha=$(git -C "$proj" rev-parse HEAD)
   for id in "$@"; do
-    fm_test_spawn_brief "$home" "$id"
+    write_exempt_brief "$home" "$id"
+    printf 'Delivery contract: mode=no-mistakes\nTarget-project approved base: ref=%s; sha=%s\n' \
+      "$base_ref" "$base_sha" >> "$home/data/$id/brief.md"
   done
   printf '%s\n' "$case_dir|$home|$proj|$wt|$fakebin|$launchlog"
 }
@@ -98,6 +107,8 @@ run_spawn() {
   # which would make launch assertions depend on the developer's environment.
   # A test opts in to the set case via FM_TEST_CLAUDE_CONFIG_DIR.
   CLAUDE_CONFIG_DIR="${FM_TEST_CLAUDE_CONFIG_DIR:-}" \
+    FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_HARNESS=1 \
+    FM_GATE_REFUSE_BYPASS=1 \
     FM_FAKE_LAUNCH_LOG="$launchlog" FM_FAKE_PI_VERSION="${FM_TEST_PI_VERSION:-0.84.0}" \
     FM_FAKE_CURSOR_MODELS="${FM_TEST_CURSOR_MODELS:-}" \
     FM_FAKE_CURSOR_LIST_STATUS="${FM_TEST_CURSOR_LIST_STATUS:-0}" \
@@ -172,6 +183,7 @@ test_relative_home_overrides_launch_with_absolute_cross_process_paths() {
     CDPATH="$CASE_DIR/cdpath" FM_ROOT_OVERRIDE='' FM_HOME=home \
       FM_STATE_OVERRIDE=home/state FM_DATA_OVERRIDE=home/data \
       FM_PROJECTS_OVERRIDE=home/projects FM_CONFIG_OVERRIDE=home/config \
+      FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_HARNESS=1 FM_GATE_REFUSE_BYPASS=1 \
       FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
       CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" \
       GROK_HOME=home/grok-home PATH="$FAKEBIN_DIR:$PATH" \
@@ -196,11 +208,14 @@ test_home_defaults_preserve_absolute_or_resolve_relative_paths() {
   home_real=$(cd "$HOME_DIR" && pwd -P)
 
   : > "$LAUNCH_LOG"
+  # The retained tmux fixture must opt into the hermetic legacy lane; an
+  # explicit state path is the lane's trust boundary and equals FM_HOME/state.
   out=$(
     cd "$CASE_DIR" || exit 1
     FM_ROOT_OVERRIDE='' FM_HOME=home \
-      FM_STATE_OVERRIDE='' FM_DATA_OVERRIDE='' \
+      FM_STATE_OVERRIDE=home/state FM_DATA_OVERRIDE='' \
       FM_PROJECTS_OVERRIDE=home/projects FM_CONFIG_OVERRIDE=home/config \
+      FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_HARNESS=1 FM_GATE_REFUSE_BYPASS=1 \
       FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
       CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" \
       GROK_HOME=home/grok-home PATH="$FAKEBIN_DIR:$PATH" \
@@ -219,8 +234,9 @@ test_home_defaults_preserve_absolute_or_resolve_relative_paths() {
   : > "$LAUNCH_LOG"
   out=$(
     FM_ROOT_OVERRIDE='' FM_HOME="$linked_home" \
-      FM_STATE_OVERRIDE='' FM_DATA_OVERRIDE='' \
+      FM_STATE_OVERRIDE="$linked_home/state" FM_DATA_OVERRIDE='' \
       FM_PROJECTS_OVERRIDE="$linked_home/projects" FM_CONFIG_OVERRIDE="$linked_home/config" \
+      FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_HARNESS=1 FM_GATE_REFUSE_BYPASS=1 \
       FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
       CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" \
       GROK_HOME="$linked_home/grok-home" PATH="$FAKEBIN_DIR:$PATH" \
@@ -249,6 +265,7 @@ test_absolute_override_spelling_is_preserved_in_launch_paths() {
     FM_ROOT_OVERRIDE='' FM_HOME="$linked_home" \
       FM_STATE_OVERRIDE="$linked_home/state" FM_DATA_OVERRIDE="$linked_home/data" \
       FM_PROJECTS_OVERRIDE="$linked_home/projects" FM_CONFIG_OVERRIDE="$linked_home/config" \
+      FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_HARNESS=1 FM_GATE_REFUSE_BYPASS=1 \
       FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
       CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" \
       GROK_HOME="$linked_home/grok-home" PATH="$FAKEBIN_DIR:$PATH" \
@@ -411,7 +428,10 @@ test_shipped_phynd_dispatch_profiles_reach_spawn_consumer() {
 $profile
 EOF
     id="shipped-$harness-z16"
-    fm_test_spawn_brief "$HOME_DIR" "$id"
+    write_exempt_brief "$HOME_DIR" "$id"
+    printf 'Delivery contract: mode=no-mistakes\nTarget-project approved base: ref=%s; sha=%s\n' \
+      "$(git -C "$PROJ_DIR" symbolic-ref --short HEAD)" "$(git -C "$PROJ_DIR" rev-parse HEAD)" \
+      >> "$HOME_DIR/data/$id/brief.md"
     out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
       "$id" "$PROJ_DIR" --harness "$harness" --model "$model" --effort "$effort")
     status=$?
@@ -722,6 +742,7 @@ test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata() {
   out=$(FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
+    FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_HARNESS=1 FM_GATE_REFUSE_BYPASS=1 \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
     FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" PATH="$FAKEBIN_DIR:/usr/bin:/bin:/usr/sbin:/sbin" \
     "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1)
