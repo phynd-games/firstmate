@@ -44,6 +44,9 @@ printf '%s\n' '❯'
 SH
     chmod +x "$dir/$tool"
   done
+  PHYN_TEST_NIX_PROFILE=$dir
+  PHYN_TEST_GLOBALBIN=
+  export PHYN_TEST_NIX_PROFILE PHYN_TEST_GLOBALBIN
 }
 
 make_phynd_fixture() {
@@ -62,14 +65,17 @@ make_phynd_fixture() {
 }
 
 phynd_env() {
-  local home=$1 xdg=$2 state=$3 npm_prefix=$4 log=$5 rebuild_log=$6
+  local home=$1 xdg=$2 state=$3 npm_prefix=$4 log=$5 rebuild_log=$6 path
   shift 6
+  path="$PHYN_TEST_FAKEBIN:$REAL_PATH"
+  if [ -n "${PHYN_TEST_GLOBALBIN:-}" ]; then
+    path="$PHYN_TEST_FAKEBIN:$PHYN_TEST_GLOBALBIN:$REAL_PATH"
+  fi
   HOME="$home" \
   PHYN_DEV_HOME="$home" \
   PHYN_DEV_XDG_CONFIG_HOME="$xdg" \
   PHYN_DEV_STATE_DIR="$state" \
   PHYN_DEV_NPM_PREFIX="$npm_prefix" \
-  PHYN_DEV_NIX_PROFILE="$home/nix-profile/bin" \
   PHYN_DEV_USER="$(id -un)" \
   PHYN_DEV_SKIP_SUDO=1 \
   PHYN_DEV_SKIP_TOOLS=1 \
@@ -77,7 +83,8 @@ phynd_env() {
   PHYN_DEV_UNAME_M=arm64 \
   PHYN_DEV_NIX_LOG="$log" \
   PHYN_DEV_REBUILD_LOG="$rebuild_log" \
-  PATH="$PHYN_TEST_FAKEBIN:$REAL_PATH" \
+  PHYN_DEV_NIX_PROFILE="${PHYN_TEST_NIX_PROFILE:-$home/nix-profile/bin}" \
+  PATH="$path" \
   "$@"
 }
 
@@ -138,7 +145,12 @@ test_install_noop_update_and_safe_backup() {
   count=$(wc -l < "$rebuild_log" | tr -d ' ')
   [ "$count" -eq 1 ] || fail "second install should not reactivate nix-darwin"
 
+  mkdir -p "$case_dir/globalbin"
+  cp "$case_dir/fakebin/starship" "$case_dir/globalbin/starship"
+  chmod +x "$case_dir/globalbin/starship"
   rm "$case_dir/fakebin/starship"
+  PHYN_TEST_GLOBALBIN="$case_dir/globalbin"
+  export PHYN_TEST_GLOBALBIN
   out=$(phynd_env "$home" "$xdg" "$state" "$npm_prefix" \
     "$nix_log" "$rebuild_log" "$fixture/phynd-dev" install) \
     || fail "phynd-dev should repair missing Nix-managed packages: $out"

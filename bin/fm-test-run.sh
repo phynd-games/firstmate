@@ -1086,8 +1086,16 @@ families_for_changed_path() {
   local path=$1 fixture_ref
   case "$path" in
     phynd-dev|bin/phynd-dev|flake.nix|flake.lock|nix/*|home/wezterm/*|\
-    config/fresh/*|config/starship.toml|config/crew-dispatch.json)
+    config/fresh/*|config/starship.toml)
       printf '%s\n' "__script__:phynd-dev.test.sh"
+      ;;
+    config/crew-dispatch.json)
+      printf '%s\n' "__script__:phynd-dev.test.sh"
+      printf '%s\n' "__script__:fm-bootstrap.test.sh"
+      printf '%s\n' "__script__:fm-backend-herdr-presentation-e2e.test.sh"
+      printf '%s\n' "__script__:fm-remote-secondmate-lifecycle-e2e.test.sh"
+      printf '%s\n' "__script__:fm-secondmate-harness.test.sh"
+      printf '%s\n' "__script__:fm-spawn-dispatch-profile.test.sh"
       ;;
     tests/fm-backend-herdr-eventwait.test.py)
       printf '%s\n' real-herdr-gated
@@ -1222,6 +1230,7 @@ families_for_changed_path() {
     bin/fm-control-lib.sh)
       printf '%s\n' backend-dispatch
       printf '%s\n' session-bootstrap
+      printf '%s\n' "__script__:fm-backend.test.sh"
       printf '%s\n' "__script__:fm-quota-choose.test.sh"
       ;;
     bin/fm-composer-lib.sh)

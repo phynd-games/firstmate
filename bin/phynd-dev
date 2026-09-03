@@ -179,13 +179,28 @@ managed_link_converged() {
     && [ "$(readlink "$target" 2>/dev/null || true)" = "$source" ]
 }
 
+managed_command_converged() {
+  local tool=$1 path profile
+  path=$(command -v "$tool" 2>/dev/null) || return 1
+  [ -x "$path" ] || return 1
+  for profile in \
+    "$DEV_NIX_PROFILE" \
+    "/etc/profiles/per-user/$PHYN_DEV_USER/bin" \
+    /run/current-system/sw/bin; do
+    case "$path" in
+      "$profile"/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 managed_activation_converged() {
   local tool
   for tool in \
     actionlint basedpyright basedpyright-langserver fd fresh fzf gh git jq \
     lua-language-server node npm npx rg rust-analyzer shellcheck starship \
     treehouse typescript-language-server tmux curl; do
-    command -v "$tool" >/dev/null 2>&1 || return 1
+    managed_command_converged "$tool" || return 1
   done
   managed_link_converged "$DEV_HOME/.config/fresh/config.json" \
     "$DEV_ROOT/config/fresh/config.json" || return 1
