@@ -68,19 +68,8 @@ in
     settings = builtins.fromTOML (builtins.readFile "${repoRoot}/config/starship.toml");
   };
 
-  home.file.".config/fresh/config.json" = {
-    source = config.lib.file.mkOutOfStoreSymlink "${repoRoot}/config/fresh/config.json";
-  };
-
-  home.file.".config/wezterm/wezterm.lua" = {
-    source = config.lib.file.mkOutOfStoreSymlink "${repoRoot}/home/wezterm/wezterm.lua";
-  };
-
   home.file.".local/bin/phynd-dev" = {
     source = config.lib.file.mkOutOfStoreSymlink "${repoRoot}/bin/phynd-dev";
   };
 
-  home.file.".local/bin/ghf" = {
-    source = config.lib.file.mkOutOfStoreSymlink "${npmPrefix}/bin/gnhf";
-  };
 }

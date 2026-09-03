@@ -32,7 +32,11 @@ SH
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${PHYN_DEV_REBUILD_LOG:?}"
 mkdir -p "$PHYN_DEV_HOME/.local/bin"
-ln -sfn "$PHYN_DEV_ROOT/bin/phynd-dev" "$PHYN_DEV_HOME/.local/bin/phynd-dev"
+mkdir -p "$PHYN_DEV_HOME/.local/state/phynd-dev/home-manager"
+ln -sfn "$PHYN_DEV_ROOT/bin/phynd-dev" \
+  "$PHYN_DEV_HOME/.local/state/phynd-dev/home-manager/phynd-dev"
+ln -sfn "$PHYN_DEV_HOME/.local/state/phynd-dev/home-manager/phynd-dev" \
+  "$PHYN_DEV_HOME/.local/bin/phynd-dev"
 SH
   chmod +x "$dir/nix" "$dir/darwin-rebuild"
   for tool in actionlint basedpyright basedpyright-langserver fd fresh fzf gh git jq \
@@ -46,7 +50,8 @@ SH
   done
   PHYN_TEST_NIX_PROFILE=$dir
   PHYN_TEST_GLOBALBIN=
-  export PHYN_TEST_NIX_PROFILE PHYN_TEST_GLOBALBIN
+  PHYN_TEST_SKIP_TOOLS=1
+  export PHYN_TEST_NIX_PROFILE PHYN_TEST_GLOBALBIN PHYN_TEST_SKIP_TOOLS
 }
 
 make_phynd_fixture() {
@@ -78,7 +83,7 @@ phynd_env() {
   PHYN_DEV_NPM_PREFIX="$npm_prefix" \
   PHYN_DEV_USER="$(id -un)" \
   PHYN_DEV_SKIP_SUDO=1 \
-  PHYN_DEV_SKIP_TOOLS=1 \
+  PHYN_DEV_SKIP_TOOLS="${PHYN_TEST_SKIP_TOOLS:-1}" \
   PHYN_DEV_UNAME_S=Darwin \
   PHYN_DEV_UNAME_M=arm64 \
   PHYN_DEV_NIX_LOG="$log" \
@@ -86,6 +91,63 @@ phynd_env() {
   PHYN_DEV_NIX_PROFILE="${PHYN_TEST_NIX_PROFILE:-$home/nix-profile/bin}" \
   PATH="$path" \
   "$@"
+}
+
+test_npm_tools_ignore_stale_path_commands() {
+  local case_dir fixture home xdg state npm_prefix nix_log rebuild_log npm_log out count
+  case_dir="$TMP_ROOT/npm-tools"
+  fixture="$case_dir/repo"
+  home="$case_dir/home"
+  xdg="$home/.config"
+  state="$home/.local/state/phynd-dev"
+  npm_prefix="$home/.local/share/phynd-dev/npm"
+  nix_log="$case_dir/nix.log"
+  rebuild_log="$case_dir/rebuild.log"
+  npm_log="$case_dir/npm.log"
+  mkdir -p "$home"
+  make_phynd_fixture "$ROOT" "$fixture"
+  make_fake_phynd_tools "$case_dir/fakebin"
+  PHYN_TEST_FAKEBIN="$case_dir/fakebin"
+  export PHYN_TEST_FAKEBIN
+  cat > "$case_dir/fakebin/npm" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${PHYN_DEV_NPM_LOG:?}"
+mkdir -p "$NPM_CONFIG_PREFIX/bin"
+for tool in pi gnhf gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi; do
+  cat > "$NPM_CONFIG_PREFIX/bin/$tool" <<'TOOL'
+#!/usr/bin/env bash
+exit 0
+TOOL
+  chmod +x "$NPM_CONFIG_PREFIX/bin/$tool"
+done
+SH
+  chmod +x "$case_dir/fakebin/npm"
+  mkdir -p "$case_dir/globalbin"
+  for tool in no-mistakes pi gnhf gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi; do
+    cat > "$case_dir/globalbin/$tool" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+    chmod +x "$case_dir/globalbin/$tool"
+  done
+  PHYN_TEST_GLOBALBIN="$case_dir/globalbin"
+  PHYN_TEST_SKIP_TOOLS=0
+  PHYN_DEV_NPM_LOG="$npm_log"
+  export PHYN_TEST_GLOBALBIN PHYN_TEST_SKIP_TOOLS PHYN_DEV_NPM_LOG
+  : > "$nix_log"
+  : > "$rebuild_log"
+  : > "$npm_log"
+
+  out=$(phynd_env "$home" "$xdg" "$state" "$npm_prefix" "$nix_log" "$rebuild_log" \
+    "$fixture/phynd-dev" install) || fail "npm-tool reconciliation failed: $out"
+  count=$(wc -l < "$npm_log" | tr -d ' ')
+  [ "$count" -eq 7 ] || fail "initial install should reconcile each npm tool once"
+  rm "$npm_prefix/bin/"*
+  out=$(phynd_env "$home" "$xdg" "$state" "$npm_prefix" "$nix_log" "$rebuild_log" \
+    "$fixture/phynd-dev" install) || fail "npm-tool repair failed: $out"
+  count=$(wc -l < "$npm_log" | tr -d ' ')
+  [ "$count" -eq 14 ] || fail "stale global npm tools should not suppress repair"
+  pass "npm-managed tools ignore stale commands outside the managed prefix"
 }
 
 test_root_entrypoint_resolves_itself() {
@@ -294,6 +356,7 @@ test_starship_is_nix_managed_and_loaded_once() {
 }
 
 test_root_entrypoint_resolves_itself
+test_npm_tools_ignore_stale_path_commands
 test_install_noop_update_and_safe_backup
 test_flake_update_and_check_are_explicit
 test_fresh_effective_config_and_wezterm_load
