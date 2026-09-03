@@ -57,10 +57,10 @@ configure_paths() {
   DEV_XDG_CONFIG_HOME=${PHYN_DEV_XDG_CONFIG_HOME:-${XDG_CONFIG_HOME:-$DEV_HOME/.config}}
   DEV_STATE_DIR=${PHYN_DEV_STATE_DIR:-$DEV_HOME/.local/state/phynd-dev}
   DEV_NPM_PREFIX=${PHYN_DEV_NPM_PREFIX:-$DEV_HOME/.local/share/phynd-dev/npm}
-  DEV_NIX_PROFILE=${PHYN_DEV_NIX_PROFILE:-$DEV_HOME/.nix-profile/bin}
   DEV_ACTIVATION_STATE=$DEV_STATE_DIR/activation.sha256
   export PHYN_DEV_ROOT="$DEV_ROOT"
   export PHYN_DEV_USER="${PHYN_DEV_USER:-$(id -un)}"
+  DEV_NIX_PROFILE=${PHYN_DEV_NIX_PROFILE:-/etc/profiles/per-user/$PHYN_DEV_USER/bin}
   export PHYN_DEV_HOME="$DEV_HOME"
   export PHYN_DEV_SYSTEM="$DEV_SYSTEM"
   export NPM_CONFIG_PREFIX="$DEV_NPM_PREFIX"
@@ -224,9 +224,9 @@ managed_activation_converged() {
     treehouse typescript-language-server tmux curl; do
     managed_command_converged "$tool" || return 1
   done
-  managed_link_converged "$DEV_HOME/.config/fresh/config.json" \
+  managed_link_converged "$DEV_XDG_CONFIG_HOME/fresh/config.json" \
     "$DEV_ROOT/config/fresh/config.json" || return 1
-  managed_link_converged "$DEV_HOME/.config/wezterm/wezterm.lua" \
+  managed_link_converged "$DEV_XDG_CONFIG_HOME/wezterm/wezterm.lua" \
     "$DEV_ROOT/home/wezterm/wezterm.lua" || return 1
   managed_link_converged "$DEV_HOME/.local/bin/phynd-dev" \
     "$DEV_ROOT/bin/phynd-dev"
