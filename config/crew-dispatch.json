@@ -1,6 +1,41 @@
 {
   "rules": [
     {
+      "when": "The task produces a critical design or architecture plan and the work is on the most critical path or is materially ambiguous.",
+      "use": {
+        "harness": "claude",
+        "model": "fable",
+        "effort": "xhigh"
+      },
+      "why": "The captain prefers Fable at xhigh effort for the most critical-path or ambiguous design and architecture work. If this Fable route is concretely unavailable, use the separate Sol fallback rule."
+    },
+    {
+      "when": "The task produces a critical design or architecture plan, unless the more specific most-critical-path or materially-ambiguous rule applies.",
+      "use": {
+        "harness": "claude",
+        "model": "fable",
+        "effort": "high"
+      },
+      "why": "The captain's default for critical design and architecture plans is Fable at high effort."
+    },
+    {
+      "when": "A critical design or architecture plan matched a Fable rule, but that preferred Fable route is concretely unavailable.",
+      "use": {
+        "harness": "pi",
+        "model": "openai-codex/gpt-5.6-sol",
+        "effort": "xhigh"
+      },
+      "why": "The captain's fallback after unavailable Fable is Sol at xhigh effort."
+    },
+    {
+      "when": "The task ports, wires, validates, repairs, or ships a phynd-cloud TypeScript Lambda from apps/Phynd-APIs into apps/Phynd-Rust-APIs.",
+      "use": {
+        "harness": "codex",
+        "effort": "xhigh"
+      },
+      "why": "The captain requires xhigh reasoning for every remaining phynd-cloud Rust Lambda migration lane. Switched from claude to codex on 2026-08-26 by captain instruction after the Claude spend window blocked the View Explorer delivery lane. No model is pinned, so Codex uses its current default model."
+    },
+    {
       "when": "Reviewing open pull requests, auditing existing changes, or checking PRs for defects without implementing fixes.",
       "use": {
         "harness": "pi",

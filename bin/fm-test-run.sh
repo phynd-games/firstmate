@@ -213,7 +213,8 @@ family_for_basename() {
     fm-lavish-feature-intake.test.sh|\
     fm-tmux-submit-busy.test.sh|fm-trace-context-lib.test.sh|\
     fm-transition-lib.test.sh|\
-    fm-test-run.test.sh|fm-test-isolation-proof.test.sh|fm-setup-phynd.test.sh)
+    fm-test-run.test.sh|fm-test-isolation-proof.test.sh|fm-setup-phynd.test.sh|\
+    phynd-dev.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
     fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
@@ -1084,6 +1085,18 @@ families_for_unmapped_bin() {
 families_for_changed_path() {
   local path=$1 fixture_ref
   case "$path" in
+    phynd-dev|bin/phynd-dev|flake.nix|flake.lock|nix/*|home/wezterm/*|\
+    config/fresh/*|config/starship.toml)
+      printf '%s\n' "__script__:phynd-dev.test.sh"
+      ;;
+    config/crew-dispatch.json)
+      printf '%s\n' "__script__:phynd-dev.test.sh"
+      printf '%s\n' "__script__:fm-bootstrap.test.sh"
+      printf '%s\n' "__script__:fm-backend-herdr-presentation-e2e.test.sh"
+      printf '%s\n' "__script__:fm-remote-secondmate-lifecycle-e2e.test.sh"
+      printf '%s\n' "__script__:fm-secondmate-harness.test.sh"
+      printf '%s\n' "__script__:fm-spawn-dispatch-profile.test.sh"
+      ;;
     tests/fm-backend-herdr-eventwait.test.py)
       printf '%s\n' real-herdr-gated
       printf '%s\n' legacy-adapter
@@ -1167,7 +1180,7 @@ families_for_changed_path() {
     bin/fm-quota-choose.sh)
       printf '%s\n' "__script__:fm-quota-choose.test.sh"
       ;;
-    .pi/extensions/*|.pi/extensions/lib/*)
+    .pi/extensions/*)
       # Pi extensions share session lifecycle, watcher, branch, and strict type
       # boundaries. Select all coupled families so a new imported helper cannot
       # bypass changed-file validation merely because no test names it yet.
@@ -1217,6 +1230,7 @@ families_for_changed_path() {
     bin/fm-control-lib.sh)
       printf '%s\n' backend-dispatch
       printf '%s\n' session-bootstrap
+      printf '%s\n' "__script__:fm-backend.test.sh"
       printf '%s\n' "__script__:fm-quota-choose.test.sh"
       ;;
     bin/fm-composer-lib.sh)
@@ -1899,7 +1913,7 @@ fi
 
 if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
   [ -r "$ROOT/bin/fm-timeout-lib.sh" ] || die "per-script timeout helper not found: bin/fm-timeout-lib.sh"
-  # shellcheck source=bin/fm-timeout-lib.sh
+  # shellcheck source=/dev/null
   . "$ROOT/bin/fm-timeout-lib.sh"
 fi
 

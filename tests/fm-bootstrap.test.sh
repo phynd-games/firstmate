@@ -29,6 +29,7 @@ set -u
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 TMP_ROOT=$(fm_test_tmproot fm-bootstrap-tests)
 export FM_BACKEND_CMUX_BUNDLE_BIN="$TMP_ROOT/no-bundled-cmux"
+export FM_BOOTSTRAP_OS_OVERRIDE=Linux
 
 # Hermetic runtime-backend detection. These cases pin the backend per-home via
 # config/backend; the dev shell's ambient runtime markers ($TMUX inside tmux,
@@ -214,6 +215,7 @@ run_bootstrap_timeout_case() {
     export -f sleep
     export -f git
     if [ "$override" = __unset__ ]; then
+      # shellcheck disable=SC2034,SC2153 # Variables and ROOT are consumed by the bootstrap subprocess.
       PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$fake_root" \
         FM_FAKE_FLEET_SYNC_STARTED_MARKER="$started_marker" \
         FM_FAKE_GIT_SYNC_STARTED_RECORD="$git_record" \
@@ -536,12 +538,46 @@ test_retained_backends_refuse() {
 
 test_herdr_install_requires_manual_action() {
   local out status
-  out=$("$ROOT/bin/fm-bootstrap.sh" install herdr 2>&1)
+  out=$(FM_BOOTSTRAP_OS_OVERRIDE=Linux "$ROOT/bin/fm-bootstrap.sh" install herdr 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "install herdr should fail instead of evaluating its manual-install hint"
   [ "$out" = "error: herdr requires manual installation (instructions: https://herdr.dev)" ] \
     || fail "install herdr should return actionable manual-install guidance, got: $out"
   pass "bootstrap: Herdr manual-install guidance is never executed as a shell command"
+}
+
+test_darwin_missing_tool_routes_through_phynd_dev() {
+  local case_dir fakebin out expected
+  case_dir="$TMP_ROOT/darwin-install-route"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  mv "$fakebin/herdr" "$fakebin/herdr.present"
+  expected="MISSING: herdr (install: '$case_dir/home/phynd-dev' install-tool herdr)"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_BOOTSTRAP_OS_OVERRIDE=Darwin FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" "$expected" "Darwin Herdr remediation should route through phynd-dev"
+  assert_not_contains "$out" "MISSING_MANUAL: herdr" "Darwin Herdr should have an executable remediation"
+  pass "bootstrap: Darwin missing tools route through the repository phynd-dev entrypoint"
+}
+
+test_darwin_install_route_quotes_apostrophes() {
+  local case_dir log out
+  case_dir="$TMP_ROOT/darwin-install-captain's-home"
+  log="$case_dir/route.log"
+  mkdir -p "$case_dir/home"
+  cat > "$case_dir/home/phynd-dev" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "${FM_ROUTE_LOG:?}"
+SH
+  chmod +x "$case_dir/home/phynd-dev"
+  out=$(FM_BOOTSTRAP_OS_OVERRIDE=Darwin FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_ROUTE_LOG="$log" "$ROOT/bin/fm-bootstrap.sh" install herdr 2>&1) \
+    || fail "Darwin remediation command with apostrophe failed: $out"
+  [ "$(cat "$log")" = "install-tool herdr" ] \
+    || fail "Darwin remediation command with apostrophe invoked the wrong arguments"
+  pass "bootstrap quotes Darwin remediation paths before eval"
 }
 
 test_unknown_backend_reports_invalid_configuration() {
@@ -1046,6 +1082,8 @@ test_quota_axi_min_version
 test_git_is_required_with_supported_install_instruction
 test_retained_backends_refuse
 test_herdr_install_requires_manual_action
+test_darwin_missing_tool_routes_through_phynd_dev
+test_darwin_install_route_quotes_apostrophes
 test_unknown_backend_reports_invalid_configuration
 test_fleet_sync_timeout_scales_with_origin_backed_project_count
 test_fleet_sync_timeout_floor_preserves_small_fleets

@@ -31,6 +31,20 @@ Read that repository's root `AGENTS.md` and the most specific app guidance befor
 
 ### Install and launch
 
+For the complete macOS developer environment, use the repository entrypoint:
+
+```sh
+git clone https://github.com/phynd-games/firstmate
+cd firstmate
+./phynd-dev install
+./phynd-dev launch
+```
+
+`./phynd-dev update` reapplies later flake, package, Fresh, Starship, and WezTerm changes safely.
+The command is idempotent and keeps existing user configuration in timestamped backups when it must replace a file.
+
+For an existing Herdr/Pi installation that does not need the Nix-managed developer environment, the focused setup path remains:
+
 ```sh
 gh auth login
 git clone https://github.com/phynd-games/firstmate
