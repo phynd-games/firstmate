@@ -206,6 +206,7 @@ _fm_vloop_toon_tables_valid() {  # <evidence-content>
       }
       return in_quotes ? -1 : width
     }
+    /^[[:space:]]*help\[[0-9]+\]:/ { close_table(); next }
     /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*\[[0-9]+\]/ {
       close_table()
       if (!valid_header($0)) { invalid = 1; next }
@@ -227,7 +228,11 @@ _fm_vloop_toon_tables_valid() {  # <evidence-content>
         if (field_values[i] == "" || seen_fields[field_values[i]]) invalid = 1
         seen_fields[field_values[i]] = 1
       }
-      if (table_name == "findings" && (field_count != 6 || field_values[1] != "id" || field_values[2] != "severity" || field_values[3] != "file" || field_values[4] != "line" || field_values[5] != "action" || field_values[6] != "description")) invalid = 1
+      if (table_name == "findings") {
+        valid_findings = field_count == 6 && field_values[1] == "id" && field_values[2] == "severity" && field_values[3] == "file" && field_values[4] == "line" && field_values[5] == "action" && field_values[6] == "description"
+        valid_findings = valid_findings || (field_count == 5 && field_values[1] == "id" && field_values[2] == "severity" && field_values[3] == "file" && field_values[4] == "action" && field_values[5] == "description")
+        if (!valid_findings) invalid = 1
+      }
       in_table = 1
       row_count = 0
       next
@@ -252,15 +257,16 @@ _fm_vloop_findings_valid() {  # <evidence-content>
     function valid_table(value) {
       return value ~ /^[[:space:]]*findings\[[0-9]+\]\{[^{}]+\}:[[:space:]]*$/
     }
-    /^[[:space:]]*findings:/ {
+    /^  findings:/ {
       scalar_count++
       value = $0
       sub(/^[^:]*:/, "", value)
       sub(/^[[:space:]]+/, "", value)
       sub(/[[:space:]]+$/, "", value)
-      if (value != "none") invalid = 1
+      if (value != "none" && value !~ /^[0-9]+ awaiting$/) invalid = 1
       next
     }
+    /^findings:/ { invalid = 1; next }
     /^[[:space:]]*findings\[/ {
       table_count++
       if (!valid_table($0)) invalid = 1
@@ -268,7 +274,8 @@ _fm_vloop_findings_valid() {  # <evidence-content>
     }
     /^[[:space:]]*findings([^[:alnum:]_]|$)/ { invalid = 1 }
     END {
-      if (scalar_count > 1 || table_count > 1 || scalar_count + table_count > 1) invalid = 1
+      if (scalar_count > 1 || table_count > 1) invalid = 1
+      if (scalar_count == 0 && table_count == 0) invalid = 1
       exit invalid
     }
   '
@@ -404,13 +411,18 @@ _fm_vloop_hash_sig_valid() {  # <signature>
 
 _fm_vloop_scalar_fields_valid() {  # <evidence-content>
   printf '%s\n' "$1" | awk '
-    /^[[:space:]]*(id|branch|status|head|outcome|base|pr|gate|awaiting_agent):[[:space:]]*/ {
+    NR == 1 { in_run = ($0 == "run:"); next }
+    in_run && /^  (id|branch|status|head|outcome|base|pr|gate|awaiting_agent):[[:space:]]*/ {
       line = $0
-      sub(/^[[:space:]]*/, "", line)
+      sub(/^  /, "", line)
       key = line
       sub(/:.*/, "", key)
       if (++seen[key] > 1) invalid = 1
+      next
     }
+    /^[^[:space:]]/ { in_run = 0 }
+    /^(id|branch|status|head|pr|awaiting_agent):[[:space:]]*/ { invalid = 1 }
+    /^outcome:[[:space:]]*/ { if (++seen["outcome"] > 1) invalid = 1 }
     END { exit invalid }
   '
 }

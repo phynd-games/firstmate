@@ -19,6 +19,8 @@ in
   home.homeDirectory = homeDirectory;
   home.stateVersion = "24.11";
 
+  manual.manpages.enable = false;
+
   home.packages = with pkgs; [
     actionlint
     basedpyright
@@ -54,7 +56,7 @@ in
 
   programs.zsh = {
     enable = true;
-    dotDir = ".config/zsh";
+    dotDir = "${config.xdg.configHome}/zsh";
     autosuggestion.enable = true;
     syntaxHighlighting.enable = true;
     envExtra = ''

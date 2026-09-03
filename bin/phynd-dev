@@ -10,6 +10,8 @@
 # update operation; flake-check evaluates the flake without building it.
 # tools and install-tool reconcile one named tool; launch opens Herdr when run
 # from an interactive terminal; status is read-only.
+# PHYN_DEV_NIX_CUSTOM_CONF optionally overrides the host Nix custom-config path
+# for isolated tests; activation uses /etc/nix/nix.custom.conf by default.
 set -euo pipefail
 
 say() {
@@ -57,6 +59,7 @@ configure_paths() {
   DEV_XDG_CONFIG_HOME=${PHYN_DEV_XDG_CONFIG_HOME:-${XDG_CONFIG_HOME:-$DEV_HOME/.config}}
   DEV_STATE_DIR=${PHYN_DEV_STATE_DIR:-$DEV_HOME/.local/state/phynd-dev}
   DEV_NPM_PREFIX=${PHYN_DEV_NPM_PREFIX:-$DEV_HOME/.local/share/phynd-dev/npm}
+  DEV_NIX_CUSTOM_CONF=${PHYN_DEV_NIX_CUSTOM_CONF:-/etc/nix/nix.custom.conf}
   DEV_ACTIVATION_STATE=$DEV_STATE_DIR/activation.sha256
   export PHYN_DEV_ROOT="$DEV_ROOT"
   export PHYN_DEV_USER="${PHYN_DEV_USER:-$(id -un)}"
@@ -154,8 +157,44 @@ run_privileged() {
   fi
 }
 
+determinate_installer_custom_conf() {
+  local target=$1
+  [ -f "$target" ] && [ ! -L "$target" ] || return 1
+  [ "$(wc -l < "$target" | tr -d ' ')" = 3 ] || return 1
+  [ "$(sed -n '1p' "$target")" = \
+    '# Written by https://github.com/DeterminateSystems/nix-installer.' ] || return 1
+  [ "$(sed -n '2p' "$target")" = \
+    '# The contents below are based on options specified at installation time.' ] || return 1
+  [ -z "$(sed -n '3p' "$target")" ]
+}
+
+nix_custom_conf_backup_target() {
+  local target=$1 candidate number
+  candidate="$target.before-nix-darwin"
+  number=1
+  while [ -e "$candidate" ] || [ -L "$candidate" ]; do
+    candidate="$target.before-nix-darwin-$number"
+    number=$((number + 1))
+  done
+  printf '%s\n' "$candidate"
+}
+
+prepare_nix_custom_conf() {
+  local target=$DEV_NIX_CUSTOM_CONF backup
+  [ -e "$target" ] || [ -L "$target" ] || return 0
+  [ -L "$target" ] && return 0
+  if determinate_installer_custom_conf "$target"; then
+    backup=$(nix_custom_conf_backup_target "$target")
+    run_privileged mv "$target" "$backup"
+    say "preserved the Determinate installer Nix config in $backup"
+    return 0
+  fi
+  die "unmanaged Nix config at $target; inspect it and rename it to ${target}.before-nix-darwin before retrying"
+}
+
 activation_command() {
   local rebuild
+  prepare_nix_custom_conf
   if command -v darwin-rebuild >/dev/null 2>&1; then
     rebuild=$(command -v darwin-rebuild)
     run_privileged env \
@@ -163,6 +202,7 @@ activation_command() {
       "PHYN_DEV_HOME=$PHYN_DEV_HOME" \
       "PHYN_DEV_SYSTEM=$PHYN_DEV_SYSTEM" \
       "PHYN_DEV_ROOT=$DEV_ROOT" \
+      'NIX_PATH=darwin-config=/etc/nix-darwin/configuration.nix' \
       "$rebuild" switch --flake "$DEV_ROOT#phynd-dev" --impure
   else
     run_privileged env \
@@ -170,6 +210,7 @@ activation_command() {
       "PHYN_DEV_HOME=$PHYN_DEV_HOME" \
       "PHYN_DEV_SYSTEM=$PHYN_DEV_SYSTEM" \
       "PHYN_DEV_ROOT=$DEV_ROOT" \
+      'NIX_PATH=darwin-config=/etc/nix-darwin/configuration.nix' \
       nix run "$DEV_ROOT#darwin-rebuild" -- \
       switch --flake "$DEV_ROOT#phynd-dev" --impure
   fi
