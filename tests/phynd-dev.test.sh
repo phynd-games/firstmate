@@ -26,6 +26,10 @@ if [ "${1:-}" = flake ] && [ "${2:-}" = check ]; then
   printf '%s\n' 'flake check' >> "${PHYN_DEV_NIX_LOG:?}"
   exit 0
 fi
+if [ "${1:-}" = eval ]; then
+  printf '%s\n' 'darwin configuration eval' >> "${PHYN_DEV_NIX_LOG:?}"
+  exit 0
+fi
 exit 0
 SH
   cat > "$dir/darwin-rebuild" <<'SH'
@@ -155,8 +159,9 @@ SH
   done
   PHYN_TEST_GLOBALBIN="$case_dir/globalbin"
   PHYN_TEST_SKIP_TOOLS=0
+  PHYN_DEV_BACKUP_SUFFIX=ghf-test
   PHYN_DEV_NPM_LOG="$npm_log"
-  export PHYN_TEST_GLOBALBIN PHYN_TEST_SKIP_TOOLS PHYN_DEV_NPM_LOG
+  export PHYN_TEST_GLOBALBIN PHYN_TEST_SKIP_TOOLS PHYN_DEV_BACKUP_SUFFIX PHYN_DEV_NPM_LOG
   : > "$nix_log"
   : > "$rebuild_log"
   : > "$npm_log"
@@ -165,16 +170,25 @@ SH
     "$fixture/phynd-dev" install) || fail "npm-tool reconciliation failed: $out"
   count=$(wc -l < "$npm_log" | tr -d ' ')
   [ "$count" -eq 7 ] || fail "initial install should reconcile each npm tool once"
+  rm "$home/.local/bin/ghf"
+  printf '%s\n' unrelated > "$home/.local/bin/ghf"
+  out=$(phynd_env "$home" "$xdg" "$state" "$npm_prefix" "$nix_log" "$rebuild_log" \
+    "$fixture/phynd-dev" install) || fail "ghf backup repair failed: $out"
+  count=$(wc -l < "$npm_log" | tr -d ' ')
+  [ "$count" -eq 14 ] || fail "an unrelated ghf target should trigger gnhf repair"
+  [ "$(cat "$home/.local/bin/ghf.phynd-dev-backup-ghf-test")" = unrelated ] \
+    || fail "an unrelated ghf target should be preserved in a backup"
+  [ -L "$home/.local/bin/ghf" ] || fail "gnhf repair should restore the managed ghf link"
   rm -f "$home/.local/bin/ghf"
   out=$(phynd_env "$home" "$xdg" "$state" "$npm_prefix" "$nix_log" "$rebuild_log" \
     "$fixture/phynd-dev" install) || fail "ghf-link repair failed: $out"
   count=$(wc -l < "$npm_log" | tr -d ' ')
-  [ "$count" -eq 14 ] || fail "missing ghf link should trigger gnhf repair"
+  [ "$count" -eq 21 ] || fail "missing ghf link should trigger gnhf repair"
   rm "$npm_prefix/bin/"*
   out=$(phynd_env "$home" "$xdg" "$state" "$npm_prefix" "$nix_log" "$rebuild_log" \
     "$fixture/phynd-dev" install) || fail "npm-tool repair failed: $out"
   count=$(wc -l < "$npm_log" | tr -d ' ')
-  [ "$count" -eq 21 ] || fail "stale global npm tools should not suppress repair"
+  [ "$count" -eq 28 ] || fail "stale global npm tools should not suppress repair"
   pass "npm-managed tools ignore stale commands outside the managed prefix"
 }
 
@@ -221,6 +235,15 @@ SH
 printf '%s\n' 'printf repaired > "${PHYN_DEV_NM_MARKER:?}"'
 SH
   chmod +x "$case_dir/fakebin/curl"
+  cat > "$case_dir/fakebin/npm" <<'SH'
+#!/usr/bin/env bash
+mkdir -p "$NPM_CONFIG_PREFIX/bin"
+for tool in pi gnhf gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi; do
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$NPM_CONFIG_PREFIX/bin/$tool"
+  chmod +x "$NPM_CONFIG_PREFIX/bin/$tool"
+done
+SH
+  chmod +x "$case_dir/fakebin/npm"
 
   out=$(phynd_env "$home" "$xdg" "$state" "$npm_prefix" "$nix_log" "$rebuild_log" \
     "$fixture/phynd-dev" install-tool no-mistakes) \
@@ -367,11 +390,16 @@ test_flake_update_and_check_are_explicit() {
     "$fixture/phynd-dev" flake-update) || fail "flake-update path failed: $out"
   assert_contains "$out" "updating the flake lock" "flake-update should explain its action"
   assert_contains "$(cat "$nix_log")" "flake check" "flake-check should invoke nix"
+  assert_contains "$(cat "$nix_log")" "darwin configuration eval" \
+    "flake-check should evaluate the Darwin configuration"
   assert_contains "$(cat "$nix_log")" "flake update" "flake-update should invoke nix"
   if [ "$(uname -s)" = Darwin ] && PATH="$REAL_PATH" command -v nix >/dev/null 2>&1; then
     out=$(PATH="$REAL_PATH" nix flake check --no-build --impure "$fixture") \
       || fail "real Nix could not evaluate the pinned fixture flake: $out"
-    pass "real Nix evaluates the pinned flake without building system closures"
+    out=$(PATH="$REAL_PATH" nix eval --no-write-lock-file --impure --raw \
+      "$fixture#darwinConfigurations.phynd-dev.config.system.build.toplevel.drvPath") \
+      || fail "real Nix could not evaluate the Darwin/Home Manager configuration: $out"
+    pass "real Nix evaluates the flake and Darwin configuration without building closures"
   else
     pass "real Nix evaluation skipped because this host lacks Darwin Nix"
   fi
@@ -399,7 +427,9 @@ test_fresh_effective_config_and_wezterm_load() {
     "$fixture/phynd-dev" install >/dev/null \
     || fail "editor-config install failed"
 
-  if command -v fresh >/dev/null 2>&1; then
+  if [ "$(uname -s)" = Darwin ]; then
+    command -v fresh >/dev/null 2>&1 \
+      || fail "Fresh is required on the supported Darwin path"
     show=$(HOME="$home" XDG_CONFIG_HOME="$xdg" PATH="$REAL_PATH" \
       fresh --cmd config show) || fail "Fresh could not load the activated repo config"
     printf '%s\n' "$show" | jq -e '
@@ -418,7 +448,13 @@ test_fresh_effective_config_and_wezterm_load() {
     lsp_path="$case_dir/lsp-bin"
     mkdir -p "$lsp_path"
     for tool in typescript-language-server rust-analyzer lua-language-server basedpyright-langserver; do
-      cp "$PHYN_TEST_FAKEBIN/$tool" "$lsp_path/$tool"
+      cat > "$lsp_path/$tool" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$(basename "$0")" >> "${FRESH_LSP_LOG:?}"
+while IFS= read -r line; do
+  :
+done
+SH
       chmod +x "$lsp_path/$tool"
     done
     for language in typescript javascript rust lua python; do
@@ -433,19 +469,29 @@ test_fresh_effective_config_and_wezterm_load() {
       esac
       printf '%s\n' invalid > "$file"
       session="phynd-$language"
+      lsp_log="$case_dir/$language-lsp.log"
+      : > "$lsp_log"
       out=$(HOME="$home" XDG_CONFIG_HOME="$xdg" \
+        FRESH_LSP_LOG="$lsp_log" \
         PATH="$lsp_path:$REAL_PATH" \
         fresh --no-upgrade-check --cmd daemon open-file "$session" "$file" 2>&1) \
         || fail "Fresh could not attach the isolated $language workspace: $out"
       assert_contains "$out" "opened 1 file(s)" \
         "Fresh should attach the isolated $language workspace through its daemon"
+      attempts=0
+      while [ ! -s "$lsp_log" ] && [ "$attempts" -lt 20 ]; do
+        sleep 0.1
+        attempts=$((attempts + 1))
+      done
+      [ -s "$lsp_log" ] \
+        || fail "Fresh did not start the configured $language language server"
       HOME="$home" XDG_CONFIG_HOME="$xdg" \
         PATH="$lsp_path:$REAL_PATH" \
         fresh --no-upgrade-check --cmd daemon kill "$session" >/dev/null 2>&1 || :
     done
-    pass "Fresh loads managed settings and attaches isolated workspaces for all five languages"
+    pass "Fresh loads managed settings and starts servers for all five languages"
   else
-    pass "Fresh effective-config validation skipped because Fresh is not installed in this test environment"
+    pass "Fresh executable validation skipped outside the supported Darwin host"
   fi
 
   if command -v wezterm >/dev/null 2>&1; then
@@ -470,15 +516,27 @@ test_repo_starship_config_is_usable() {
 }
 
 test_starship_is_nix_managed_and_loaded_once() {
-  local shell_home zsh_dir zshrc enabled out
+  local shell_home zsh_dir zshrc zshenv zprofile zlogin enabled out call_log
   if [ "$(uname -s)" != Darwin ] || ! command -v nix >/dev/null 2>&1 || \
     ! command -v zsh >/dev/null 2>&1; then
     pass "Starship Nix activation validation skipped outside a Darwin host with Nix"
     return 0
   fi
   shell_home="$TMP_ROOT/starship-shell-home"
-  mkdir -p "$shell_home"
-  printf '%s\n' 'export PHYN_EXISTING_SHELL=preserved' > "$shell_home/.zshrc"
+  mkdir -p "$shell_home/bin"
+  printf '%s\n' 'export PHYN_EXISTING_ENV=preserved' > "$shell_home/.zshenv"
+  printf '%s\n' 'export PHYN_EXISTING_PROFILE=preserved' > "$shell_home/.zprofile"
+  printf '%s\n' 'export PHYN_EXISTING_LOGIN=preserved' > "$shell_home/.zlogin"
+  printf '%s\n' 'eval "$(starship init zsh)"' > "$shell_home/.zshrc"
+  call_log="$shell_home/starship-calls.log"
+  cat > "$shell_home/bin/starship" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = init ] && [ "${2:-}" = zsh ]; then
+  printf '%s\n' init >> "${STARSHIP_CALL_LOG:?}"
+  printf '%s\n' 'PROMPT="❯ "'
+fi
+SH
+  chmod +x "$shell_home/bin/starship"
   enabled=$(nix eval --impure --json \
     "$ROOT#darwinConfigurations.phynd-dev.config.home-manager.users.phynd.programs.starship.enableZshIntegration") \
     || fail "Nix could not evaluate the generated Starship zsh integration setting"
@@ -487,16 +545,34 @@ test_starship_is_nix_managed_and_loaded_once() {
     nix eval --impure --raw \
     "$ROOT#darwinConfigurations.phynd-dev.config.home-manager.users.phynd.home.file.\".config/zsh/.zshrc\".text") \
     || fail "Nix could not evaluate the generated interactive zsh configuration"
+  zshenv=$(PHYN_DEV_HOME="$shell_home" \
+    nix eval --impure --raw \
+    "$ROOT#darwinConfigurations.phynd-dev.config.home-manager.users.phynd.home.file.\".config/zsh/.zshenv\".text") \
+    || fail "Nix could not evaluate the generated zshenv configuration"
+  zprofile=$(PHYN_DEV_HOME="$shell_home" \
+    nix eval --impure --raw \
+    "$ROOT#darwinConfigurations.phynd-dev.config.home-manager.users.phynd.home.file.\".config/zsh/.zprofile\".text") \
+    || fail "Nix could not evaluate the generated zprofile configuration"
+  zlogin=$(PHYN_DEV_HOME="$shell_home" \
+    nix eval --impure --raw \
+    "$ROOT#darwinConfigurations.phynd-dev.config.home-manager.users.phynd.home.file.\".config/zsh/.zlogin\".text") \
+    || fail "Nix could not evaluate the generated zlogin configuration"
   zsh_dir="$shell_home/.config/zsh"
   mkdir -p "$zsh_dir"
+  printf '%s\n' "$zshenv" > "$zsh_dir/.zshenv"
+  printf '%s\n' "$zprofile" > "$zsh_dir/.zprofile"
   printf '%s\n' "$zshrc" > "$zsh_dir/.zshrc"
-  out=$(HOME="$shell_home" ZDOTDIR="$zsh_dir" TERM=xterm PATH="$PATH" \
-    zsh -di -c 'printf "%s\\n" "$PHYN_EXISTING_SHELL"; print -P -- "$PROMPT"' 2>&1) \
+  printf '%s\n' "$zlogin" > "$zsh_dir/.zlogin"
+  out=$(HOME="$shell_home" ZDOTDIR="$zsh_dir" TERM=xterm \
+    STARSHIP_CALL_LOG="$call_log" PATH="$shell_home/bin:$PATH" \
+    zsh -ilc 'printf "%s\\n" "$PHYN_EXISTING_ENV" "$PHYN_EXISTING_PROFILE" "$PHYN_EXISTING_LOGIN"; print -P -- "$PROMPT"' 2>&1) \
     || fail "a fresh interactive zsh could not load the generated configuration: $out"
   assert_contains "$out" "preserved" \
-    "a fresh interactive zsh should preserve the conventional user zsh configuration"
+    "a fresh interactive zsh should preserve all conventional user startup files"
   assert_contains "$out" "❯" \
     "a fresh interactive zsh should render the repo-owned Starship prompt"
+  [ "$(wc -l < "$call_log" | tr -d ' ')" -eq 1 ] \
+    || fail "a fresh interactive zsh should initialize Starship exactly once"
   pass "Nix-managed Starship renders through the generated interactive zsh configuration"
 }
 

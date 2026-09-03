@@ -390,6 +390,50 @@ test_active_dispatch_profile_allows_raw_launch_command() {
   pass "active crew-dispatch profile allows the raw launch-command escape hatch"
 }
 
+test_shipped_phynd_dispatch_profiles_reach_spawn_consumer() {
+  local rec id out status
+  rec=$(make_spawn_case shipped-phynd-dispatch claude shipped-phynd-z16)
+  read_case_record "$rec"
+  cp "$ROOT/config/crew-dispatch.json" "$HOME_DIR/config/crew-dispatch.json"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    shipped-phynd-z16 "$PROJ_DIR")
+  status=$?
+  expect_code 1 "$status" "the shipped dispatch config should require a resolved profile"
+  assert_contains "$out" "config/crew-dispatch.json is active - pass an explicit harness resolved from the dispatch rules" \
+    "the shipped dispatch config should reach the spawn consultation backstop"
+
+  for profile in \
+    "claude fable xhigh" \
+    "pi openai-codex/gpt-5.6-sol xhigh" \
+    "codex default xhigh"; do
+    read -r harness model effort <<EOF
+$profile
+EOF
+    id="shipped-$harness-z16"
+    fm_test_spawn_brief "$HOME_DIR" "$id"
+    out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+      "$id" "$PROJ_DIR" --harness "$harness" --model "$model" --effort "$effort")
+    status=$?
+    expect_code 0 "$status" "the shipped $harness dispatch profile should reach the spawn consumer"
+    assert_meta_profile "$HOME_DIR/state/$id.meta" "$harness" "$model" "$effort"
+  done
+  jq -e '
+    (.rules | length) == 7 and
+    .rules[0].use.harness == "claude" and .rules[0].use.model == "fable" and .rules[0].use.effort == "xhigh" and
+    .rules[1].use.harness == "claude" and .rules[1].use.model == "fable" and .rules[1].use.effort == "high" and
+    .rules[2].use.harness == "pi" and .rules[2].use.model == "openai-codex/gpt-5.6-sol" and
+    .rules[3].use.harness == "codex" and .rules[3].use.effort == "xhigh" and
+    .rules[4].when == "Reviewing open pull requests, auditing existing changes, or checking PRs for defects without implementing fixes." and
+    .rules[5].when == "New feature design or architecture work, including selecting an approach before implementation." and
+    .rules[6].when == "Ambiguous, high-risk, or difficult implementation work, or implementation that Luna could not complete." and
+    .rules[6].use[0].harness == "pi" and .rules[6].use[0].model == "openai-codex/gpt-5.6-sol" and
+    .default.harness == "pi" and .default.model == "openai-codex/gpt-5.6-luna"
+  ' "$ROOT/config/crew-dispatch.json" >/dev/null \
+    || fail "shipped dispatch profiles did not preserve precedence and fallbacks"
+  pass "shipped Phynd dispatch profiles reach the real spawn consumer"
+}
+
 test_claude_threads_model_and_effort() {
   local rec id out status launch
   id=profile-claude-z2
@@ -809,6 +853,7 @@ test_active_dispatch_profile_requires_explicit_harness_for_scout
 test_active_dispatch_profile_allows_explicit_harness
 test_active_dispatch_profile_allows_positional_harness
 test_active_dispatch_profile_allows_raw_launch_command
+test_shipped_phynd_dispatch_profiles_reach_spawn_consumer
 test_claude_threads_model_and_effort
 test_codex_threads_model_and_effort
 test_codex_omits_invalid_max_effort

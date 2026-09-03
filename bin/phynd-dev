@@ -255,6 +255,20 @@ homebrew_package_converged() {
   brew list "--$kind" "$name" >/dev/null 2>&1
 }
 
+preserve_existing_zshenv() {
+  local source target
+  [ -f "$DEV_ACTIVATION_STATE" ] && return 0
+  target="$DEV_STATE_DIR/existing-zsh"
+  mkdir -p "$target"
+  source="$DEV_HOME/.zshenv"
+  [ -e "$target/.zshenv" ] || [ -L "$target/.zshenv" ] || {
+    if [ -e "$source" ] || [ -L "$source" ]; then
+      cp -p "$source" "$target/.zshenv"
+      say "preserved existing .zshenv in $target"
+    fi
+  }
+}
+
 npm_command_converged() {
   local tool=$1 path
   path=$(command -v "$tool" 2>/dev/null) || return 1
@@ -286,6 +300,7 @@ managed_activation_converged() {
 
 activate() {
   local hash current
+  preserve_existing_zshenv
   PHYN_DEV_ACTIVATION_CHANGED=0
   export PHYN_DEV_ACTIVATION_CHANGED
   hash=$(desired_hash)
@@ -330,9 +345,9 @@ backup_target() {
   printf '%s\n' "$candidate"
 }
 
-link_repo_file() {
+link_managed_target() {
   local source=$1 target=$2 current backup
-  [ -f "$source" ] || die "managed source is missing: $source"
+  [ -e "$source" ] || [ -L "$source" ] || die "managed source is missing: $source"
   mkdir -p "$(dirname "$target")"
   if [ -L "$target" ]; then
     current=$(readlink "$target" 2>/dev/null || true)
@@ -346,7 +361,13 @@ link_repo_file() {
     say "backed up existing $target to $backup"
   fi
   ln -s "$source" "$target"
-  say "linked $target to repository configuration"
+  say "linked $target to managed source"
+}
+
+link_repo_file() {
+  local source=$1 target=$2
+  [ -f "$source" ] || die "managed source is missing: $source"
+  link_managed_target "$source" "$target"
 }
 
 reconcile_repo_links() {
@@ -374,7 +395,7 @@ install_npm_tool() {
   say "reconciling $name through npm"
   npm install --global --prefix "$DEV_NPM_PREFIX" "$spec"
   if [ "$name" = gnhf ] || [ "$name" = ghf ]; then
-    ln -sfn "$DEV_NPM_PREFIX/bin/gnhf" "$DEV_HOME/.local/bin/ghf"
+    link_managed_target "$DEV_NPM_PREFIX/bin/gnhf" "$DEV_HOME/.local/bin/ghf"
   fi
 }
 
@@ -490,6 +511,9 @@ flake_check() {
   ensure_nix
   say 'evaluating the pinned flake without building system closures'
   nix flake check --no-build --impure "$DEV_ROOT"
+  nix eval --no-write-lock-file --impure --raw \
+    "$DEV_ROOT#darwinConfigurations.phynd-dev.config.system.build.toplevel.drvPath" \
+    >/dev/null
 }
 
 ensure_nix() {

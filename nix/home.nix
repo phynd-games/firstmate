@@ -12,6 +12,7 @@
 let
   system = pkgs.stdenv.hostPlatform.system;
   npmPrefix = "${homeDirectory}/.local/share/phynd-dev/npm";
+  existingZshDir = "${homeDirectory}/.local/state/phynd-dev/existing-zsh";
 in
 {
   home.username = user;
@@ -56,10 +57,35 @@ in
     dotDir = ".config/zsh";
     autosuggestion.enable = true;
     syntaxHighlighting.enable = true;
+    envExtra = ''
+      if [[ -r "${existingZshDir}/.zshenv" ]]; then
+        source "${existingZshDir}/.zshenv"
+      fi
+      if [[ -r "$HOME/.zshenv" && ! -L "$HOME/.zshenv" && "$HOME/.zshenv" != "$ZDOTDIR/.zshenv" ]]; then
+        source "$HOME/.zshenv"
+      fi
+    '';
+    profileExtra = ''
+      if [[ -r "$HOME/.zprofile" && "$HOME/.zprofile" != "$ZDOTDIR/.zprofile" ]]; then
+        source "$HOME/.zprofile"
+      fi
+    '';
+    loginExtra = ''
+      if [[ -r "$HOME/.zlogin" && "$HOME/.zlogin" != "$ZDOTDIR/.zlogin" ]]; then
+        source "$HOME/.zlogin"
+      fi
+    '';
     initContent = lib.mkBefore ''
+      starship() {
+        if [[ "${1-}:${2-}" == "init:zsh" ]]; then
+          return 0
+        fi
+        command starship "$@"
+      }
       if [[ -r "$HOME/.zshrc" && "$HOME/.zshrc" != "$ZDOTDIR/.zshrc" ]]; then
         source "$HOME/.zshrc"
       fi
+      unset -f starship
       bindkey '^f' autosuggest-accept
     '';
     shellAliases = {

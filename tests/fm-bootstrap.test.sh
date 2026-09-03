@@ -989,49 +989,6 @@ test_crew_dispatch_active_rules_are_verbose_bootstrap_info() {
   pass "bootstrap surfaces active crew-dispatch rules only as verbose BOOTSTRAP_INFO"
 }
 
-test_phynd_dispatch_defaults_are_effective_bootstrap_facts() {
-  local case_dir fakebin out
-  case_dir="$TMP_ROOT/dispatch-phynd-defaults"
-  mkdir -p "$case_dir/home"
-  fakebin=$(make_fake_toolchain "$case_dir")
-  add_real_jq "$fakebin"
-
-  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" \
-    FM_ROOT_OVERRIDE="$case_dir/home" FM_CONFIG_OVERRIDE="$ROOT/config" \
-    FM_BOOTSTRAP_DETECT_ONLY=1 FM_BOOTSTRAP_NETWORK=skip \
-    FM_BOOTSTRAP_VERBOSE_FACTS=1 FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
-    "$ROOT/bin/fm-bootstrap.sh")
-  assert_contains "$out" \
-    "BOOTSTRAP_INFO: crew dispatch rule: The task produces a critical design or architecture plan and the work is on the most critical path or is materially ambiguous. -> claude/fable/xhigh" \
-    "most-critical-path design work should resolve to Claude Fable xhigh"
-  assert_contains "$out" \
-    "BOOTSTRAP_INFO: crew dispatch rule: The task produces a critical design or architecture plan, unless the more specific most-critical-path or materially-ambiguous rule applies. -> claude/fable/high" \
-    "ordinary design work should resolve to Claude Fable high"
-  assert_contains "$out" \
-    "BOOTSTRAP_INFO: crew dispatch rule: A critical design or architecture plan matched a Fable rule, but that preferred Fable route is concretely unavailable. -> pi/openai-codex/gpt-5.6-sol/xhigh" \
-    "unavailable Fable should resolve to Pi Sol xhigh"
-  assert_contains "$out" \
-    "BOOTSTRAP_INFO: crew dispatch rule: The task ports, wires, validates, repairs, or ships a phynd-cloud TypeScript Lambda from apps/Phynd-APIs into apps/Phynd-Rust-APIs. -> codex/default/xhigh" \
-    "the Rust migration should resolve to Codex xhigh"
-  assert_contains "$out" \
-    "BOOTSTRAP_INFO: crew dispatch default: pi/openai-codex/gpt-5.6-luna/xhigh" \
-    "the preserved generic default should remain available after Phynd-specific rules"
-  jq -e '
-    (.rules | length) == 7 and
-    .rules[0].use.harness == "claude" and .rules[0].use.model == "fable" and .rules[0].use.effort == "xhigh" and
-    .rules[1].use.harness == "claude" and .rules[1].use.model == "fable" and .rules[1].use.effort == "high" and
-    .rules[2].use.harness == "pi" and .rules[2].use.model == "openai-codex/gpt-5.6-sol" and
-    .rules[3].use.harness == "codex" and .rules[3].use.effort == "xhigh" and
-    .rules[4].when == "Reviewing open pull requests, auditing existing changes, or checking PRs for defects without implementing fixes." and
-    .rules[5].when == "New feature design or architecture work, including selecting an approach before implementation." and
-    .rules[6].when == "Ambiguous, high-risk, or difficult implementation work, or implementation that Luna could not complete." and
-    .rules[6].use[0].model == "openai-codex/gpt-5.6-sol" and
-    .default.harness == "pi" and .default.model == "openai-codex/gpt-5.6-luna"
-  ' "$ROOT/config/crew-dispatch.json" >/dev/null \
-    || fail "shipped dispatch rules did not preserve Phynd precedence and Firstmate fallbacks"
-  pass "bootstrap validates and semantically checks shipped Phynd dispatch precedence"
-}
-
 test_crew_dispatch_validation() {
   local label body expect mode case_dir fakebin out n
   n=0
@@ -1139,5 +1096,4 @@ test_network_sweeps_recheck_lock_ownership
 test_network_phases_record_per_step_elapsed_times
 test_tasks_axi_verdict_handoff_is_consumed_once
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
-test_phynd_dispatch_defaults_are_effective_bootstrap_facts
 test_crew_dispatch_validation
