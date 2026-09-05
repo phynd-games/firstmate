@@ -1337,13 +1337,7 @@ families_for_changed_path() {
     tests/*)
       printf '%s\n' "__unmapped__:$path"
       ;;
-    ui/*)
-      if [ -e "$path" ]; then
-        families_for_test_reference "assets/dashboard" \
-          || printf '%s\n' "__unmapped__:$path"
-      fi
-      ;;
-    README.md|LICENSE|assets/*|docs/*|.gitignore)
+    README.md|LICENSE|assets/*|docs/*|ui/*|.gitignore)
       ;;
     *)
       families_for_test_reference "$path" \
