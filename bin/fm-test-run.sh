@@ -238,7 +238,7 @@ family_for_basename() {
     fm-control-herdr-smoke.test.sh)
       printf '%s\n' real-herdr-gated
       ;;
-    fm-backlog-handoff.test.sh|fm-on.test.sh|fm-remote-backlog-handoff.test.sh|\
+    fm-on.test.sh|fm-remote-backlog-handoff.test.sh|\
     fm-remote-doctor.test.sh|fm-remote-job.test.sh|fm-remote-job-orphan-reap.test.sh|\
     fm-remote-transport-lanes.test.sh|\
     fm-remote-reply.test.sh|fm-remote-secondmate-lifecycle-e2e.test.sh|\
@@ -246,14 +246,14 @@ family_for_basename() {
     fm-secondmate-lifecycle-e2e.test.sh|\
     fm-secondmate-liveness.test.sh|fm-secondmate-reconcile.test.sh|\
     fm-secondmate-safety.test.sh|fm-secondmate-sync.test.sh|\
-    fm-startup-memory-budget.test.sh|fm-stow-cascade.test.sh|\
+    fm-startup-memory-budget.test.sh|\
     fm-send-secondmate-marker.test.sh|fm-shared-captain-inheritance.test.sh)
       printf '%s\n' secondmate
       ;;
     fm-backlog-atomicity.test.sh|\
     fm-bootstrap.test.sh|fm-bootstrap-network-parallel.test.sh|fm-fleet-sync.test.sh|fm-gate-refuse.test.sh|fm-gotmp.test.sh|\
     fm-session-start.test.sh|fm-sessionstart-nudge.test.sh|fm-startup-network.test.sh|\
-    fm-tangle-guard.test.sh|fm-update.test.sh)
+    fm-update.test.sh)
       printf '%s\n' session-bootstrap
       ;;
     fm-afk-pi-herdr-return-e2e.test.sh|\
@@ -292,7 +292,9 @@ family_for_basename() {
       ;;
     fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|fm-tmux-agent-liveness.test.sh|\
     fm-backend-zellij.test.sh|fm-backend-cmux.test.sh|\
-    fm-teardown-endpoint-safety.test.sh)
+    fm-teardown-endpoint-safety.test.sh|fm-backlog-handoff.test.sh|\
+    fm-send-remote-delivery.test.sh|fm-spawn-pool-base-freshen.test.sh|\
+    fm-stow-cascade.test.sh|fm-tangle-guard.test.sh)
       printf '%s\n' legacy-adapter
       ;;
     fm-pr-check-security.test.sh|fm-pr-merge.test.sh|fm-review-diff.test.sh|\
@@ -1258,7 +1260,7 @@ families_for_changed_path() {
       printf '%s\n' live-harness-optin
       ;;
     bin/fm-bearings-snapshot.sh|bin/fm-fleet-snapshot.sh|bin/fm-fleet-view.sh|\
-    bin/fm-home-summary-refresh.sh)
+    bin/fm-home-summary-refresh.sh|bin/fm-record-read.py|bin/fm_record_io.py)
       printf '%s\n' snapshot-bearings
       ;;
     bin/fm-install-herdr.sh|bin/fm-install-treehouse.sh|bin/fm-herdr-ci-cleanup.sh)
@@ -1337,14 +1339,7 @@ families_for_changed_path() {
     tests/*)
       printf '%s\n' "__unmapped__:$path"
       ;;
-    ui/*)
-      # The dashboard client source builds into the committed bundle under
-      # assets/, which the dashboard suites serve and assert against. Selecting
-      # by the built directory keeps one mapping for source and bundle alike.
-      families_for_test_reference "assets/dashboard" \
-        || printf '%s\n' "__unmapped__:$path"
-      ;;
-    README.md|LICENSE|assets/*|docs/*|.gitignore)
+    README.md|LICENSE|assets/*|docs/*|ui/*|.gitignore)
       ;;
     *)
       families_for_test_reference "$path" \
@@ -2042,7 +2037,7 @@ run_script_bounded() {  # <script> <out> <stream> <id>
 
 run_one_serial() {
   local script=$1
-  local base family expected out begin_iso begin_ms end_ms end_iso duration rc
+  local base family expected out begin_iso begin_ms end_ms end_iso duration rc legacy_root
   base=$(basename "$script")
   family=$(family_for_basename "$base")
   expected=$(expected_gate_skip_for_family "$family")
@@ -2055,7 +2050,26 @@ run_one_serial() {
 
   set +e
   # Stream live output while retaining a copy for gate-skip detection.
-  run_script_bounded "$script" "$out" 1 "s$TOTAL"
+  if [ "$family" = legacy-adapter ] || [ "$family" = cmux ] || \
+    [ "$family" = zellij ] || [ "$family" = orca ]; then
+    legacy_root="$RUN_TMP/serial-$TOTAL"
+    mkdir -p "$legacy_root/state"
+    printf '%s' firstmate-herdr-legacy-test-runner-v1 > \
+      "$legacy_root/state/.fm-backend-legacy-test-runner"
+    chmod 0600 "$legacy_root/state/.fm-backend-legacy-test-runner"
+    # shellcheck disable=SC2030,SC2031
+    (
+      export FM_ROOT_OVERRIDE="$ROOT"
+      export FM_BACKEND_LEGACY_TEST_LANE=1
+      export FM_BACKEND_TEST_HARNESS=1
+      export FM_BACKEND_TEST_RUNNER_ROOT="$legacy_root"
+      export FM_BACKEND_TEST_TRUST_FILE="$legacy_root/state/.fm-backend-legacy-test-runner"
+      export FM_GATE_REFUSE_BYPASS=1
+      run_script_bounded "$script" "$out" 1 "s$TOTAL"
+    )
+  else
+    run_script_bounded "$script" "$out" 1 "s$TOTAL"
+  fi
   rc=$?
   set -e
   : "${rc:=1}"
@@ -2158,17 +2172,20 @@ else
       export TMP="$work/tmp"
       unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
         FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND \
-        FM_BACKEND_TEST_HARNESS FM_GATE_REFUSE_BYPASS 2>/dev/null || true
+        FM_BACKEND_LEGACY_TEST_LANE FM_BACKEND_TEST_HARNESS FM_BACKEND_TEST_TRUST_FILE \
+        FM_BACKEND_TEST_RUNNER_ROOT FM_GATE_REFUSE_BYPASS 2>/dev/null || true
+      # shellcheck disable=SC2030,SC2031
       case "$family" in
         legacy-adapter|cmux|zellij|orca)
           export FM_ROOT_OVERRIDE="$ROOT"
-          export FM_STATE_OVERRIDE="$work/state"
           export FM_BACKEND_LEGACY_TEST_LANE=1
           export FM_BACKEND_TEST_HARNESS=1
+          export FM_BACKEND_TEST_RUNNER_ROOT="$work"
+          export FM_BACKEND_TEST_TRUST_FILE="$work/state/.fm-backend-legacy-test-runner"
           export FM_GATE_REFUSE_BYPASS=1
-          mkdir -p "$FM_STATE_OVERRIDE"
-          printf '%s' firstmate-herdr-legacy-test-runner-v1 > "$FM_STATE_OVERRIDE/.fm-backend-legacy-test-runner"
-          chmod 0600 "$FM_STATE_OVERRIDE/.fm-backend-legacy-test-runner"
+          mkdir -p "$work/state"
+          printf '%s' firstmate-herdr-legacy-test-runner-v1 > "$work/state/.fm-backend-legacy-test-runner"
+          chmod 0600 "$work/state/.fm-backend-legacy-test-runner"
           ;;
       esac
       cd "$ROOT" || exit 1

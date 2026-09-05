@@ -2037,6 +2037,12 @@ freshen_spawn_worktree_base() {  # <worktree> [<approved-ref> <approved-sha>]
   SPAWN_FRESHEN_APPROVED_REF=$approved_ref
   if [ -n "$approved_ref" ]; then
     expected=$approved_sha
+    if branch=$(fm_pr_review_base_branch "$approved_ref"); then
+      if ! git -C "$worktree" fetch --quiet origin "+refs/heads/$branch:refs/remotes/origin/$branch"; then
+        echo "error: could not fetch origin for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+        return 1
+      fi
+    fi
     target=$(fm_pr_review_base_resolve "$worktree" "$approved_ref" "$approved_sha") || {
       echo "error: approved base '$approved_ref' does not resolve to its recorded SHA for pooled worktree '$worktree'" >&2
       return 1
