@@ -1258,7 +1258,7 @@ families_for_changed_path() {
       printf '%s\n' live-harness-optin
       ;;
     bin/fm-bearings-snapshot.sh|bin/fm-fleet-snapshot.sh|bin/fm-fleet-view.sh|\
-    bin/fm-home-summary-refresh.sh)
+    bin/fm-home-summary-refresh.sh|bin/fm-record-read.py|bin/fm_record_io.py)
       printf '%s\n' snapshot-bearings
       ;;
     bin/fm-install-herdr.sh|bin/fm-install-treehouse.sh|bin/fm-herdr-ci-cleanup.sh)
@@ -1336,13 +1336,6 @@ families_for_changed_path() {
       ;;
     tests/*)
       printf '%s\n' "__unmapped__:$path"
-      ;;
-    ui/*)
-      # The dashboard client source builds into the committed bundle under
-      # assets/, which the dashboard suites serve and assert against. Selecting
-      # by the built directory keeps one mapping for source and bundle alike.
-      families_for_test_reference "assets/dashboard" \
-        || printf '%s\n' "__unmapped__:$path"
       ;;
     README.md|LICENSE|assets/*|docs/*|.gitignore)
       ;;
