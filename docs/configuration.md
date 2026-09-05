@@ -167,7 +167,7 @@ The setting is inherited into secondmate homes under the primary-authoritative c
 
 ## Retiring a pre-existing local dashboard
 
-This change removes the local dashboard feature and does not inspect, stop, or reconcile dashboard processes that are already running.
+The local loopback dashboard is removed, and Firstmate does not inspect, stop, or reconcile dashboard processes that were already running.
 Before updating the main home to this revision, use the pre-removal checkout from that main home to run `bin/fm-dashboard-start.sh status` and inspect the recorded owner for that home.
 Run `bin/fm-dashboard-start.sh stop` only after the status and Herdr prove that the recorded owner belongs to the main home and that its recorded pane is the dashboard pane to close.
 If the owner record is missing, unreadable, ambiguous, or inconsistent, or if Herdr cannot confirm the recorded pane, preserve the record and leave the process untouched.
