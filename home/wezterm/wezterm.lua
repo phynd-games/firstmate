@@ -5,7 +5,7 @@ local config = wezterm.config_builder()
 local is_windows = os.getenv("OS") and os.getenv("OS"):lower():find("windows")
 local is_macos = wezterm.target_triple:lower():find("darwin") ~= nil
 
-config.color_scheme = "Abernathy"
+config.color_scheme = "Rosé Pine (base16)"
 config.max_fps = 120
 config.font = wezterm.font("Hack Nerd Font", { weight = "DemiBold" })
 config.window_decorations = "INTEGRATED_BUTTONS|RESIZE"
