@@ -1858,7 +1858,7 @@ EOF
   assert_contains "$out" "RUNTIME BOUND" "the truncation banner did not name the bound it hit"
   assert_contains "$out" 'stopped during the "bootstrap" stage' "the truncation banner did not name the incomplete stage"
   assert_contains "$out" "RECONCILE these stages" "the truncation banner did not tell the agent what to reconcile"
-  assert_contains "$out" "wake-queue supervision-instructions read-once fleet-state network-checks context next-step" \
+  assert_contains "$out" "wake-queue supervision-instructions read-once fleet-state network-checks docs-reader context next-step" \
     "the truncation banner did not list every stage that never ran"
   assert_not_contains "$out" "NEXT STEP" "a truncated digest claimed to have reached its closing reminder"
   assert_absent "$home/state/.session-start-complete" \
@@ -2509,8 +2509,37 @@ EOF
   pass "session start omits the removed dashboard and preserves supervision"
 }
 
+test_docs_reader_stage_reports_without_a_guessed_url() {
+  local rec root home fakebin out
+  rec=$(new_world docs-reader)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+
+  # tests/lib.sh exports the test-harness marker, so the reader must report
+  # itself rather than start a server for this throwaway home.
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" "DOCS READER" "session start lost the document reader section"
+  assert_contains "$out" "DOCS_READER: unavailable - not started under the test harness" \
+    "the docs-reader stage did not explain why no reader is available"
+  assert_not_contains "$out" "DOCS_READER: http://" \
+    "session start printed a reader URL it could not have verified"
+  assert_absent "$home/state/.docs-reader" "session start recorded a reader it never started"
+  assert_contains "$out" "NEXT STEP" "session start did not complete after the docs-reader stage"
+
+  printf 'off\n' > "$home/config/docs-reader"
+  out=$(FM_DOCS_READER_TEST_ALLOW=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "DOCS_READER: unavailable - turned off by config/docs-reader" \
+    "the off switch was not honored by session start"
+  pass "session start reports the document reader honestly and never guesses a URL"
+}
+
 test_context_digest_absent_empty_present
 test_session_start_omits_removed_dashboard_and_preserves_supervision
+test_docs_reader_stage_reports_without_a_guessed_url
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
 test_trace_context_effective_state_is_frozen_after_lock

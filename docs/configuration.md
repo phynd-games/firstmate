@@ -11,7 +11,7 @@ The shared orchestrator behavior lives in [`AGENTS.md`](../AGENTS.md) - edit it 
 This section is the single owner of the top-level operational-home layout; producer script headers and their help own exact child-file fields and mutation contracts.
 The tracked code root contains the shared instruction, skill, documentation, workflow, and `bin/` surfaces, while each effective `FM_HOME` contains private operational directories.
 `data/` holds durable private fleet records such as project and secondmate registries, captain preferences, optional shared captain preferences, learnings, backlog, briefs, scout reports, and explicitly installed content-addressed extension packages under `data/extensions/packages/`.
-`state/` holds runtime records such as task metadata, append-only status events, endpoint signals, watcher and wake-queue coordination, inactive terminal-outcome receipts under `state/terminal-outcomes/`, enabled extension working namespaces under `state/extensions/`, away-mode state, generated Relay artifacts, private secondmate config-reread generations with retry and quarantine state, per-task steering-inbox records under `state/<id>.inbox/` (`bin/fm-task-inbox-lib.sh`), and parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
+`state/` holds runtime records such as task metadata, append-only status events, endpoint signals, watcher and wake-queue coordination, inactive terminal-outcome receipts under `state/terminal-outcomes/`, enabled extension working namespaces under `state/extensions/`, away-mode state, generated Relay artifacts, private secondmate config-reread generations with retry and quarantine state, per-task steering-inbox records under `state/<id>.inbox/` (`bin/fm-task-inbox-lib.sh`), parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`), and the local document reader's owner record and generated runtime under `state/.docs-reader` and `state/docs-reader/` (`bin/fm-docs-reader.sh`).
 `config/` holds checked-in Phynd defaults alongside local gitignored operating choices, including explicit extension bindings under `config/extensions.d/`, and `projects/` holds local project clones that Firstmate reads but changes only through narrow guarded and concrete captain-approved exceptions in `AGENTS.md`.
 Untracked files and directories whose names begin with `scratchpad` are also gitignored, so temporary scratch does not make porcelain-based secondmate sync guards treat a home as dirty.
 
@@ -173,6 +173,14 @@ Run `bin/fm-dashboard-start.sh stop` only after the status and Herdr prove that 
 If the owner record is missing, unreadable, ambiguous, or inconsistent, or if Herdr cannot confirm the recorded pane, preserve the record and leave the process untouched.
 Resolve any such ownership uncertainty outside Firstmate under explicit operator authority before taking action.
 This retirement procedure is for the removed loopback dashboard only and is separate from the hosted myfirstmate Relay dashboard used for account setup and Relay configuration.
+
+## Local document reader (config/docs-reader)
+
+`bin/fm-docs-reader.sh` serves this home's `data/` Markdown as a loopback-only, live-reloading site and prints verified page URLs; [`docs/docs-reader.md`](docs-reader.md) is the operator guide and the script header owns every command, record, and tuning variable.
+Session start runs one bounded `ensure` while it holds the fleet lock and prints the `DOCS_READER:` line with the verified address or the reason none is available.
+The reader keeps its generated configuration, runtime, and log under `state/docs-reader/` and its owner record in `state/.docs-reader`; it never writes into `data/`.
+Write `off` to the local, gitignored `config/docs-reader` to turn the reader off for this home; the file is not inherited by secondmate homes, whose readers are independent.
+`FM_DOCS_READER_PORT`, `FM_DOCS_READER_PORT_TRIES`, `FM_DOCS_READER_READY_SECS`, `FM_DOCS_READER_HTTP_SECS`, and `FM_DOCS_READER_PYTHON` tune the port range, readiness bound, verification bound, and interpreter, as the script header documents.
 
 ## Away-mode supervisor backend (FM_SUPERVISOR_BACKEND / FM_SUPERVISOR_TARGET)
 
@@ -802,6 +810,9 @@ FM_SESSION_START_QUEUED_LIMIT=20   # plain queued backlog rows in the session-st
 FM_BOOTSTRAP_DETECT_ONLY=0   # internal/read-only session-start mode: skip bootstrap's mutating sweeps and print advisory TANGLE wording
 FM_BOOTSTRAP_NETWORK=all   # internal session-start phase split: all, skip (local steps only), or only (network steps only); see bin/fm-bootstrap.sh
 FM_STARTUP_NETWORK_TIMEOUT=120   # seconds bounding the whole deferred network stage; hitting it prints an actionable NETWORK_CHECKS line
+FM_DOCS_READER_STAGE_TIMEOUT=45  # seconds session start allows the local document reader's ensure step (10 for the read-only status read); see "Local document reader"
+FM_DOCS_READER_PORT=             # first candidate loopback port for this home's document reader; default 8600 plus a stable per-home hash
+FM_DOCS_READER_PYTHON=           # interpreter override for the document reader runtime; default the private venv, then python3
 FM_TASKS_AXI_COMPATIBLE=   # internal one-hop handoff of an already-computed tasks-axi compatibility verdict (0 or 1); consumed when bin/fm-tasks-axi-lib.sh is sourced
 FM_GUARD_READ_ONLY=0    # internal/read-only guard mode: keep alarms but suppress drain, supervision repair, and checkout repair commands
 FM_GUARD_CONTINUE_LINE='This is a supervision warning only; the guarded operation WILL still run.'   # banner continuation line; fm-send.sh overrides it to name the requested message specifically

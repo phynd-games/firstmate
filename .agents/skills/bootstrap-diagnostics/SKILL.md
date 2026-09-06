@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, FLEET_SYNC, NETWORK_CHECKS, PR_CHECK_MIGRATION, HOME_SUMMARY, BACKLOG_RECONCILE, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, HERDR_SUPERVISOR, or FMX - or reports that an interrupted backlog cleanup may have left an endpoint or local copy, or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap, network-checks, or docs-reader section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, FLEET_SYNC, NETWORK_CHECKS, PR_CHECK_MIGRATION, HOME_SUMMARY, BACKLOG_RECONCILE, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, HERDR_SUPERVISOR, DOCS_READER unavailable, or FMX - or reports that an interrupted backlog cleanup may have left an endpoint or local copy, or when a standalone bin/fm-bootstrap.sh, bin/fm-startup-network.sh, or bin/fm-docs-reader.sh run prints one of those lines.
   A silent bootstrap section, or any other BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -72,3 +72,7 @@ When any diagnostic needs captain attention, report the plain consequence and re
   `docs/herdr-supervisor.md` owns the contract, including the boundary it deliberately does not promise to recover across.
 - `FMX: X mode on ...` / `FMX: X mode off ...` - bootstrap confirmed or removed the local Relay poll artifacts (`docs/configuration.md` "Relay (.env)"); the emitted line still carries Relay's former `X mode` wording.
   Only when a running watcher needs the cadence transition applied immediately, restart the home-scoped watcher through the emitted harness supervision protocol; bootstrap deliberately never restarts the watcher itself.
+- `DOCS_READER: unavailable - <reason>` - the local Markdown document reader could not be brought up and verified, so captain-facing document pointers fall back to file paths until it is.
+  Nothing about fleet supervision depends on it, so it is never a reason to stop or repeat session start.
+  A reason naming the runtime means `bin/fm-docs-reader.sh install` has not been run on this home (or no Python 3.10+ is available); a port or readiness reason points at `state/docs-reader/serve.log`.
+  Rerun `bin/fm-docs-reader.sh ensure` once the named requirement is met, and mention the reader to the captain only when they asked for a document link, adding one clause that it is unavailable.

@@ -32,6 +32,13 @@ in
     lua-language-server
     nerd-fonts.hack
     nodejs_24
+    # The local Markdown document reader runtime (bin/fm-docs-reader.sh):
+    # MkDocs plus the nh3 sanitizer and Pygments, pinned by flake.lock.
+    (python3.withPackages (ps: [
+      ps.mkdocs
+      ps.nh3
+      ps.pygments
+    ]))
     ripgrep
     rust-analyzer
     shellcheck

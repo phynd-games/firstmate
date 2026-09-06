@@ -90,6 +90,7 @@ config/herdr-supervisor  optional selector for hosting this home's watcher conti
 config/trace-context  optional presence flag enabling default-off native W3C trace-context propagation to spawned agents; LOCAL, gitignored; inherited by secondmate homes; see docs/configuration.md "Trace context propagation" and docs/trace-context.md
 config/cmux-socket-password  retained historical cmux control-socket password setting; LOCAL, gitignored, ignored by the active Herdr-only runtime, and non-operational (docs/cmux-backend.md)
 config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
+config/docs-reader  optional `off` switch for this home's local Markdown document reader; LOCAL, gitignored, not inherited; see docs/docs-reader.md
 bin/fm-setup-phynd.sh  engineer workstation setup: installs Pi, installs configured Pi packages, and applies the checked-in Phynd Pi defaults
 config/watched-tools.json  optional list of the tools this home depends on, read by the update check armed with bin/fm-tool-update-check.sh; LOCAL, gitignored, firstmate-maintained but human-editable, and NOT inherited by secondmate homes; see docs/configuration.md "Watched tool updates"
 config/x-mode.env    generated Relay watcher cadence; LOCAL, gitignored; source before arming watcher when present
@@ -144,6 +145,7 @@ state/               runtime records and signals; gitignored
   public-followup/   generated private transport for promised public replies: retained open-loop registrations, typed terminal-result inbox, accepted/rejected ledgers, and retirement receipts (section 14; bin/fm-public-followup.sh)
   x-poll.error x-poll.claim-error  generated Relay and offer-claim diagnostic dedupe markers
   .startup-network.*  status, report, per-step elapsed timings, inline-print claim, and lock for the deferred network stage session start runs off its blocking path; bin/fm-startup-network.sh
+  .docs-reader .docs-reader.lock docs-reader/  the local Markdown document reader's owner record, lock, and generated private runtime (configuration, theme override, venv, log); bin/fm-docs-reader.sh owns them and docs/docs-reader.md owns the operator contract
   .wake-queue        durable queued wakes retained until post-handling acknowledgement: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
   .watcher-down      private generation-bound recovery state coupling watcher downtime, durable wake presentation, and post-handling acknowledgement; never touch
   .herdr-supervisor .herdr-supervisor-live .herdr-supervisor-heartbeat .herdr-supervisor-alarm .herdr-supervisor-launch.sh .herdr-supervisor-monitor .herdr-supervisor-monitor-heartbeat .herdr-supervisor.log  Herdr-hosted watcher continuity: the binding record, the loop's own generation and process identity, its liveness beacon, its durable actionable diagnostic, the generated launcher the pane executes, and a bounded diagnostic ledger; bin/fm-herdr-supervisor.sh owns them and docs/herdr-supervisor.md owns the contract
@@ -200,6 +202,7 @@ When that section reports its checks still in progress it names exactly what is 
    That liveness line is a fast presence check only, not a full state read - when you need a crew's actual current state (a run-step, not just "is the pane there"), read it with `bin/fm-crew-state.sh <id>` as before; the digest deliberately skips that deeper, slower read for every task so it stays fast and bounded.
 6. **Network checks** - after the fleet-state digest, the deferred stage's result, or an explicit statement of what it has not confirmed yet.
    A read-only session runs no network checks at all and says so.
+   A `DOCS_READER:` line follows with the local Markdown document reader's verified loopback address, or the reason none is available; a locked session brings the reader up through one bounded idempotent step, a read-only session only reports it, and `bin/fm-docs-reader.sh` owns the contract.
 7. **Context digest and next step** - last of the bulk sections, the full contents of `data/projects.md`, `data/secondmates.md`, `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`, each clearly delimited, followed by the closing reminder.
    A file that does not exist prints an explicit `ABSENT` marker, never confused with an empty-but-present file: absence is meaningful (`captain.md` absent means use the firstmate repo's built-in defaults, `projects.md` absent means rebuild it from the clones under `projects/`, etc.).
    The closing reminder points back to the emitted supervision block and preserves only the lock, afk, Relay, and read-once reminders.
@@ -515,6 +518,7 @@ When a routine operational update's specific event requires no action but a resp
 Batch non-urgent updates into the next natural reply.
 Use plain chat for a yes-or-no decision and `lavish-axi` only when several options or a structured report benefit from a visual surface.
 Whenever a PR is mentioned, include its full `https://...` URL before any shorthand reference.
+When you point the captain at a local Markdown document, give the verified reader link from `bin/fm-docs-reader.sh url <path>`; when that command fails, give the file path and say the reader is unavailable, and never send a loopback URL to Relay or any other remote reader (`communication-discipline` owns the rule).
 Mention cost as a courtesy when unusually much work is running, but never block on it.
 
 ## 10. Backlog contract
@@ -567,7 +571,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `phynd-design` - load after `phynd-governance` before designing a Phynd feature, service, Lambda route, data pipeline, or cross-app change.
 - `phynd-engineering` - load after `phynd-governance` before implementing, testing, auditing, or reviewing Phynd changes.
 - `communication-discipline` - load before composing captain-facing output, worker instructions, progress updates, or review results.
-- `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH: invalid`, `FLEET_SYNC:`, `NETWORK_CHECKS:`, `PR_CHECK_MIGRATION:`, `HOME_SUMMARY:`, `BACKLOG_RECONCILE:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, `HERDR_SUPERVISOR:`, or `FMX:`), or when `BOOTSTRAP_INFO:` says an interrupted backlog cleanup may have left an endpoint or local copy; silence and other `BOOTSTRAP_INFO:` facts need no load.
+- `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH: invalid`, `FLEET_SYNC:`, `NETWORK_CHECKS:`, `PR_CHECK_MIGRATION:`, `HOME_SUMMARY:`, `BACKLOG_RECONCILE:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, `HERDR_SUPERVISOR:`, `DOCS_READER: unavailable`, or `FMX:`), or when `BOOTSTRAP_INFO:` says an interrupted backlog cleanup may have left an endpoint or local copy; silence and other `BOOTSTRAP_INFO:` facts need no load.
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
 - `lavish-feature-intake` - load before planning, designing, implementing, or dispatching potentially significant work; uncertainty requires its interactive intake gate.
 - `ask-user-authority` - load before deciding any ask-user finding and before approving a validation review step.

@@ -49,14 +49,19 @@
 #                       read-only, always runs.
 #   7. network checks - the result of the deferred network stage started back at
 #                       step 1, harvested WITHOUT waiting for it.
-#   8. context digest - data/projects.md, data/secondmates.md, data/captain.md,
+#   8. docs reader    - one bounded, idempotent `bin/fm-docs-reader.sh ensure`
+#                       when locked (a read-only session only reports status),
+#                       printing the local Markdown reader's verified loopback
+#                       URL or the reason it is unavailable - never a guessed URL.
+#                       It is local-only (no network) and never fails the digest.
+#   9. context digest - data/projects.md, data/secondmates.md, data/captain.md,
 #                       data/captain-shared.md, data/learnings.md: read-only,
 #                       always safe, always runs.
-#   9. closing reminder - prints the context-specific watcher next step; this
+#  10. closing reminder - prints the context-specific watcher next step; this
 #                       script points back to the emitted harness supervision
 #                       block and deliberately never arms the watcher itself.
 #
-# Those nine names are also the runtime-bound stage list below, so a truncated
+# Those ten names are also the runtime-bound stage list below, so a truncated
 # startup can name exactly which of them never ran.
 #
 # NO NETWORK ON THE BLOCKING PATH. This digest runs on a session-open hook that
@@ -256,7 +261,7 @@ done
 # The ordered stage list is the contract behind the truncation banner: the child
 # names the stage it is entering, and the parent reports every stage at or after
 # that one as never emitted. Keep it in the exact order the digest prints.
-SESSION_START_STAGES='lock bootstrap wake-queue supervision-instructions read-once fleet-state network-checks context next-step'
+SESSION_START_STAGES='lock bootstrap wake-queue supervision-instructions read-once fleet-state network-checks docs-reader context next-step'
 
 stage() {  # <stage-name>: breadcrumb for the parent's truncation banner
   [ -n "${FM_SESSION_START_STAGE_FILE:-}" ] || return 0
@@ -988,7 +993,23 @@ else
   "$SCRIPT_DIR/fm-startup-network.sh" harvest --pid $$ 2>&1 || true
 fi
 
-# --- 8. context digest -----------------------------------------------------
+# --- 8. docs reader ----------------------------------------------------------
+# The local Markdown document reader (bin/fm-docs-reader.sh owns the contract):
+# bounded, idempotent, local-only, and never a reason for the digest to fail.
+# Only a session holding the lock may start it; a read-only session reports the
+# recorded reader's state without touching anything. The line below is the only
+# place session start learns a document URL, and it is printed only after the
+# script verified the page itself, so the agent never relays a guessed address.
+stage docs-reader
+section "DOCS READER"
+if [ "$READ_ONLY" -eq 1 ]; then
+  fm_run_timed "${FM_DOCS_READER_STAGE_TIMEOUT:-10}" "$SCRIPT_DIR/fm-docs-reader.sh" status 2>&1 || true
+else
+  fm_run_timed "${FM_DOCS_READER_STAGE_TIMEOUT:-45}" "$SCRIPT_DIR/fm-docs-reader.sh" ensure 2>&1 \
+    || printf 'DOCS_READER: the ensure step did not finish; run bin/fm-docs-reader.sh ensure by hand for the reason.\n'
+fi
+
+# --- 9. context digest -----------------------------------------------------
 # Last of the bulk sections deliberately: curated memory is stable session to
 # session, already governed by config/startup-memory-budget, and recoverable
 # with one targeted read, so it is the cheapest thing for a truncated tail to
@@ -1001,7 +1022,7 @@ print_file_or_absent "$DATA/captain.md" "data/captain.md"
 print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
 print_file_or_absent "$DATA/learnings.md" "data/learnings.md"
 
-# --- 9. closing reminder -----------------------------------------------
+# --- 10. closing reminder ----------------------------------------------
 stage next-step
 section "NEXT STEP"
 if [ "$READ_ONLY" -eq 1 ]; then

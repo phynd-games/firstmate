@@ -28,6 +28,9 @@ Worker instructions should contain the objective, acceptance criteria, constrain
 Workers should work independently, avoid narrating routine steps, and report only a milestone, blocker, decision request, or final result.
 Use durable records for detailed evidence and return a compact pointer rather than copying the evidence into chat.
 
+When the pointer is a Markdown document under this home's `data/`, run `bin/fm-docs-reader.sh url <path>[#anchor]` and give the captain the URL it prints, which is the local document reader's verified address for that exact page.
+When the command fails, give the file path instead and say in one clause that the reader is unavailable; never compose a `localhost` or `127.0.0.1` address yourself, and never send a reader URL to Relay or any other remote reader, because the address exists only on the captain's machine.
+
 Self-review visible output before sending:
 
 - Is the result or requested decision in the first sentence?

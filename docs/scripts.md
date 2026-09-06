@@ -14,6 +14,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-bootstrap.sh`        | Detect toolchain and fleet problems, run the locked session-start sweeps, and install approved tools |
 | `phynd-dev`              | Reconcile the pinned macOS Nix, Fresh, Starship, WezTerm, and Firstmate developer environment |
 | `fm-startup-network.sh`  | Run session start's network checks off its blocking path, retaining every report while waking only for actionable results |
+| `fm-docs-reader.sh`      | Serve this home's `data/` Markdown as a loopback-only live-reloading site and print verified page URLs ([docs-reader.md](docs-reader.md)) |
+| `fm-docs-reader-hooks.py` | MkDocs hooks that restrict the reader to real Markdown inside `data/` and sanitize every rendered page |
 | `fm-fleet-sync.sh`       | Refresh project clones with safe fast-forwards, self-heals, `STUCK:` reports, branch pruning, and bounded recovery from an orphaned `.git/packed-refs.lock` |
 | `fm-fleet-snapshot.sh`   | Print the read-only structured fleet snapshot JSON (schema `fm-fleet-snapshot.v1`)   |
 | `fm-record-read.py`      | Read one bounded fleet record through a contained, descriptor-backed handle          |

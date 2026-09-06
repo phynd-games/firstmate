@@ -167,6 +167,13 @@ jobs:
           set -eu
           npm install -g tasks-axi
           tasks-axi --version
+      - name: Install the pinned document reader runtime
+        # tests/fm-docs-reader.test.sh drives the real reader; without this
+        # runtime it would only print a gate skip.
+        run: |
+          set -eu
+          FM_HOME="$RUNNER_TEMP/docs-reader-home" bin/fm-docs-reader.sh install
+          echo "FM_DOCS_READER_PYTHON=$RUNNER_TEMP/docs-reader-home/state/docs-reader/venv/bin/python" >> "$GITHUB_ENV"
       - name: Run portable serial shard ${{ matrix.shard }}
         env:
           # job-total rather than a literal, so shrinking or growing the matrix
