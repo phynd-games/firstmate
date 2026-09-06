@@ -9,11 +9,11 @@ Exact task chronology, branch names, temporary homes, local paths, process ids, 
 ## Herdr-only runtime invariant
 
 Herdr is the sole supported runtime backend (`AGENTS.md` hard rule 6; owner `bin/fm-backend-policy-lib.sh`).
-The deterministic guard runs without any real backend binary; the real-Herdr guard drives the real spawn and teardown inside a helper-provisioned lab session.
+The deterministic guard runs without any real backend binary.
+The real-Herdr guard that drove the real spawn and teardown inside a helper-provisioned lab session, `tests/fm-backend-herdr-only-smoke.test.sh`, was retired with the real-Herdr CI lane on 2026-09-05, so its output below is the last measured evidence.
 
 ```sh
 bash tests/fm-backend-herdr-only.test.sh
-bash tests/fm-backend-herdr-only-smoke.test.sh
 ```
 
 Verified 2026-08-29 on macOS aarch64 with the installed Herdr 0.8.2 (`herdr status --json` client protocol 20) for the smoke run; the deterministic run used a canned `herdr` stub answering protocol 13 for the floor case and a PATH without `herdr` for the missing-binary case:
@@ -320,7 +320,8 @@ This guard is the refresh command after any harness upgrade; it spends a small n
 ## Herdr
 
 The compatibility floor is protocol 14.
-The whole real-Herdr lane's latest active verification uses both Herdr 0.7.4 protocol 16 and Herdr 0.8.0 protocol 19 on macOS aarch64, while focused Herdr 0.7.5 protocol 17, earlier protocol-16, protocol-14, and 0.7.3 evidence is retained where it defines current behavior or fallbacks.
+The real-Herdr CI lane and its `real-herdr-gated` suites were retired on 2026-09-05, so the real-Herdr observations below are the last measured evidence and have no refresh command until that coverage is rebuilt.
+The whole real-Herdr lane's last verification used both Herdr 0.7.4 protocol 16 and Herdr 0.8.0 protocol 19 on macOS aarch64, while focused Herdr 0.7.5 protocol 17, earlier protocol-16, protocol-14, and 0.7.3 evidence is retained where it defines current behavior or fallbacks.
 Protocol 17 keeps every protocol-16 feature gate satisfied; the event and workspace-move floors remain 16.
 Default-on presentation projection has its own floor at Herdr 0.8.0, protocol 19, verified below.
 
@@ -376,21 +377,11 @@ ok - live Herdr submit confirm: Claude Code (2.1.236 (Claude Code)) on herdr 0.8
 
 ### Prune and respawn
 
-The real label-collision reproduction is owned by:
-
-```sh
-HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
-  tests/fm-backend-herdr-prune-safety-e2e.test.sh
-```
+The real label-collision reproduction was last run by the since-retired `tests/fm-backend-herdr-prune-safety-e2e.test.sh`.
 
 Observed guarantee: a pre-existing captain-owned workspace with a seed-shaped tab was adopted for routing but its tab was never eligible for prune because the current create call did not return that seed id.
 
-Restart-husk replacement is owned by:
-
-```sh
-HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
-  tests/fm-backend-herdr-respawn-idem-e2e.test.sh
-```
+Restart-husk replacement was last run by the since-retired `tests/fm-backend-herdr-respawn-idem-e2e.test.sh`.
 
 Observed guarantee: a restored no-agent tab was replaced create-before-close, while a registered live agent caused refusal.
 
@@ -425,12 +416,7 @@ Firstmate requires both `HERDR_PANE_ID` and `HERDR_SOCKET_PATH` before accepting
 {"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1"}
 ```
 
-Placement is owned by:
-
-```sh
-HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
-  tests/fm-backend-herdr-launcher-workspace-e2e.test.sh
-```
+Placement was last run by the since-retired `tests/fm-backend-herdr-launcher-workspace-e2e.test.sh`.
 
 Observed guarantees on 2026-07-30 against Herdr 0.7.5 protocol 17:
 
@@ -453,21 +439,11 @@ Cross-session and contradictory bindings are covered deterministically in `tests
 
 ### Per-home and presentation topology
 
-Per-home behavior is owned by:
-
-```sh
-HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
-  tests/fm-backend-herdr-workspace-per-home-e2e.test.sh
-```
+Per-home behavior was last run by the since-retired `tests/fm-backend-herdr-workspace-per-home-e2e.test.sh`.
 
 Observed guarantee: the primary and secondmate used distinct home workspaces, a child launched by the secondmate stayed in that secondmate workspace, list-live remained home-scoped, and exact cleanup did not affect sibling homes.
 
-The complete projection suite ran on 2026-07-21 against Herdr 0.7.4 protocol 16:
-
-```sh
-HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
-  tests/fm-backend-herdr-presentation-e2e.test.sh
-```
+The complete projection suite, the since-retired `tests/fm-backend-herdr-presentation-e2e.test.sh`, ran on 2026-07-21 against Herdr 0.7.4 protocol 16.
 
 Observed guarantees included:
 
@@ -482,12 +458,7 @@ ok - real Herdr lab validation completed on Herdr 0.7.4 with the default-session
 
 The suite also covers lost or failed move responses, active-tab refusal, restart husks, missing and duplicate tokens, manual renames, concurrent cleanup, and exact focus restoration.
 
-The mandatory projection suite ran again on 2026-07-24 against Herdr 0.7.5 protocol 16:
-
-```sh
-HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
-  tests/fm-backend-herdr-presentation-e2e.test.sh
-```
+The same projection suite ran again on 2026-07-24 against Herdr 0.7.5 protocol 16.
 
 Observed restart-reclaim guarantees:
 
@@ -499,12 +470,7 @@ ok - real Herdr lab: missing, renamed, and duplicate tokens trigger zero destruc
 ok - real Herdr lab validation completed on Herdr 0.7.5 with the default-session tripwire intact
 ```
 
-The projection suite ran again on 2026-08-04 against Herdr 0.8.0 protocol 19 for the default-on flip, where an absent `config/herdr-presentation-spaces` enables the projection and the value `off` opts out; since 2026-08-05 an absent file enables the projection only at or above the 0.8.0 floor recorded under "Presentation version floor" below, and `on` is the explicit opt-in that survives the floor:
-
-```sh
-HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
-  tests/fm-backend-herdr-presentation-e2e.test.sh
-```
+The projection suite ran again on 2026-08-04 against Herdr 0.8.0 protocol 19 for the default-on flip, where an absent `config/herdr-presentation-spaces` enables the projection and the value `off` opts out; since 2026-08-05 an absent file enables the projection only at or above the 0.8.0 floor recorded under "Presentation version floor" below, and `on` is the explicit opt-in that survives the floor.
 
 Observed default and opt-out guarantees:
 
@@ -519,12 +485,7 @@ The projected spawn in that run used the historical empty opt-in file, so a home
 One concurrent cross-home recovery case refused under contention on a loaded machine and passed on an immediate rerun; recovery-path presentation lock contention is a deliberate hard refusal rather than a flat fallback, which default-on now makes reachable from any Herdr home.
 That run measured the default-on projection on Herdr 0.8.0 only, while the focus-flash regression below was last run on 0.7.5 before the flip, so neither run covered a defective release under default-on projection; the version floor and the focus-flash suite's Part C close that gap.
 
-The restored-shell session-start cleanup ran on 2026-07-24 against Herdr 0.7.5 protocol 17:
-
-```sh
-HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
-  tests/fm-herdr-session-cleanup-e2e.test.sh
-```
+The restored-shell session-start cleanup ran on 2026-07-24 against Herdr 0.7.5 protocol 17 through the since-retired `tests/fm-herdr-session-cleanup-e2e.test.sh`.
 
 Observed guarantee: one exact home-local, journal-correlated, one-tab and one-pane childless idle shell was closed after restoration while the exact non-target focus and default fleet session remained unchanged, and a repeat run was a no-op.
 
@@ -600,13 +561,8 @@ tests/fm-backend-herdr.test.sh
 
 Observed guarantees: every measured release classifies as the table records; either the protocol or the version signal alone carries an at-or-above verdict, and each divergent pair flips once the carrying signal is removed; client and running selected-session server verdicts compose conservatively, an unreadable server-running state and losing both release signals report indeterminate and fall back flat, the default is rechecked after server ensure before projection publication, an unconfigured home is projected only at or above the floor, an explicit `on`, including the historical empty opt-in file, is honored below it, and the below-floor warning is emitted once per home per detected release rather than once per spawn.
 
-The whole real-Herdr lane was run on 2026-08-05 against the then-CI-pinned Herdr 0.7.4 protocol 16, which is below the floor, and Herdr 0.8.0 protocol 19, which is at it:
-
-```sh
-HERDR_LAB_HELPER=bin/fm-herdr-lab.sh bin/fm-test-run.sh --lane real-herdr-gated
-```
-
-Both runs reported `family=real-herdr-gated count=11 failed=0`.
+The whole real-Herdr lane was last run on 2026-08-05 against the then-CI-pinned Herdr 0.7.4 protocol 16, which is below the floor, and Herdr 0.8.0 protocol 19, which is at it.
+Both runs reported `family=real-herdr-gated count=11 failed=0`, and the lane has since been retired.
 The projection suite's unconfigured-home case is release-aware rather than pinned to one outcome, so it proves the projected default on the current 0.8.0 lane and the flat fallback with its naming warning on retained below-floor 0.7.4:
 
 ```text
@@ -669,12 +625,7 @@ FM_SEND_MARKER_HERDR_E2E=1 \
 
 ### Native blocked event
 
-The protocol-16 event path was measured on 2026-07-11 with Herdr 0.7.3 and Python 3.13:
-
-```sh
-HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
-  tests/fm-backend-herdr-eventwait-smoke.test.sh
-```
+The protocol-16 event path was measured on 2026-07-11 with Herdr 0.7.3 and Python 3.13 by the since-retired `tests/fm-backend-herdr-eventwait-smoke.test.sh`.
 
 Observed output:
 
@@ -688,11 +639,7 @@ Polling remained active and is covered as the fallback for capability, connect, 
 
 ### Agent lifecycle control
 
-Herdr is one of the two backends whose recovery-grade agent-state classifier the control plane may trust ([agent-control.md](../agent-control.md)), so its lifecycle gating is measured against the real binary; reverified 2026-08-08 on Herdr 0.8.0, and first measured 2026-08-02 on Herdr 0.7.5 with identical results:
-
-```sh
-tests/fm-control-herdr-smoke.test.sh
-```
+Herdr is one of the two backends whose recovery-grade agent-state classifier the control plane may trust ([agent-control.md](../agent-control.md)), so its lifecycle gating is measured against the real binary; reverified 2026-08-08 on Herdr 0.8.0, and first measured 2026-08-02 on Herdr 0.7.5 with identical results by the since-retired `tests/fm-control-herdr-smoke.test.sh`.
 
 Observed output:
 
@@ -705,7 +652,7 @@ ok - real herdr: an agent that does not stop fails closed instead of being repor
 ```
 
 The registry read through `herdr pane report-agent` is the same source `fm_backend_herdr_agent_state` classifies, so registering and not registering an agent on a plain shell pane exercises exactly the gate every lifecycle verb depends on, with no real agent launched.
-That command is the guard that refreshes this record; run it after every Herdr upgrade rather than trusting the version above.
+That suite was retired with the real-Herdr lane on 2026-09-05, so this record has no refresh command until the coverage is rebuilt; do not trust the version above for a newer Herdr release.
 
 ### Away-mode transport
 
@@ -717,7 +664,7 @@ FM_AFK_PI_HERDR_E2E=1 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 ```
 
 Observed guarantees: pending composer input refused injection and raised one alert; idle Pi accepted one marked escalation; the return gate refused ordinary work while a live blocker remained; resolving the blocker allowed the return flow.
-The dedicated Herdr daemon workspace topology is covered by `tests/fm-afk-launch.test.sh` and preserves the captain tab's pane count.
+The dedicated Herdr daemon workspace topology was covered by the since-retired `tests/fm-afk-launch.test.sh`, which preserved the captain tab's pane count.
 
 ## Zellij
 

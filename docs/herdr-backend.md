@@ -30,8 +30,8 @@ Spawn stops before creating a Herdr container or acquiring a task worktree when 
 No separate first-run provisioning is required.
 Recorded workspace, tab, and pane ids are opaque Herdr handles for the endpoint lifetime and are not reused after close; moving a pane creates a new handle. This documented Herdr 0.8.2 no-reuse guarantee is the identity binding for Firstmate's supported pane operations: the shared adapter gate revalidates the recorded workspace, tab, and pane before dispatch and never accepts a response from a different handle.
 
-The required CI lane uses the pinned installers in `bin/fm-install-herdr.sh` and `bin/fm-install-treehouse.sh`.
-Those script headers own release assets, checksums, download bounds, and post-install gates.
+The real-Herdr CI lane, its `real-herdr-gated` suites, and its pinned CI installers were retired on 2026-09-05 after the lane became persistently red; rebuilding that coverage is deferred until it can be done reliably.
+The deterministic Herdr suites and the opt-in live Herdr guards remain, and [`verification/runtime-backends.md`](verification/runtime-backends.md#herdr) retains the last measured real-Herdr evidence.
 Real harness credential tests remain opt-in rather than part of default CI.
 
 ## Watcher continuity
@@ -173,9 +173,7 @@ Operational compromises:
 - Regaining a dedicated space after degradation requires stopping the flat task, manually checking the stale projection, and clearing its journal before a genuinely fresh launch.
 - The visible token is only a restart-stable correlator and never substitutes for the exact binding.
 
-`tests/fm-backend-herdr-presentation-e2e.test.sh` covers multi-home ordering, concurrency, lock contention, legacy coexistence, focus preservation, exact same-identity restart replacement, ambiguous bindings and tokens, and exact-pane cleanup through the guarded lab path.
 `tests/fm-herdr-session-cleanup.test.sh` covers every discovery, ownership, topology, process, locking, revalidation, focus, retirement, and continue-on-error boundary.
-`tests/fm-herdr-session-cleanup-e2e.test.sh` covers the restored-shell cleanup in a guarded non-default named lab.
 `tests/fm-backend-herdr-focus-flash-e2e.test.sh` reproduces the raw explicit-close focus steal on the installed release and proves the focus-safe emptying-close plan removes a doomed workspace with no wrong-focus interval; [`verification/runtime-backends.md`](verification/runtime-backends.md#workspace-removal-focus-safety) owns the active versioned evidence.
 
 ## Default-tab prune safety
@@ -189,7 +187,7 @@ A working seed pane is never closed.
 This created-versus-adopted gate is a destructive safety boundary.
 A prior label heuristic could adopt a captain-owned workspace named `firstmate` and close its live seed-shaped tab.
 The current structural gate removes label inference from cleanup authority.
-`tests/fm-backend-herdr-prune-safety-e2e.test.sh` reproduces the collision in an isolated named session and proves the adopted pane remains untouched.
+The real-Herdr reproduction of that collision was retired with the real-Herdr lane; the created-versus-adopted gate stays covered deterministically in `tests/fm-backend-herdr.test.sh`.
 
 ## Endpoint metadata
 
@@ -288,7 +286,7 @@ The push path only shortens latency.
 Polling runs every cycle and remains the permanent fallback when protocol 16, the event schema, Python, connection, subscription, or repeated reader execution is unavailable.
 There is still one watcher process; the event reader is a bounded child of that watcher.
 
-`tests/fm-backend-herdr-eventwait-smoke.test.sh`, `tests/fm-transition-lib.test.sh`, and `tests/fm-supervision-events.test.sh` cover capability, subscribe-then-reconcile ordering, dedupe, exemptions, and polling fallback.
+`tests/fm-transition-lib.test.sh` and `tests/fm-supervision-events.test.sh` cover subscribe-then-reconcile ordering, dedupe, exemptions, and polling fallback, and `tests/fm-backend-herdr-eventwait.test.py` covers the raw-socket reader; the real-server capability smoke was retired with the real-Herdr lane.
 
 ## Away-mode supervisor support
 
@@ -334,18 +332,9 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 tests/fm-backend-herdr.test.sh
 tests/fm-composer-lib.test.sh
 tests/fm-herdr-submit-confirm-live-e2e.test.sh
-tests/fm-backend-herdr-smoke.test.sh
-tests/fm-backend-herdr-prune-safety-e2e.test.sh
-tests/fm-backend-herdr-respawn-idem-e2e.test.sh
-tests/fm-backend-herdr-workspace-per-home-e2e.test.sh
-tests/fm-backend-herdr-launcher-workspace-e2e.test.sh
-tests/fm-backend-herdr-presentation-e2e.test.sh
-tests/fm-backend-herdr-eventwait-smoke.test.sh
 tests/fm-herdr-session-cleanup.test.sh
-tests/fm-herdr-session-cleanup-e2e.test.sh
-tests/fm-afk-inject-herdr-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh
 ```
 
-Real Herdr tests use the named lab helper and default-session tripwire.
+The opt-in live Herdr tests use the named lab helper and default-session tripwire.
 [`verification/runtime-backends.md`](verification/runtime-backends.md#herdr) records the active version, CLI, projection, event, and lifecycle evidence without task-specific chronology.

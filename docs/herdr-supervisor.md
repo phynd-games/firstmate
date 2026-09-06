@@ -205,9 +205,5 @@ It proves the central claim by counting arm invocations - one establish must pro
 
 Every gate in that list is mutation-tested: reverting the guard in the script makes its case fail.
 
-`tests/fm-herdr-supervisor-smoke.test.sh` is the real-Herdr contract, and it passes.
-It runs entirely inside a named non-default `fm-lab-*` session provisioned and torn down through `bin/fm-herdr-lab.sh`, whose fleet-state tripwire proves the default session never changed.
-It establishes against a real server, checks that Herdr's own process tracking names the live supervisor in its pane, proves continuity by counting real watcher cycles, proves a duplicate real arm attaches without a second watcher, proves a repeat `ensure` adds no second pane or owner, kills the supervisor and proves a new generation takes over, and proves `retire` releases both the record and its own workspace.
-
-That suite is in the `real-herdr-gated` family, so it never runs in a portable CI lane.
-It is where the two mechanics above were found: the pane-command truncation, and the server-start hang that a fake CLI cannot reproduce.
+The real-Herdr smoke contract for this script, `tests/fm-herdr-supervisor-smoke.test.sh`, was retired with the real-Herdr CI lane on 2026-09-05 and is deferred until that coverage can be rebuilt reliably.
+It is where the two mechanics above were found: the pane-command truncation, and the server-start hang that a fake CLI cannot reproduce, so a rebuilt real-Herdr guard must cover both again.
