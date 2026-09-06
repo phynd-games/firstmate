@@ -125,8 +125,8 @@ FM_SNAPSHOT_BACKLOG_BYTES=${FM_SNAPSHOT_BACKLOG_BYTES:-262144}
 FM_SNAPSHOT_META_BYTES=${FM_SNAPSHOT_META_BYTES:-65536}
 FM_SNAPSHOT_STATUS_BYTES=${FM_SNAPSHOT_STATUS_BYTES:-262144}
 FM_SNAPSHOT_REPORTS=${FM_SNAPSHOT_REPORTS:-256}
-FM_DASHBOARD_STAMP_DEPTH=${FM_DASHBOARD_STAMP_DEPTH:-2}
-FM_DASHBOARD_STAMP_MAX_ENTRIES=${FM_DASHBOARD_STAMP_MAX_ENTRIES:-512}
+FM_SNAPSHOT_STAMP_DEPTH=${FM_SNAPSHOT_STAMP_DEPTH:-2}
+FM_SNAPSHOT_STAMP_MAX_ENTRIES=${FM_SNAPSHOT_STAMP_MAX_ENTRIES:-512}
 validate_positive_bound() {  # <name> <value>
   case "$2" in
     ''|*[!0-9]*|0)
@@ -163,8 +163,8 @@ validate_positive_bound FM_SNAPSHOT_BACKLOG_BYTES "$FM_SNAPSHOT_BACKLOG_BYTES"
 validate_positive_bound FM_SNAPSHOT_META_BYTES "$FM_SNAPSHOT_META_BYTES"
 validate_positive_bound FM_SNAPSHOT_STATUS_BYTES "$FM_SNAPSHOT_STATUS_BYTES"
 validate_positive_bound FM_SNAPSHOT_REPORTS "$FM_SNAPSHOT_REPORTS"
-validate_positive_bound FM_DASHBOARD_STAMP_DEPTH "$FM_DASHBOARD_STAMP_DEPTH"
-validate_positive_bound FM_DASHBOARD_STAMP_MAX_ENTRIES "$FM_DASHBOARD_STAMP_MAX_ENTRIES"
+validate_positive_bound FM_SNAPSHOT_STAMP_DEPTH "$FM_SNAPSHOT_STAMP_DEPTH"
+validate_positive_bound FM_SNAPSHOT_STAMP_MAX_ENTRIES "$FM_SNAPSHOT_STAMP_MAX_ENTRIES"
 
 # shellcheck source=bin/fm-backend.sh
 # shellcheck disable=SC1091
@@ -364,11 +364,11 @@ snapshot_record_read() {  # <path> <mode> <limit> [<root> ...]
   shift 3
   [ "$#" -gt 0 ] || set -- "$STATE" "$DATA" "$CONFIG" "$PROJECTS"
   if [ -n "${SNAPSHOT_REPORT_EXCLUDE_PATHS:-}" ]; then
-    FM_DASHBOARD_REPORT_EXCLUDE_PATHS="$SNAPSHOT_REPORT_EXCLUDE_PATHS" \
-      python3 "$SCRIPT_DIR/fm-dashboard-read.py" "$path" "$@" \
+    FM_RECORD_EXCLUDE_PATHS="$SNAPSHOT_REPORT_EXCLUDE_PATHS" \
+      python3 "$SCRIPT_DIR/fm-record-read.py" "$path" "$@" \
       "$mode" "$limit" - /dev/null 2>&1
   else
-    python3 "$SCRIPT_DIR/fm-dashboard-read.py" "$path" "$@" \
+    python3 "$SCRIPT_DIR/fm-record-read.py" "$path" "$@" \
       "$mode" "$limit" - /dev/null 2>&1
   fi
 }
@@ -777,6 +777,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
 task_json_lines() {
   local meta id kind harness mode yolo project worktree home projects spawn_gen backend recorded_backend target status_log report_path
   local remote_host remote_root remote_state remote_rc remote_home_present remote_identity_valid
+  local remote_reason remote_unavailable
   local pr pr_source event_json current_json endpoint_exists endpoint_status agent_alive meta_json status_json report_json worktree_json home_json
   local endpoint_rc agent_alive_rc local_identity_valid
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
@@ -787,8 +788,11 @@ task_json_lines() {
     id=$(basename "$meta" .meta)
     endpoint_freshness=unknown
     endpoint_reason=''
-    endpoint_probe_output=''
-    endpoint_probe_status=1
+    remote_reason=''
+    remote_unavailable=false
+    status_reason=''
+    open_decisions_available=true
+    open_decisions_reason=''
     if ! meta_text=$(snapshot_record_text "$meta" "$FM_SNAPSHOT_META_BYTES" "$STATE" "$DATA" "$CONFIG" "$PROJECTS"); then
       meta_reason=$(printf '%s' "$meta_text" | tail -1)
       [ -n "$meta_reason" ] || meta_reason='could not read task metadata'
@@ -1083,6 +1087,8 @@ task_json_lines() {
       --arg pr_source "$pr_source" \
       --arg agent_alive "$agent_alive" \
       --arg endpoint_status "$endpoint_status" \
+      --arg endpoint_freshness "$endpoint_freshness" \
+      --arg endpoint_reason "$endpoint_reason" \
       --arg observed_at "$SNAPSHOT_NOW" \
       --arg last_event_raw "$last_event_raw" \
       --arg current_freshness "$current_freshness" \
@@ -1094,6 +1100,8 @@ task_json_lines() {
       --argjson home_path "$home_json" \
       --argjson endpoint_exists "$endpoint_exists" \
       --argjson remote_unavailable "$remote_unavailable" \
+      --argjson pr_available "$pr_available" \
+      --arg pr_reason "$pr_reason" \
       --argjson open_decisions "$open_decisions_json" \
       --argjson open_decisions_available "$open_decisions_available" \
       --arg open_decisions_reason "$open_decisions_reason" \
@@ -2125,10 +2133,10 @@ collector_stamp_inputs() {
 collector_local_stamp() {
   collector_stamp_inputs || return 1
   PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - \
-    "$STAMP_ROOTS_JSON" "$FM_DASHBOARD_STAMP_DEPTH" "$FM_DASHBOARD_STAMP_MAX_ENTRIES" <<'PY'
+    "$STAMP_ROOTS_JSON" "$FM_SNAPSHOT_STAMP_DEPTH" "$FM_SNAPSHOT_STAMP_MAX_ENTRIES" <<'PY'
 import json
 import sys
-from fm_dashboard_io import bounded_stamp
+from fm_record_io import bounded_stamp
 
 roots = [(item["root"], item["label"]) for item in json.loads(sys.argv[1])]
 print(bounded_stamp(roots, int(sys.argv[2]), int(sys.argv[3])))
@@ -2142,8 +2150,8 @@ collector_stamp() {
   collector_stamp_inputs || return 1
   live_inputs=$STAMP_REGISTRY_INPUTS
 
-  if [ -n "${FM_DASHBOARD_STAMP_LIVE_INPUTS:-}" ]; then
-    live_inputs=$(printf '%s\n%s' "$live_inputs" "$FM_DASHBOARD_STAMP_LIVE_INPUTS")
+  if [ -n "${FM_SNAPSHOT_STAMP_LIVE_INPUTS:-}" ]; then
+    live_inputs=$(printf '%s\n%s' "$live_inputs" "$FM_SNAPSHOT_STAMP_LIVE_INPUTS")
   else
     while IFS= read -r meta; do
       [ -e "$meta" ] || [ -L "$meta" ] || continue
@@ -2184,8 +2192,8 @@ collector_stamp() {
 
   # A pre-read fingerprint taken by this same run is pinned here, so one
   # authority still produces the stamp from both halves.
-  if [ -n "${FM_DASHBOARD_STAMP_LOCAL:-}" ]; then
-    local_stamp=$FM_DASHBOARD_STAMP_LOCAL
+  if [ -n "${FM_SNAPSHOT_STAMP_LOCAL:-}" ]; then
+    local_stamp=$FM_SNAPSHOT_STAMP_LOCAL
   else
     local_stamp=$(collector_local_stamp) || return 1
   fi
@@ -2203,7 +2211,7 @@ collector_stamp_inputs \
   || { echo "fm-fleet-snapshot: freshness inputs failed" >&2; exit 1; }
 FRESHNESS_LOCAL_BEFORE=$(collector_local_stamp) \
   || { echo "fm-fleet-snapshot: freshness fingerprint failed" >&2; exit 1; }
-FRESHNESS_STAMP=$(FM_DASHBOARD_STAMP_LOCAL="$FRESHNESS_LOCAL_BEFORE" collector_stamp) \
+FRESHNESS_STAMP=$(FM_SNAPSHOT_STAMP_LOCAL="$FRESHNESS_LOCAL_BEFORE" collector_stamp) \
   || { echo "fm-fleet-snapshot: freshness stamp failed" >&2; exit 1; }
 snapshot_test_delay_after_stamp
 

@@ -31,7 +31,8 @@
     "docs/zellij-backend.md",
     "docs/orca-backend.md",
     "docs/cmux-backend.md",
-    "docs/remote-secondmates.md"
+    "docs/remote-secondmates.md",
+    "docs/docs-reader.md"
   ],
   "requiredOwnerPointers": [
     {
@@ -389,10 +390,6 @@
       "audience": "maintainer-architecture"
     },
     {
-      "path": "docs/dashboard.md",
-      "audience": "operator-current"
-    },
-    {
       "path": "docs/cmux-backend.md",
       "audience": "operator-current"
     },
@@ -403,6 +400,14 @@
     {
       "path": "docs/configuration.md",
       "audience": "operator-current"
+    },
+    {
+      "path": "docs/docs-reader.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "defaults/docs-reader-requirements.txt",
+      "audience": "operator-example"
     },
     {
       "path": "docs/captain-hold-lifecycle.md",
@@ -579,10 +584,6 @@
     {
       "path": "skills/stow/SKILL.md",
       "audience": "public-product"
-    },
-    {
-      "path": "ui/README.md",
-      "audience": "maintainer-architecture"
     }
   ]
 }

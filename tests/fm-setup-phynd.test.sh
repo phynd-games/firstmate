@@ -2,6 +2,7 @@
 # Behavior tests for the hermetic Phynd workstation installer.
 set -u
 
+# shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 SETUP="$ROOT/bin/fm-setup-phynd.sh"
@@ -30,6 +31,17 @@ if [ "${1:-}" = prefix ] && [ "${2:-}" = --global ]; then
 fi
 exit 0
 SH
+  # The document reader install must be exercised but never reach the network:
+  # every python the installer would consider fails its venv probe, so the
+  # installer prints its notice and continues.
+  local py
+  for py in python3 python3.14 python3.13 python3.12 python3.11 python3.10; do
+    cat > "$dir/$py" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+    chmod +x "$dir/$py"
+  done
   cat > "$dir/pi" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in
@@ -47,7 +59,7 @@ SH
 
 run_installer() {
   local home=$1 fakebin=$2
-  HOME="$home" SHELL=/bin/bash PATH="$fakebin:$PATH" \
+  env -u FM_DOCS_READER_PYTHON HOME="$home" SHELL=/bin/bash PATH="$fakebin:$PATH" \
     PI_CODING_AGENT_HOME="$home/.pi/agent" FM_HOME="$home" \
     FM_CONFIG_OVERRIDE="$home/config" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" PHYND_PROJECT_DIR="$home/projects/phynd-cloud" \
@@ -63,6 +75,9 @@ test_settings_merge_and_backend_materialization() {
     > "$home/.pi/agent/settings.json"
   make_installer_stubs "$fakebin"
   out=$(run_installer "$home" "$fakebin") || fail "healthy installer failed: $out"
+  assert_contains "$out" "NOTICE: local document reader runtime not installed" \
+    "the installer did not attempt the document reader install or hid its outcome"
+  assert_absent "$home/state/docs-reader/venv" "a reader venv appeared without a usable python"
   [ "$(cat "$home/config/backend")" = herdr ] || fail "installer did not write config/backend=herdr"
   jq -e '.unrelated == true and .defaultModel == "gpt-5.6-sol" and .defaultThinkingLevel == "medium"' \
     "$home/.pi/agent/settings.json" >/dev/null || fail "installer settings merge lost captain defaults or unrelated data"

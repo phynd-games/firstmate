@@ -52,8 +52,6 @@ The guarded lab teardown's before-and-after default-session tripwire was byte-id
 
 Four worker endpoints were reachable, but `watcher-self-recovery-herdr` was `pane-not-found`, so the required five-endpoint coverage was not satisfied.
 
-The dashboard root returned HTTP 500 with a rebuild failure, `/api/v1/overview` returned HTTP 404, and only `/healthz` returned HTTP 200, so dashboard and API validation failed.
-
 This record makes no all-clear claim, and PR #2 was not merged.
 
 The owning runtime records and safe checks are:
@@ -78,8 +76,6 @@ herdr 0.8.2
 ```
 
 [`docs/verification/supervision.md`](supervision.md#watcher-continuity) owns watcher continuity and records the `bin/fm-test-run.sh tests/fm-watch-recovery-loop.test.sh` output, including `FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0`.
-
-No local dashboard test command exists in this branch, so the failed dashboard/API observations remain recorded here without referring to nonexistent test paths.
 
 ## Regression commands
 

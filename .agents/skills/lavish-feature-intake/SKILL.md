@@ -3,7 +3,7 @@ name: lavish-feature-intake
 description: >-
   Agent-only policy for mandatory Lavish interactive intake before significant Firstmate work.
   Owns significance classification, required intake content, captured-feedback acceptance,
-  exemptions, task-boundary enforcement, and the Firstmate dashboard integration example.
+  exemptions, task-boundary enforcement, and the Firstmate fleet-board integration example.
 user-invocable: false
 metadata:
   internal: true
@@ -51,9 +51,9 @@ A result is not authority for merge, destructive, irreversible, security-sensiti
 Route any unresolved captain choice through `captain-hold-lifecycle` before treating intake or review as complete.
 The Lavish poll has a source-side loss window after feedback is cleared, so never claim lossless or at-least-once intake delivery.
 
-The current interactive dashboard-style integration is `bin/fm-bearings-board.sh build`.
-Use it as a live ordering example because it builds the stable surface, opens Lavish, binds `captain-hold`, and arms `fm-procevent-lavish` without creating another answer or polling system.
-Do not modify dashboard product code to satisfy this gate.
+The current interactive fleet-board integration is `bin/fm-bearings-board.sh build`.
+Use it as a live ordering example because it builds the stable fleet-board surface, opens Lavish, binds `captain-hold`, and arms `fm-procevent-lavish` without creating another answer or polling system.
+Do not modify fleet-board product code to satisfy this gate.
 
 ## Enforcement and compatibility
 

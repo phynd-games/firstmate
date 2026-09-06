@@ -65,6 +65,7 @@ The setup script:
 6. Enables one visible Herdr presentation workspace per task.
 7. Clones and registers `phynd-games/phynd-cloud` under `projects/phynd-cloud` when it is absent.
 8. Initializes the project's no-mistakes gate when a fresh clone and the command are available.
+9. Installs the pinned runtime for the local Markdown document reader, which serves this home's reports on loopback ([docs/docs-reader.md](docs/docs-reader.md)).
 
 Run `herdr` from the Firstmate directory, then launch `pi` inside the Herdr terminal so the captain and visible workers share the Herdr session.
 Approve the project trust prompt when Pi starts so the tracked Firstmate extensions load.

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Read one dashboard record through a contained, descriptor-backed handle."""
+"""Read one fleet record through a contained, descriptor-backed handle."""
 
 from __future__ import annotations
 
 import json
 import os
 import sys
-from fm_dashboard_io import RecordError, bounded_report_paths, open_contained
+from fm_record_io import RecordError, bounded_report_paths, open_contained
 LINE_EXACT_MAX_BYTES = 1024 * 1024
 LINE_TAIL_MAX_BYTES = 4 * 1024 * 1024
 
@@ -105,7 +105,7 @@ def read_lines(fd: int, size: int, limit: int) -> tuple[list[bytes], int, bool]:
 
 def main() -> int:
     if len(sys.argv) < 7:
-        return fail("usage: fm-dashboard-read.py PATH ROOT... MODE LIMIT OUTPUT META")
+        return fail("usage: fm-record-read.py PATH ROOT... MODE LIMIT OUTPUT META")
     path = sys.argv[1]
     mode, limit_text, output, meta = sys.argv[-4:]
     roots = sys.argv[2:-4]
@@ -118,7 +118,7 @@ def main() -> int:
     if mode == "report_paths":
         try:
             excluded_paths = set(os.environ.get(
-                "FM_DASHBOARD_REPORT_EXCLUDE_PATHS", "").splitlines())
+                "FM_RECORD_EXCLUDE_PATHS", "").splitlines())
             report_paths, omitted, errors, error_count = bounded_report_paths(
                 path, limit, excluded_paths)
             for report_path in report_paths:

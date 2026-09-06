@@ -3,7 +3,8 @@
 # Usage: bin/fm-setup-phynd.sh
 #
 # Installs or updates Herdr, installs Pi, then installs the configured Pi packages,
-# and finally merges the checked-in Phynd defaults into global Pi settings.
+# installs the pinned local document reader runtime, and finally merges the
+# checked-in Phynd defaults into global Pi settings.
 
 set -euo pipefail
 
@@ -27,7 +28,8 @@ usage() {
 Usage: bin/fm-setup-phynd.sh
 
 Installs or updates Herdr, installs Pi, installs the configured Pi packages,
-clones/registers the Phynd Cloud monorepo, and applies Phynd defaults.
+clones/registers the Phynd Cloud monorepo, installs the pinned local document
+reader runtime, and applies Phynd defaults.
 USAGE
 }
 
@@ -203,6 +205,22 @@ provision_phynd_project() {
 
 provision_phynd_project
 
+install_docs_reader() {
+  # The local Markdown document reader runtime: a private venv built from
+  # hash-pinned requirements. Optional - when it cannot be installed the reader
+  # reports itself unavailable and report links fall back to file paths.
+  local out
+  printf 'Installing the local document reader runtime...\n'
+  if out=$(FM_HOME="$HOME_ROOT" "$ROOT/bin/fm-docs-reader.sh" install 2>&1); then
+    printf '%s\n' "$out"
+  else
+    printf 'NOTICE: local document reader runtime not installed: %s\n' "$(printf '%s' "$out" | tail -n 1)" >&2
+    printf 'NOTICE: run bin/fm-docs-reader.sh install after providing Python 3.10 or newer.\n' >&2
+  fi
+}
+
+install_docs_reader
+
 mkdir -p "$PI_HOME" "$CONFIG_DIR" "$CLAUDE_HOME"
 printf 'herdr\n' > "$CONFIG_DIR/backend"
 printf 'on\n' > "$CONFIG_DIR/herdr-presentation-spaces"
@@ -263,7 +281,7 @@ if (fields.some((value) => typeof value !== "string" || value.length === 0)) {
 process.stdout.write(fields[0] + "/" + fields[1] + " with " + fields[2] + " thinking");
 ' "$SETTINGS_SOURCE")
 printf 'Phynd Pi setup complete.\n'
-printf 'Captain default: openai-codex/gpt-5.6-sol with medium thinking.\n'
+printf 'Captain default: %s.\n' "$PI_PROFILE"
 printf 'Default Firstmate backend: herdr.\n'
 printf 'Herdr presentation spaces: on (one visible workspace per task).\n'
 printf 'Theme: cosmic-lagoon.\n'

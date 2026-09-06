@@ -35,13 +35,12 @@
 #   --base <ref>    with --changed, compare against this ref (default: origin/main)
 #   --exclude-family <name>
 #                   drop scripts whose primary family matches <name> after selection
-#                   (repeatable; portable CI lanes exclude real-herdr-gated so the
-#                   dedicated required Herdr lane owns that coverage)
+#                   (repeatable)
 #   --fail-on-gate-skip <token>
 #                   after each script, fail the run if any output line contains
-#                   "skip: <token>" (e.g. --fail-on-gate-skip 'herdr not found').
-#                   The required Herdr CI lane uses this so a missing pin cannot
-#                   silently pass as a gate skip.
+#                   "skip: <token>" (e.g. --fail-on-gate-skip 'herdr not found'),
+#                   so a lane that requires a tool cannot silently pass as a
+#                   gate skip when that tool is missing.
 #   --jobs N        run the selected scripts with up to N concurrent workers.
 #                   Plain --changed uses min(4, cpus) workers when multiple
 #                   selected scripts are admissible.
@@ -201,7 +200,7 @@ family_for_basename() {
     fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|\
     fm-classify-decision-key.test.sh|\
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|fm-factory-manifest.test.sh|\
-    fm-crew-state.test.sh|fm-captain-hold-lifecycle.test.sh|fm-install-herdr.test.sh|\
+    fm-crew-state.test.sh|fm-captain-hold-lifecycle.test.sh|\
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
     fm-kimi-harness.test.sh|fm-muse-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-lint-workflows.test.sh|\
@@ -227,16 +226,6 @@ family_for_basename() {
     fm-watcher-lock.test.sh|fm-inactive-reconcile.test.sh|\
     fm-herdr-supervisor.test.sh)
       printf '%s\n' watcher-wake-lock
-      ;;
-    fm-afk-inject-herdr-e2e.test.sh|fm-afk-launch.test.sh|fm-backend-herdr-only-smoke.test.sh|\
-    fm-backend-herdr-eventwait-smoke.test.sh|fm-backend-herdr-presentation-e2e.test.sh|\
-    fm-backend-herdr-launcher-workspace-e2e.test.sh|\
-    fm-backend-herdr-prune-safety-e2e.test.sh|fm-backend-herdr-respawn-idem-e2e.test.sh|\
-    fm-herdr-session-cleanup-e2e.test.sh|\
-    fm-backend-herdr-smoke.test.sh|fm-backend-herdr-workspace-per-home-e2e.test.sh|\
-    fm-herdr-supervisor-smoke.test.sh|\
-    fm-control-herdr-smoke.test.sh)
-      printf '%s\n' real-herdr-gated
       ;;
     fm-backlog-handoff.test.sh|fm-on.test.sh|fm-remote-backlog-handoff.test.sh|\
     fm-remote-doctor.test.sh|fm-remote-job.test.sh|fm-remote-job-orphan-reap.test.sh|\
@@ -314,7 +303,6 @@ family_for_basename() {
 
 expected_gate_skip_for_family() {
   case "$1" in
-    real-herdr-gated) printf '%s\n' herdr ;;
     live-harness-optin) printf '%s\n' optin-env ;;
     legacy-adapter) printf '%s\n' legacy-adapter-optin ;;
     cmux|zellij|orca) printf '%s\n' optional-binary ;;
@@ -327,7 +315,6 @@ list_known_families() {
   cat <<'EOF'
 pure-contract-unit
 watcher-wake-lock
-real-herdr-gated
 secondmate
 session-bootstrap
 live-harness-optin
@@ -353,7 +340,6 @@ list_known_lanes() {
     printf 'portable-serial-%sof%s\n' "$i" "$PORTABLE_SERIAL_SHARDS"
     i=$((i + 1))
   done
-  printf '%s\n' real-herdr-gated
   printf '%s\n' legacy-adapter
 }
 
@@ -480,7 +466,7 @@ is_proven_isolated_script() {
 }
 
 # The portable serial remainder: every tests/*.test.sh that is neither
-# proven-isolated nor real-herdr-gated. Watcher, lock, AFK, real tmux, daemon,
+# proven-isolated nor in the explicit legacy-adapter lane. Watcher, lock, AFK, real tmux, daemon,
 # secondmate lifecycle, bootstrap, live-harness opt-in, GUI-backend, and other
 # unproven work stays here. Derived rather than enumerated so a newly added test
 # lands here by default instead of falling out of every lane.
@@ -490,7 +476,7 @@ list_portable_serial() {
     [ -n "$s" ] || continue
     base=$(basename "$s")
     fam=$(family_for_basename "$base")
-    if [ "$fam" = "real-herdr-gated" ] || [ "$fam" = "legacy-adapter" ] \
+    if [ "$fam" = "legacy-adapter" ] \
       || [ "$fam" = "cmux" ] || [ "$fam" = "zellij" ] || [ "$fam" = "orca" ]; then
       continue
     fi
@@ -743,10 +729,6 @@ select_lane() {
         fi
       done < <(portable_serial_assignments)
       ;;
-    real-herdr-gated)
-      select_family real-herdr-gated
-      found=1
-      ;;
     legacy-adapter)
       select_family legacy-adapter
       select_family cmux
@@ -789,7 +771,7 @@ run_coverage_guard() {
     return 1
   fi
 
-  # Serial (whole lane and each CI shard) + Herdr and legacy lanes listings without
+  # Serial (whole lane and each CI shard) + legacy lane listings without
   # disturbing a caller's selection.
   saved_scripts=("${SCRIPTS[@]+"${SCRIPTS[@]}"}")
   SCRIPTS=()
@@ -809,9 +791,6 @@ run_coverage_guard() {
     printf '%s\n' "${SCRIPTS[@]+"${SCRIPTS[@]}"}" >>"$tmp/serial_shards_raw"
     shard=$((shard + 1))
   done
-  SCRIPTS=()
-  select_family real-herdr-gated
-  printf '%s\n' "${SCRIPTS[@]+"${SCRIPTS[@]}"}" | LC_ALL=C sort -u >"$tmp/herdr"
   SCRIPTS=()
   select_lane legacy-adapter
   printf '%s\n' "${SCRIPTS[@]+"${SCRIPTS[@]}"}" | LC_ALL=C sort -u >"$tmp/legacy"
@@ -837,8 +816,7 @@ run_coverage_guard() {
     return 1
   fi
 
-  for pair in "shards_union:serial" "shards_union:herdr" "shards_union:legacy" \
-    "serial:herdr" "serial:legacy" "herdr:legacy"; do
+  for pair in "shards_union:serial" "shards_union:legacy" "serial:legacy"; do
     a=${pair%%:*}
     b=${pair#*:}
     comm -12 "$tmp/$a" "$tmp/$b" >"$tmp/overlap"
@@ -850,7 +828,7 @@ run_coverage_guard() {
     fi
   done
 
-  cat "$tmp/shards_union" "$tmp/serial" "$tmp/herdr" "$tmp/legacy" | LC_ALL=C sort >"$tmp/union_raw"
+  cat "$tmp/shards_union" "$tmp/serial" "$tmp/legacy" | LC_ALL=C sort >"$tmp/union_raw"
   uniq -d "$tmp/union_raw" >"$tmp/union_dups"
   if [ -s "$tmp/union_dups" ]; then
     log "coverage guard: duplicate scripts across lanes:"
@@ -862,7 +840,7 @@ run_coverage_guard() {
   missing=$(comm -23 "$tmp/all" "$tmp/union" || true)
   extra=$(comm -13 "$tmp/all" "$tmp/union" || true)
   if [ -n "$missing" ] || [ -n "$extra" ]; then
-    log "coverage guard: union of portable shards + portable serial + Herdr + legacy lanes must equal tests/*.test.sh"
+    log "coverage guard: union of portable shards + portable serial + legacy lanes must equal tests/*.test.sh"
     [ -z "$missing" ] || { log "missing from union:"; printf '%s\n' "$missing" >&2; }
     [ -z "$extra" ] || { log "extra beyond inventory:"; printf '%s\n' "$extra" >&2; }
     rm -rf "$tmp"
@@ -879,12 +857,12 @@ run_coverage_guard() {
     fi
   fi
 
-  printf 'FM_TEST_COVERAGE ok total=%s parallel=%s serial=%s serial_shards=%s herdr=%s\n' \
+  printf 'FM_TEST_COVERAGE ok total=%s parallel=%s serial=%s serial_shards=%s legacy=%s\n' \
     "$(wc -l <"$tmp/all" | tr -d ' ')" \
     "$(wc -l <"$tmp/shards_union" | tr -d ' ')" \
     "$(wc -l <"$tmp/serial" | tr -d ' ')" \
     "$PORTABLE_SERIAL_SHARDS" \
-    "$(wc -l <"$tmp/herdr" | tr -d ' ')"
+    "$(wc -l <"$tmp/legacy" | tr -d ' ')"
   rm -rf "$tmp"
   return 0
 }
@@ -1092,13 +1070,12 @@ families_for_changed_path() {
     config/crew-dispatch.json)
       printf '%s\n' "__script__:phynd-dev.test.sh"
       printf '%s\n' "__script__:fm-bootstrap.test.sh"
-      printf '%s\n' "__script__:fm-backend-herdr-presentation-e2e.test.sh"
       printf '%s\n' "__script__:fm-remote-secondmate-lifecycle-e2e.test.sh"
       printf '%s\n' "__script__:fm-secondmate-harness.test.sh"
       printf '%s\n' "__script__:fm-spawn-dispatch-profile.test.sh"
       ;;
     tests/fm-backend-herdr-eventwait.test.py)
-      printf '%s\n' real-herdr-gated
+      printf '%s\n' backend-dispatch
       printf '%s\n' legacy-adapter
       ;;
     tests/*.test.sh)
@@ -1114,13 +1091,11 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       ;;
     bin/backends/herdr*|bin/fm-herdr-lab.sh|tests/herdr-test-safety.sh)
-      printf '%s\n' real-herdr-gated
       printf '%s\n' backend-dispatch
       printf '%s\n' pure-contract-unit
       ;;
     bin/fm-herdr-session-cleanup.sh)
       printf '%s\n' session-bootstrap
-      printf '%s\n' real-herdr-gated
       printf '%s\n' backend-dispatch
       ;;
     bin/backends/zellij*|tests/zellij-test-safety.sh)
@@ -1137,7 +1112,6 @@ families_for_changed_path() {
       ;;
     bin/fm-backend.sh|bin/fm-backend-hometag-lib.sh)
       printf '%s\n' backend-dispatch
-      printf '%s\n' real-herdr-gated
       ;;
     bin/fm-watch*|bin/fm-wake*|bin/fm-inactive-reconcile.sh|\
     bin/fm-classify-lib.sh|bin/fm-daemon*|bin/fm-turnend-guard*|bin/fm-guard.sh|\
@@ -1146,11 +1120,9 @@ families_for_changed_path() {
       ;;
     bin/fm-afk*)
       printf '%s\n' afk
-      printf '%s\n' real-herdr-gated
       ;;
     bin/fm-supervisor-target-lib.sh)
       printf '%s\n' watcher-wake-lock
-      printf '%s\n' real-herdr-gated
       printf '%s\n' live-harness-optin
       printf '%s\n' afk
       ;;
@@ -1258,14 +1230,8 @@ families_for_changed_path() {
       printf '%s\n' live-harness-optin
       ;;
     bin/fm-bearings-snapshot.sh|bin/fm-fleet-snapshot.sh|bin/fm-fleet-view.sh|\
-    bin/fm-home-summary-refresh.sh)
+    bin/fm-home-summary-refresh.sh|bin/fm-record-read.py|bin/fm_record_io.py)
       printf '%s\n' snapshot-bearings
-      ;;
-    bin/fm-install-herdr.sh|bin/fm-install-treehouse.sh|bin/fm-herdr-ci-cleanup.sh)
-      printf '%s\n' pure-contract-unit
-      # Pin or cleanup changes also select the real-Herdr family so the required
-      # lane's contract coverage re-runs.
-      printf '%s\n' real-herdr-gated
       ;;
     bin/fm-lint.sh|bin/fm-lint-workflows.sh|bin/fm-install-shellcheck.sh|\
     bin/fm-install-actionlint.sh|\
@@ -1290,7 +1256,6 @@ families_for_changed_path() {
       ;;
     .github/workflows/ci.yml|.no-mistakes.yaml)
       printf '%s\n' pure-contract-unit
-      printf '%s\n' real-herdr-gated
       ;;
     docs/fm-test-portable-shards.md|docs/fm-test-isolation-proof.md|\
     docs/fm-test-isolation-proof.json)
@@ -1337,14 +1302,7 @@ families_for_changed_path() {
     tests/*)
       printf '%s\n' "__unmapped__:$path"
       ;;
-    ui/*)
-      # The dashboard client source builds into the committed bundle under
-      # assets/, which the dashboard suites serve and assert against. Selecting
-      # by the built directory keeps one mapping for source and bundle alike.
-      families_for_test_reference "assets/dashboard" \
-        || printf '%s\n' "__unmapped__:$path"
-      ;;
-    README.md|LICENSE|assets/*|docs/*|.gitignore)
+    README.md|LICENSE|assets/*|docs/*|ui/*|.gitignore)
       ;;
     *)
       families_for_test_reference "$path" \
