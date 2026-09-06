@@ -389,10 +389,6 @@
       "audience": "maintainer-architecture"
     },
     {
-      "path": "docs/dashboard.md",
-      "audience": "operator-current"
-    },
-    {
       "path": "docs/cmux-backend.md",
       "audience": "operator-current"
     },
@@ -579,10 +575,6 @@
     {
       "path": "skills/stow/SKILL.md",
       "audience": "public-product"
-    },
-    {
-      "path": "ui/README.md",
-      "audience": "maintainer-architecture"
     }
   ]
 }

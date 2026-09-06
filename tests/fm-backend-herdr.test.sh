@@ -6,8 +6,8 @@
 # diff against (it is new in this task), so these are direct behavior
 # assertions against a small, LOG-based, canned-response fake `herdr` + real
 # `jq` (jq itself is a real required tool for this backend, not faked).
-# The real-binary smoke test lives in tests/fm-backend-herdr-smoke.test.sh,
-# gated on the herdr binary actually being installed.
+# The real-binary smoke test was retired with the real-Herdr CI lane on
+# 2026-09-05; docs/verification/runtime-backends.md retains its last output.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -4429,8 +4429,8 @@ EOF
 # helpers) with a FAKE socket reader and fake herdr CLI, so the policy routing,
 # per-pane dedupe marker, reconnect level-reconcile, and fail-closed return
 # codes are asserted without a real herdr server. The isolated real-herdr smoke
-# that drives a live idle->blocked transition lives in
-# tests/fm-backend-herdr-eventwait-smoke.test.sh.
+# that drove a live idle->blocked transition was retired with the real-Herdr
+# CI lane on 2026-09-05.
 
 # make_herdr_eventfake: a herdr stub answering exactly the calls the event path
 # makes - `session list --json` (echoes one session, name FM_FAKE_SESSION_NAME,

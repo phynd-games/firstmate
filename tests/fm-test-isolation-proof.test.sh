@@ -196,7 +196,6 @@ test_candidates_exclude_serial_classes() {
     tests/fm-backend-tmux-smoke.test.sh \
     tests/fm-watcher-lock.test.sh \
     tests/fm-wake-queue.test.sh \
-    tests/fm-backend-herdr-smoke.test.sh \
     tests/fm-afk-inject-e2e.test.sh \
     tests/fm-pi-primary-live-e2e.test.sh \
     tests/fm-pr-check-security.test.sh \
@@ -229,8 +228,8 @@ test_list_exclusions_documents_reasons() {
   [ -n "$out" ] || fail "--list-exclusions printed nothing"
   printf '%s\n' "$out" | grep -Fq 'fm-watcher-lock.test.sh' \
     || fail "exclusions must document watcher-lock serial reason"
-  printf '%s\n' "$out" | grep -Fq 'fm-backend-herdr-smoke.test.sh' \
-    || fail "exclusions must document real-herdr serial reason"
+  printf '%s\n' "$out" | grep -Fq 'fm-backend-cmux-smoke.test.sh' \
+    || fail "exclusions must document the GUI-backend serial reason"
   pass "exclusion list documents serial reasons"
 }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded descriptor-relative reads for dashboard evidence."""
+"""Bounded descriptor-relative reads for fleet records."""
 
 from __future__ import annotations
 

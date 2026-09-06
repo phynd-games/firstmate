@@ -8,8 +8,8 @@
 # by bin/fm-test-run.sh (docs/fm-test-portable-shards.md).
 #
 # It does NOT compose production CI shard membership; fm-test-run.sh owns that
-# partition. The default portable pool excludes real Herdr, real default-server
-# tmux, watcher lock races, AFK, live harnesses, and GUI backends. A named family
+# partition. The default portable pool excludes real default-server tmux,
+# watcher lock races, AFK, live harnesses, and GUI backends. A named family
 # pool instead runs that family's exact membership and inherits its prerequisites.
 #
 # Usage:
@@ -124,8 +124,7 @@ exclusion_reason() {
     fm-watcher-lock.test.sh)
       printf '%s\n' 'watcher/wake/lock family; intentional process locks and daemon races'
       ;;
-    fm-afk-inject-e2e.test.sh|fm-afk-return.test.sh|fm-afk-inject-herdr-e2e.test.sh|\
-    fm-afk-launch.test.sh)
+    fm-afk-inject-e2e.test.sh|fm-afk-return.test.sh)
       printf '%s\n' 'AFK lifecycle / inject path; exclusive daemon and pane control'
       ;;
     fm-afk-pi-herdr-return-e2e.test.sh|\
@@ -134,12 +133,6 @@ exclusion_reason() {
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
     fm-sessionstart-instruction-refresh-live-e2e.test.sh)
       printf '%s\n' 'live harness opt-in; never default parallel CI'
-      ;;
-    fm-backend-herdr-only-smoke.test.sh|fm-backend-herdr-eventwait-smoke.test.sh|\
-    fm-backend-herdr-presentation-e2e.test.sh|fm-backend-herdr-prune-safety-e2e.test.sh|\
-    fm-backend-herdr-respawn-idem-e2e.test.sh|fm-backend-herdr-smoke.test.sh|\
-    fm-backend-herdr-workspace-per-home-e2e.test.sh|fm-herdr-session-cleanup-e2e.test.sh)
-      printf '%s\n' 'real Herdr-gated; Herdr lane is a later phase'
       ;;
     fm-backend-cmux-smoke.test.sh)
       printf '%s\n' 'cmux GUI backend; never parallel with another cmux mutator'
@@ -204,7 +197,6 @@ fm-teardown.test.sh
 fm-watcher-lock.test.sh
 fm-wake-queue.test.sh
 fm-afk-inject-e2e.test.sh
-fm-backend-herdr-smoke.test.sh
 fm-backend-cmux-smoke.test.sh
 fm-pi-primary-live-e2e.test.sh
 fm-quota-array-dispatch-live-e2e.test.sh

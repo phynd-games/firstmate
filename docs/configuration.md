@@ -165,6 +165,15 @@ It always invokes `bin/fm-watch-arm.sh` through its plain attach-or-start path, 
 See [`herdr-supervisor.md`](herdr-supervisor.md) for its health predicate, bounded recovery, durable records, and the one boundary it refuses to promise: a dead Herdr server takes its host pane with it.
 The setting is inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
 
+## Retiring a pre-existing local dashboard
+
+The local loopback dashboard is removed, and Firstmate does not inspect, stop, or reconcile dashboard processes that were already running.
+Before updating the main home to this revision, use the pre-removal checkout from that main home to run `bin/fm-dashboard-start.sh status` and inspect the recorded owner for that home.
+Run `bin/fm-dashboard-start.sh stop` only after the status and Herdr prove that the recorded owner belongs to the main home and that its recorded pane is the dashboard pane to close.
+If the owner record is missing, unreadable, ambiguous, or inconsistent, or if Herdr cannot confirm the recorded pane, preserve the record and leave the process untouched.
+Resolve any such ownership uncertainty outside Firstmate under explicit operator authority before taking action.
+This retirement procedure is for the removed loopback dashboard only and is separate from the hosted myfirstmate Relay dashboard used for account setup and Relay configuration.
+
 ## Away-mode supervisor backend (FM_SUPERVISOR_BACKEND / FM_SUPERVISOR_TARGET)
 
 The `/afk` sub-supervisor injects escalation digests into firstmate's own pane independently of where new task endpoints are spawned.
