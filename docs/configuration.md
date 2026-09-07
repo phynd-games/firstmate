@@ -178,7 +178,7 @@ This retirement procedure is for the removed loopback dashboard only and is sepa
 
 `bin/fm-docs-reader.sh` serves this home's `data/` Markdown as a loopback-only, live-reloading site and prints verified page URLs; [`docs/docs-reader.md`](docs-reader.md) is the operator guide and the script header owns every command, record, and tuning variable.
 Session start runs one bounded `ensure` while it holds the fleet lock and prints the `DOCS_READER:` line with the verified address or the reason none is available.
-The reader keeps its generated configuration, runtime, and log under `state/docs-reader/` and its owner record in `state/.docs-reader`; it never writes into `data/`.
+The reader keeps its generated configuration, its copy of the tracked theme override from `defaults/docs-reader-theme/`, runtime, and log under `state/docs-reader/` and its owner record in `state/.docs-reader`; it never writes into `data/`.
 Write `off` to the local, gitignored `config/docs-reader` to turn the reader off for this home; the file is not inherited by secondmate homes, whose readers are independent.
 `FM_DOCS_READER_PORT`, `FM_DOCS_READER_PORT_TRIES`, `FM_DOCS_READER_READY_SECS`, `FM_DOCS_READER_HTTP_SECS`, and `FM_DOCS_READER_PYTHON` tune the port range, readiness bound, verification bound, and interpreter, as the script header documents.
 

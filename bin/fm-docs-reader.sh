@@ -4,12 +4,16 @@
 # Serves every Markdown file under this home's data/ directory as a navigable,
 # live-reloading site on the loopback interface, so a report link the captain
 # receives opens as a formatted page instead of a raw file. The server is
-# MkDocs (its own navigation, search, theme, and live reload) driven by a
-# private generated configuration; bin/fm-docs-reader-hooks.py narrows the site
-# to Markdown and raster images inside the real data/ directory and sanitizes
-# every rendered page, so report text is never compiled or executed and never
-# triggers a network fetch. There is no dashboard, no task control, and no
-# write path: the reader reads data/ and writes only under state/.
+# MkDocs (its own search, theme, and live reload) driven by a private generated
+# configuration; bin/fm-docs-reader-hooks.py narrows the site to Markdown and
+# raster images inside the real data/ directory and sanitizes every rendered
+# page, so report text is never compiled or executed and never triggers a
+# network fetch. defaults/docs-reader-theme/ is the tracked theme override
+# (copied into state/docs-reader/theme at every ensure): it replaces the
+# bundled theme's horizontal navbar, which grew taller than the viewport with
+# one section per task directory, with a vertical scrolling document tree and a
+# bounded reading column. There is no dashboard, no task control, and no write
+# path: the reader reads data/ and writes only under state/.
 #
 # NO FALSE URL. A URL is printed only after a GET against 127.0.0.1 returned the
 # page and the page carried this home's identity token. Anything unproven prints
@@ -20,7 +24,12 @@
 # a dead one is replaced, and a recorded pid that no longer runs this reader is
 # left alone and forgotten rather than killed. A port already answering for
 # another process is skipped for the next candidate; nothing is ever killed
-# that this script cannot prove is its own reader for this home.
+# that this script cannot prove is its own reader for this home. A reused live
+# server also gets the generated configuration and theme override re-converged
+# in place: files are rewritten only when their content differs, and the
+# configuration carries a digest of the theme files, so MkDocs' own watch on
+# the configuration rebuilds a running site after a Firstmate update without a
+# restart.
 #
 # LOOPBACK ONLY. The server binds 127.0.0.1 exclusively. There is no host flag.
 #
@@ -49,8 +58,10 @@
 #   .docs-reader          key=value owner record: pid, port, url, home, config,
 #                         python, started
 #   .docs-reader.lock     the per-home lock serializing ensure/stop
-#   docs-reader/          the generated mkdocs.yml, theme override, private
-#                         venv (after install), and serve.log
+#   docs-reader/          the generated mkdocs.yml, the theme override copied
+#                         from defaults/docs-reader-theme plus the two
+#                         generated Pygments stylesheets, the private venv
+#                         (after install), and serve.log
 #
 # Tuning:
 #   FM_DOCS_READER_PORT         first candidate port (default: 8600 + a stable
@@ -80,6 +91,7 @@ THEME_DIR="$READER_DIR/theme"
 VENV_DIR="$READER_DIR/venv"
 SERVE_LOG="$READER_DIR/serve.log"
 REQUIREMENTS="$FM_ROOT/defaults/docs-reader-requirements.txt"
+THEME_SRC="$FM_ROOT/defaults/docs-reader-theme"
 HOOKS="$SCRIPT_DIR/fm-docs-reader-hooks.py"
 
 FM_DOCS_READER_PORT_TRIES=${FM_DOCS_READER_PORT_TRIES:-10}
@@ -255,21 +267,31 @@ cmd_install() {
 
 # --- generated configuration ------------------------------------------------
 
+# pygments_css <python> <style> <dest>: generate one highlight stylesheet once.
+pygments_css() {
+  local python=$1 style=$2 dest=$3
+  [ -s "$dest" ] && return 0
+  "$python" -m pygments -S "$style" -f html -a .codehilite > "$dest" 2>/dev/null \
+    || printf '/* pygments stylesheet unavailable */\n' > "$dest"
+}
+
+# theme_digest: one number over every file the theme override serves, stamped
+# into the configuration so a running server (which watches its configuration,
+# not the theme directory) rebuilds when the override changes.
+theme_digest() {
+  cat "$THEME_DIR/main.html" "$THEME_DIR/css/"*.css 2>/dev/null | cksum | awk '{print $1}'
+}
+
 write_site_config() {  # <python>
-  local python=$1 token
+  local python=$1 token digest
   token=$(home_token)
+  [ -f "$THEME_SRC/main.html" ] && [ -f "$THEME_SRC/css/reader.css" ] || return 1
   mkdir -p "$THEME_DIR/css" || return 1
-  write_if_changed "$THEME_DIR/main.html" <<EOF
-{% extends "base.html" %}
-{% block extrahead %}
-<meta name="fm-docs-home" content="{{ config.extra.fm_home_token }}">
-<link rel="stylesheet" href="{{ 'css/codehilite.css'|url }}">
-{% endblock %}
-EOF
-  if [ ! -s "$THEME_DIR/css/codehilite.css" ]; then
-    "$python" -m pygments -S default -f html -a .codehilite > "$THEME_DIR/css/codehilite.css" 2>/dev/null \
-      || printf '/* pygments stylesheet unavailable */\n' > "$THEME_DIR/css/codehilite.css"
-  fi
+  write_if_changed "$THEME_DIR/main.html" < "$THEME_SRC/main.html" || return 1
+  write_if_changed "$THEME_DIR/css/reader.css" < "$THEME_SRC/css/reader.css" || return 1
+  pygments_css "$python" default "$THEME_DIR/css/codehilite.css"
+  pygments_css "$python" github-dark "$THEME_DIR/css/codehilite-dark.css"
+  digest=$(theme_digest)
   # docs_dir is the real data/ path: the hooks compare every page's real path
   # against it, so a symlinked home cannot make its own pages look like escapes.
   write_if_changed "$MKDOCS_CONFIG" <<EOF
@@ -309,6 +331,7 @@ validation:
     absolute_links: ignore
 extra:
   fm_home_token: $token
+  fm_theme_digest: $digest
 EOF
 }
 
@@ -415,6 +438,13 @@ start_server() {  # <python> - prints the URL on success
 ensure_locked() {
   local url python reason
   if url=$(verified_url); then
+    # The server stays; only its generated inputs are re-converged, and MkDocs
+    # rebuilds on its own when the configuration digest moves.
+    python=$(record_get python)
+    [ -n "$python" ] && [ -x "$python" ] || python=$(resolve_python) || python=''
+    if [ -n "$python" ] && ! write_site_config "$python"; then
+      printf 'fm-docs-reader: could not refresh %s for the running reader\n' "$MKDOCS_CONFIG" >&2
+    fi
     printf '%s\n' "$url"
     return 0
   fi

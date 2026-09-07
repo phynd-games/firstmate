@@ -1,0 +1,120 @@
+{#
+  Theme override for the Firstmate document reader (bin/fm-docs-reader.sh copies
+  this directory into state/docs-reader/theme and points MkDocs' custom_dir at
+  it). It extends the bundled `mkdocs` theme and replaces only its navigation
+  and page layout:
+
+  - The bundled theme renders every first-level navigation entry into one
+    horizontal navbar with dropdowns. A Firstmate home has one directory per
+    task under data/, so that navbar grows with the task count until it is
+    taller than the viewport and, being sticky, covers every document. The
+    section tree below renders the same nav as a vertical, independently
+    scrolling panel: inline beside the document on wide viewports, a Bootstrap
+    offcanvas dialog behind a "Documents" button on narrow ones (which is what
+    200% browser zoom produces). Native <details> elements give each section a
+    keyboard-operable disclosure with no script.
+  - The document sits in a bounded reading column with an "On this page"
+    outline; css/reader.css owns the measure, type scale, and spacing.
+  - The bundled darkmode.js expects #hljs-light/#hljs-dark stylesheet links
+    that only exist when the remote highlight.js is enabled; with it disabled
+    the script threw before wiring the theme toggle. The two generated local
+    Pygments stylesheets below fill those ids, so the toggle works and code
+    keeps readable colours in dark mode.
+
+  Everything referenced here is served from the reader itself; nothing is
+  fetched from the network. Titles come from MkDocs, which already escapes
+  them, and page bodies pass through the sanitizing hook before this template
+  sees them.
+#}
+{% extends "base.html" %}
+
+{% block extrahead %}
+<meta name="fm-docs-home" content="{{ config.extra.fm_home_token }}">
+<link rel="stylesheet" href="{{ 'css/reader.css'|url }}">
+<link id="hljs-light" rel="stylesheet" href="{{ 'css/codehilite.css'|url }}">
+<link id="hljs-dark" rel="stylesheet" href="{{ 'css/codehilite-dark.css'|url }}" disabled>
+{% endblock %}
+
+{% block site_name %}
+<button type="button" class="fm-nav-toggle d-lg-none" data-bs-toggle="offcanvas" data-bs-target="#fm-docs-nav" aria-controls="fm-docs-nav" aria-expanded="false" aria-label="Open the document list">
+  <i class="fa-solid fa-list-ul" aria-hidden="true"></i><span class="fm-nav-toggle-text">Documents</span>
+</button>
+<a class="navbar-brand" href="{{ nav.homepage.url|url }}">{{ config.site_name }}</a>
+{% endblock %}
+
+{# The bundled navbar keeps search, previous/next, and the theme toggle; the
+   document tree is rendered by the content block instead. #}
+{% block site_nav %}{% endblock %}
+
+{% macro tree(items, depth) -%}
+<ul class="fm-tree{% if depth == 0 %} fm-tree-root{% endif %}">
+{%- for item in items %}
+{%- if item.children %}
+  <li class="fm-tree-section"><details{% if item.active %} open{% endif %}><summary>{{ item.title }}</summary>{{ tree(item.children, depth + 1) }}</details></li>
+{%- else %}
+  <li><a href="{{ item.url|url }}" class="fm-tree-link{% if item.active %} active" aria-current="page{% endif %}">{{ item.title }}</a></li>
+{%- endif %}
+{%- endfor %}
+</ul>
+{%- endmacro %}
+
+{% macro outline(item) -%}
+{%- if item.level <= config.theme.navigation_depth %}
+<li class="nav-item" data-bs-level="{{ item.level }}"><a href="{{ item.url }}" class="nav-link">{{ item.title }}</a>
+{%- if item.children %}
+  <ul class="nav flex-column">
+  {%- for child in item.children %}{{ outline(child) }}{%- endfor %}
+  </ul>
+{%- endif %}
+</li>
+{%- endif %}
+{%- endmacro %}
+
+{% block content %}
+<div class="fm-shell">
+  <aside id="fm-docs-nav" class="offcanvas-lg offcanvas-start fm-sidebar" tabindex="-1" aria-labelledby="fm-docs-nav-title">
+    <div class="offcanvas-header">
+      <h2 class="offcanvas-title" id="fm-docs-nav-title">Documents</h2>
+      <button type="button" class="btn-close" data-bs-dismiss="offcanvas" data-bs-target="#fm-docs-nav" aria-label="Close the document list"></button>
+    </div>
+    <div class="offcanvas-body">
+      <nav class="fm-tree-nav" aria-label="Documents">{{ tree(nav, 0) }}</nav>
+    </div>
+  </aside>
+  {%- if page.toc and page.toc.items|length > 0 and (page.toc.items|length > 1 or page.toc.items[0].children) %}
+  <details class="fm-toc bs-sidebar" open>
+    <summary>On this page</summary>
+    <ul class="nav flex-column">
+    {%- for item in page.toc %}{{ outline(item) }}{%- endfor %}
+    </ul>
+  </details>
+  {%- endif %}
+  <div class="fm-main" role="main">{% include "content.html" %}</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+(function () {
+  var panel = document.getElementById('fm-docs-nav');
+  var toggle = document.querySelector('[data-bs-toggle="offcanvas"][data-bs-target="#fm-docs-nav"]');
+  if (panel && toggle) {
+    panel.addEventListener('show.bs.offcanvas', function () { toggle.setAttribute('aria-expanded', 'true'); });
+    panel.addEventListener('hidden.bs.offcanvas', function () {
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.focus();
+    });
+    var scroller = panel.querySelector('.offcanvas-body');
+    var current = panel.querySelector('a[aria-current="page"]');
+    if (scroller && current) {
+      scroller.scrollTop = Math.max(0, current.offsetTop - scroller.clientHeight / 2);
+    }
+  }
+  var outline = document.querySelector('details.fm-toc');
+  if (outline && !window.matchMedia('(min-width: 1200px)').matches) {
+    outline.removeAttribute('open');
+  }
+})();
+</script>
+{% endblock %}

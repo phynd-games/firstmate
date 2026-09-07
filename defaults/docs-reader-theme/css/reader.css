@@ -1,0 +1,409 @@
+/* Firstmate document reader: layout, navigation tree, and reading typography.
+ * Loaded by main.html on top of the bundled mkdocs theme (Bootstrap 5). Every
+ * colour is a Bootstrap theme variable so light, dark, and auto modes stay
+ * coherent. Breakpoints follow Bootstrap: the document tree is an offcanvas
+ * dialog below 992px (a phone, or a desktop window at 200% zoom), an inline
+ * scrolling column from 992px, and the outline moves to a third column from
+ * 1200px. */
+
+:root {
+  --fm-bar-h: 3.5rem;
+  --fm-sidebar-w: 18rem;
+  --fm-outline-w: 14rem;
+  --fm-measure: 46rem;
+  --bs-offcanvas-width: 22rem;
+}
+
+html {
+  scroll-padding-top: calc(var(--fm-bar-h) + 1rem) !important;
+}
+
+/* --- top bar: one slim row, never wraps ----------------------------------- */
+
+.navbar > .container {
+  max-width: none;
+  flex-wrap: nowrap;
+  gap: 0.5rem;
+}
+
+.navbar-brand {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 1rem;
+}
+
+.fm-nav-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 0.4rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.fm-nav-toggle:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.fm-nav-toggle:focus-visible,
+.fm-tree a:focus-visible,
+.fm-tree summary:focus-visible,
+.fm-toc summary:focus-visible,
+.fm-toc .nav-link:focus-visible {
+  outline: 2px solid var(--bs-primary);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+.navbar .fm-nav-toggle:focus-visible {
+  outline-color: #fff;
+}
+
+/* --- page shell ----------------------------------------------------------- */
+
+body > .container {
+  max-width: none;
+  margin-top: 0;
+  padding: 0;
+}
+
+body > .container > .row {
+  --bs-gutter-x: 0;
+  margin: 0;
+}
+
+.fm-shell {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "outline"
+    "main";
+  gap: 0 2rem;
+  align-items: start;
+  padding: 1.5rem 1rem 3rem;
+}
+
+.fm-main {
+  grid-area: main;
+  min-width: 0;
+  max-width: var(--fm-measure);
+}
+
+.fm-toc {
+  grid-area: outline;
+}
+
+@media (min-width: 992px) {
+  .fm-shell {
+    grid-template-columns: var(--fm-sidebar-w) minmax(0, 1fr);
+    grid-template-areas:
+      "side outline"
+      "side main";
+    padding: 1.5rem 2rem 3rem;
+  }
+
+  /* The panel starts 1.5rem below the bar (the shell's top padding) and
+     sticks to the bar once the page scrolls; the height bound keeps its
+     bottom inside the viewport in both positions. */
+  .fm-sidebar {
+    grid-area: side;
+    position: sticky;
+    top: var(--fm-bar-h);
+    align-self: start;
+    max-height: calc(100vh - var(--fm-bar-h) - 1.5rem);
+    padding: 0.5rem 0 1rem;
+  }
+
+  /* Bootstrap renders an offcanvas-lg inline here; give its body the scroll
+     so a long tree never grows the page. */
+  .fm-sidebar .offcanvas-body {
+    display: block;
+    position: relative;
+    max-height: calc(100vh - var(--fm-bar-h) - 3rem);
+    overflow-y: auto;
+    padding-right: 0.5rem;
+  }
+}
+
+@media (min-width: 1200px) {
+  .fm-shell {
+    grid-template-columns: var(--fm-sidebar-w) minmax(0, 1fr) var(--fm-outline-w);
+    grid-template-areas: "side main outline";
+  }
+
+  .fm-toc {
+    position: sticky;
+    top: calc(var(--fm-bar-h) + 1.5rem);
+    max-height: calc(100vh - var(--fm-bar-h) - 3rem);
+    overflow-y: auto;
+  }
+
+  .fm-toc > summary {
+    pointer-events: none;
+  }
+}
+
+/* --- document tree -------------------------------------------------------- */
+
+/* The bundled theme styles every <details> as an admonition card; the tree
+   and the outline use the element only for its disclosure behaviour. */
+.fm-tree details,
+.fm-toc {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.fm-tree summary,
+.fm-toc > summary {
+  font-weight: inherit;
+  text-align: left;
+}
+
+.offcanvas-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.fm-tree,
+.fm-tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.fm-tree ul {
+  margin-left: 0.55rem;
+  padding-left: 0.6rem;
+  border-left: 1px solid var(--bs-border-color);
+}
+
+.fm-tree a,
+.fm-tree summary {
+  display: block;
+  padding: 0.28rem 0.5rem;
+  border-radius: 0.375rem;
+  color: var(--bs-body-color);
+  font-size: 0.9rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+
+.fm-tree summary {
+  position: relative;
+  padding-left: 1.35rem;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 500;
+}
+
+.fm-tree summary::-webkit-details-marker {
+  display: none;
+}
+
+.fm-tree summary::before {
+  content: "";
+  position: absolute;
+  left: 0.5rem;
+  top: 0.72rem;
+  width: 0.42rem;
+  height: 0.42rem;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  opacity: 0.65;
+  transform: rotate(-45deg);
+  transition: transform 0.12s ease;
+}
+
+.fm-tree details[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+.fm-tree a:hover,
+.fm-tree summary:hover {
+  background: var(--bs-tertiary-bg);
+  color: var(--bs-body-color);
+}
+
+.fm-tree a[aria-current="page"] {
+  background: var(--bs-primary-bg-subtle);
+  color: var(--bs-primary-text-emphasis);
+  font-weight: 600;
+}
+
+/* --- on-this-page outline ------------------------------------------------- */
+
+.fm-toc {
+  font-size: 0.85rem;
+}
+
+.fm-toc > summary {
+  cursor: pointer;
+  margin-bottom: 0.4rem;
+  color: var(--bs-secondary-color);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.fm-toc .nav {
+  flex-direction: column;
+}
+
+.fm-toc .nav .nav {
+  margin-left: 0.75rem;
+}
+
+.fm-toc.bs-sidebar .nav > li > a {
+  display: block;
+  padding: 0.2rem 0 0.2rem 0.6rem;
+  border-left: 2px solid transparent;
+  border-right: 0;
+  color: var(--bs-secondary-color);
+  font-weight: 400;
+  font-size: 0.85rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.fm-toc.bs-sidebar .nav > li > a:hover,
+.fm-toc.bs-sidebar .nav > li > a:focus {
+  border-right: 0;
+  color: var(--bs-body-color);
+}
+
+.fm-toc.bs-sidebar .nav > li > a.active {
+  border-right: 0;
+  border-left-color: var(--bs-primary);
+  color: var(--bs-body-color);
+  font-weight: 600;
+}
+
+@media (max-width: 1199.98px) {
+  .fm-toc {
+    margin-bottom: 1.5rem;
+    padding: 0.6rem 0.9rem;
+    border: 1px solid var(--bs-border-color);
+    border-radius: 0.5rem;
+    max-width: var(--fm-measure);
+    background: var(--bs-tertiary-bg);
+  }
+
+  .fm-toc > summary {
+    margin-bottom: 0;
+  }
+
+  .fm-toc[open] > summary {
+    margin-bottom: 0.4rem;
+  }
+}
+
+/* --- reading column ------------------------------------------------------- */
+
+.fm-main {
+  font-size: 1.0625rem;
+  line-height: 1.65;
+}
+
+.fm-main h1 {
+  margin: 0 0 1rem;
+  font-size: 2rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+.fm-main h2 {
+  margin: 2.25rem 0 0.75rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--bs-border-color);
+  font-size: 1.45rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.fm-main h3 {
+  margin: 1.75rem 0 0.5rem;
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.fm-main h4,
+.fm-main h5,
+.fm-main h6 {
+  margin: 1.25rem 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.fm-main h1:first-child {
+  margin-top: 0;
+}
+
+.fm-main p,
+.fm-main ul,
+.fm-main ol,
+.fm-main blockquote,
+.fm-main pre {
+  margin-bottom: 1rem;
+}
+
+.fm-main li + li {
+  margin-top: 0.2rem;
+}
+
+.fm-main pre {
+  padding: 0.85rem 1rem;
+  border-radius: 0.5rem;
+}
+
+.fm-main pre code {
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.fm-main code {
+  font-size: 0.9em;
+}
+
+.fm-main table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  margin-bottom: 1.25rem;
+  font-size: 0.95rem;
+}
+
+.fm-main img {
+  max-width: 100%;
+  height: auto;
+}
+
+.fm-main blockquote {
+  padding-left: 1rem;
+  border-left: 3px solid var(--bs-border-color);
+  color: var(--bs-secondary-color);
+}
+
+.fm-main hr {
+  margin: 2rem 0;
+}
+
+footer {
+  padding: 0 1rem;
+}
