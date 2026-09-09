@@ -1,0 +1,11 @@
+{
+  "current-test-provenance.md": "9110fc570a44f06f3fcb9ece6b1bd63c0539abb6e1d1ccf627a56ef3f762e700",
+  "current-head-parity.json": "a896bc3f63b10c0e02fd0286514414d26d97a0e8fc5292733a85fb40cd800a1e",
+  "current-parser-replay.json": "010753a9753bcdaf178cf516f588144a8452cd209aade382d537aa520fe362cb",
+  "current-crew-terminal.txt": "d94106ab20d777f92b0bb81c37a5269a6766e725782b1627da07701b7619b14c",
+  "current-claim-episodes.txt": "b10d52d9253edfc6a700eb0a0e8dcebf6d48b17d3eddf6f121c67f495321eab7",
+  "frozen-crew-replay.txt": "de63ac83c999ade2a6951b50bebf6602aa73fa8b2275ac18b92ba0cf164d60d4",
+  "crew-replay-driver.sh": "19d14453b8ff800085850fcfde92ce81b417fc1cd75abfa42c880cb8e8cf7440",
+  "mutation-before-after.txt": "e18c9d26b443135c04ed6224175892194615ac2d89dc48bbfacae30158e5a8da",
+  "final-evidence-provenance.md": "ff96d39fc9d64f4445156b3af6904ff3e08afaee47f8fbde8a204c376edbb2ff"
+}

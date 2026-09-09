@@ -1,0 +1,153 @@
+{
+  "base": "fe601e80363dca6469775ca98ad0643071fb48f3",
+  "head": "751ccb65bf1bf3d4c62daa2eb126de77cdb69b8f",
+  "rows": [
+    {
+      "case": "historical-capture",
+      "sha256": "42ce54765c327fc1978fa0f881cc45aa47803df6c9c8587dd6c238ade146f6e5",
+      "head_expected": 0,
+      "base": 1,
+      "head": 0
+    },
+    {
+      "case": "synthetic-awaiting",
+      "sha256": "9843761e4e0a341ae1eb55d1609babbeac36426ca9c22f4bd942f80364bb1e06",
+      "head_expected": 0,
+      "base": 0,
+      "head": 0
+    },
+    {
+      "case": "valid-00",
+      "sha256": "fff7e73d1fe1b19c8b12b820da506ed78c4c0d193d87651308a2cdd75f5e2fc2",
+      "head_expected": 0,
+      "base": 0,
+      "head": 0
+    },
+    {
+      "case": "valid-01",
+      "sha256": "9ef6ce4fb94a054b60f8a022be058724ba51c0864b21de3ca4570ae4cb480ab6",
+      "head_expected": 0,
+      "base": 1,
+      "head": 0
+    },
+    {
+      "case": "valid-02",
+      "sha256": "1c7b8108795a5a584a4ad423f4fd99d1e4f6553cdafb9f4dc31c645af873d980",
+      "head_expected": 0,
+      "base": 1,
+      "head": 0
+    },
+    {
+      "case": "valid-03",
+      "sha256": "a38a58ee1be05bb78917fae7a8bffeda302ee2f26bb226c7afdd94d289dcee21",
+      "head_expected": 0,
+      "base": 1,
+      "head": 0
+    },
+    {
+      "case": "valid-04",
+      "sha256": "207588941d31e6509526603dc9e1055878bdba0340158e2557a9883c2f423753",
+      "head_expected": 0,
+      "base": 1,
+      "head": 0
+    },
+    {
+      "case": "valid-05",
+      "sha256": "148fb222c004b0b1f430bbc7eb9c1b793003b02e161368c99d628060889ff5e9",
+      "head_expected": 0,
+      "base": 1,
+      "head": 0
+    },
+    {
+      "case": "valid-06",
+      "sha256": "61fe60009bcd9bdb16a9797a0285e99e79aa628b3703b03a42352b45fda038c5",
+      "head_expected": 0,
+      "base": 1,
+      "head": 0
+    },
+    {
+      "case": "invalid-00",
+      "sha256": "3c631f0615cd17591fb09d7b29465f3e7f115c05030eb262a8deb7d7c0b1d210",
+      "head_expected": 1,
+      "base": 1,
+      "head": 1
+    },
+    {
+      "case": "invalid-01",
+      "sha256": "50c7abe500f637898afd42c26c3988e8a7deac5828aca324d156aa6eb56a7450",
+      "head_expected": 1,
+      "base": 1,
+      "head": 1
+    },
+    {
+      "case": "invalid-02",
+      "sha256": "ea1ca9ca45142c2bff52d8aa255bfbf0ca039864daeb08168718c117d7357d72",
+      "head_expected": 1,
+      "base": 1,
+      "head": 1
+    },
+    {
+      "case": "invalid-03",
+      "sha256": "e1a8c71f0334e6eac99c6768c90520ed97194c005196db2db1f3490291e5ff61",
+      "head_expected": 1,
+      "base": 1,
+      "head": 1
+    },
+    {
+      "case": "invalid-04",
+      "sha256": "2d55054ee837d3746314567d1a65f3fa7eaf374e6a5a6472e5f0250500d9e131",
+      "head_expected": 1,
+      "base": 1,
+      "head": 1
+    },
+    {
+      "case": "invalid-05",
+      "sha256": "45465a9b47acb9380ec313cfe538d14df263599ace70f330419db98b2892fc22",
+      "head_expected": 1,
+      "base": 0,
+      "head": 1
+    },
+    {
+      "case": "invalid-06",
+      "sha256": "2d6cb36f248c1b73f1540022606a0e6582851f7cfff1ac5665721f4250ad2691",
+      "head_expected": 1,
+      "base": 1,
+      "head": 1
+    },
+    {
+      "case": "invalid-07",
+      "sha256": "7ecad6ba834e54609b64f347857dc81b1fa17361edeebd6c8d9f3aa1b0ac130d",
+      "head_expected": 1,
+      "base": 1,
+      "head": 1
+    },
+    {
+      "case": "invalid-08",
+      "sha256": "34c90e658fc369c618865beaafc2527177e65cdb274989608891a1f62264c950",
+      "head_expected": 1,
+      "base": 1,
+      "head": 1
+    },
+    {
+      "case": "invalid-09",
+      "sha256": "2ea7b41f39da6fe73b75b9ba928dd7ef5a414bfe9c5c7895f2aa596d76c8e775",
+      "head_expected": 1,
+      "base": 1,
+      "head": 1
+    },
+    {
+      "case": "invalid-10",
+      "sha256": "ef7141d8993810c4715639c10dcc3602619d5c67741ab875a9810c86511a9673",
+      "head_expected": 1,
+      "base": 1,
+      "head": 1
+    },
+    {
+      "case": "duplicate-scalar",
+      "sha256": "ee73280f478c7f40b63bbdf7a2cc4e10dd7d8e108e64982a8a58f5f20d3b930d",
+      "head_expected": 1,
+      "base": 1,
+      "head": 1
+    }
+  ]
+}

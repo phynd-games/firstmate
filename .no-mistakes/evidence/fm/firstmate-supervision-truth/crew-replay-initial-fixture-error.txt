@@ -1,0 +1,13 @@
+synthetic task=severity branch=fm/severity-summary head=239da14d79b618e46f40ab9f71b87894bac2d0e0
+captured-foreign base: state: unknown · source: none · unreadable validation run evidence
+captured-foreign head: state: working · source: pane · harness busy (claude-hook)
+synthetic-bound-passed base: state: unknown · source: none · unreadable validation run evidence
+synthetic-bound-passed head: state: done · source: run-step · run passed: PR merged/closed
+synthetic-bound-failed base: state: unknown · source: none · unreadable validation run evidence
+synthetic-bound-failed head: state: failed · source: run-step · run failed
+malformed base: state: unknown · source: none · unreadable validation run evidence
+malformed head: state: unknown · source: none · unreadable validation run evidence
+unknown-no-record base: state: working · source: pane · harness busy (fm-spawn)
+not ok - unknown-no-record base state (missing: 'state: unknown')
+--- output ---
+state: working · source: pane · harness busy (fm-spawn)

@@ -1,0 +1,16 @@
+outcome=passed; findings=4 info
+state: done · source: run-step · run passed: PR merged/closed
+outcome=passed; findings=1 error, 2 warning, 3 info
+state: done · source: run-step · run passed: PR merged/closed
+outcome=failed; findings=4 info
+state: failed · source: run-step · run failed
+outcome=failed; findings=1 error, 2 warning, 3 info
+state: failed · source: run-step · run failed
+malformed findings=1 unknown
+state: unknown · source: none · unreadable validation run evidence
+malformed findings=1 info, 1 warning
+state: unknown · source: none · unreadable validation run evidence
+malformed findings=4 info
+  findings: 4 info
+state: unknown · source: none · unreadable validation run evidence
+ok - crew-state preserves terminal severity summaries and refuses malformed evidence

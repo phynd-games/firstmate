@@ -1,0 +1,1 @@
+ok - findings grammar: historical daemon output is accepted, malformed shapes are rejected

@@ -1,0 +1,16 @@
+synthetic task=severity branch=fm/severity-summary head=fd9ca4e72b8e4846f6c6533b5ed266536ef78b82
+captured-foreign base: state: unknown · source: none · unreadable validation run evidence
+captured-foreign head: state: working · source: pane · harness busy (claude-hook)
+synthetic-bound-passed base: state: unknown · source: none · unreadable validation run evidence
+synthetic-bound-passed head: state: done · source: run-step · run passed: PR merged/closed
+synthetic-bound-failed base: state: unknown · source: none · unreadable validation run evidence
+synthetic-bound-failed head: state: failed · source: run-step · run failed
+malformed base: state: unknown · source: none · unreadable validation run evidence
+malformed head: state: unknown · source: none · unreadable validation run evidence
+unknown-no-record base: state: unknown · source: pane · harness state unavailable (unknown fm-spawn)
+unknown-no-record head: state: unknown · source: pane · harness state unavailable (unknown fm-spawn)
+REFUSED: task severity endpoint identity resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr capability check failed: error: 'herdr status --json' failed; is herdr installed correctly? Upgrade or repair Herdr, then verify with 'herdr status --json'.
+unread-pane base: 
+not ok - unread-pane base state (missing: 'state: unknown')
+--- output ---
+

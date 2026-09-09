@@ -1,0 +1,27 @@
+ok - failed claim alarm delivery retries until persisted, then suppresses repeats
+herdr-supervisor: deferred - another continuity owner is completing its ownership claim
+rc=0
+ok - a live, identity-verified other owner defers cmd_ensure without a false alarm
+rc1=1
+rc2=1
+1788945459	1	check	herdr-supervisor	check: herdr-supervisor - the continuity ownership claim could not be acquired within its bounded retry window
+ok - an unknown claim record alarms once, and the same unresolved episode does not alarm twice
+herdr-supervisor: not needed - this home has no in-flight work, event source, or relay poll
+rc3=1
+1788945459	1	check	herdr-supervisor	check: herdr-supervisor - the continuity ownership claim could not be acquired within its bounded retry window
+1788945461	2	check	herdr-supervisor	check: herdr-supervisor - the continuity ownership claim could not be acquired within its bounded retry window
+ok - successful claim acquisition lets a later failure episode alarm again
+loop owner-arrival: wake queue absent; emergency alarm absent
+ok - the arm path rechecks a live owner arriving during claim acquisition
+ok - concurrent ensure calls publish one alarm for an unresolved episode
+ok - the shared loop episode alarms again after a healthy owner comes and goes
+ok - the recovery loop episode alarms again after a healthy owner comes and goes
+ok - monitor handoff resets claim alarms while status remains read-only
+ok - contended recovery retries when the recovered owner remains
+ok - contended recovery retries when the recovered owner disappears
+ok - ensure-exit preserves the recovered episode after process exit
+ok - ensure-substitution preserves the recovered episode after process exit
+ok - contended recovery retries when the recovered owner stale-retry
+ok - contended recovery retries when the recovered owner identity-arrival
+ok - contended recovery retries when the recovered owner identity-replaced
+ok - contended recovery retries when the recovered owner observation-blocked

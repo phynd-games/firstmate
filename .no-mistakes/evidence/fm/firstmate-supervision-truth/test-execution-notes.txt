@@ -1,0 +1,24 @@
+Testing scope: fe601e80363dca6469775ca98ad0643071fb48f3 to 751ccb65bf1bf3d4c62daa2eb126de77cdb69b8f, plus test-only changes in this phase.
+All direct test runs set TMPDIR=$PWD/.test-phase/tmp, HOME=$PWD/.test-phase/home, FM_HOME=$PWD/.test-phase/home and FM_TEST_SKIP_ORPHAN_REAP=1. Each supervisor probe overrides HOME/FM_HOME again with its own synthetic fixture. No real Herdr lifecycle was executed.
+
+Initial bash tests/fm-validation-loop.test.sh and bash bin/fm-test-run.sh --per-script-timeout-secs 180 tests/fm-validation-loop.test.sh both passed the parser/bounds/journal cases and failed at the watcher fixture. The fixture used a fake legacy backend without its required policy marker. All three watcher cases passed after giving their private state directories that marker; no production policy was changed.
+Initial new crew-state fixture attempts lacked complete native endpoint metadata. Corrected the synthetic metadata and Herdr CLI responses; --terminal-severity-only passed.
+The first supervisor suite was interrupted by an in-progress test-file edit; --claim-alarms-only was rerun against a stable file and passed. An initial new selector was accidentally inserted into a fixture heredoc; the misselected synthetic processes were stopped, placement was corrected, and --claim-loop-arrival-only then passed at head and failed at base. These were test-authoring issues, not product failures.
+
+Final focused commands:
+bash tests/fm-validation-loop.test.sh --findings-only
+bash tests/fm-validation-loop.test.sh --watcher-limits-only
+bash tests/fm-crew-state.test.sh --terminal-severity-only
+bash tests/fm-herdr-supervisor.test.sh --claim-alarms-only
+bash tests/fm-herdr-supervisor.test.sh --claim-loop-arrival-only
+
+Mutation commands: copy tracked bin scripts/backends and current tests into .test-phase/base; replace bin/fm-validation-loop-lib.sh and bin/fm-herdr-supervisor.sh using git show fe601e80363dca6469775ca98ad0643071fb48f3:<path>. Execute:
+bash .test-phase/base/tests/fm-crew-state.test.sh --terminal-severity-only
+bash .test-phase/base/tests/fm-herdr-supervisor.test.sh --claim-owner-only
+bash .test-phase/base/tests/fm-herdr-supervisor.test.sh --claim-loop-arrival-only
+bash .test-phase/base/tests/fm-validation-loop.test.sh (private copy selects only test_findings_grammar_accepts_real_daemon_output)
+All four mutations failed at the intended behavioral assertion.
+
+Unresolved evidence: state/firstmate-v2-plan.meta is absent from this isolated worktree. The phase forbids reading any other clone, so neither the production incident provenance nor the required live read-only before/after crew-state check could be independently verified. The captured daemon sample is exercised as a fixture, not represented as a fresh production capture.
+No UI was changed. Product evidence consists of CLI output and durable operator alarm queue rows.
+No linters, formatters, static analyzers, broad repository suite, pipeline controls, pushes, PR operations or CI were run.

@@ -1,0 +1,8 @@
+run:
+  id: "01RUN"
+  branch: fm/loop
+  status: completed
+  head: abc1234
+  pr: ""
+  findings: 1 warning, 0 info
+outcome: passed

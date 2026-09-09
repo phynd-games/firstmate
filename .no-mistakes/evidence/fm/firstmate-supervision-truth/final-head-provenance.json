@@ -1,0 +1,38 @@
+{
+  "commits": {
+    "base": "fe601e80363dca6469775ca98ad0643071fb48f3",
+    "original_implementation": "5cf0782b57e32264388c64acd4a07581113b0f7e",
+    "final_head": "751ccb65bf1bf3d4c62daa2eb126de77cdb69b8f"
+  },
+  "sha256": [
+    {
+      "file": "bin/fm-validation-loop-lib.sh",
+      "base": "72556409ad6149888f7bc68453f55317cd70fc629a6a18cd83b5928d2eebec4f",
+      "original_implementation": "5c44598d46e76a7db561295125ddfff92c00a3a6d527dee51e7ccec6f9929cad",
+      "final_head": "5c44598d46e76a7db561295125ddfff92c00a3a6d527dee51e7ccec6f9929cad",
+      "working_tree": "5c44598d46e76a7db561295125ddfff92c00a3a6d527dee51e7ccec6f9929cad"
+    },
+    {
+      "file": "bin/fm-crew-state.sh",
+      "base": "9322f0aa2e5075609c2c8261017e762bd8c481af5862003a520821fdf3ec4894",
+      "original_implementation": "9322f0aa2e5075609c2c8261017e762bd8c481af5862003a520821fdf3ec4894",
+      "final_head": "9322f0aa2e5075609c2c8261017e762bd8c481af5862003a520821fdf3ec4894",
+      "working_tree": "9322f0aa2e5075609c2c8261017e762bd8c481af5862003a520821fdf3ec4894"
+    },
+    {
+      "file": "bin/fm-nm-run-lib.sh",
+      "base": "4601917190b75bb55327f8d2ffdf617b65ffae2bc2b6efd664078f0bb1f86165",
+      "original_implementation": "4601917190b75bb55327f8d2ffdf617b65ffae2bc2b6efd664078f0bb1f86165",
+      "final_head": "4601917190b75bb55327f8d2ffdf617b65ffae2bc2b6efd664078f0bb1f86165",
+      "working_tree": "4601917190b75bb55327f8d2ffdf617b65ffae2bc2b6efd664078f0bb1f86165"
+    },
+    {
+      "file": "bin/fm-herdr-supervisor.sh",
+      "base": "903f02a7f953acae497a194950128c70ce79977353343a49f225154769a700a5",
+      "original_implementation": "e3f5eb0ae2927fff913495b31647d21b7ee73230facbf94ceb8592d60a605650",
+      "final_head": "d9a6835af891c077e9b21d77cf583fb903eae8b72891e8b89319dad41d45ed3d",
+      "working_tree": "d9a6835af891c077e9b21d77cf583fb903eae8b72891e8b89319dad41d45ed3d"
+    }
+  ],
+  "interpretation": "Parser, crew-state reader and run-attribution library are byte-identical to original implementation; supervisor changed and is covered by prior final-head focused-check evidence, including observation-blocked recovery."
+}

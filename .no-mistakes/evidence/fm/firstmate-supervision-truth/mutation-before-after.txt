@@ -1,0 +1,51 @@
+Mutation comparison: base fe601e80363dca6469775ca98ad0643071fb48f3 versus target 751ccb65bf1bf3d4c62daa2eb126de77cdb69b8f plus test-only improvements.
+Production bin files were copied into private .test-phase/base/bin, then the two changed production files were replaced with git show BASE:path. Current regression tests executed against that copy. No branch or pipeline was changed.
+
+Crew-state command (base fails; head passes)
+
+base-crew-state.log
+outcome=passed; findings=4 info
+state: unknown · source: none · unreadable validation run evidence
+not ok - severity summary preserves terminal verdict (missing: 'state: done')
+--- output ---
+state: unknown · source: none · unreadable validation run evidence
+
+crew-state.log
+outcome=passed; findings=4 info
+state: done · source: run-step · run passed: PR merged/closed
+outcome=passed; findings=1 error, 2 warning, 3 info
+state: done · source: run-step · run passed: PR merged/closed
+outcome=failed; findings=4 info
+state: failed · source: run-step · run failed
+outcome=failed; findings=1 error, 2 warning, 3 info
+state: failed · source: run-step · run failed
+malformed findings=1 unknown
+state: unknown · source: none · unreadable validation run evidence
+malformed findings=1 info, 1 warning
+state: unknown · source: none · unreadable validation run evidence
+malformed findings=4 info
+  findings: 4 info
+state: unknown · source: none · unreadable validation run evidence
+ok - crew-state preserves terminal severity summaries and refuses malformed evidence
+
+Findings grammar (base fails; head passes)
+
+base-parser.log
+not ok - the real captured findings: 4 info sample was rejected
+
+parser-head.log
+ok - findings grammar: real daemon output is accepted, every prior rejection shape stays rejected
+
+Ensure with a live owner (base fails)
+
+base-owner.log
+not ok - cmd_ensure did not return success while deferring to a live other owner
+
+Main-loop arrival race (base fails; head passes)
+
+base-loop-arrival.log
+not ok - a live owner arriving before arming raised a false alarm
+
+loop-arrival.log
+loop owner-arrival: wake queue absent; emergency alarm absent
+ok - the arm path rechecks a live owner arriving during claim acquisition

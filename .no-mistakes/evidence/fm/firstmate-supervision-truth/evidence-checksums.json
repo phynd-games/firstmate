@@ -1,0 +1,9 @@
+{
+  "test-execution-notes.txt": "3436dcc4d9c97f2cc1947f05c5c53cd0a9f2431e52721e8adfb6a2a1f7e85892",
+  "supervisor-claim-episodes.txt": "ea2bd19b20b9fed9068d6cca1d81529995e97795068b465ebe2f0e9cc0d68df7",
+  "mutation-before-after.txt": "e18c9d26b443135c04ed6224175892194615ac2d89dc48bbfacae30158e5a8da",
+  "focused-check-logs.txt": "7b3574f51e50a8cb7f4b72fa8c9d6a6693a210928529aab47764a57d9d539707",
+  "frozen-parser-replay.json": "dbc22d39aa80e4d1e0fd7f5a94e92dc37c9216fac8cb3758fb2acf864592820a",
+  "frozen-crew-replay.txt": "de63ac83c999ade2a6951b50bebf6602aa73fa8b2275ac18b92ba0cf164d60d4",
+  "final-findings-focused.txt": "cfe0b430c9eeef6e5bd40edc7d06396379dd48715b8fb4f8f3995195da6fde6f"
+}

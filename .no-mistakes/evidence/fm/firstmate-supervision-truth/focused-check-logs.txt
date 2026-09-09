@@ -1,0 +1,58 @@
+validation.log
+ok - near-complete continuation: fresh advancing evidence keeps continue/working at every observation
+ok - repeated-finding stop: the identical theme past its bound stops; distinct themes continue
+ok - unknown-state stop: unknown, unreadable, and dead verdicts are never absorbed
+ok - malformed evidence stop: incomplete run evidence fails closed at the absorb boundary
+ok - findings grammar: real daemon output is accepted, every prior rejection shape stays rejected
+ok - malformed journal stop: incomplete and unrecognized loop state fails closed
+ok - terminal transition: a completed run cannot reactivate under the same run id
+ok - journal state matrix: only coherent phase, status, and active combinations continue
+ok - journal write failure: time-based stop propagation fails closed
+ok - stale pipeline evidence: an active run unreadable past the bound stops; fresh or terminal evidence does not
+ok - recovery handoff: a stop preserves run custody, and a new run on the same copy resets the bounds
+ok - fix-round bound: the default bound is routine; the first round past it stops with counts
+ok - stall: frozen evidence stops, recovery resumes, ci waits are exempt
+ok - coarse evidence: fallback status never enforces the running/fixing stall bound
+ok - head change set: an overlarge transition stops instead of refreshing progress
+ok - initial scope: the first base-to-head diff must match the authenticated manifest
+ok - head change set: an authenticated new file remains eligible
+ok - head transition: repeated or regressed run heads stop instead of refreshing progress
+ok - threshold overrides: zero or malformed values fall back to the defaults, never disable a bound
+not ok - watcher did not surface a limit-stopped validating crew
+
+validation-runner.log
+FM_TEST_BEGIN 2026-09-09T08:53:11Z tests/fm-validation-loop.test.sh family=unclassified expected_gate_skip=none
+ok - near-complete continuation: fresh advancing evidence keeps continue/working at every observation
+ok - repeated-finding stop: the identical theme past its bound stops; distinct themes continue
+ok - unknown-state stop: unknown, unreadable, and dead verdicts are never absorbed
+ok - malformed evidence stop: incomplete run evidence fails closed at the absorb boundary
+ok - findings grammar: real daemon output is accepted, every prior rejection shape stays rejected
+ok - malformed journal stop: incomplete and unrecognized loop state fails closed
+ok - terminal transition: a completed run cannot reactivate under the same run id
+ok - journal state matrix: only coherent phase, status, and active combinations continue
+ok - journal write failure: time-based stop propagation fails closed
+ok - stale pipeline evidence: an active run unreadable past the bound stops; fresh or terminal evidence does not
+ok - recovery handoff: a stop preserves run custody, and a new run on the same copy resets the bounds
+ok - fix-round bound: the default bound is routine; the first round past it stops with counts
+ok - stall: frozen evidence stops, recovery resumes, ci waits are exempt
+ok - coarse evidence: fallback status never enforces the running/fixing stall bound
+ok - head change set: an overlarge transition stops instead of refreshing progress
+ok - initial scope: the first base-to-head diff must match the authenticated manifest
+ok - head change set: an authenticated new file remains eligible
+ok - head transition: repeated or regressed run heads stop instead of refreshing progress
+ok - threshold overrides: zero or malformed values fall back to the defaults, never disable a bound
+not ok - watcher did not surface a limit-stopped validating crew
+FM_TEST_END 2026-09-09T08:55:35Z tests/fm-validation-loop.test.sh exit=1 duration_ms=143070 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=1 skipped_gate=0 duration_ms=143161
+FM_TEST_SUMMARY_FAMILY family=unclassified count=1 duration_ms=143070 failed=1
+FM_TEST_SLOWEST rank=1 script=tests/fm-validation-loop.test.sh duration_ms=143070
+
+watcher-retry.log
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22GYSFGZZMA1FCY1HSHDD5Z/bin/fm-wake-lib.sh: line 1809: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22GYSFGZZMA1FCY1HSHDD5Z/.test-phase/tmp/fm-validation-loop-tests.mqVchM/vloop-watcher/queue-failure: Is a directory
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22GYSFGZZMA1FCY1HSHDD5Z/bin/fm-watch.sh: line 1000: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22GYSFGZZMA1FCY1HSHDD5Z/.test-phase/tmp/fm-validation-loop-tests.mqVchM/vloop-watcher/state/.stale-limit-test_fm-loopy: Is a directory
+ok - watcher: a limit-stopped crew surfaces once with the recorded breach in the durable wake reason
+ok - watcher: a validation limit surfaces after the same hash was generically stale
+ok - watcher: a no-verb signal carries the validation-loop breach reason
+
+parser-head.log
+ok - findings grammar: real daemon output is accepted, every prior rejection shape stays rejected

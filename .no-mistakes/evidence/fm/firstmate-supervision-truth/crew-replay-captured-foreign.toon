@@ -1,0 +1,19 @@
+run:
+  id: "01M1SKRKCG5BVV9H1CYRR3HW4S"
+  branch: fm/remove-firstmate-dashboard
+  status: cancelled
+  head: f89f5d62
+  pr: "https://github.com/phynd-games/firstmate/pull/8"
+  findings: 4 info
+  steps[9]{step,status,findings,duration_ms}:
+    intent,completed,0,0
+    rebase,completed,0,846
+    review,completed,0,1071493
+    test,completed,4,471486
+    document,completed,0,133028
+    lint,completed,0,17366
+    push,completed,0,1988
+    pr,completed,0,68068
+    ci,failed,0,5916289
+outcome: cancelled
+error: "cancelled: aborted by user"

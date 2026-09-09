@@ -1,0 +1,8 @@
+run:
+  id: "01M1SKRKCG5BVV9H1CYRR3HW4S"
+  branch: fm/severity-summary
+  status: completed
+  head: "b5d44c7f791901d1ede2211bda41edff0dfa6b99"
+  pr: ""
+  findings: 4 info
+outcome: passed

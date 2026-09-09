@@ -1,0 +1,14 @@
+synthetic task=severity branch=fm/severity-summary head=b5d44c7f791901d1ede2211bda41edff0dfa6b99
+captured-foreign base: state: unknown · source: none · unreadable validation run evidence
+captured-foreign head: state: working · source: pane · harness busy (claude-hook)
+synthetic-bound-passed base: state: unknown · source: none · unreadable validation run evidence
+synthetic-bound-passed head: state: done · source: run-step · run passed: PR merged/closed
+synthetic-bound-failed base: state: unknown · source: none · unreadable validation run evidence
+synthetic-bound-failed head: state: failed · source: run-step · run failed
+malformed base: state: unknown · source: none · unreadable validation run evidence
+malformed head: state: unknown · source: none · unreadable validation run evidence
+unknown-no-record base: state: unknown · source: pane · harness state unavailable (unknown fm-spawn)
+unknown-no-record head: state: unknown · source: pane · harness state unavailable (unknown fm-spawn)
+unread-pane base: state: unknown · source: none · backend target gone: severity-test:w1:p1
+unread-pane head: state: unknown · source: none · backend target gone: severity-test:w1:p1
+ok - identical captured and constructed inputs preserve crew/run attribution and unknown negatives
