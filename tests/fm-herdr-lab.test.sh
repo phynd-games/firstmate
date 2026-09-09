@@ -215,7 +215,7 @@ fm_lab_test_cleanup() {
   [ "$initial_status" -eq 0 ] || retain_evidence "test exited $initial_status; launch records retained"
   for record in "$FAKE_STATE"/*.launched "$FAKE_STATE"/*.child "$FAKE_STATE"/*.detached "$FAKE_STATE"/*.delay; do
     [ -f "$record" ] || continue
-    pid= launch_birth=
+    pid='' launch_birth=''
     read -r pid launch_birth < "$record" || true
     if fixture_identity_valid "$pid" "$launch_birth"; then
       found=0
@@ -551,7 +551,7 @@ account_launches() {
   local record pid birth entry found
   for record in "$FAKE_STATE"/*.launched "$FAKE_STATE"/*.child "$FAKE_STATE"/*.detached "$FAKE_STATE"/*.delay; do
     [ -f "$record" ] || continue
-    pid= birth=
+    pid='' birth=''
     read -r pid birth < "$record" || true
     fixture_identity_valid "$pid" "$birth" || { retain_evidence "invalid launch record $record"; return 1; }
     found=0
@@ -1156,6 +1156,7 @@ test_rejected_launcher_never_becomes_cleanup_authority() {
   local mode=${1:-1} name="fm-lab-rejected-launch-${1:-1}-$$" status=0 pid='' birth='' before output
   local FM_FAKE_LAUNCH_RECORD="$FAKE_STATE/rejected-launcher-$mode"
   local FM_FAKE_REJECT_LAUNCH=$mode FM_FAKE_PUBLISH_FAIL=1
+  # shellcheck disable=SC2016 # Expressions intentionally expand in the child shell.
   run_with_fake /bin/bash -c 'source "$1"; ( ( fm_herdr_lab_provision "$2"; result=$?; exit "$result" ); result=$?; exit "$result" )' _ "$ROOT/bin/fm-herdr-lab.sh" "$name" > "$TMP_ROOT/rejected-$mode-launch.log" 2>&1 || status=$?
   read -r pid birth < "$FM_FAKE_LAUNCH_RECORD" || true
   fixture_identity_valid "$pid" "$birth" || { retain_evidence "rejected launcher lacks launch identity"; fail "missing launcher identity"; }
@@ -1165,12 +1166,14 @@ test_rejected_launcher_never_becomes_cleanup_authority() {
   assert_absent "$FAKE_STATE/publication-attempts" "rejected observation reached publication failure cancellation"
   before=$(wc -l < "$FM_FAKE_LAUNCH_RECORD.probes")
   status=0
+  # shellcheck disable=SC2016 # Expressions intentionally expand in the child shell.
   run_with_fake /bin/bash -c 'source "$1"; ( ( fm_herdr_lab_teardown "$2"; result=$?; exit "$result" ); result=$?; exit "$result" )' _ "$ROOT/bin/fm-herdr-lab.sh" "$name" > "$TMP_ROOT/rejected-$mode-teardown.log" 2>&1 || status=$?
   expect_code 1 "$status" "rejected evidence must refuse later teardown"
   [ "$(wc -l < "$FM_FAKE_LAUNCH_RECORD.probes")" = "$before" ] || fail "teardown probed rejected custody"
   output=$(cat "$TMP_ROOT/rejected-$mode-teardown.log")
   assert_contains "$output" "no authenticated custody" "teardown accepted rejected observation"
   status=0
+  # shellcheck disable=SC2016 # Expressions intentionally expand in the child shell.
   run_with_fake /bin/bash -c 'source "$1"; ( ( fm_herdr_lab_provision "$2"; result=$?; exit "$result" ); result=$?; exit "$result" )' _ "$ROOT/bin/fm-herdr-lab.sh" "$name" >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "rejected evidence must block re-provision"
   assert_present "$(receipt_of "$name").pending" "rejected evidence was discarded"
@@ -1185,6 +1188,7 @@ test_stock_bash_allocates_in_ordinary_and_nested_shells() {
   for mode in ordinary nested; do
     name="fm-lab-stock-bash-$mode-$$"
     status=0
+    # shellcheck disable=SC2016 # Expressions intentionally expand in the child shell.
     run_with_fake /bin/bash -c '
       source "$1"
       name=$2
@@ -1212,6 +1216,7 @@ test_stock_bash_allocates_in_ordinary_and_nested_shells() {
     fixture_register "$pid" "$birth"
     recorded=$(receipt_field "$name" '.birth')
     [ "$(receipt_field "$name" '.pid')" = "$pid" ] && [ "$recorded" = "$birth" ] || fail "stock bash receipt disagrees with launch identity"
+    # shellcheck disable=SC2016 # Expressions intentionally expand in the child shell.
     run_with_fake /bin/bash -c 'source "$1"; fm_herdr_lab_teardown "$2"' _ "$ROOT/bin/fm-herdr-lab.sh" "$name" || fail "stock bash cleanup failed"
     settle_launched "stock bash $mode cleanup" "$pid" "$birth"
   done
