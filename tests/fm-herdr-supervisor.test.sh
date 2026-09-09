@@ -329,7 +329,7 @@ claim_probe() {
   shift
   HOME="$home" PATH="$FAKEBIN:$PATH" FM_FAKE_HERDR_STATE="$home/fakestate" \
   FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" \
-  FM_SUPERVISION_MODEL=extension FM_HERDR_SUPERVISOR_LOCK_TRIES=2 \
+  FM_SUPERVISION_MODEL=extension FM_HERDR_SUPERVISOR_LOCK_TRIES="${FM_TEST_CLAIM_LOCK_TRIES:-2}" \
   FM_SUP_SCRIPT="$ROOT/bin/fm-herdr-supervisor.sh" exec bash "$@"
 }
 
@@ -339,8 +339,10 @@ claim_alarm_concurrent_test() (
   pids=()
   trap 'for pid in "${pids[@]:-}"; do [ -z "$pid" ] || kill "$pid" 2>/dev/null || true; done; wait' EXIT
   printf 'unreadable claim\n' > "$home/state/.supervision-claim.lock"
+  # Four real processes contend on the episode lock; give them a bounded
+  # contention budget instead of the two-try budget used by fault probes.
   for n in 1 2 3 4; do
-    claim_probe "$home" -c '
+    FM_TEST_CLAIM_LOCK_TRIES=100 claim_probe "$home" -c '
       set --
       . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
       cmd_ensure "concurrent probe"
@@ -352,7 +354,7 @@ claim_alarm_concurrent_test() (
   done
   pids=()
   count=$(grep -c 'herdr-supervisor' "$home/state/.wake-queue" 2>/dev/null || true)
-  [ "$count" = 1 ] || fail "concurrent ensure calls published $count alarms"
+  [ "$count" = 1 ] || fail "concurrent ensure calls published $count alarms: $(cat "$home"/ensure-*.out)"
   pass "concurrent ensure calls publish one alarm for an unresolved episode"
 )
 
@@ -937,7 +939,52 @@ claim_alarm_loop_arrival_test() (
   pass "the arm path rechecks a live owner arriving during claim acquisition"
 )
 
+server_restart_test() (
+  HOME10=$(new_home server-restart)
+  trap 'stop_loop "$HOME10"' EXIT
+  cat > "$HOME10/arm.sh" <<'SH'
+#!/usr/bin/env bash
+: > "$FM_HOME/arm-entered"
+exec sleep 300
+SH
+  chmod +x "$HOME10/arm.sh"
+  fm_write_meta "$HOME10/state/socket-task.meta" "window=firstmate:fm-socket-task"
+  run_supervisor "$HOME10" "$FAKEBIN" ensure >/dev/null 2>&1 || fail "establish failed for the socket case"
+  wait_for 10 test -e "$HOME10/arm-entered" || fail "the old loop never armed"
+  # The loop stays alive on purpose: this must prove the SERVER identity check
+  # fails on its own, not that a dead process was noticed first.
+  printf '%s\n' "$HOME10/fakestate/restarted.sock" > "$HOME10/fakestate/socket"
+  out=$(run_supervisor "$HOME10" "$FAKEBIN" status 2>&1)
+  assert_contains "$out" "supervisor: unhealthy" "a replaced Herdr server is unhealthy"
+  assert_contains "$out" "socket changed" "the unhealthy reason names the lost server"
+  pass "a Herdr server restart is detected as a lost supervisor, not as healthy"
+  # A real server restart also ends its pane processes. Keep the old loop alive
+  # only for the read-only identity assertion above, then model that lifecycle
+  # before asking ensure to replace it. Otherwise its valid claim correctly
+  # defers replacement, depending on when its arm cycle releases the claim.
+  stop_loop "$HOME10"
+  wait_for 10 test ! -e "$HOME10/state/.supervision-claim.lock" \
+    || fail "the restarted server's old loop did not release its claim"
+  old_socket_workspace_count=$(grep -c . "$HOME10/fakestate/closed-workspaces" 2>/dev/null || true)
+  out=$(run_supervisor "$HOME10" "$FAKEBIN" ensure 2>&1)
+  assert_contains "$out" "started" "a changed Herdr server permits a fresh supervisor generation"
+  quarantine_record=
+  for candidate in "$HOME10"/state/.herdr-supervisor-quarantine.*; do
+    if [ -e "$candidate" ]; then
+      quarantine_record=$candidate
+      break
+    fi
+  done
+  [ -n "$quarantine_record" ] || fail "the replaced server left no quarantine evidence"
+  new_socket_workspace_count=$(grep -c . "$HOME10/fakestate/closed-workspaces" 2>/dev/null || true)
+  [ "$new_socket_workspace_count" = "$old_socket_workspace_count" ] \
+    || fail "server replacement closed a workspace through the new server"
+  pass "server replacement quarantines old ownership before fresh establishment"
+  stop_loop "$HOME10"
+)
+
 case "${1:-}" in
+  --server-restart-only) server_restart_test; exit $? ;;
   --claim-loop-arrival-only) claim_alarm_loop_arrival_test; exit $? ;;
   --claim-identity-replaced-only) claim_alarm_contended_recovery_test identity-replaced; exit $? ;;
   --claim-observation-blocked-only) claim_alarm_contended_recovery_test observation-blocked; exit $? ;;
@@ -1403,33 +1450,7 @@ stop_loop "$HOME9"
 # 10. A Herdr server restart changes the session socket and invalidates the
 #     old binding without authorizing close through the replacement server.
 # =============================================================================
-HOME10=$(new_home server-restart)
-make_arm_stub "$HOME10/arm.sh" ok
-fm_write_meta "$HOME10/state/socket-task.meta" "window=firstmate:fm-socket-task"
-run_supervisor "$HOME10" "$FAKEBIN" ensure >/dev/null 2>&1 || fail "establish failed for the socket case"
-# The loop stays alive on purpose: this must prove the SERVER identity check
-# fails on its own, not that a dead process was noticed first.
-printf '%s\n' "$HOME10/fakestate/restarted.sock" > "$HOME10/fakestate/socket"
-out=$(run_supervisor "$HOME10" "$FAKEBIN" status 2>&1)
-assert_contains "$out" "supervisor: unhealthy" "a replaced Herdr server is unhealthy"
-assert_contains "$out" "socket changed" "the unhealthy reason names the lost server"
-pass "a Herdr server restart is detected as a lost supervisor, not as healthy"
-old_socket_workspace_count=$(grep -c . "$HOME10/fakestate/closed-workspaces" 2>/dev/null || true)
-out=$(run_supervisor "$HOME10" "$FAKEBIN" ensure 2>&1)
-assert_contains "$out" "started" "a changed Herdr server permits a fresh supervisor generation"
-quarantine_record=
-for candidate in "$HOME10"/state/.herdr-supervisor-quarantine.*; do
-  if [ -e "$candidate" ]; then
-    quarantine_record=$candidate
-    break
-  fi
-done
-[ -n "$quarantine_record" ] || fail "the replaced server left no quarantine evidence"
-new_socket_workspace_count=$(grep -c . "$HOME10/fakestate/closed-workspaces" 2>/dev/null || true)
-[ "$new_socket_workspace_count" = "$old_socket_workspace_count" ] \
-  || fail "server replacement closed a workspace through the new server"
-pass "server replacement quarantines old ownership before fresh establishment"
-stop_loop "$HOME10"
+server_restart_test
 
 # =============================================================================
 # 10b. A live record left behind by a superseded generation is never healthy.

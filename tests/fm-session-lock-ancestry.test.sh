@@ -376,10 +376,11 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock
 
 # make_identity_fixture <dir> <identity-available: yes|no>
 # A home plus a ps that reports a harness for the ancestry walk and either
-# answers or refuses the identity query.
+# answers or refuses the identity query. An empty proc root keeps Linux's real
+# /proc identity from bypassing the simulated ps capability on that host.
 make_identity_fixture() {
   local dir=$1 identity=$2 fakebin="$1/fakebin"
-  mkdir -p "$dir/state" "$fakebin"
+  mkdir -p "$dir/state" "$dir/proc" "$fakebin"
   git init -q "$dir"
   git -C "$dir" commit -q --allow-empty -m init
   : > "$dir/AGENTS.md"
@@ -419,7 +420,7 @@ run_lock_bounded() {
   local dir=$1 tag=$2 child waited
   rm -f "$dir/$tag.rc" "$dir/$tag.out"
   (
-    FM_HOME="$dir" FM_ROOT_OVERRIDE="$dir" PATH="$dir/fakebin:$PATH" \
+    FM_HOME="$dir" FM_ROOT_OVERRIDE="$dir" FM_PROC_ROOT_OVERRIDE="$dir/proc" PATH="$dir/fakebin:$PATH" \
       "$ROOT/bin/fm-lock.sh" > "$dir/$tag.out" 2>&1
     printf '%s\n' "$?" > "$dir/$tag.rc"
   ) &
