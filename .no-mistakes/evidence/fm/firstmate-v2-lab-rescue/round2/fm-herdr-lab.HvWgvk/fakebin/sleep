@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+if [ "${FM_FAKE_HERDR_FAST_POLL:-}" = 1 ]; then
+  exit 0
+fi
+exec "$FM_FAKE_HERDR_REAL_SLEEP" "$@"

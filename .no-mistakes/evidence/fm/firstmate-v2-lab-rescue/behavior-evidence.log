@@ -1,0 +1,34 @@
+[focused-test.log]
+evidence: case=provision receipt={"name":"fm-lab-behavior-4102","pid":7121,"birth":"Wed-Sep-9-05:20:40-2026","ppid":4102,"pgid":7121,"own_group":true,"allocated_epoch":1788945640,"deadline_epoch":1788945659,"command_description":"herdr server --session fm-lab-behavior-4102","native":{"socket_path":"/tmp/fm-lab-behavior-4102.sock","running":true,"bound_epoch":1788945643}}
+evidence: case=late-launch-delay pid=97166 state=absent
+evidence: case=late-launch status=1 elapsed=13s polls=30 launched_pid=95448 launched_state=absent
+evidence: case=exec-transition pid=17560 recorded_birth=Wed-Sep-9-05:21:50-2026 live_birth=Wed-Sep-9-05:21:50-2026 live_command=/bin/sleep 300 described=herdr server --session fm-lab-exec-identity-4102
+evidence: case=reused-pid status=1 alive=yes output=fm-herdr-lab: pid 26587 is now a different process; retaining allocation receipt|fm-herdr-lab: session stop failed for 'fm-lab-reused-pid-4102'; not attempting delete
+evidence: case=signal-recheck status=1 ps_queries=2 alive=yes
+evidence: case=unknown-state status=1 elapsed=4s alive=yes
+evidence: case=descendants server=40630 child=42410 detached=42528 unrelated=38822 child_pgid=40630 detached_pgid=42528
+evidence: case=server-exit status=1 output=fm-herdr-lab: lab session 'fm-lab-server-exit-4102' reported running but could not be verified as a non-default owned lab; cancellation attempted
+evidence: case=preflight-hang status=1 elapsed=3s
+evidence: case=poll-hang status=1 elapsed=19s polls=4 polls_started_inside_reserve=0 launched_pid=88572 launched_state=absent
+not ok - expected at least five nominal 3-second polls inside the budget, saw 4
+
+[remaining-cases.log]
+evidence: case=stop-hang status=1 elapsed=6s
+evidence: case=generation before=16777234:245379930 after=16777234:245379964
+evidence: case=run-bound status=124 elapsed=1s
+evidence: case=stock-bash mode=ordinary version=3.2.57(1)-release parent=55945 outer=55945
+evidence: case=stock-bash mode=nested version=3.2.57(1)-release parent=70793 outer=70779
+evidence: case=rejected-launch mode=1 pid=91563 teardown_status=1 rejected_probes=       1 later_probes=       1 state=absent
+evidence: case=rejected-launch mode=parent pid=98363 teardown_status=1 rejected_probes=       1 later_probes=       1 state=absent
+evidence: case=publication-failure pid=6249 status=1 state=absent
+evidence: case=large-targets pid=17151 status=1 elapsed=21s targets=10000
+not ok - large retained list overran original deadline
+
+[g7-isolated.log]
+evidence: case=poll-hang status=1 elapsed=18s polls=4 polls_started_inside_reserve=0 launched_pid=37221 launched_state=absent
+not ok - expected at least five nominal 3-second polls inside the budget, saw 4
+
+[large-isolated.log]
+evidence: case=large-targets pid=68471 status=1 elapsed=20s targets=10000
+
+[cli-isolated.log]

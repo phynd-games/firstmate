@@ -1,0 +1,16 @@
+session list --json --session fm-lab-cli-entry-88892-27174
+server --session fm-lab-cli-entry-88892-27174
+status --json --session fm-lab-cli-entry-88892-27174
+session list --json --session fm-lab-cli-entry-88892-27174
+session list --json --session fm-lab-cli-entry-88892-27174
+workspace list --session fm-lab-cli-entry-88892-27174
+session list --json --session fm-lab-cli-entry-88892-27174
+session stop fm-lab-cli-entry-88892-27174 --json --session fm-lab-cli-entry-88892-27174
+session list --json --session fm-lab-cli-entry-88892-27174
+session list --json --session fm-lab-cli-entry-88892-27174
+session stop fm-lab-cli-entry-88892-27174 --json --session fm-lab-cli-entry-88892-27174
+session list --json --session fm-lab-cli-entry-88892-27174
+session delete fm-lab-cli-entry-88892-27174 --json --session fm-lab-cli-entry-88892-27174
+session list --json --session fm-lab-cli-entry-88892-27174
+session list --json --session fm-lab-cli-entry-88892-27174
+session list --json --session fm-lab-cli-entry-88892-27174

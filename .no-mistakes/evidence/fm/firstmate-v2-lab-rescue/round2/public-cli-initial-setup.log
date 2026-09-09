@@ -1,0 +1,9 @@
+
+$ bin/fm-herdr-lab.sh prepare fm-lab-cli-evidence-20773
+exit=0
+
+$ bin/fm-herdr-lab.sh provision fm-lab-cli-evidence-20773
+fm-herdr-lab: tripwire already exists for 'fm-lab-cli-evidence-20773'; refusing ambiguous ownership
+exit=1
+not ok - provision failed
+cleanup: evidence RETAINED in /private/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M22KSZYDN9KDENNT227D4QXM/round2/fm-herdr-lab.egLijQ (2026-09-09T09:41:40Z test exited 1; launch records retained;)

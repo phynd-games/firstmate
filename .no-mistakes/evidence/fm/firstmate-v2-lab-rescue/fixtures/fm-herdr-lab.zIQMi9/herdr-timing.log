@@ -1,0 +1,13 @@
+1788946064 session list --json --session fm-lab-large-targets-65540
+1788946066 server --session fm-lab-large-targets-65540
+1788946066 status --json --session fm-lab-large-targets-65540
+1788946066 session list --json --session fm-lab-large-targets-65540
+1788946067 session list --json --session fm-lab-large-targets-65540
+1788946068 session list --json --session fm-lab-large-targets-65540
+1788946069 session stop fm-lab-large-targets-65540 --json --session fm-lab-large-targets-65540
+1788946070 session list --json --session fm-lab-large-targets-65540
+1788946071 session list --json --session fm-lab-large-targets-65540
+1788946073 session stop fm-lab-large-targets-65540 --json --session fm-lab-large-targets-65540
+1788946073 session list --json --session fm-lab-large-targets-65540
+1788946074 session delete fm-lab-large-targets-65540 --json --session fm-lab-large-targets-65540
+1788946074 session list --json --session fm-lab-large-targets-65540

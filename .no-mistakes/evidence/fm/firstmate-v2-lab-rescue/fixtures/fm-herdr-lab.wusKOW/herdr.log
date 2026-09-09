@@ -1,0 +1,6 @@
+session list --json --session fm-lab-poll-hang-4102
+server --session fm-lab-poll-hang-4102
+status --json --session fm-lab-poll-hang-4102
+status --json --session fm-lab-poll-hang-4102
+status --json --session fm-lab-poll-hang-4102
+status --json --session fm-lab-poll-hang-4102

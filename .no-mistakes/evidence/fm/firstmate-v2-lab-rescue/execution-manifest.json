@@ -1,0 +1,47 @@
+{
+  "head": "5f2869ee9cd077654ed27180022f77a309bd623b",
+  "sha256": {
+    "bin/fm-herdr-lab.sh": "f69bde3db76806a515b0d1b0bdf3e2d03d73f9365d0b21c04965f648ba9a87e7",
+    "tests/fm-herdr-lab.test.sh": "cd652342b1b1a9cdf3f3e5c922322db0da49ac990a3ae14703ebb95722f4f43d",
+    "docs/herdr-backend.md": "90ce831d25b56912f4d5c17a3a33954a9a4ea38f05d74d6aa2d672b43585033f"
+  },
+  "runs": [
+    {
+      "test": "bash tests/fm-herdr-lab.test.sh",
+      "outer_timeout_seconds": 300,
+      "exit": 1,
+      "log": "focused-test.log"
+    },
+    {
+      "test": "unchanged fixture setup and test functions from test_hanging_stop_is_bounded_and_never_reaches_delete onward",
+      "outer_timeout_seconds": 300,
+      "exit": 1,
+      "log": "remaining-cases.log"
+    },
+    {
+      "test": "test_hanging_polls_respect_the_aggregate_budget_and_are_clipped",
+      "outer_timeout_seconds": 120,
+      "exit": 1,
+      "log": "g7-isolated.log"
+    },
+    {
+      "test": "test_large_retained_target_list_stops_at_original_deadline",
+      "outer_timeout_seconds": 120,
+      "exit": 0,
+      "log": "large-isolated.log"
+    },
+    {
+      "test": "test_cli_entrypoint_matches_sourced_contract",
+      "outer_timeout_seconds": 120,
+      "exit": 0,
+      "log": "cli-isolated.log"
+    }
+  ],
+  "environment": {
+    "TMPDIR": "/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M22KSZYDN9KDENNT227D4QXM/fixtures",
+    "FM_TEST_SKIP_ORPHAN_REAP": "1"
+  },
+  "isolation": "All helper calls used the test fixture private PATH, HOME, FM_HOME, XDG directories, TMPDIR, and state directory. Native Herdr was not invoked.",
+  "selection": "Temporary scripts contained the unchanged prefix of tests/fm-herdr-lab.test.sh before its final test_refuses_unsafe_names invocation, followed only by the listed original test function invocations. No implementation or assertions were changed.",
+  "cleanup": "All runs completed their fixture cleanup with observed absence. Failure fixture directories remain in the evidence directory. Temporary selected-case runners were removed."
+}

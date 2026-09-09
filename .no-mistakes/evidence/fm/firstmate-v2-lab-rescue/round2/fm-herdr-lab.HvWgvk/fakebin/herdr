@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "$FM_FAKE_HERDR_LOG"
+printf '%s %s\n' "$(date +%s)" "$*" >> "$FM_FAKE_HERDR_TLOG"
+state=$FM_FAKE_HERDR_STATE
+record_birth() {
+  local pid=$1 out rc=0
+  case "$pid" in ''|0|*[!0-9]*) return 1 ;; esac
+  out=$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$pid" -o lstart= 2>/dev/null) || rc=$?
+  [ "$rc" -eq 0 ] && [ -n "$out" ] || return 1
+  printf '%s\n' "$out" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g'
+}
+record_launch() {
+  local pid=$1 path=$2 birth
+  if ! birth=$(record_birth "$pid"); then
+    printf 'launch identity unknown pid %s\n' "$pid" >> "$FM_FAKE_ROOT/RETAINED"
+    return 1
+  fi
+  printf '%s %s\n' "$pid" "$birth" > "$path"
+  printf '%s %s\n' "$pid" "$birth" > "$state/$pid.launched"
+}
+last=
+for arg in "$@"; do
+  previous=$last
+  last=$arg
+done
+[ "${previous:-}" = --session ] || { echo "fake herdr: missing trailing --session" >&2; exit 90; }
+session=$last
+default_socket=$(cat "$state/default-socket")
+lab_state=absent
+[ ! -f "$state/$session" ] || lab_state=$(cat "$state/$session")
+if [ -n "${FM_FAKE_HERDR_HANG:-}" ] && [ "$FM_FAKE_HERDR_HANG" = "$1 ${2:-}" ]; then
+  "$FM_FAKE_HERDR_REAL_SLEEP" 300
+fi
+
+case "$1 ${2:-}" in
+  "session list")
+    if [ "${FM_FAKE_HERDR_SERVER_LINGER:-1}" != 0 ] && [ -f "$state/$session.server" ]; then
+      read -r pid birth < "$state/$session.server"
+      case "$pid" in ''|0|*[!0-9]*) exit 95 ;; esac
+      [ -n "$birth" ] || exit 95
+      rc=0
+      out=$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$pid" -o stat= 2>/dev/null) || rc=$?
+      if { [ "$rc" -eq 1 ] && [ -z "$out" ]; } || [[ "$out" =~ ^[[:space:]]*Z ]]; then
+        if [ "$lab_state" = running ]; then lab_state=stopped; fi
+      fi
+    fi
+    if [ "$lab_state" = absent ] || [ "$lab_state" = deleted ]; then
+      jq -nc --arg socket "$default_socket" '{sessions:[{default:true,name:"default",running:true,socket_path:$socket}]}'
+    else
+      running=false
+      [ "$lab_state" = running ] && running=true
+      jq -nc --arg socket "$default_socket" --arg name "$session" --argjson running "$running" \
+        '{sessions:[{default:true,name:"default",running:true,socket_path:$socket},{default:false,name:$name,running:$running,socket_path:("/tmp/" + $name + ".sock")}]}'
+    fi
+    ;;
+  "server --session")
+    record_launch "$$" "$state/$session.launched"
+    if [ "${FM_FAKE_HERDR_SERVER_DELAY:-0}" != 0 ]; then
+      "$FM_FAKE_HERDR_REAL_SLEEP" "$FM_FAKE_HERDR_SERVER_DELAY" &
+      delay=$!
+      record_launch "$delay" "$state/$session.delay"
+      wait "$delay"
+    fi
+    cp "$state/$session.launched" "$state/$session.server"
+    if [ "${FM_FAKE_HERDR_SERVER_CHILDREN:-}" = 1 ]; then
+      # Each child's birth is read by this parent while the child is its own
+      # live, unreaped child, so the pid cannot have been reused yet.
+      "$FM_FAKE_HERDR_REAL_SLEEP" 300 &
+      child=$!
+      record_launch "$child" "$state/$session.child"
+      python3 -c 'import os, sys
+os.setsid()
+with open(sys.argv[1] + ".pid", "w") as handle:
+    handle.write(str(os.getpid()))
+os.execvp(sys.argv[2], sys.argv[2:])' "$state/$session.detached" "$FM_FAKE_HERDR_REAL_SLEEP" 300 &
+      detached=$!
+      record_launch "$detached" "$state/$session.detached"
+      while [ ! -s "$state/$session.detached.pid" ]; do "$FM_FAKE_HERDR_REAL_SLEEP" 0.05; done
+      [ "$(cat "$state/$session.detached.pid")" = "$detached" ] || exit 94
+    fi
+    printf '%s\n' running > "$state/$session"
+    if [ "${FM_FAKE_HERDR_SERVER_IGNORE_TERM:-}" = 1 ]; then
+      exec python3 -c 'import os, signal, sys, time
+signal.signal(signal.SIGTERM, lambda *_: open(sys.argv[1], "w").close())
+open(sys.argv[2], "w").close()
+time.sleep(300)' "$state/$session.term" "$state/$session.term-ready"
+    fi
+    if [ "${FM_FAKE_HERDR_SERVER_LINGER:-1}" = 1 ]; then
+      exec "$FM_FAKE_HERDR_REAL_SLEEP" 300
+    fi
+    ;;
+  "status --json")
+    if [ "${FM_FAKE_HERDR_SERVER_LINGER:-1}" = 0 ]; then
+      read -r pid birth < "$state/$session.launched"
+      case "$pid" in ''|0|*[!0-9]*) exit 95 ;; esac
+      [ -n "$birth" ] || exit 95
+      for ((i=0; i<40; i++)); do
+        rc=0
+        out=$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$pid" -o stat= 2>/dev/null) || rc=$?
+        if { [ "$rc" -eq 1 ] && [ -z "$out" ]; } || [[ "$out" =~ ^[[:space:]]*Z ]]; then
+          break
+        fi
+        "$FM_FAKE_HERDR_REAL_SLEEP" 0.01
+      done
+    fi
+    if [ "$lab_state" = running ]; then
+      printf '%s\n' '{"server":{"running":true}}'
+    else
+      printf '%s\n' '{"server":{"running":false}}'
+    fi
+    ;;
+  "session stop")
+    [ "$3" = "$session" ] || exit 91
+    printf '%s\n' stopped > "$state/$session"
+    : > "$state/$session.stopped"
+    # The fake stops only the exact server it started: same pid AND same birth.
+    if [ "${FM_FAKE_HERDR_STOP_KEEPS_SERVER:-}" != 1 ] && [ -s "$state/$session.server" ]; then
+      read -r server_pid server_birth < "$state/$session.server"
+      case "$server_pid" in ''|0|*[!0-9]*) printf 'invalid stop identity\n' >> "$FM_FAKE_ROOT/RETAINED"; exit 95 ;; esac
+      [ -n "$server_birth" ] || { printf 'empty stop birth\n' >> "$FM_FAKE_ROOT/RETAINED"; exit 95; }
+      rc=0
+      raw=$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$server_pid" -o lstart= 2>/dev/null) || rc=$?
+      if [ "$rc" -eq 1 ] && [ -z "$raw" ]; then
+        printf 'absent\n' > "$state/$session.stop"
+      else
+        current_birth=$(printf '%s\n' "$raw" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g')
+        if [ "$rc" -ne 0 ] || [ "$current_birth" != "$server_birth" ]; then
+          printf 'not-signaled\n' > "$state/$session.stop"
+          printf 'stop pid %s unknown or reused\n' "$server_pid" >> "$FM_FAKE_ROOT/RETAINED"
+          exit 95
+        fi
+        if ! kill -TERM "$server_pid" 2>/dev/null; then
+          printf 'kill-failed\n' > "$state/$session.stop"
+          printf 'stop signal not delivered pid %s\n' "$server_pid" >> "$FM_FAKE_ROOT/RETAINED"
+          exit 95
+        fi
+        printf 'delivered\n' > "$state/$session.stop"
+        gone=0
+        for ((i=0; i<40; i++)); do
+          rc=0
+          out=$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$server_pid" -o stat= 2>/dev/null) || rc=$?
+          if { [ "$rc" -eq 1 ] && [ -z "$out" ]; } || [[ "$out" =~ ^[[:space:]]*Z ]]; then gone=1; break; fi
+          [ "$rc" -eq 0 ] || break
+          "$FM_FAKE_HERDR_REAL_SLEEP" 0.01
+        done
+        if [ "$gone" -ne 1 ]; then
+          printf 'stop exit unproved pid %s\n' "$server_pid" >> "$FM_FAKE_ROOT/RETAINED"
+          exit 95
+        fi
+      fi
+    fi
+    ;;
+  "session delete")
+    [ "$3" = "$session" ] || exit 92
+    [ "${FM_FAKE_HERDR_DELETE_FAIL:-}" != 1 ] || exit 93
+    printf '%s\n' deleted > "$state/$session"
+    ;;
+  *)
+    printf '%s\n' '{"ok":true}'
+    ;;
+esac

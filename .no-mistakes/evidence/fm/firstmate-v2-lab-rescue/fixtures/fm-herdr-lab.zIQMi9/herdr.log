@@ -1,0 +1,13 @@
+session list --json --session fm-lab-large-targets-65540
+server --session fm-lab-large-targets-65540
+status --json --session fm-lab-large-targets-65540
+session list --json --session fm-lab-large-targets-65540
+session list --json --session fm-lab-large-targets-65540
+session list --json --session fm-lab-large-targets-65540
+session stop fm-lab-large-targets-65540 --json --session fm-lab-large-targets-65540
+session list --json --session fm-lab-large-targets-65540
+session list --json --session fm-lab-large-targets-65540
+session stop fm-lab-large-targets-65540 --json --session fm-lab-large-targets-65540
+session list --json --session fm-lab-large-targets-65540
+session delete fm-lab-large-targets-65540 --json --session fm-lab-large-targets-65540
+session list --json --session fm-lab-large-targets-65540

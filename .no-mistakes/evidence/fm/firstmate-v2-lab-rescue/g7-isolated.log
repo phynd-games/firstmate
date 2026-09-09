@@ -1,0 +1,5 @@
+evidence: case=poll-hang status=1 elapsed=18s polls=4 polls_started_inside_reserve=0 launched_pid=37221 launched_state=absent
+not ok - expected at least five nominal 3-second polls inside the budget, saw 4
+cleanup: fixture 37221 positively absent
+cleanup: fixture 37221 observed absent
+cleanup: evidence RETAINED in /private/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M22KSZYDN9KDENNT227D4QXM/fixtures/fm-herdr-lab.5atSSL (2026-09-09T09:27:43Z test exited 1; launch records retained;)

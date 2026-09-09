@@ -1,0 +1,98 @@
+ok - fm-herdr-lab: names fail closed and require the lab prefix
+evidence: case=provision receipt={"name":"fm-lab-behavior-4102","pid":7121,"birth":"Wed-Sep-9-05:20:40-2026","ppid":4102,"pgid":7121,"own_group":true,"allocated_epoch":1788945640,"deadline_epoch":1788945659,"command_description":"herdr server --session fm-lab-behavior-4102","native":{"socket_path":"/tmp/fm-lab-behavior-4102.sock","running":true,"bound_epoch":1788945643}}
+ok - fm-herdr-lab: provisioning, scoped calls, guarded teardown, and fleet tripwire are deterministic
+ok - fm-herdr-lab: state is private and a real socket identity is required
+ok - fm-herdr-lab: missing tripwire refuses teardown before any Herdr call
+ok - fm-herdr-lab: changed default fleet state is a hard failure
+ok - fm-herdr-lab: an owned stopped lab can re-provision safely
+ok - fm-herdr-lab: failed deletion retains ownership until absence is confirmed
+evidence: case=late-launch-delay pid=97166 state=absent
+evidence: case=late-launch status=1 elapsed=13s polls=30 launched_pid=95448 launched_state=absent
+ok - fm-herdr-lab: timed-out provisioning cancels the launch before teardown
+evidence: case=exec-transition pid=17560 recorded_birth=Wed-Sep-9-05:21:50-2026 live_birth=Wed-Sep-9-05:21:50-2026 live_command=/bin/sleep 300 described=herdr server --session fm-lab-exec-identity-4102
+ok - fm-herdr-lab: identity survives the exec transition and cleanup terminates the exact server
+evidence: case=reused-pid status=1 alive=yes output=fm-herdr-lab: pid 26587 is now a different process; retaining allocation receipt|fm-herdr-lab: session stop failed for 'fm-lab-reused-pid-4102'; not attempting delete
+ok - fm-herdr-lab: a same-number new-birth pid is refused, retains its receipt, and blocks re-provision
+evidence: case=signal-recheck status=1 ps_queries=2 alive=yes
+ok - fm-herdr-lab: every signal is preceded by its own identity recheck
+ok - fm-herdr-lab: delete independently rechecks custody after stop
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22KSZYDN9KDENNT227D4QXM/bin/fm-herdr-lab.sh: line 426: 56246 Killed: 9                  ( umask 077; exec python3 -c 'import os, sys, time
+marker, startup_end, end = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+if time.time() >= startup_end:
+    sys.exit(1)
+os.setsid()
+with open(marker + ".tmp", "x") as handle:
+    handle.write(str(os.getpid()))
+os.replace(marker + ".tmp", marker)
+while time.time() < end:
+    try:
+        with open(marker + ".accepted") as handle:
+            if handle.read() == str(os.getpid()):
+                os.execvp(sys.argv[4], sys.argv[4:])
+    except FileNotFoundError:
+        pass
+    time.sleep(0.01)
+sys.exit(1)' "$marker" "$marker_end" "$acceptance_end" env HERDR_SESSION="$name" herdr server --session "$name" ) > /dev/null 2>&1
+ok - fm-herdr-lab: escalation and descendant signals independently recheck identity
+evidence: case=unknown-state status=1 elapsed=4s alive=yes
+ok - fm-herdr-lab: an unreadable process table is unknown, never absent
+evidence: case=descendants server=40630 child=42410 detached=42528 unrelated=38822 child_pgid=40630 detached_pgid=42528
+tests/fm-herdr-lab.test.sh: line 1: 38822 Killed: 9                  python3 -c 'import os, sys
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])' "$REAL_SLEEP" 300
+ok - fm-herdr-lab: only proven group members are cleaned; detached and unrelated processes are preserved
+evidence: case=server-exit status=1 output=fm-herdr-lab: lab session 'fm-lab-server-exit-4102' reported running but could not be verified as a non-default owned lab; cancellation attempted
+ok - fm-herdr-lab: a server that exits at start is positively absent and leaves nothing to clean
+evidence: case=preflight-hang status=1 elapsed=3s
+ok - fm-herdr-lab: a hanging preflight call is bounded and launches nothing
+evidence: case=poll-hang status=1 elapsed=19s polls=4 polls_started_inside_reserve=0 launched_pid=88572 launched_state=absent
+not ok - expected at least five nominal 3-second polls inside the budget, saw 4
+cleanup: fixture 7121 positively absent
+cleanup: fixture 7121 observed absent
+cleanup: fixture 27577 positively absent
+cleanup: fixture 27577 observed absent
+cleanup: fixture 40852 positively absent
+cleanup: fixture 40852 observed absent
+cleanup: fixture 49808 positively absent
+cleanup: fixture 49808 observed absent
+cleanup: fixture 63784 positively absent
+cleanup: fixture 63784 observed absent
+cleanup: fixture 51228 positively absent
+cleanup: fixture 51228 observed absent
+cleanup: fixture 51282 positively absent
+cleanup: fixture 51282 observed absent
+cleanup: fixture 76449 positively absent
+cleanup: fixture 76449 observed absent
+cleanup: fixture 95448 positively absent
+cleanup: fixture 95448 observed absent
+cleanup: fixture 97166 positively absent
+cleanup: fixture 97166 observed absent
+cleanup: fixture 17560 positively absent
+cleanup: fixture 17560 observed absent
+cleanup: fixture 26587 positively absent
+cleanup: fixture 26587 observed absent
+cleanup: fixture 38618 positively absent
+cleanup: fixture 38618 observed absent
+cleanup: fixture 46435 positively absent
+cleanup: fixture 46435 observed absent
+cleanup: fixture 56246 positively absent
+cleanup: fixture 56246 observed absent
+cleanup: fixture 70844 positively absent
+cleanup: fixture 70844 observed absent
+cleanup: fixture 72555 positively absent
+cleanup: fixture 72555 observed absent
+cleanup: fixture 72573 positively absent
+cleanup: fixture 72573 observed absent
+cleanup: fixture 8875 positively absent
+cleanup: fixture 8875 observed absent
+cleanup: fixture 40630 positively absent
+cleanup: fixture 40630 observed absent
+cleanup: fixture 42410 positively absent
+cleanup: fixture 42410 observed absent
+cleanup: fixture 42528 positively absent
+cleanup: fixture 42528 observed absent
+cleanup: fixture 64947 positively absent
+cleanup: fixture 64947 observed absent
+cleanup: fixture 88572 positively absent
+cleanup: fixture 88572 observed absent
+cleanup: evidence RETAINED in /private/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M22KSZYDN9KDENNT227D4QXM/fixtures/fm-herdr-lab.wusKOW (2026-09-09T09:24:01Z test exited 1; launch records retained;)

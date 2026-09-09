@@ -1,0 +1,9 @@
+evidence: case=poll-hang status=1 elapsed=15s polls=6 polls_started_inside_reserve=0 launched_pid=27902 launched_state=absent
+ok - fm-herdr-lab: hanging polls are clipped to the budget and cleanup fits inside the reserve
+evidence: case=large-targets pid=62322 status=1 elapsed=19s targets=10000
+ok - fm-herdr-lab: large retained target lists stop at the original deadline with custody intact
+cleanup: fixture 27902 positively absent
+cleanup: fixture 27902 observed absent
+cleanup: fixture 62322 positively absent
+cleanup: fixture 62322 observed absent
+evidence: failed lifecycle records preserved in /private/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M22KSZYDN9KDENNT227D4QXM/round2/fm-herdr-lab.mRJx3C

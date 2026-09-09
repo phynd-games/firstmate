@@ -1,0 +1,134 @@
+ok - fm-herdr-lab: names fail closed and require the lab prefix
+evidence: case=provision receipt={"name":"fm-lab-behavior-38204","pid":41277,"birth":"Wed-Sep-9-05:37:04-2026","ppid":38204,"pgid":41277,"own_group":true,"allocated_epoch":1788946623,"deadline_epoch":1788946642,"command_description":"herdr server --session fm-lab-behavior-38204","native":{"socket_path":"/tmp/fm-lab-behavior-38204.sock","running":true,"bound_epoch":1788946625}}
+ok - fm-herdr-lab: provisioning, scoped calls, guarded teardown, and fleet tripwire are deterministic
+ok - fm-herdr-lab: state is private and a real socket identity is required
+ok - fm-herdr-lab: missing tripwire refuses teardown before any Herdr call
+ok - fm-herdr-lab: changed default fleet state is a hard failure
+ok - fm-herdr-lab: an owned stopped lab can re-provision safely
+ok - fm-herdr-lab: failed deletion retains ownership until absence is confirmed
+evidence: case=late-launch-delay pid=14307 state=absent
+evidence: case=late-launch status=1 elapsed=7s polls=30 launched_pid=13488 launched_state=absent
+ok - fm-herdr-lab: timed-out provisioning cancels the launch before teardown
+evidence: case=exec-transition pid=26733 recorded_birth=Wed-Sep-9-05:38:01-2026 live_birth=Wed-Sep-9-05:38:01-2026 live_command=/bin/sleep 300 described=herdr server --session fm-lab-exec-identity-38204
+ok - fm-herdr-lab: identity survives the exec transition and cleanup terminates the exact server
+evidence: case=reused-pid status=1 alive=yes output=fm-herdr-lab: pid 38098 is now a different process; retaining allocation receipt|fm-herdr-lab: session stop failed for 'fm-lab-reused-pid-38204'; not attempting delete
+ok - fm-herdr-lab: a same-number new-birth pid is refused, retains its receipt, and blocks re-provision
+evidence: case=signal-recheck status=1 ps_queries=2 alive=yes
+ok - fm-herdr-lab: every signal is preceded by its own identity recheck
+ok - fm-herdr-lab: delete independently rechecks custody after stop
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22KSZYDN9KDENNT227D4QXM/bin/fm-herdr-lab.sh: line 423: 86966 Killed: 9                  ( umask 077; exec python3 -c 'import os, sys, time
+marker, startup_end, end = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+if time.time() >= startup_end:
+    sys.exit(1)
+os.setsid()
+with open(marker + ".tmp", "x") as handle:
+    handle.write(str(os.getpid()))
+os.replace(marker + ".tmp", marker)
+while time.time() < end:
+    try:
+        with open(marker + ".accepted") as handle:
+            if handle.read() == str(os.getpid()):
+                os.execvp(sys.argv[4], sys.argv[4:])
+    except FileNotFoundError:
+        pass
+    time.sleep(0.01)
+sys.exit(1)' "$marker" "$marker_end" "$acceptance_end" env HERDR_SESSION="$name" herdr server --session "$name" ) > /dev/null 2>&1
+ok - fm-herdr-lab: escalation and descendant signals independently recheck identity
+evidence: case=unknown-state status=1 elapsed=2s alive=yes
+ok - fm-herdr-lab: an unreadable process table is unknown, never absent
+evidence: case=descendants server=40541 child=41556 detached=41587 unrelated=39511 child_pgid=40541 detached_pgid=41587
+tests/fm-herdr-lab.test.sh: line 1: 39511 Killed: 9                  python3 -c 'import os, sys
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])' "$REAL_SLEEP" 300
+ok - fm-herdr-lab: only proven group members are cleaned; detached and unrelated processes are preserved
+evidence: case=server-exit status=1 output=fm-herdr-lab: lab session 'fm-lab-server-exit-38204' reported running but could not be verified as a non-default owned lab; cancellation attempted
+ok - fm-herdr-lab: a server that exits at start is positively absent and leaves nothing to clean
+evidence: case=preflight-hang status=1 elapsed=4s
+ok - fm-herdr-lab: a hanging preflight call is bounded and launches nothing
+evidence: case=poll-hang status=1 elapsed=17s polls=7 polls_started_inside_reserve=0 launched_pid=67797 launched_state=absent
+ok - fm-herdr-lab: hanging polls are clipped to the budget and cleanup fits inside the reserve
+evidence: case=stop-hang status=1 elapsed=4s
+ok - fm-herdr-lab: a hanging stop is bounded and never becomes a delete
+evidence: case=generation before=16777234:245410931 after=16777234:245411130
+ok - fm-herdr-lab: a re-bound default socket trips even when every CLI field is unchanged, and stays primary
+evidence: case=run-bound status=124 elapsed=1s
+ok - fm-herdr-lab: run keeps its per-call bound and rejects bounds outside 1..3
+evidence: case=stock-bash mode=ordinary version=3.2.57(1)-release parent=29668 outer=29668
+evidence: case=stock-bash mode=nested version=3.2.57(1)-release parent=36452 outer=36418
+ok - fm-herdr-lab: stock bash binds the actual parent in ordinary and nested shells
+evidence: case=rejected-launch mode=1 pid=46284 teardown_status=1 rejected_probes=       1 later_probes=       1 state=absent
+ok - fm-herdr-lab: rejected launch observations never authorize publication or later cleanup
+evidence: case=rejected-launch mode=parent pid=48755 teardown_status=1 rejected_probes=       1 later_probes=       1 state=absent
+ok - fm-herdr-lab: rejected launch observations never authorize publication or later cleanup
+evidence: case=publication-failure pid=51139 status=1 state=absent
+ok - fm-herdr-lab: authenticated publication failure cancels the launcher before server exec
+evidence: case=large-targets pid=54350 status=1 elapsed=19s targets=10000
+ok - fm-herdr-lab: large retained target lists stop at the original deadline with custody intact
+ok - fm-herdr-lab: the CLI entrypoint keeps the public command contract
+cleanup: fixture 41277 positively absent
+cleanup: fixture 41277 observed absent
+cleanup: fixture 54020 positively absent
+cleanup: fixture 54020 observed absent
+cleanup: fixture 67452 positively absent
+cleanup: fixture 67452 observed absent
+cleanup: fixture 81258 positively absent
+cleanup: fixture 81258 observed absent
+cleanup: fixture 96361 positively absent
+cleanup: fixture 96361 observed absent
+cleanup: fixture 4168 positively absent
+cleanup: fixture 4168 observed absent
+cleanup: fixture 82968 positively absent
+cleanup: fixture 82968 observed absent
+cleanup: fixture 82996 positively absent
+cleanup: fixture 82996 observed absent
+cleanup: fixture 13488 positively absent
+cleanup: fixture 13488 observed absent
+cleanup: fixture 14307 positively absent
+cleanup: fixture 14307 observed absent
+cleanup: fixture 26733 positively absent
+cleanup: fixture 26733 observed absent
+cleanup: fixture 38098 positively absent
+cleanup: fixture 38098 observed absent
+cleanup: fixture 59395 positively absent
+cleanup: fixture 59395 observed absent
+cleanup: fixture 69604 positively absent
+cleanup: fixture 69604 observed absent
+cleanup: fixture 86966 positively absent
+cleanup: fixture 86966 observed absent
+cleanup: fixture 5667 positively absent
+cleanup: fixture 5667 observed absent
+cleanup: fixture 7409 positively absent
+cleanup: fixture 7409 observed absent
+cleanup: fixture 7558 positively absent
+cleanup: fixture 7558 observed absent
+cleanup: fixture 25221 positively absent
+cleanup: fixture 25221 observed absent
+cleanup: fixture 40541 positively absent
+cleanup: fixture 40541 observed absent
+cleanup: fixture 41556 positively absent
+cleanup: fixture 41556 observed absent
+cleanup: fixture 41587 positively absent
+cleanup: fixture 41587 observed absent
+cleanup: fixture 51568 positively absent
+cleanup: fixture 51568 observed absent
+cleanup: fixture 67797 positively absent
+cleanup: fixture 67797 observed absent
+cleanup: fixture 9275 positively absent
+cleanup: fixture 9275 observed absent
+cleanup: fixture 23275 positively absent
+cleanup: fixture 23275 observed absent
+cleanup: fixture 30220 positively absent
+cleanup: fixture 30220 observed absent
+cleanup: fixture 37197 positively absent
+cleanup: fixture 37197 observed absent
+cleanup: fixture 46284 positively absent
+cleanup: fixture 46284 observed absent
+cleanup: fixture 48755 positively absent
+cleanup: fixture 48755 observed absent
+cleanup: fixture 51139 positively absent
+cleanup: fixture 51139 observed absent
+cleanup: fixture 54350 positively absent
+cleanup: fixture 54350 observed absent
+cleanup: fixture 89559 positively absent
+cleanup: fixture 89559 observed absent
+evidence: failed lifecycle records preserved in /private/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M22KSZYDN9KDENNT227D4QXM/round2/fm-herdr-lab.HvWgvk

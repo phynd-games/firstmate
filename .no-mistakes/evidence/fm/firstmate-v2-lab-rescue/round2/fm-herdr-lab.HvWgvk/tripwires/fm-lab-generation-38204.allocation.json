@@ -1,0 +1,1 @@
+{"name":"fm-lab-generation-38204","pid":23275,"birth":"Wed-Sep-9-05:39:48-2026","ppid":38204,"pgid":23275,"own_group":true,"allocated_epoch":1788946788,"deadline_epoch":1788946808,"command_description":"herdr server --session fm-lab-generation-38204","native":{"socket_path":"/tmp/fm-lab-generation-38204.sock","running":true,"bound_epoch":1788946788}}

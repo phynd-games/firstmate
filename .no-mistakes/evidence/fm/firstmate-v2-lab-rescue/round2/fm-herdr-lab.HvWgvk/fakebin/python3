@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -eu
+if [[ "${3:-}" = *.allocation.setsid ]]; then
+  raw=$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$$" -o lstart=) || {
+    printf 'launcher identity unknown pid %s\n' "$$" >> "$FM_FAKE_ROOT/RETAINED"
+    exit 95
+  }
+  birth=$(printf '%s\n' "$raw" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g')
+  [ -n "$birth" ] || { printf 'empty launcher birth\n' >> "$FM_FAKE_ROOT/RETAINED"; exit 95; }
+  printf '%s %s\n' "$$" "$birth" > "$FM_FAKE_HERDR_STATE/$$.launched"
+  if [ -n "${FM_FAKE_LAUNCH_RECORD:-}" ]; then
+    printf '%s %s\n' "$$" "$birth" > "$FM_FAKE_LAUNCH_RECORD"
+  fi
+fi
+exec "$FM_FAKE_PYTHON_REAL" "$@"

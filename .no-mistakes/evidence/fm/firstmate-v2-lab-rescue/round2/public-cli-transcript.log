@@ -1,0 +1,51 @@
+
+$ bin/fm-herdr-lab.sh provision fm-lab-cli-evidence-62120
+exit=0
+
+Persisted allocation receipt:
+{
+  "name": "fm-lab-cli-evidence-62120",
+  "pid": 65243,
+  "birth": "Wed-Sep-9-05:42:02-2026",
+  "ppid": 63417,
+  "pgid": 65243,
+  "own_group": true,
+  "allocated_epoch": 1788946922,
+  "deadline_epoch": 1788946941,
+  "command_description": "herdr server --session fm-lab-cli-evidence-62120",
+  "native": {
+    "socket_path": "/tmp/fm-lab-cli-evidence-62120.sock",
+    "running": true,
+    "bound_epoch": 1788946924
+  }
+}
+
+Persisted default-session tripwire:
+{
+  "name": "default",
+  "default": true,
+  "running": true,
+  "socket_path": "/private/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M22KSZYDN9KDENNT227D4QXM/round2/fm-herdr-lab.6vBmtw/default.sock",
+  "socket_identity": "16777234:245420928",
+  "server_generation": "unsupported-by-cli"
+}
+
+$ bin/fm-herdr-lab.sh run fm-lab-cli-evidence-62120 workspace list
+{"ok":true}
+exit=0
+
+$ bin/fm-herdr-lab.sh run fm-lab-cli-evidence-62120 status --session default
+fm-herdr-lab: run forbids caller-supplied --session; the helper appends the lab session
+exit=1
+
+$ bin/fm-herdr-lab.sh stop fm-lab-cli-evidence-62120
+exit=0
+
+$ bin/fm-herdr-lab.sh teardown fm-lab-cli-evidence-62120
+exit=0
+
+Observed final fake session state: deleted
+Observed allocation receipt: absent
+Observed tripwire: absent
+cleanup: fixture 65243 positively absent
+cleanup: fixture 65243 observed absent

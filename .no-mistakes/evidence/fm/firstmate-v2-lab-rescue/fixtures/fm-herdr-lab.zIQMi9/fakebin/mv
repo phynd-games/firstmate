@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+if [ "${FM_FAKE_PUBLISH_FAIL:-}" = 1 ] && [[ "${2:-}" = *.allocation.json.pending ]]; then
+  printf '%s\n' "$*" >> "$FM_FAKE_HERDR_STATE/publication-attempts"
+  exit 96
+fi
+exec "$FM_FAKE_MV_REAL" "$@"

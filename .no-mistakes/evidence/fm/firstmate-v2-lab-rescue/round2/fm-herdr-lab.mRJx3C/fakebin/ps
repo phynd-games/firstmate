@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Pass-through ps shim. FM_FAKE_PS_HANG=1 hangs every call; FM_FAKE_PS_MUTATE_PID
+# rewrites the birth year of that pid's identity queries once more than
+# FM_FAKE_PS_MUTATE_AFTER of them have been answered truthfully.
+if [ "${FM_FAKE_PS_HANG:-}" = 1 ]; then
+  "$FM_FAKE_HERDR_REAL_SLEEP" 300
+fi
+if [ "${FM_FAKE_PS_PARTIAL:-}" = 1 ]; then printf 'partial observation\n'; exit 1; fi
+rc=0
+out=$("$FM_FAKE_PS_REAL" "$@") || rc=$?
+if [ -n "${FM_FAKE_REJECT_LAUNCH:-}" ] && [ -s "$FM_FAKE_LAUNCH_RECORD" ]; then
+  read -r launcher birth < "$FM_FAKE_LAUNCH_RECORD"
+  if [ "${1:-}" = -p ] && [ "${2:-}" = "$launcher" ]; then
+    printf '%s\n' "$launcher" >> "$FM_FAKE_LAUNCH_RECORD.probes"
+    if [ "$FM_FAKE_REJECT_LAUNCH" = parent ]; then
+      out=$(printf '%s\n' "$out" | awk '{$6=1; print}')
+    else
+      out=$(printf '%s\n' "$out" | awk '{$5=1999; $6=1; print}')
+    fi
+  fi
+fi
+if [ -n "${FM_FAKE_PS_MUTATE_PID:-}" ]; then
+  target=0
+  previous=
+  for arg in "$@"; do
+    [ "$previous" = -p ] && [ "$arg" = "$FM_FAKE_PS_MUTATE_PID" ] && target=1
+    previous=$arg
+  done
+  if [ "$target" -eq 1 ]; then
+    count=$(cat "$FM_FAKE_PS_COUNTER" 2>/dev/null || printf 0)
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$FM_FAKE_PS_COUNTER"
+    if [ "$count" -gt "${FM_FAKE_PS_MUTATE_AFTER:-0}" ] && { [ -z "${FM_FAKE_PS_AFTER_TERM:-}" ] || [ -e "$FM_FAKE_PS_AFTER_TERM" ]; }; then
+      out=$(printf '%s\n' "$out" | sed -E 's/([0-9]{2}:[0-9]{2}:[0-9]{2}) [0-9]{4}/\1 1999/')
+    fi
+  fi
+fi
+[ -z "$out" ] || printf '%s\n' "$out"
+exit "$rc"

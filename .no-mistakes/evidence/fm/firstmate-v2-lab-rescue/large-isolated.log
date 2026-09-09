@@ -1,0 +1,5 @@
+evidence: case=large-targets pid=68471 status=1 elapsed=20s targets=10000
+ok - fm-herdr-lab: large retained target lists stop at the original deadline with custody intact
+cleanup: fixture 68471 positively absent
+cleanup: fixture 68471 observed absent
+evidence: failed lifecycle records preserved in /private/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M22KSZYDN9KDENNT227D4QXM/fixtures/fm-herdr-lab.zIQMi9

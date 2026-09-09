@@ -1,0 +1,34 @@
+evidence: case=stop-hang status=1 elapsed=6s
+ok - fm-herdr-lab: a hanging stop is bounded and never becomes a delete
+evidence: case=generation before=16777234:245379930 after=16777234:245379964
+ok - fm-herdr-lab: a re-bound default socket trips even when every CLI field is unchanged, and stays primary
+evidence: case=run-bound status=124 elapsed=1s
+ok - fm-herdr-lab: run keeps its per-call bound and rejects bounds outside 1..3
+evidence: case=stock-bash mode=ordinary version=3.2.57(1)-release parent=55945 outer=55945
+evidence: case=stock-bash mode=nested version=3.2.57(1)-release parent=70793 outer=70779
+ok - fm-herdr-lab: stock bash binds the actual parent in ordinary and nested shells
+evidence: case=rejected-launch mode=1 pid=91563 teardown_status=1 rejected_probes=       1 later_probes=       1 state=absent
+ok - fm-herdr-lab: rejected launch observations never authorize publication or later cleanup
+evidence: case=rejected-launch mode=parent pid=98363 teardown_status=1 rejected_probes=       1 later_probes=       1 state=absent
+ok - fm-herdr-lab: rejected launch observations never authorize publication or later cleanup
+evidence: case=publication-failure pid=6249 status=1 state=absent
+ok - fm-herdr-lab: authenticated publication failure cancels the launcher before server exec
+evidence: case=large-targets pid=17151 status=1 elapsed=21s targets=10000
+not ok - large retained list overran original deadline
+cleanup: fixture 8852 positively absent
+cleanup: fixture 8852 observed absent
+cleanup: fixture 39252 positively absent
+cleanup: fixture 39252 observed absent
+cleanup: fixture 57564 positively absent
+cleanup: fixture 57564 observed absent
+cleanup: fixture 72037 positively absent
+cleanup: fixture 72037 observed absent
+cleanup: fixture 91563 positively absent
+cleanup: fixture 91563 observed absent
+cleanup: fixture 6249 positively absent
+cleanup: fixture 6249 observed absent
+cleanup: fixture 98363 positively absent
+cleanup: fixture 98363 observed absent
+cleanup: fixture 17151 positively absent
+cleanup: fixture 17151 observed absent
+cleanup: evidence RETAINED in /private/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M22KSZYDN9KDENNT227D4QXM/fixtures/fm-herdr-lab.qWUXYv (2026-09-09T09:26:40Z test exited 1; launch records retained;)
