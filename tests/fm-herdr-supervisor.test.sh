@@ -430,6 +430,13 @@ claim_alarm_loop_test() (
   pass "the $mode loop episode alarms again after a healthy owner comes and goes"
 )
 
+claim_alarm_owner_cleanup() {
+  [ -n "${LIVE_OWNER_PID:-}" ] || return 0
+  kill "$LIVE_OWNER_PID" 2>/dev/null || true
+  wait "$LIVE_OWNER_PID" 2>/dev/null || true
+  LIVE_OWNER_PID=
+}
+
 claim_alarm_owner_tests() {
 # =============================================================================
 # 2026-09-06 audit finding 3: cmd_ensure escalated the instant its claim-acquire
@@ -477,6 +484,9 @@ touch "$FM_HOME/state/other-owner-ready"
 while :; do sleep 1; done
 ' &
 LIVE_OWNER_PID=$!
+trap 'claim_alarm_owner_cleanup; fm_test_cleanup' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 i=0
 while [ ! -e "$HOMEB/state/other-owner-ready" ] && [ "$i" -lt 50 ]; do
   sleep 0.1
@@ -496,8 +506,7 @@ cmd_ensure "test probe"
 printf "rc=%s\n" "$?"
 ' > "$ENSURE_OUT_LIVE" 2>&1
 
-kill "$LIVE_OWNER_PID" 2>/dev/null || true
-wait "$LIVE_OWNER_PID" 2>/dev/null || true
+claim_alarm_owner_cleanup
 
 assert_grep 'rc=0' "$ENSURE_OUT_LIVE" \
   "cmd_ensure did not return success while deferring to a live other owner"
@@ -573,6 +582,7 @@ pass "successful claim acquisition lets a later failure episode alarm again"
 }
 
 case "${1:-}" in
+  --claim-owner-only) claim_alarm_owner_tests; exit $? ;;
   --claim-concurrent-only) claim_alarm_concurrent_test; exit $? ;;
   --claim-shared-only) claim_alarm_loop_test shared; exit $? ;;
   --claim-recovery-only) claim_alarm_loop_test recovery; exit $? ;;
