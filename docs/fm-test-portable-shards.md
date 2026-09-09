@@ -2,6 +2,7 @@
 
 `bin/fm-test-run.sh` owns portable lane composition and execution.
 `bin/fm-test-isolation-proof.sh` owns the proven-isolated candidate set.
+`.github/workflows/ci.yml` does not currently run these lanes automatically; run them locally through the entry points below.
 
 ## Verification inputs
 
@@ -61,7 +62,7 @@ On [PR 1495](https://github.com/kunchenguid/firstmate/pull/1495), its main step 
 Each shard is still strictly serial in itself, and separate runners mean no two of these stateful scripts ever share a machine, so the split needs no concurrency isolation proof.
 
 `bin/fm-test-run.sh` owns `n` and refuses any lane whose `of<n>` disagrees with it.
-`.github/workflows/ci.yml` derives the same `n` from `strategy.job-total` rather than a literal, so changing the shard count in either file without the other fails the lane loudly instead of leaving part of the required suite unrun.
+A CI job driving this matrix should derive `n` from `strategy.job-total` rather than a literal, so changing the shard count in either place without the other fails the lane loudly instead of leaving part of the suite unrun.
 
 Assignment is longest-processing-time bin packing over per-script duration hints embedded in `bin/fm-test-run.sh`.
 The hints came from the `fm-test-timing-portable-serial-*` artifacts of green CI run [32491999845](https://github.com/kunchenguid/firstmate/actions/runs/32491999845) on 2026-08-21, where the lane ran 116 scripts in 2541548 ms of serial work.
@@ -97,9 +98,8 @@ It separately verifies that the portable serial CI shards are non-empty, disjoin
 
 ## Timing artifacts
 
-Portable shards and each portable serial shard upload runner-generated timing JSON.
+Portable shards and each portable serial shard can upload runner-generated timing JSON when run in CI.
 `bin/fm-test-run.sh --aggregate-json` creates the combined summary artifact.
-`.github/workflows/ci.yml` owns the exact artifact names and aggregation wiring.
 
 ## Local entry points
 
@@ -114,4 +114,4 @@ Portable shards and each portable serial shard upload runner-generated timing JS
 | portable serial 1-4 | job `timeout-minutes: 20` | Each balanced shard is about eleven minutes of measured script time, leaving roughly 2x hang-tripwire margin for job setup and runner-speed spread. |
 
 Timeouts are hang tripwires rather than expected healthy durations.
-`.github/workflows/ci.yml` owns the exact numbers.
+A CI job running these lanes should set its `timeout-minutes:` from this table.
