@@ -65,8 +65,10 @@ case "${1:-}" in
   status)
     if [ -f "$S/hang" ]; then sleep 300; exit 0; fi
     running=true
+    compatible=true
     [ ! -f "$S/server-stopped" ] || running=false
-    printf '{"client":{"version":"0.8.2","protocol":16},"server":{"running":%s,"status":"running","compatible":true,"protocol":16}}\n' "$running"
+    [ ! -f "$S/server-incompatible" ] || compatible=false
+    printf '{"client":{"version":"0.8.2","protocol":16},"server":{"running":%s,"status":"running","compatible":%s,"protocol":16}}\n' "$running" "$compatible"
     exit 0
     ;;
   session)
@@ -232,6 +234,7 @@ run_supervisor() {  # <home> <fakebin> <args...>
     : > "$supervisor_root/.installed"
   fi
   supervisor="$supervisor_root/bin/fm-herdr-supervisor.sh"
+  HOME="$home" \
   PATH="$fakebin:$PATH" \
   FM_HOME="$home" \
   FM_ROOT_OVERRIDE="$ROOT" \
@@ -983,7 +986,31 @@ SH
   stop_loop "$HOME10"
 )
 
+stopped_server_test() (
+  HOME13C=$(new_home no-server)
+  trap 'stop_loop "$HOME13C"' EXIT
+  make_arm_stub "$HOME13C/arm.sh" ok
+  fm_write_meta "$HOME13C/state/noserver-task.meta" "window=firstmate:fm-noserver-task"
+  : > "$HOME13C/fakestate/server-stopped"
+  out=$(run_supervisor "$HOME13C" "$FAKEBIN" ensure 2>&1) && fail "a stopped Herdr server reported success: $out"
+  assert_contains "$out" "no running server" "the refusal names the missing Herdr server"
+  assert_absent "$HOME13C/state/.herdr-supervisor" "a stopped server leaves no supervisor record"
+  assert_present "$HOME13C/state/.herdr-supervisor-alarm" "a stopped server leaves a durable alarm"
+  assert_no_grep "server" "$HOME13C/fakestate/calls.log" "the supervisor must never invoke a Herdr server command"
+  pass "a Herdr session with no running server is refused loudly and starts no server"
+  rm "$HOME13C/fakestate/server-stopped"
+  : > "$HOME13C/fakestate/server-incompatible"
+  out=$(run_supervisor "$HOME13C" "$FAKEBIN" ensure 2>&1) \
+    && fail "an incompatible Herdr server reported success: $out"
+  assert_contains "$out" "incompatible or unreadable server capabilities" \
+    "the refusal preserves the native capability check"
+  assert_absent "$HOME13C/state/.herdr-supervisor" "an incompatible server leaves no supervisor record"
+  assert_no_grep "server" "$HOME13C/fakestate/calls.log" "an incompatible server grants no lifecycle authority"
+  pass "an incompatible Herdr server is refused without establishing continuity"
+)
+
 case "${1:-}" in
+  --stopped-server-only) stopped_server_test; exit $? ;;
   --server-restart-only) server_restart_test; exit $? ;;
   --claim-loop-arrival-only) claim_alarm_loop_arrival_test; exit $? ;;
   --claim-identity-replaced-only) claim_alarm_contended_recovery_test identity-replaced; exit $? ;;
@@ -1648,16 +1675,7 @@ stop_loop "$HOME13B"
 #      boundary this design says it cannot recover across, so it belongs in the
 #      alarm, not in a retry.
 # =============================================================================
-HOME13C=$(new_home no-server)
-make_arm_stub "$HOME13C/arm.sh" ok
-fm_write_meta "$HOME13C/state/noserver-task.meta" "window=firstmate:fm-noserver-task"
-: > "$HOME13C/fakestate/server-stopped"
-out=$(run_supervisor "$HOME13C" "$FAKEBIN" ensure 2>&1) && fail "a stopped Herdr server reported success"
-assert_contains "$out" "no running server" "the refusal names the missing Herdr server"
-assert_absent "$HOME13C/state/.herdr-supervisor" "a stopped server leaves no supervisor record"
-assert_present "$HOME13C/state/.herdr-supervisor-alarm" "a stopped server leaves a durable alarm"
-assert_no_grep "server" "$HOME13C/fakestate/calls.log" "the supervisor must never invoke a Herdr server command"
-pass "a Herdr session with no running server is refused loudly and starts no server"
+stopped_server_test || exit 1
 
 # =============================================================================
 # 13d. A Herdr CLI that never returns cannot wedge the caller. `ensure` is

@@ -584,7 +584,11 @@ HERDR_LOADED=0
 herdr_load() {
   [ "$HERDR_LOADED" -eq 0 ] || return 0
   backend_load || return 1
-  fm_backend_source herdr >/dev/null 2>&1 || return 1
+  # Loading must not probe the server: herdr_identity owns the bounded native
+  # checks and their failure reporting. The generic dispatcher probes during
+  # load, turning a stopped server into successful "not eligible" here.
+  # shellcheck source=/dev/null
+  . "$SCRIPT_DIR/backends/herdr.sh" || return 1
   HERDR_LOADED=1
 }
 
@@ -661,6 +665,10 @@ herdr_identity() {
     echo "herdr session '$HS_SESSION' has no running server, so there is no pane to host watcher continuity in; start it and rerun" >&2
     return 1
   fi
+  fm_backend_herdr_server_status_healthy "$status" || {
+    echo "herdr session '$HS_SESSION' has incompatible or unreadable server capabilities" >&2
+    return 1
+  }
 
   sessions=$(hs_herdr "$HS_SESSION" session list --json 2>/dev/null) || sessions=
   [ -n "$sessions" ] || {
