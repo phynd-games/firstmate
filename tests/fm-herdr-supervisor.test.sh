@@ -1394,4 +1394,138 @@ assert_grep 'progress two' "$HOMEA/state/.herdr-supervisor-alarm-history" \
   "a superseded alarm was dropped instead of recorded in the history"
 pass "the latest highest-priority alarm wins and superseded ones stay in the history"
 
+# =============================================================================
+# 2026-09-06 audit finding 3: cmd_ensure escalated the instant its claim-acquire
+# attempt failed, with no check for whether a healthy other owner already held
+# it. A live, identity-verified holder read as a false "claim could not be
+# acquired" alarm; seven of those over 18 hours were seven false alarms about
+# one healthy, unchanging state. This drives the REAL cmd_ensure directly
+# (sourced with the same technique as the alarm-priority case above, so it
+# returns before touching herdr or the arm stub - neither is needed) against a
+# REAL claim lock acquired by a real background process, so the
+# held-by-other/live/unknown distinction is proved by the genuine
+# fm_supervision_claim_* code, never a hand-built lock fixture.
+#
+# A genuinely DEAD or identity-mismatched holder is deliberately NOT exercised
+# as an escalation case here: fm_lock_try_acquire already treats both as
+# reclaimable (a dead pid is stolen with no time-based grace; a live pid whose
+# identity no longer matches its record is stolen too, since a mismatch is
+# read as "possibly reused, not provably still the recorded owner" rather than
+# "still definitely held") - correct, pre-existing, and outside this fix. What
+# actually remains unresolvable - and is what genuinely reaches cmd_ensure's
+# escalate-or-defer decision - is a claim record fm_lock_try_acquire cannot
+# interpret as a live pid at all (garbage instead of the real owner-dir
+# protocol): not stealable, and not a live pid fm_supervision_claim_held_by_other
+# can call held-by-other, so it is exactly the audit's "unknown owner" case.
+# =============================================================================
+
+# --- 3a. a live, identity-verified other owner defers, with no alarm ---------
+# The background holder sources fm-herdr-supervisor.sh itself (the same
+# technique the alarm-priority case above uses), not fm-wake-lib.sh directly:
+# the lock/identity helpers assume the PATH and SCRIPT_DIR context their own
+# entry script establishes, so acquiring through that same fully-booted
+# context is what makes the fabricated lock byte-identical to a real one.
+HOMEB=$(new_home claim-alarm-live-owner)
+FM_HOME="$HOMEB" FM_STATE_OVERRIDE="$HOMEB/state" FM_CONFIG_OVERRIDE="$HOMEB/config" \
+FM_SUP_SCRIPT="$ROOT/bin/fm-herdr-supervisor.sh" bash -c '
+set -u
+set --
+. "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+fm_supervision_claim_acquire "$SUPERVISION_CLAIM" 20 || exit 1
+touch "$FM_HOME/state/other-owner-ready"
+# A plain trailing "sleep 20" here is a tail call bash can exec-replace this
+# process image with, which changes the /proc or ps identity fm_pid_identity
+# reads mid-test even though the pid never changes - a genuine holder must
+# keep the SAME visible command running, so loop a builtin sleep instead.
+while :; do sleep 1; done
+' &
+LIVE_OWNER_PID=$!
+i=0
+while [ ! -e "$HOMEB/state/other-owner-ready" ] && [ "$i" -lt 50 ]; do
+  sleep 0.1
+  i=$((i + 1))
+done
+[ -e "$HOMEB/state/other-owner-ready" ] || fail "the background claim holder never signaled ready"
+
+ENSURE_OUT_LIVE="$HOMEB/ensure-live-owner.out"
+FM_HOME="$HOMEB" FM_STATE_OVERRIDE="$HOMEB/state" FM_CONFIG_OVERRIDE="$HOMEB/config" \
+FM_SUPERVISION_MODEL=extension FM_HERDR_SUPERVISOR_LOCK_TRIES=2 \
+FM_SUP_SCRIPT="$ROOT/bin/fm-herdr-supervisor.sh" bash -c '
+set -u
+set --
+. "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+cmd_ensure "test probe"
+printf "rc=%s\n" "$?"
+' > "$ENSURE_OUT_LIVE" 2>&1
+
+kill "$LIVE_OWNER_PID" 2>/dev/null || true
+wait "$LIVE_OWNER_PID" 2>/dev/null || true
+
+assert_grep 'rc=0' "$ENSURE_OUT_LIVE" \
+  "cmd_ensure did not return success while deferring to a live other owner"
+assert_grep 'deferred - another continuity owner is completing its ownership claim' "$ENSURE_OUT_LIVE" \
+  "a live, identity-verified other owner is deferred, not alarmed"
+assert_absent "$HOMEB/state/.herdr-supervisor-alarm" \
+  "a healthy live claim holder must not raise an alarm"
+assert_absent "$HOMEB/state/.wake-queue" \
+  "a healthy live claim holder must not queue a wake"
+pass "a live, identity-verified other owner defers cmd_ensure without a false alarm"
+
+# --- 3b. an unknown (unstealable, unprovable) claim record alarms, and the
+#         same unresolved episode does not alarm twice ----------------------
+# A plain file at the claim path - not the real owner-dir-plus-symlink
+# protocol fm_lock_try_create writes - has no readable pid at all. It is not
+# fresh-enough-to-ignore forever (fm_lock_mid_acquire_is_fresh's grace window
+# is for a record with NO pid; this one is durably unreadable), so acquire
+# keeps failing every poll, and fm_supervision_claim_held_by_other correctly
+# finds no live, identity-verified pid to defer to either: a genuine unknown
+# owner, exactly the audit's "distinguish from dead/stale/unknown" case.
+HOMEC=$(new_home claim-alarm-unknown-record)
+printf 'not the real owner-dir protocol\n' > "$HOMEC/state/.supervision-claim.lock"
+
+ENSURE_OUT_UNKNOWN="$HOMEC/ensure-unknown-record.out"
+FM_HOME="$HOMEC" FM_STATE_OVERRIDE="$HOMEC/state" FM_CONFIG_OVERRIDE="$HOMEC/config" \
+FM_SUPERVISION_MODEL=extension FM_HERDR_SUPERVISOR_LOCK_TRIES=2 \
+FM_SUP_SCRIPT="$ROOT/bin/fm-herdr-supervisor.sh" bash -c '
+set -u
+set --
+. "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+cmd_ensure "test probe"
+printf "rc1=%s\n" "$?"
+cmd_ensure "test probe"
+printf "rc2=%s\n" "$?"
+' > "$ENSURE_OUT_UNKNOWN" 2>&1
+
+assert_grep 'rc1=1' "$ENSURE_OUT_UNKNOWN" \
+  "an unresolvable (unknown) claim record must fail, not defer"
+assert_grep 'the continuity ownership claim could not be acquired within its bounded retry window' \
+  "$HOMEC/state/.wake-queue" \
+  "an unknown owner still raises the real acquisition-failure reason in the durable queue"
+assert_grep 'rc2=1' "$ENSURE_OUT_UNKNOWN" \
+  "the same unresolved episode continues to fail on a second poll"
+WAKE_COUNT=$(grep -c 'herdr-supervisor' "$HOMEC/state/.wake-queue" 2>/dev/null || true)
+[ "${WAKE_COUNT:-0}" -eq 1 ] || fail \
+  "an unresolved claim episode alarmed ${WAKE_COUNT:-0} times across two polls, expected exactly 1"
+pass "an unknown claim record alarms once, and the same unresolved episode does not alarm twice"
+
+# --- 3c. after the episode resolves, a later genuinely new failure alarms
+#         again (recovery clears the dedupe key) -----------------------------
+FM_HOME="$HOMEC" FM_STATE_OVERRIDE="$HOMEC/state" FM_CONFIG_OVERRIDE="$HOMEC/config" \
+FM_SUPERVISION_MODEL=extension FM_HERDR_SUPERVISOR_LOCK_TRIES=2 \
+FM_SUP_SCRIPT="$ROOT/bin/fm-herdr-supervisor.sh" bash -c '
+set -u
+set --
+. "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+claim_alarm_clear "$CLAIM_ALARM_ENSURE"
+cmd_ensure "test probe"
+printf "rc3=%s\n" "$?"
+' > "$HOMEC/ensure-reappear.out" 2>&1
+
+WAKE_COUNT2=$(grep -c 'herdr-supervisor' "$HOMEC/state/.wake-queue" 2>/dev/null || true)
+assert_grep 'rc3=1' "$HOMEC/ensure-reappear.out" \
+  "the reappearance probe did not observe the same still-unresolved failure"
+[ "${WAKE_COUNT2:-0}" -eq 2 ] || fail \
+  "clearing the dedupe key did not let a new failure episode alarm again (count=${WAKE_COUNT2:-0})"
+pass "clearing the dedupe key lets a later failure episode alarm again"
+
 echo "all fm-herdr-supervisor tests passed"

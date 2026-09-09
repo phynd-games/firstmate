@@ -257,13 +257,34 @@ _fm_vloop_findings_valid() {  # <evidence-content>
     function valid_table(value) {
       return value ~ /^[[:space:]]*findings\[[0-9]+\]\{[^{}]+\}:[[:space:]]*$/
     }
+    function valid_scalar(value) {
+      # The daemon prints one of: "none", "<N> awaiting" (a run parked at a
+      # gate), or a severity breakdown with only the present severities
+      # (each count >= 1) joined by ", " in fixed descending-severity order
+      # error, warning, info -- verified against the installed daemon output
+      # (no-mistakes axi status, v1.49.0-4-gfeb8cdf): a terminal run printed
+      # "findings: 4 info" and a gate-parked run printed "findings: 2
+      # awaiting". No other order or omitted-severity shape is real daemon
+      # output, so every other string stays rejected. Do not use an
+      # apostrophe anywhere in this awk script; it is embedded in a
+      # single-quoted shell string and an apostrophe would close it early.
+      return value == "none" \
+        || value ~ /^[1-9][0-9]* awaiting$/ \
+        || value ~ /^[1-9][0-9]* info$/ \
+        || value ~ /^[1-9][0-9]* warning$/ \
+        || value ~ /^[1-9][0-9]* warning, [1-9][0-9]* info$/ \
+        || value ~ /^[1-9][0-9]* error$/ \
+        || value ~ /^[1-9][0-9]* error, [1-9][0-9]* info$/ \
+        || value ~ /^[1-9][0-9]* error, [1-9][0-9]* warning$/ \
+        || value ~ /^[1-9][0-9]* error, [1-9][0-9]* warning, [1-9][0-9]* info$/
+    }
     /^  findings:/ {
       scalar_count++
       value = $0
       sub(/^[^:]*:/, "", value)
       sub(/^[[:space:]]+/, "", value)
       sub(/[[:space:]]+$/, "", value)
-      if (value != "none" && value !~ /^[0-9]+ awaiting$/) invalid = 1
+      if (!valid_scalar(value)) invalid = 1
       next
     }
     /^findings:/ { invalid = 1; next }
