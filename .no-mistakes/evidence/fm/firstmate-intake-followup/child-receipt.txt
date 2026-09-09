@@ -1,0 +1,16 @@
+version=1
+task_id=fixture-v2-journal
+classification=carried-forward
+parent_task_id=fixture-v2-plan
+artifact=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22GR8AV93GW3790GW9EQ13A/.test-tmp/fm-lavish-feature-intake.dlhTP5/reviewer-demo/fixture-v2-plan-intake.html
+artifact_sha256=8befb9549aa1301e8e94deb51b3eae1ba47673df77506e43458ebf9b92676966
+source_id=lavish-3c68c2a9dfb57622
+sequence=1
+result=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22GR8AV93GW3790GW9EQ13A/.test-tmp/fm-lavish-feature-intake.dlhTP5/reviewer-demo/state/procevent-inbox/lavish-3c68c2a9dfb57622.1.result
+result_sha256=d10db6c3c0b743a6b33974b0fc405ff964f15df1c4f9a876b110b99e4e6f541b
+feedback=carried
+scope_id=journal
+scope_source=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22GR8AV93GW3790GW9EQ13A/.test-tmp/fm-lavish-feature-intake.dlhTP5/reviewer-demo/scope.md
+scope_source_sha256=2365b45ff4a3687343a0d3384153308328968b7d219c796988c7576514119de4
+approval_source=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22GR8AV93GW3790GW9EQ13A/.test-tmp/fm-lavish-feature-intake.dlhTP5/reviewer-demo/approval.md
+approval_source_sha256=fd0036c5d060b04d3432c998ab6223b50d9b29e6e89bee68185e9fcbbd546a2c

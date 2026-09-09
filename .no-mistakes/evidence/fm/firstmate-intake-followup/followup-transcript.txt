@@ -1,0 +1,57 @@
+FM_TEST_BEGIN 2026-09-09T07:57:10Z tests/fm-lavish-feature-intake.test.sh family=pure-contract-unit expected_gate_skip=none
+not-autohandled: lavish-3c68c2a9dfb57622 (left for the handler; still unacknowledged)
+
+$ fm-lavish-intake.sh carry-forward fixture-v2-journal --parent fixture-v2-plan --scope-source <fixture>/scope.md --scope-id journal --approval-source <fixture>/approval.md
+carried-forward: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22GR8AV93GW3790GW9EQ13A/.test-tmp/fm-lavish-feature-intake.dlhTP5/reviewer-demo/state/fixture-v2-journal.lavish-intake
+
+$ fm-lavish-intake.sh verify fixture-v2-journal
+status=submitted
+evidence=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22GR8AV93GW3790GW9EQ13A/.test-tmp/fm-lavish-feature-intake.dlhTP5/reviewer-demo/state/fixture-v2-journal.lavish-intake
+
+$ fm-brief.sh fixture-v2-journal firstmate --mode no-mistakes --intake <child-receipt> --approved-base-ref main --approved-base-sha <target>
+scaffolded: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22GR8AV93GW3790GW9EQ13A/.test-tmp/fm-lavish-feature-intake.dlhTP5/reviewer-demo/data/fixture-v2-journal/brief.md (ship, mode=no-mistakes; replace {TASK})
+Generated worker instructions retain the literal `git rev-parse HEAD` command and identify the approved parent and child scope.
+
+$ fm-lavish-intake.sh check-brief fixture-v2-journal <generated-child-brief>
+status=submitted
+evidence=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22GR8AV93GW3790GW9EQ13A/.test-tmp/fm-lavish-feature-intake.dlhTP5/reviewer-demo/state/fixture-v2-journal.lavish-intake
+
+$ repeat identical carry-forward
+carried-forward: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22GR8AV93GW3790GW9EQ13A/.test-tmp/fm-lavish-feature-intake.dlhTP5/reviewer-demo/state/fixture-v2-journal.lavish-intake
+Parent and child receipt bytes unchanged; existing captain hold/backlog unchanged; no child endpoint metadata created.
+
+$ retry with changed approval declaration
+fm-lavish-intake: intake evidence already exists for task fixture-v2-journal with different lineage
+
+$ retry with each duplicated carry-forward field
+parent_task_id: fm-lavish-intake: receipt must contain exactly one parent_task_id field
+fm-lavish-intake: intake evidence already exists for task fixture-v2-journal with different lineage
+scope_id: fm-lavish-intake: receipt must contain exactly one scope_id field
+fm-lavish-intake: intake evidence already exists for task fixture-v2-journal with different lineage
+scope_source: fm-lavish-intake: receipt must contain exactly one scope_source field
+fm-lavish-intake: intake evidence already exists for task fixture-v2-journal with different lineage
+scope_source_sha256: fm-lavish-intake: receipt must contain exactly one scope_source_sha256 field
+fm-lavish-intake: intake evidence already exists for task fixture-v2-journal with different lineage
+approval_source: fm-lavish-intake: receipt must contain exactly one approval_source field
+fm-lavish-intake: intake evidence already exists for task fixture-v2-journal with different lineage
+approval_source_sha256: fm-lavish-intake: receipt must contain exactly one approval_source_sha256 field
+fm-lavish-intake: intake evidence already exists for task fixture-v2-journal with different lineage
+
+$ verify with the base-commit intake owner (regression comparison)
+fm-lavish-intake: unknown intake classification: carried-forward
+
+$ fixture-only parent cleanup using existing teardown test helper (external operations stubbed)
+teardown fixture-v2-plan complete (window fixture, worktree /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22GR8AV93GW3790GW9EQ13A/.test-tmp/fm-lavish-feature-intake.dlhTP5/reviewer-demo/retired-worktree)
+Backlog: fixture-v2-plan is closed in /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22GR8AV93GW3790GW9EQ13A/.test-tmp/fm-lavish-feature-intake.dlhTP5/reviewer-demo/data/backlog.md. Run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+
+$ fm-lavish-intake.sh verify fixture-v2-journal (parent receipt and session removed)
+status=submitted
+evidence=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22GR8AV93GW3790GW9EQ13A/.test-tmp/fm-lavish-feature-intake.dlhTP5/reviewer-demo/state/fixture-v2-journal.lavish-intake
+
+$ fm-lavish-intake.sh check-brief fixture-v2-journal <generated-child-brief> (after parent cleanup)
+status=submitted
+evidence=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M22GR8AV93GW3790GW9EQ13A/.test-tmp/fm-lavish-feature-intake.dlhTP5/reviewer-demo/state/fixture-v2-journal.lavish-intake
+FM_TEST_END 2026-09-09T07:58:11Z tests/fm-lavish-feature-intake.test.sh exit=0 duration_ms=61202 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=61293
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=1 duration_ms=61202 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-lavish-feature-intake.test.sh duration_ms=61202
