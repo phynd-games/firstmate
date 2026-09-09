@@ -1464,6 +1464,70 @@ test_carry_forward_rejects_unsafe_declaration_sources() {
   pass "Lavish intake: carry-forward refuses both unsafe declaration roles before filesystem mutation"
 }
 
+test_carry_forward_requires_separate_declaration_files() {
+  local home scope approval receipt brief alias child before out command
+  home=$(make_home carry-separate-files)
+  setup_parent_receipt "$home" plan-separate >/dev/null
+  run_intake "$home" verify plan-separate >/dev/null || fail "parent fixture does not verify"
+  make_scope_and_approval "$home" x
+  scope="$home/scope-x.md"
+  approval="$home/approval-x.md"
+  cp "$scope" "$approval"
+  mkdir "$home/alias-dir"
+  run_intake "$home" carry-forward journal-separate --parent plan-separate \
+    --scope-source "$scope" --scope-id P2a --approval-source "$approval" >/dev/null \
+    || fail "distinct files with identical contents were rejected"
+  receipt="$home/state/journal-separate.lavish-intake"
+  run_brief "$home" journal-separate firstmate --mode no-mistakes --intake "$receipt" >/dev/null
+  brief="$home/data/journal-separate/brief.md"
+  run_intake "$home" check-brief journal-separate "$brief" >/dev/null \
+    || fail "distinct-file receipt did not produce an accepted brief"
+  before=$(carry_receipts_snapshot "$home")
+  run_intake "$home" carry-forward journal-separate --parent plan-separate \
+    --scope-source "$home/./scope-x.md" --scope-id P2a \
+    --approval-source "$home/alias-dir/../approval-x.md" >/dev/null \
+    || fail "canonical aliases of distinct files broke idempotency"
+  [ "$(carry_receipts_snapshot "$home")" = "$before" ] || fail "distinct-file retry mutated receipts"
+  for alias in "$scope" "$home/./scope-x.md" "$home/alias-dir/../scope-x.md"; do
+    for child in journal-separate journal-new; do
+      before=$(carry_tree_snapshot "$home")
+      assert_carry_refused "$home" 'must be separate files' "$child" --parent plan-separate \
+        --scope-source "$scope" --scope-id P2a --approval-source "$alias"
+      [ "$(carry_tree_snapshot "$home")" = "$before" ] || fail "equal-path declaration caused filesystem mutation"
+    done
+  done
+  cp "$receipt" "$home/receipt.saved"
+  for alias in "$scope" "$home/./scope-x.md" "$home/alias-dir/../scope-x.md"; do
+    python3 - "$home/receipt.saved" "$receipt" "$alias" <<'PYTHON'
+from pathlib import Path
+import sys
+source, target, approval = sys.argv[1:]
+rows = Path(source).read_text().splitlines()
+Path(target).write_text(''.join(
+    ('approval_source=' + approval if row.startswith('approval_source=') else row) + '\n'
+    for row in rows
+))
+PYTHON
+    for command in verify check-brief; do
+      before=$(carry_tree_snapshot "$home")
+      if [ "$command" = verify ]; then
+        if out=$(run_intake "$home" verify journal-separate 2>&1); then
+          fail "verify accepted a receipt binding both roles to the same file"
+        fi
+      else
+        if out=$(run_intake "$home" check-brief journal-separate "$brief" 2>&1); then
+          fail "check-brief accepted a receipt binding both roles to the same file"
+        fi
+      fi
+      assert_contains "$out" 'must be separate files' "same-file receipt failed at the wrong gate"
+      [ "$(carry_tree_snapshot "$home")" = "$before" ] || fail "same-file receipt reverification mutated evidence"
+    done
+  done
+  cp "$home/receipt.saved" "$receipt"
+  run_intake "$home" check-brief journal-separate "$brief" >/dev/null || fail "restored distinct-file receipt does not verify"
+  pass "Lavish intake: issuance and reverification require distinct canonical declaration files"
+}
+
 test_carry_forward_preflights_state_and_receipt_paths() {
   local home before kind path
   home=$(make_home carry-unsafe-state)
@@ -1687,6 +1751,7 @@ carry_forward_proof_group() {
   test_carry_forward_rejects_missing_parent
   test_carry_forward_rejects_changed_parent_evidence
   test_carry_forward_rejects_unsafe_declaration_sources
+  test_carry_forward_requires_separate_declaration_files
   test_carry_forward_requires_complete_parent_verification
   test_carry_forward_preflights_state_and_receipt_paths
   test_carry_forward_rejects_conflicting_repeat
@@ -1743,6 +1808,7 @@ test_carry_forward_requires_significant_parent
 test_carry_forward_rejects_missing_parent
 test_carry_forward_rejects_changed_parent_evidence
 test_carry_forward_rejects_unsafe_declaration_sources
+test_carry_forward_requires_separate_declaration_files
 test_carry_forward_requires_complete_parent_verification
 test_carry_forward_preflights_state_and_receipt_paths
 test_carry_forward_rejects_conflicting_repeat

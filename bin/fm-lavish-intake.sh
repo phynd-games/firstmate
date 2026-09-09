@@ -26,10 +26,12 @@
 #           captures a new Lavish answer: it carries the parent's existing
 #           source id, sequence, artifact, and result forward unchanged, binds
 #           an explicit MAIN-supplied scope declaration (a scope-source file
-#           plus a scope id, and an approval-source file) by hashing their
-#           exact bytes -- it never accepts a caller-supplied hash as proof and
-#           never infers scope from the text's meaning -- and publishes one
-#           new child receipt atomically. A repeated identical request is
+#           plus a scope id, and a separate approval-source file with a distinct
+#           canonical path) by hashing their exact bytes, and publishes one
+#           new child receipt atomically. File separation does not require
+#           different contents or independent authors. It never accepts a
+#           caller-supplied hash as proof or infers scope from the text's meaning.
+#           A repeated identical request is
 #           idempotent; a conflicting one refuses without mutating either
 #           receipt. It never releases a captain hold, creates a worker
 #           endpoint, or changes merge authority. Because the parent task may
@@ -1498,14 +1500,20 @@ cmd_exempt() {
   write_receipt "$task" not-applicable "$artifact" "" "$reason"
 }
 
+require_separate_declaration_sources() {
+  [ "$1" != "$2" ] || fail "scope source and approval source must be separate files"
+}
+
 carry_preflight() {
   local child=$1 parent=$2 scope_source=$3 approval_source=$4 state_real receipt path key
+  local scope_real approval_real
   path_has_no_symlink "$STATE" || fail "intake state directory is unsafe: $STATE"
   state_real=$(real_dir "$STATE") || fail "intake state directory is missing or unsafe: $STATE"
-  real_file_no_hardlink "$scope_source" >/dev/null \
+  scope_real=$(real_file_no_hardlink "$scope_source") \
     || fail "scope source is not a safe regular file: $scope_source"
-  real_file_no_hardlink "$approval_source" >/dev/null \
+  approval_real=$(real_file_no_hardlink "$approval_source") \
     || fail "approval source is not a safe regular file: $approval_source"
+  require_separate_declaration_sources "$scope_real" "$approval_real"
   receipt=$(real_file_no_hardlink "$(receipt_path "$parent")") \
     || fail "no intake evidence exists or evidence is unsafe for parent task $parent"
   [ "$(dirname "$receipt")" = "$state_real" ] \
@@ -1717,6 +1725,7 @@ verify_carried_forward_receipt() {
     || fail "scope source hash does not match evidence"
   approval_source=$(require_unique_meta "$receipt" approval_source)
   approval_source=$(real_file_no_hardlink "$approval_source") || fail "approval source is missing or unsafe: $approval_source"
+  require_separate_declaration_sources "$scope_source" "$approval_source"
   expected_approval=$(require_unique_meta "$receipt" approval_source_sha256)
   [ "$expected_approval" = "$(sha256_file "$approval_source")" ] \
     || fail "approval source hash does not match evidence"
