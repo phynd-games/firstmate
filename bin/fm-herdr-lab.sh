@@ -23,7 +23,16 @@
 # destructive call.
 # Provision records the running default session as a fleet-state tripwire and
 # teardown requires that record to be identical afterward.
+# Every finite CLI call has a 3-second deadline (FM_HERDR_LAB_CALL_SECS,
+# integer 1..3); provision has a 20-second aggregate polling deadline and at
+# most 30 polls. The server itself is intentionally long-lived, started in
+# its own process group; failed provision cancels only that verified group.
+# Stop/delete are never retried automatically; failed cleanup retains evidence.
 set -u
+
+FM_HERDR_LAB_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$FM_HERDR_LAB_LIB_DIR/fm-timeout-lib.sh"
 
 fm_herdr_lab_error() {
   echo "fm-herdr-lab: $*" >&2
@@ -51,7 +60,9 @@ fm_herdr_lab_tripwire_path() { # <session>
 fm_herdr_lab_raw() { # <session> <herdr arguments...>
   local name=$1
   shift
-  HERDR_SESSION="$name" herdr "$@" --session "$name"
+  local seconds=${FM_HERDR_LAB_CALL_SECS:-3}
+  case "$seconds" in 1|2|3) ;; *) fm_herdr_lab_error "call deadline must be 1..3 seconds"; return 1 ;; esac
+  fm_run_timed "$seconds" env HERDR_SESSION="$name" herdr "$@" --session "$name"
 }
 
 fm_herdr_lab_session_list() { # <session>
@@ -153,23 +164,35 @@ fm_herdr_lab_cli() { # <session> <herdr arguments...>
   fm_herdr_lab_raw "$name" "$@"
 }
 
-fm_herdr_lab_cancel_provision() { # <pid>
-  local pid=$1 attempt=0
-  if kill -0 "$pid" 2>/dev/null; then
-    kill -TERM "$pid" 2>/dev/null || true
-    while kill -0 "$pid" 2>/dev/null && [ "$attempt" -lt 10 ]; do
-      sleep 0.1
-      attempt=$((attempt + 1))
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -KILL "$pid" 2>/dev/null || true
+fm_herdr_lab_cancel_provision() { # <owned-child-pid>
+  local pid=$1 pgid identity current groups
+  # Reuse the process identity owner without creating runtime state.
+  # shellcheck source=bin/fm-wake-lib.sh
+  FM_WAKE_LIB_NO_STATE_MKDIR=1 . "$FM_HERDR_LAB_LIB_DIR/fm-wake-lib.sh"
+  if fm_pid_alive "$pid"; then
+    identity=$(fm_pid_identity "$pid") || return 1
+    pgid=$(fm_run_timed 1 ps -p "$pid" -o pgid= 2>/dev/null | tr -d '[:space:]') || return 1
+    [ "$pgid" = "$pid" ] || { fm_herdr_lab_error "unproved provision process group; preserving it"; return 1; }
+    current=$(fm_pid_identity "$pid") || return 1
+    [ "$current" = "$identity" ] || return 1
+    kill -TERM -- "-$pid" 2>/dev/null || true
+    sleep 0.2
+    if fm_pid_alive "$pid"; then
+      current=$(fm_pid_identity "$pid") || return 1
+      [ "$current" = "$identity" ] || return 1
+      kill -KILL -- "-$pid" 2>/dev/null || true
     fi
   fi
   wait "$pid" 2>/dev/null || true
+  groups=$(fm_run_timed 1 ps -eo pgid=,stat= 2>/dev/null) || return 1
+  if printf '%s\n' "$groups" | awk -v group="$pid" '$1 == group && $2 !~ /^Z/ { found=1 } END { exit !found }'; then
+    fm_herdr_lab_error "provision group still has live members; retaining ownership evidence"
+    return 1
+  fi
 }
 
 fm_herdr_lab_provision() { # <session>
-  local name=$1 sessions tripwire running attempt server_pid max_attempts timeout_seconds
+  local name=$1 sessions tripwire running attempt server_pid max_attempts timeout_seconds started
   fm_herdr_lab_validate_name "$name" || return 1
   command -v herdr >/dev/null 2>&1 || { fm_herdr_lab_error "herdr is required"; return 1; }
   command -v jq >/dev/null 2>&1 || { fm_herdr_lab_error "jq is required"; return 1; }
@@ -195,12 +218,17 @@ fm_herdr_lab_provision() { # <session>
   else
     fm_herdr_lab_prepare "$name" || return 1
   fi
-  fm_herdr_lab_raw "$name" server >/dev/null 2>&1 &
+  command -v python3 >/dev/null 2>&1 || { fm_herdr_lab_error "python3 is required for isolated provision ownership"; return 1; }
+  # No shell background job may retain an unrelated process group. Python
+  # replaces itself with the exact named Herdr server before any child work.
+  python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+    env HERDR_SESSION="$name" herdr server --session "$name" >/dev/null 2>&1 &
   server_pid=$!
   attempt=0
-  max_attempts=300
-  timeout_seconds=60
-  while [ "$attempt" -lt "$max_attempts" ]; do
+  max_attempts=30
+  timeout_seconds=20
+  started=$SECONDS
+  while [ "$attempt" -lt "$max_attempts" ] && [ "$((SECONDS - started))" -lt "$timeout_seconds" ]; do
     running=$(fm_herdr_lab_cli "$name" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null) || running=false
     if [ "$running" = true ]; then
       fm_herdr_lab_refuse_if_default "$name" || {
@@ -269,8 +297,10 @@ fm_herdr_lab_teardown() { # <session>
     fm_herdr_lab_verify_tripwire "$name"
     return
   fi
-  fm_herdr_lab_stop "$name" >/dev/null 2>&1 || true
-  sleep 0.5
+  # Never turn a failed/uncertain stop into an attempted delete. Preserve the
+  # tripwire so an operator can reconcile the exact named lab safely.
+  fm_herdr_lab_stop "$name" >/dev/null 2>&1 || return 1
+  sleep 0.2
   fm_herdr_lab_refuse_if_default "$name" || return 1
   fm_herdr_lab_raw "$name" session delete "$name" --json >/dev/null 2>&1 || delete_status=$?
   sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {
