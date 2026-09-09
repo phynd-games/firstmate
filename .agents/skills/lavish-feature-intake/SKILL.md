@@ -89,6 +89,7 @@ deleting them before every dependent child retires breaks that child's evidence.
 `bin/fm-brief.sh` carries an explicit Lavish intake contract in new worker instructions.
 `bin/fm-spawn.sh` verifies submitted evidence or an explicit exemption before creating a new worker endpoint.
 `bin/fm-promote.sh` applies the same check when scout work becomes ship work.
+A carried-forward receipt satisfies these same checks: `verify` and `check-brief` report it as `status=submitted`, so it needs no separate carve-out anywhere in this enforcement chain.
 The deterministic evidence owner is `bin/fm-lavish-intake.sh`; this policy owns meaning and procedure, while `captain-hold-lifecycle` owns captain answers and `process-event-sources` owns capture and wake durability.
 
 A new significant task must not dispatch without a verified submitted receipt.
