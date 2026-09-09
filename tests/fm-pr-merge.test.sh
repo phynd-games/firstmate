@@ -95,7 +95,7 @@ REAL_MV=$(command -v mv) || fail "these tests need mv to simulate a failed poll 
 # Build a fresh sandbox for one test case: a state dir with a task meta and a
 # fakebin with a gh-axi mock that records how it was invoked. Echoes the case dir.
 make_case() {
-  local name=$1 case_dir fakebin target_head target_repository substrate_head empty_digest base_head merge_base_sha changed_digest surface_digest surface_line_hex
+  local name=$1 case_dir fakebin target_head target_repository substrate_head empty_digest base_head merge_base_sha changed_digest
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
   mkdir -p "$case_dir/state" "$case_dir/home/data/task-x1" "$case_dir/wt" "$case_dir/substrate" "$fakebin"
@@ -121,12 +121,6 @@ make_case() {
   base_head=$(git -C "$case_dir/wt" rev-parse main)
   merge_base_sha=$(git -C "$case_dir/wt" merge-base "$base_head" "$target_head")
   changed_digest=$(git -C "$case_dir/wt" diff --name-status "$merge_base_sha" "$target_head" | fm_pr_sha256_stream)
-  surface_digest=$(sed -n '2p' "$case_dir/wt/fixture.txt" | fm_pr_sha256_stream)
-  surface_line_hex=$(awk 'NR == 2 { printf "%s", $0 }' "$case_dir/wt/fixture.txt" | od -An -tx1 | tr -d ' \n')
-surface_binding_digest() {
-    local surface=$1 reference=$2 digest=$3 change_digest=$4 line_hex=$5 behavior=$6 action=$7
-    printf '%s\n' "$surface|$reference|$digest|$change_digest|$line_hex|$behavior|$action" | fm_pr_sha256_stream
-}
   surface_unaffected_record() {
     local surface=$1 behavior=$2 action=$3 binding label
     case "$surface" in
@@ -145,7 +139,6 @@ surface_binding_digest() {
   target_repository=$(cd "$case_dir/wt" && pwd -P)
   substrate_head=$(git -C "$case_dir/substrate" rev-parse HEAD)
   empty_digest=$(printf '' | fm_pr_sha256_stream)
-  change_digest=$(git -C "$case_dir/wt" diff --no-color --unified=0 "$merge_base_sha" "$target_head" -- fixture.txt | fm_pr_sha256_stream)
   printf '%s\n' "- Firstmate substrate root: \`$case_dir/substrate\`" \
     "- Firstmate substrate launch SHA: \`$substrate_head\`" > "$case_dir/home/data/task-x1/brief.md"
   printf '%s\n' \
@@ -887,7 +880,9 @@ printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
 case "${1:-} ${2:-}" in
   "pr view")
     case " $* " in
-      *headRefOid*) printf '%s\n' 8484848484848484848484848484848484848484 ; exit 0 ;;
+      # Match the reviewed fixture identity so only the branch-rules read fails.
+      *headRefOid*) git -C "${FM_TEST_GH_OUTCOME%/*}/wt" rev-parse HEAD; exit $? ;;
+      *baseRefName*) printf '%s\n' "${FM_TEST_GH_BASE:-main}"; exit 0 ;;
     esac
     ;;
   "api graphql")
