@@ -55,7 +55,7 @@ Membership is derived rather than enumerated, so a newly added test lands here b
 
 ## Portable serial CI shards
 
-Since 2026-09-09 these shards, the two portable parallel shards, the coverage guard, and the timing aggregate are no longer automatic GitHub CI jobs: the captain retired those Linux lanes rather than repair them, and `.github/workflows/ci.yml` runs only the repository invariants.
+These shards, the two portable parallel shards, the coverage guard, and the timing aggregate are no longer automatic GitHub CI jobs: those hosted Linux lanes were retired rather than repaired, and `.github/workflows/ci.yml` runs only the repository invariants.
 The lanes remain runner capabilities for deliberate local runs, and the history below records how they were balanced.
 
 On green CI run [30725985757](https://github.com/kunchenguid/firstmate/actions/runs/30725985757), that remainder accumulated 19m04s of script time against a 20-minute job timeout.

@@ -9,14 +9,14 @@ on:
 permissions:
   contents: read
 
-# Reduced job set by explicit captain instruction (2026-09-09): the hosted
-# full-repository Lint job, the two portable parallel behavior shards, the
-# four-way portable serial behavior matrix, and their dependent coverage guard
-# and timing aggregate were retired rather than repaired, because Firstmate
-# targets macOS and those Linux lanes had failed on every push to main. Their
-# owners remain available for deliberate local use: bin/fm-lint.sh (also run by
-# the no-mistakes pre-push gate) and bin/fm-test-run.sh lanes, --check-coverage
-# and --aggregate-json. Only the inexpensive repository invariants run here.
+# Reduced job set: the hosted full-repository Lint job, the two portable
+# parallel behavior shards, the four-way portable serial behavior matrix, and
+# their dependent coverage guard and timing aggregate were retired rather than
+# repaired, because those hosted Linux lanes were failing on every push to
+# main. Their owners remain available for deliberate local use: bin/fm-lint.sh
+# (also run by the no-mistakes pre-push gate) and bin/fm-test-run.sh lanes,
+# --check-coverage and --aggregate-json. Only the inexpensive repository
+# invariants run here.
 jobs:
   invariants:
     name: Repo invariants

@@ -68,7 +68,7 @@ Tracked files hold shared instructions and tooling; `data/` holds durable privat
 AGENTS.md            this file (CLAUDE.md is a real @AGENTS.md pointer to it)
 CONTRIBUTING.md      contributor workflow and repo conventions
 README.md            public overview and development notes
-.github/workflows/   shared CI (repository invariants only since 2026-09-09), committed
+.github/workflows/   shared CI (repository invariants only), committed
 .tasks.toml          tracked tasks-axi markdown backend config for the default backlog backend (section 10)
 .agents/skills/      firstmate-loaded internal skills, committed; each carries metadata.internal=true for installers
 .claude/skills       symlink to .agents/skills for Claude Code compatibility
