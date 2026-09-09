@@ -814,13 +814,6 @@ SH
   pass "fm-herdr-lab: timed-out provisioning cancels the launch before teardown"
 }
 
-# Provision a lingering fake server and print its pid, which the fake wrote
-# itself before exec and which must equal the receipt's bound pid. Callers
-# register the pid as a fixture (this runs in a command substitution).
-# Provision a lingering fake server and print "pid birth" from the fake's own
-# launch-time record, which must agree with the helper's authenticated receipt.
-# Callers register with exactly that identity (this runs in a command
-# substitution).
 # Provision a lingering fake server IN THE CALLER'S SHELL (never a command
 # substitution, so registration reaches the registry cleanup reads), register
 # it by the identity the fake recorded at launch cross-checked against the

@@ -313,7 +313,7 @@ It provisions only non-default names beginning with `fm-lab-`, appends an explic
 Immediately before every destructive call it re-queries the named session and refuses empty, missing, literal `default`, or `default:true` identities.
 Its before/after tripwire requires the live default-session snapshot to remain byte-identical, including the OS identity of the default socket file, and it states the server-generation gap the Herdr CLI cannot fill rather than claiming it.
 Provision binds the exact server it launched in a private allocation receipt at launch time and rechecks allocation and target identities before every signal or destructive call, retaining unresolved descendants across retries and allowing only the recorded parent or orphan reparenting to pid 1; Darwin retains an unavoidable read-to-signal race.
-Provision, stop, and teardown each run under one aggregate budget that starts before their first call and reserves cleanup inside it; the script header owns the exact bounds and receipt contract, and retained fixture evidence must be copied before the shared test orphan reaper can remove directories after its one-hour age limit.
+Provision, stop, and teardown each run under one aggregate budget that starts before their first call, with provision reserving cleanup time while polling; the script header owns the exact bounds and receipt contract, [the fixture-only regression](../tests/fm-herdr-lab.test.sh) exercises them without native Herdr, and retained fixture evidence must be copied before the shared test orphan reaper can remove directories after its one-hour age limit.
 
 The helper's header and `--help` own exact commands.
 Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never duplicate the destructive policy.

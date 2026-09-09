@@ -31,8 +31,8 @@
 # budget has left, provision keeps a 4-second cleanup reserve while polling
 # (at most 30 polls), and the clock is never restarted after a failure.
 #
-# Ownership. provision launches the named server as a direct child that first
-# writes a setsid marker and then execs the exact Herdr command. The helper
+# Ownership. provision launches the named server as a direct child that calls
+# setsid, writes a marker, and waits for receipt acceptance before exec. The helper
 # waits for that marker and records an allocation receipt under the state
 # directory (<session>.allocation.json) holding the child's exec-stable
 # identity (pid, birth time, parent, process group), the original aggregate
@@ -47,12 +47,13 @@
 # is no blanket group kill. A descendant that left that group (its own setsid)
 # cannot be proved ours and is never signaled; any group member that survives
 # is reported by pid and the receipt is retained. A retained receipt blocks
-# re-provision of that name until teardown reconciles it.
+# re-provision unless the recorded server is positively absent and the helper
+# can reconcile its remaining recorded targets before allocating again.
 #
 # Tripwire. The fleet-state record holds every field the installed Herdr CLI
 # supplies for the default session (name, default, running, socket_path) plus
 # the OS identity of the socket file (device:inode), which changes when a
-# server re-binds its socket. The Herdr 0.8.x CLI exposes no server start
+# server re-binds its socket. The Herdr 0.8.2 CLI exposes no server start
 # time, pid, or generation, so a live-handoff restart that keeps the socket is
 # outside this proof; the record says so in its server_generation field
 # rather than claiming a proof the surface cannot supply. A tripwire failure is
@@ -415,7 +416,7 @@ fm_herdr_lab_signal_verified() { # <pid> <identity> <signal>
 }
 
 # Poll until <pid> is positively absent or the grace window, clipped to the
-# budget left, ends. With no budget left this is one immediate check.
+# budget left, ends. With no budget left, absence remains unproved.
 fm_herdr_lab_wait_absent() { # <pid> <grace-seconds>
   local pid=$1 grace=$2 end rc
   grace=$(fm_herdr_lab_clip "$grace") || grace=0
@@ -610,8 +611,9 @@ fm_herdr_lab_cancel_targets() {
 }
 
 # Launch the named server as a direct child and bind its identity before any
-# poll. Exit 0 with the receipt written; 1 when the child could not be bound
-# (it is either positively gone or already recorded for cancellation).
+# readiness poll. Exit 0 after publishing the receipt and accepting the launch.
+# On failure, rejected observations are evidence only, never cancellation
+# authority; the unaccepted launcher has its own deadline to exit before exec.
 fm_herdr_lab_allocate() {
   local name=$1 marker server_pid content='' identity='' rc=0 ppid pgid birth allocated marker_end acceptance_end receipt pending record allocating_pid seconds
   fm_herdr_lab_private_state || return 1
