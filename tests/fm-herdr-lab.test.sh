@@ -612,14 +612,14 @@ reap_fixture() { # <pid>
 
 test_refuses_unsafe_names() {
   local status=0 generated
-  fm_herdr_lab_validate_name default >/dev/null 2>&1 || status=$?
+  run_with_fake fm_herdr_lab_validate_name default >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "literal default must be refused"
   status=0
-  fm_herdr_lab_validate_name arbitrary-session >/dev/null 2>&1 || status=$?
+  run_with_fake fm_herdr_lab_validate_name arbitrary-session >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "non-lab prefix must be refused"
-  fm_herdr_lab_validate_name fm-lab-safe-123 || fail "valid lab session name was refused"
-  generated=$(fm_herdr_lab_name fm-autodetect-smoke-concurrency-h3)
-  fm_herdr_lab_validate_name "$generated" || fail "generated lab session name was refused"
+  run_with_fake fm_herdr_lab_validate_name fm-lab-safe-123 || fail "valid lab session name was refused"
+  generated=$(run_with_fake fm_herdr_lab_name fm-autodetect-smoke-concurrency-h3)
+  run_with_fake fm_herdr_lab_validate_name "$generated" || fail "generated lab session name was refused"
   [ "${#generated}" -le 40 ] || fail "generated lab session name is too long for Herdr socket paths: $generated"
   pass "fm-herdr-lab: names fail closed and require the lab prefix"
 }
@@ -1270,7 +1270,7 @@ with open(p, "w") as f:
 test_cli_entrypoint_matches_sourced_contract() {
   local name output status=0
   name=$(run_with_fake "$ROOT/bin/fm-herdr-lab.sh" name cli-entry) || fail "CLI name failed"
-  fm_herdr_lab_validate_name "$name" || fail "CLI name produced an invalid session name"
+  run_with_fake fm_herdr_lab_validate_name "$name" || fail "CLI name produced an invalid session name"
   output=$(run_with_fake "$ROOT/bin/fm-herdr-lab.sh" --help) || fail "CLI help failed"
   assert_contains "$output" "fm-herdr-lab.sh teardown <session>" "CLI help lost the teardown usage line"
   run_with_fake "$ROOT/bin/fm-herdr-lab.sh" bogus >/dev/null 2>&1 || status=$?
