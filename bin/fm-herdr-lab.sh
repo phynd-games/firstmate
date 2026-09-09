@@ -341,7 +341,7 @@ fm_herdr_lab_proc_identity() { # <pid>
     *) return 1 ;;
   esac
   read -r wday mon day time year ppid pgid stat _ <<< "$out"
-  [ -n "$year" ] && [ -n "$pgid" ] || return 1
+  [ -n "$year" ] && [ -n "$pgid" ] && [ -n "$stat" ] || return 1
   case "$stat" in Z*) return 3 ;; esac
   printf 'birth=%s-%s-%s-%s-%s ppid=%s pgid=%s\n' "$wday" "$mon" "$day" "$time" "$year" "$ppid" "$pgid"
 }

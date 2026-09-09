@@ -470,6 +470,9 @@ fi
 if [ "${FM_FAKE_PS_PARTIAL:-}" = 1 ]; then printf 'partial observation\n'; exit 1; fi
 rc=0
 out=$("$FM_FAKE_PS_REAL" "$@") || rc=$?
+if [ "${FM_FAKE_PS_PARTIAL:-}" = missing-stat ] && [ "${1:-}" = -p ] && [ "$rc" -eq 0 ]; then
+  out=$(printf '%s\n' "$out" | awk 'NF=7')
+fi
 if [ -n "${FM_FAKE_REJECT_LAUNCH:-}" ] && [ -s "$FM_FAKE_LAUNCH_RECORD" ]; then
   read -r launcher birth < "$FM_FAKE_LAUNCH_RECORD"
   if [ "${1:-}" = -p ] && [ "${2:-}" = "$launcher" ]; then
@@ -996,6 +999,12 @@ test_unknown_process_state_is_refused_not_treated_as_absent() {
   expect_code 1 "$status" "exit 1 with partial ps output must remain unknown"
   pid_present "$pid" || fail "partial ps output authorized signaling"
   assert_present "$(receipt_of "$name")" "partial ps output discarded custody"
+  status=0
+  output=$(FM_FAKE_PS_PARTIAL=missing-stat run_with_fake fm_herdr_lab_teardown "$name" 2>&1) || status=$?
+  expect_code 1 "$status" "exit 0 without process state must remain unknown"
+  assert_contains "$output" "cannot read the state" "missing process state was accepted as a live identity"
+  pid_present "$pid" || fail "incomplete successful ps output authorized signaling"
+  assert_present "$(receipt_of "$name")" "incomplete successful ps output discarded custody"
   run_with_fake fm_herdr_lab_teardown "$name" || fail "teardown after the process table recovered failed"
   pid_present "$pid" && fail "recovered teardown left the server running"
   reap_fixture "$pid"
@@ -1287,6 +1296,7 @@ test_cli_entrypoint_matches_sourced_contract() {
 }
 
 test_refuses_unsafe_names
+test_unknown_process_state_is_refused_not_treated_as_absent
 test_provision_run_and_guarded_teardown
 test_private_state_and_required_socket_identity
 test_missing_tripwire_blocks_destruction
@@ -1299,7 +1309,6 @@ test_same_pid_new_birth_is_refused_and_blocks_reprovision
 test_identity_is_rechecked_immediately_before_each_signal
 test_delete_rechecks_allocation_after_stop
 test_escalation_and_descendant_signal_rechecks
-test_unknown_process_state_is_refused_not_treated_as_absent
 test_unrelated_and_detached_processes_survive_while_group_children_are_cleaned
 test_server_that_exits_at_start_is_positively_absent
 test_hanging_preflight_is_bounded_and_launches_nothing
