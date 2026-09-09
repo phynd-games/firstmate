@@ -109,12 +109,9 @@ for entry in os.scandir(p):
 }
 
 fm_herdr_lab_timed() {
-  local wanted=$1 seconds remaining
+  local wanted=$1 seconds
   shift
-  remaining=$(( $(fm_herdr_lab_remaining) - FM_HERDR_LAB_RESERVE - 1 ))
-  [ "$remaining" -ge 1 ] || return 124
-  seconds=$wanted
-  [ "$seconds" -le "$remaining" ] || seconds=$remaining
+  seconds=$(fm_herdr_lab_clip "$wanted") || return 124
   fm_run_timed "$seconds" "$@"
 }
 
@@ -154,11 +151,11 @@ fm_herdr_lab_remaining() {
   printf '%s' $(( FM_HERDR_LAB_DEADLINE - $(fm_herdr_lab_now) ))
 }
 
-# Print <wanted> clipped to the budget left after the active reserve, or fail
-# when less than one whole second remains.
+# Print <wanted> clipped to the budget left after the active reserve and the
+# timeout runner's one-second termination grace, or fail if no call can start.
 fm_herdr_lab_clip() { # <wanted>
   local wanted=$1 remaining
-  remaining=$(( $(fm_herdr_lab_remaining) - FM_HERDR_LAB_RESERVE ))
+  remaining=$(( $(fm_herdr_lab_remaining) - FM_HERDR_LAB_RESERVE - 1 ))
   [ "$remaining" -ge 1 ] || return 1
   if [ "$wanted" -le "$remaining" ]; then
     printf '%s' "$wanted"
@@ -722,7 +719,7 @@ fm_herdr_lab_bind_native() { # <session>
 }
 
 fm_herdr_lab_provision_impl() { # <session>
-  local name=$1 sessions tripwire running=false attempt receipt pid status_json poll_status
+  local name=$1 sessions tripwire running=false attempt receipt pid status_json poll_status poll_seconds
   fm_herdr_lab_validate_name "$name" || return 1
   command -v herdr >/dev/null 2>&1 || { fm_herdr_lab_error "herdr is required"; return 1; }
   command -v jq >/dev/null 2>&1 || { fm_herdr_lab_error "jq is required"; return 1; }
@@ -775,10 +772,14 @@ fm_herdr_lab_provision_impl() { # <session>
 
   fm_herdr_lab_allocate "$name" || return 1
   attempt=0
+  # Leave termination grace inside each poll's allowance as well as the
+  # aggregate budget, so hanging polls do not crowd out readiness retries.
+  poll_seconds=$(fm_herdr_lab_call_secs) || return 1
+  [ "$poll_seconds" -le 1 ] || poll_seconds=$((poll_seconds - 1))
   FM_HERDR_LAB_RESERVE=$FM_HERDR_LAB_CLEANUP_RESERVE_SECS
   while [ "$attempt" -lt "$FM_HERDR_LAB_MAX_POLLS" ] && fm_herdr_lab_clip 1 >/dev/null 2>&1; do
     poll_status=0
-    status_json=$(fm_herdr_lab_cli "$name" status --json 2>/dev/null) || poll_status=$?
+    status_json=$(FM_HERDR_LAB_CALL_SECS=$poll_seconds fm_herdr_lab_cli "$name" status --json 2>/dev/null) || poll_status=$?
     running=$(printf '%s' "$status_json" | jq -r '.server.running // false' 2>/dev/null) || running=false
     if [ "$running" = true ]; then
       if fm_herdr_lab_refuse_if_default "$name" && fm_herdr_lab_bind_native "$name"; then
