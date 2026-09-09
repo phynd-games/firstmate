@@ -1573,7 +1573,7 @@ SH
     "herdr_workspace_id=w1" "herdr_tab_id=w1:t1" "herdr_pane_id=w1:p1" "herdr_terminal_id=term1"
   for outcome in passed failed; do
     expected=$outcome
-    [ "$outcome" != passed ] || expected=done
+    [ "$outcome" != passed ] || expected="done"
     for scalar in '4 info' '1 error, 2 warning, 3 info'; do
       FM_FAKE_AXI_STATUS="run:
   id: \"01RUN\"

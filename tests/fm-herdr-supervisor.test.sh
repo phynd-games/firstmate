@@ -333,6 +333,7 @@ claim_probe() {
   FM_SUP_SCRIPT="$ROOT/bin/fm-herdr-supervisor.sh" exec bash "$@"
 }
 
+# shellcheck disable=SC2016 # Probe scripts expand variables in the child bash.
 claim_alarm_concurrent_test() (
   home=$(new_home claim-alarm-concurrent)
   pids=()
@@ -346,8 +347,8 @@ claim_alarm_concurrent_test() (
     ' > "$home/ensure-$n.out" 2>&1 &
     pids+=("$!")
   done
-  for pid in "${pids[@]}"; do
-    wait "$pid" && fail "a concurrent unresolved claim reported success"
+  for probe_pid in "${pids[@]}"; do
+    wait "$probe_pid" && fail "a concurrent unresolved claim reported success"
   done
   pids=()
   count=$(grep -c 'herdr-supervisor' "$home/state/.wake-queue" 2>/dev/null || true)
@@ -355,10 +356,11 @@ claim_alarm_concurrent_test() (
   pass "concurrent ensure calls publish one alarm for an unresolved episode"
 )
 
+# shellcheck disable=SC2016 # Probe scripts expand variables in the child bash.
 claim_alarm_loop_test() (
   mode=$1
   home=$(new_home "claim-alarm-loop-$mode")
-  loop_pid= owner_pid=
+  loop_pid='' owner_pid=''
   trap 'for pid in "$loop_pid" "$owner_pid"; do [ -z "$pid" ] || kill "$pid" 2>/dev/null || true; done; wait' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
@@ -432,9 +434,10 @@ claim_alarm_loop_test() (
   pass "the $mode loop episode alarms again after a healthy owner comes and goes"
 )
 
+# shellcheck disable=SC2016 # Probe scripts expand variables in the child bash.
 claim_alarm_monitor_test() (
   home=$(new_home claim-alarm-monitor)
-  monitor_pid= owner_pid=
+  monitor_pid='' owner_pid=''
   trap 'for pid in "$monitor_pid" "$owner_pid"; do [ -z "$pid" ] || kill "$pid" 2>/dev/null || true; done; wait' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
@@ -504,10 +507,11 @@ claim_alarm_monitor_test() (
   pass "monitor handoff resets claim alarms while status remains read-only"
 )
 
+# shellcheck disable=SC2016 # Probe scripts expand variables in the child bash.
 claim_alarm_contended_recovery_test() (
   mode=$1
   home=$(new_home "claim-alarm-contention-$mode")
-  writer_pid= monitor_pid= owner_pid=
+  writer_pid='' monitor_pid='' owner_pid=''
   trap 'for pid in "$writer_pid" "$monitor_pid" "$owner_pid"; do [ -z "$pid" ] || kill "$pid" 2>/dev/null || true; done; wait' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
@@ -647,6 +651,7 @@ claim_alarm_contended_recovery_test() (
   else
     start_contended_monitor
   fi
+  # shellcheck disable=SC2329 # Invoked indirectly by wait_for below.
   monitor_observed() { [ -e "$home/state/monitor-paused-1" ] || [ -e "$home/state/monitor-finished" ]; }
   wait_for 20 monitor_observed || fail "the monitor did not observe the contended recovery"
   if [ "$mode" != identity-arrival ] && [ "$mode" != identity-replaced ]; then
@@ -878,9 +883,10 @@ pass "successful claim acquisition lets a later failure episode alarm again"
 
 # The competing owner arrives after the loop's first ownership check but
 # before its acquisition attempt, exercising the second check at the arm path.
+# shellcheck disable=SC2016 # Probe scripts expand variables in the child bash.
 claim_alarm_loop_arrival_test() (
   home=$(new_home claim-alarm-loop-arrival)
-  loop_pid= owner_pid=
+  loop_pid='' owner_pid=''
   trap 'for pid in "$loop_pid" "$owner_pid"; do [ -z "$pid" ] || kill "$pid" 2>/dev/null || true; done; wait' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
