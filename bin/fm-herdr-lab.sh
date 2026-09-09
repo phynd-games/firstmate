@@ -616,9 +616,19 @@ fm_herdr_lab_cancel_targets() {
 # poll. Exit 0 with the receipt written; 1 when the child could not be bound
 # (it is either positively gone or already recorded for cancellation).
 fm_herdr_lab_allocate() {
-  local name=$1 marker server_pid content='' identity='' rc=0 ppid pgid birth allocated marker_end acceptance_end receipt pending record
+  local name=$1 marker server_pid content='' identity='' rc=0 ppid pgid birth allocated marker_end acceptance_end receipt pending record allocating_pid seconds
   fm_herdr_lab_private_state || return 1
   fm_herdr_lab_clip 3 >/dev/null || return 1
+  seconds=$(fm_herdr_lab_clip 1) || return 1
+  IFS= read -r -t "$seconds" allocating_pid < <(exec /bin/sh -c 'printf "%s\n" "$PPID"') || {
+    fm_herdr_lab_error "cannot resolve the allocating shell pid before launch"
+    return 1
+  }
+  case "$allocating_pid" in ''|0|*[!0-9]*)
+    fm_herdr_lab_error "invalid allocating shell pid; refusing launch"
+    return 1
+    ;;
+  esac
   marker=$(fm_herdr_lab_marker_path "$name")
   receipt=$(fm_herdr_lab_receipt_path "$name")
   pending="$receipt.pending"
@@ -659,7 +669,7 @@ sys.exit(1)' "$marker" "$marker_end" "$acceptance_end" env HERDR_SESSION="$name"
   ppid=$(fm_herdr_lab_identity_field "$identity" ppid) || ppid=unknown
   pgid=$(fm_herdr_lab_identity_field "$identity" pgid) || pgid=unknown
   birth=$(fm_herdr_lab_identity_field "$identity" birth) || birth=unknown
-  if [ "$rc" -ne 0 ] || [ "$content" != "$server_pid" ] || [ "$ppid" != "${BASHPID:-$$}" ] || [ "$pgid" != "$server_pid" ] || [ -z "$birth" ] || [ "$birth" = unknown ]; then
+  if [ "$rc" -ne 0 ] || [ "$content" != "$server_pid" ] || [ "$ppid" != "$allocating_pid" ] || [ "$pgid" != "$server_pid" ] || [ -z "$birth" ] || [ "$birth" = unknown ]; then
     fm_herdr_lab_timed 1 jq -nc --argjson pid "$server_pid" --arg identity "$identity" \
       --arg marker "$content" --argjson deadline "$FM_HERDR_LAB_DEADLINE" \
       "{rejected_observation:{pid:\$pid,identity:\$identity,marker:\$marker,deadline_epoch:\$deadline}}" > "$pending" || true

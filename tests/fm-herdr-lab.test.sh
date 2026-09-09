@@ -470,11 +470,15 @@ fi
 if [ "${FM_FAKE_PS_PARTIAL:-}" = 1 ]; then printf 'partial observation\n'; exit 1; fi
 rc=0
 out=$("$FM_FAKE_PS_REAL" "$@") || rc=$?
-if [ "${FM_FAKE_REJECT_LAUNCH:-}" = 1 ] && [ -s "$FM_FAKE_LAUNCH_RECORD" ]; then
+if [ -n "${FM_FAKE_REJECT_LAUNCH:-}" ] && [ -s "$FM_FAKE_LAUNCH_RECORD" ]; then
   read -r launcher birth < "$FM_FAKE_LAUNCH_RECORD"
   if [ "${1:-}" = -p ] && [ "${2:-}" = "$launcher" ]; then
     printf '%s\n' "$launcher" >> "$FM_FAKE_LAUNCH_RECORD.probes"
-    out=$(printf '%s\n' "$out" | awk '{$5=1999; $6=1; print}')
+    if [ "$FM_FAKE_REJECT_LAUNCH" = parent ]; then
+      out=$(printf '%s\n' "$out" | awk '{$6=1; print}')
+    else
+      out=$(printf '%s\n' "$out" | awk '{$5=1999; $6=1; print}')
+    fi
   fi
 fi
 if [ -n "${FM_FAKE_PS_MUTATE_PID:-}" ]; then
@@ -1156,10 +1160,10 @@ test_run_is_bounded_per_call() {
 }
 
 test_rejected_launcher_never_becomes_cleanup_authority() {
-  local name="fm-lab-rejected-launch-$$" status=0 pid='' birth='' before output
-  local FM_FAKE_LAUNCH_RECORD="$FAKE_STATE/rejected-launcher"
-  local FM_FAKE_REJECT_LAUNCH=1 FM_FAKE_PUBLISH_FAIL=1
-  run_with_fake fm_herdr_lab_provision "$name" > "$TMP_ROOT/rejected-launch.log" 2>&1 || status=$?
+  local mode=${1:-1} name="fm-lab-rejected-launch-${1:-1}-$$" status=0 pid='' birth='' before output
+  local FM_FAKE_LAUNCH_RECORD="$FAKE_STATE/rejected-launcher-$mode"
+  local FM_FAKE_REJECT_LAUNCH=$mode FM_FAKE_PUBLISH_FAIL=1
+  run_with_fake /bin/bash -c 'source "$1"; ( ( fm_herdr_lab_provision "$2"; result=$?; exit "$result" ); result=$?; exit "$result" )' _ "$ROOT/bin/fm-herdr-lab.sh" "$name" > "$TMP_ROOT/rejected-$mode-launch.log" 2>&1 || status=$?
   read -r pid birth < "$FM_FAKE_LAUNCH_RECORD" || true
   fixture_identity_valid "$pid" "$birth" || { retain_evidence "rejected launcher lacks launch identity"; fail "missing launcher identity"; }
   expect_code 1 "$status" "replaced launch observation must be refused"
@@ -1168,19 +1172,57 @@ test_rejected_launcher_never_becomes_cleanup_authority() {
   assert_absent "$FAKE_STATE/publication-attempts" "rejected observation reached publication failure cancellation"
   before=$(wc -l < "$FM_FAKE_LAUNCH_RECORD.probes")
   status=0
-  run_with_fake fm_herdr_lab_teardown "$name" > "$TMP_ROOT/rejected-teardown.log" 2>&1 || status=$?
+  run_with_fake /bin/bash -c 'source "$1"; ( ( fm_herdr_lab_teardown "$2"; result=$?; exit "$result" ); result=$?; exit "$result" )' _ "$ROOT/bin/fm-herdr-lab.sh" "$name" > "$TMP_ROOT/rejected-$mode-teardown.log" 2>&1 || status=$?
   expect_code 1 "$status" "rejected evidence must refuse later teardown"
   [ "$(wc -l < "$FM_FAKE_LAUNCH_RECORD.probes")" = "$before" ] || fail "teardown probed rejected custody"
-  output=$(cat "$TMP_ROOT/rejected-teardown.log")
+  output=$(cat "$TMP_ROOT/rejected-$mode-teardown.log")
   assert_contains "$output" "no authenticated custody" "teardown accepted rejected observation"
   status=0
-  run_with_fake fm_herdr_lab_provision "$name" >/dev/null 2>&1 || status=$?
+  run_with_fake /bin/bash -c 'source "$1"; ( ( fm_herdr_lab_provision "$2"; result=$?; exit "$result" ); result=$?; exit "$result" )' _ "$ROOT/bin/fm-herdr-lab.sh" "$name" >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "rejected evidence must block re-provision"
   assert_present "$(receipt_of "$name").pending" "rejected evidence was discarded"
   reap_fixture "$pid"
   settle_launched "rejected launcher fixture" "$pid" "$birth"
-  evidence "case=rejected-launch pid=$pid teardown_status=1 rejected_probes=$before later_probes=$(wc -l < "$FM_FAKE_LAUNCH_RECORD.probes") state=absent"
+  evidence "case=rejected-launch mode=$mode pid=$pid teardown_status=1 rejected_probes=$before later_probes=$(wc -l < "$FM_FAKE_LAUNCH_RECORD.probes") state=absent"
   pass "fm-herdr-lab: rejected launch observations never authorize publication or later cleanup"
+}
+
+test_stock_bash_allocates_in_ordinary_and_nested_shells() {
+  local mode name status pid='' birth='' recorded
+  for mode in ordinary nested; do
+    name="fm-lab-stock-bash-$mode-$$"
+    status=0
+    run_with_fake /bin/bash -c '
+      source "$1"
+      name=$2
+      receipt="$FM_HERDR_LAB_STATE_DIR/$name.allocation.json"
+      case "$3" in
+        ordinary)
+          fm_herdr_lab_provision "$name" || exit 1
+          [ "$(jq -r .ppid "$receipt")" = "$$" ] || exit 1
+          ;;
+        nested)
+          (
+            (
+              fm_herdr_lab_provision "$name" || exit 1
+              [ "$(jq -r .ppid "$receipt")" != "$$" ] || exit 1
+            )
+            result=$?
+            exit "$result"
+          ) || exit 1
+          ;;
+      esac
+      printf "evidence: case=stock-bash mode=%s version=%s parent=%s outer=%s\n" "$3" "$BASH_VERSION" "$(jq -r .ppid "$receipt")" "$$"
+    ' _ "$ROOT/bin/fm-herdr-lab.sh" "$name" "$mode" || status=$?
+    expect_code 0 "$status" "stock bash $mode provision must bind its actual allocating parent"
+    read -r pid birth < "$FAKE_STATE/$name.server" || true
+    fixture_register "$pid" "$birth"
+    recorded=$(receipt_field "$name" '.birth')
+    [ "$(receipt_field "$name" '.pid')" = "$pid" ] && [ "$recorded" = "$birth" ] || fail "stock bash receipt disagrees with launch identity"
+    run_with_fake /bin/bash -c 'source "$1"; fm_herdr_lab_teardown "$2"' _ "$ROOT/bin/fm-herdr-lab.sh" "$name" || fail "stock bash cleanup failed"
+    settle_launched "stock bash $mode cleanup" "$pid" "$birth"
+  done
+  pass "fm-herdr-lab: stock bash binds the actual parent in ordinary and nested shells"
 }
 
 test_authenticated_publication_failure_cancels_launcher() {
@@ -1267,7 +1309,9 @@ test_hanging_polls_respect_the_aggregate_budget_and_are_clipped
 test_hanging_stop_is_bounded_and_never_reaches_delete
 test_socket_generation_change_is_the_primary_failure_even_when_cleanup_fails
 test_run_is_bounded_per_call
+test_stock_bash_allocates_in_ordinary_and_nested_shells
 test_rejected_launcher_never_becomes_cleanup_authority
+test_rejected_launcher_never_becomes_cleanup_authority parent
 test_authenticated_publication_failure_cancels_launcher
 test_large_retained_target_list_stops_at_original_deadline
 test_cli_entrypoint_matches_sourced_contract
