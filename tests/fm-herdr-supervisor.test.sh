@@ -543,6 +543,32 @@ claim_alarm_contended_recovery_test() (
   ' > "$home/owner.out" 2>&1 &
   owner_pid=$!
   wait_for 10 test -e "$home/state/owner-ready" || fail "the contended recovery owner did not acquire its claim"
+  if [ "$mode" = ensure-exit ] || [ "$mode" = ensure-substitution ]; then
+    if [ "$mode" = ensure-exit ]; then
+      (claim_probe "$home" "$ROOT/bin/fm-herdr-supervisor.sh" ensure) \
+        > "$home/recovery.out" 2>&1 && fail "ensure claimed completed recovery while publication was locked"
+    else
+      (claim_probe "$home" -c '
+        result=$("$FM_SUP_SCRIPT" ensure 2>&1)
+        rc=$?
+        printf "%s\n" "$result"
+        exit "$rc"
+      ') > "$home/recovery.out" 2>&1 && fail "subprocess ensure claimed completed recovery while publication was locked"
+    fi
+    kill "$owner_pid"
+    wait "$owner_pid" || fail "the ensure recovery owner did not release its claim"
+    owner_pid=
+    printf 'unreadable claim\n' > "$home/state/.supervision-claim.lock"
+    touch "$home/state/writer-resume"
+    wait "$writer_pid" && fail "the unresolved writer claim reported success"
+    writer_pid=
+    (claim_probe "$home" "$ROOT/bin/fm-herdr-supervisor.sh" ensure) \
+      > "$home/later-failure.out" 2>&1 && fail "the later unresolved claim reported success"
+    count=$(grep -c 'herdr-supervisor' "$home/state/.wake-queue")
+    [ "$count" = 2 ] || fail "exited ensure lost recovery ($count alarms)"
+    pass "$mode preserves the recovered episode after process exit"
+    exit 0
+  fi
   claim_probe "$home" -c '
     set --
     . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
@@ -582,9 +608,30 @@ claim_alarm_contended_recovery_test() (
   wait "$writer_pid" && fail "the unresolved writer claim reported success"
   writer_pid=
   assert_grep unresolved "$home/state/.herdr-supervisor-claim-alarm" "the writer did not finish its delayed publication"
+  if [ "$mode" = stale-retry ]; then
+    (claim_probe "$home" "$ROOT/bin/fm-herdr-supervisor.sh" ensure) \
+      > "$home/other-recovery.out" 2>&1 || fail "another ensure did not finish the old recovery"
+    assert_grep 'deferred - another continuity owner' "$home/other-recovery.out" \
+      "the intervening ensure did not recognize the recovered owner"
+    kill "$owner_pid"
+    wait "$owner_pid" || fail "the intervening recovery owner did not release its claim"
+    owner_pid=
+    printf 'unreadable claim\n' > "$home/state/.supervision-claim.lock"
+    (claim_probe "$home" "$ROOT/bin/fm-herdr-supervisor.sh" ensure) \
+      > "$home/new-episode.out" 2>&1 && fail "the newer unresolved claim reported success"
+    count=$(grep -c 'herdr-supervisor' "$home/state/.wake-queue")
+    [ "$count" = 2 ] || fail "the newer episode did not publish its alarm"
+    cp "$home/state/.herdr-supervisor-claim-alarm" "$home/newer-suppression"
+  fi
   touch "$home/state/monitor-resume-1"
-  if [ "$mode" = disappears ]; then
+  if [ "$mode" = disappears ] || [ "$mode" = stale-retry ]; then
     wait_for 20 test -e "$home/state/monitor-paused-2" || fail "the monitor lost recovery after the owner disappeared"
+    if [ "$mode" = stale-retry ]; then
+      count=$(grep -c 'herdr-supervisor' "$home/state/.wake-queue")
+      [ "$count" = 2 ] || fail "stale recovery erased the newer episode ($count alarms)"
+      cmp -s "$home/newer-suppression" "$home/state/.herdr-supervisor-claim-alarm" \
+        || fail "the old retry changed the newer suppression identity"
+    fi
     rm "$home/state/.lock"
     touch "$home/state/monitor-resume-2"
   else
@@ -759,6 +806,9 @@ pass "successful claim acquisition lets a later failure episode alarm again"
 }
 
 case "${1:-}" in
+  --claim-ensure-exit-only) claim_alarm_contended_recovery_test ensure-exit; exit $? ;;
+  --claim-ensure-substitution-only) claim_alarm_contended_recovery_test ensure-substitution; exit $? ;;
+  --claim-stale-recovery-only) claim_alarm_contended_recovery_test stale-retry; exit $? ;;
   --claim-contention-only)
     claim_alarm_contended_recovery_test remains || exit 1
     claim_alarm_contended_recovery_test disappears || exit 1
@@ -782,6 +832,9 @@ claim_alarm_loop_test recovery || exit 1
 claim_alarm_monitor_test || exit 1
 claim_alarm_contended_recovery_test remains || exit 1
 claim_alarm_contended_recovery_test disappears || exit 1
+claim_alarm_contended_recovery_test ensure-exit || exit 1
+claim_alarm_contended_recovery_test ensure-substitution || exit 1
+claim_alarm_contended_recovery_test stale-retry || exit 1
 if [ "${1:-}" = --claim-alarms-only ]; then
   exit 0
 fi
