@@ -97,6 +97,8 @@ CLAIM_ALARM="$STATE/.herdr-supervisor-claim-alarm"
 CLAIM_ALARM_LOCK="$STATE/.herdr-supervisor-claim-alarm.lock"
 CLAIM_ALARM_EPISODE="$STATE/.herdr-supervisor-claim-episode"
 CLAIM_ALARM_RECOVERY_PENDING=
+CLAIM_ALARM_OBSERVATION_LOCK="$STATE/.herdr-supervisor-claim-observation.lock"
+CLAIM_ALARM_OBSERVATION_PENDING=0
 QUARANTINE_PREFIX="$STATE/.herdr-supervisor-quarantine"
 RECORD_LOCK="$STATE/.herdr-supervisor.lock"
 HEARTBEAT="$STATE/.herdr-supervisor-heartbeat"
@@ -822,8 +824,34 @@ hs_config_preference() {
 # this home right now. Only positive, durable evidence counts; the absence of
 # evidence is never read as the presence of an owner.
 harness_owner_provable() {
-  local read_only=${1:-0} away_state away_pid away_owner away_recorded away_current away_key observed_episode
+  local read_only=${1:-0} observed_episode current_episode status=0
+  if [ "$read_only" = 1 ]; then
+    harness_owner_detect 1
+    return $?
+  fi
+  CLAIM_ALARM_OBSERVATION_PENDING=0
   observed_episode=$(claim_alarm_episode || true)
+  if ! supervisor_lock_acquire "$CLAIM_ALARM_OBSERVATION_LOCK"; then
+    CLAIM_ALARM_OBSERVATION_PENDING=1
+    return 2
+  fi
+  current_episode=$(claim_alarm_episode || true)
+  [ "$current_episode" = "$observed_episode" ] || observed_episode=$current_episode
+  if ! harness_owner_detect 0; then
+    fm_lock_release "$CLAIM_ALARM_OBSERVATION_LOCK"
+    return 1
+  fi
+  CLAIM_ALARM_RECOVERY_PENDING=$observed_episode
+  if [ -n "$observed_episode" ]; then
+    { : > "$observed_episode/recovered"; } 2>/dev/null || status=1
+  fi
+  fm_lock_release "$CLAIM_ALARM_OBSERVATION_LOCK"
+  [ "$status" -ne 0 ] || claim_alarm_clear "$observed_episode" || true
+  return 0
+}
+
+harness_owner_detect() {
+  local read_only=${1:-0} away_state away_pid away_owner away_recorded away_current away_key
   HS_DEFER_REASON=
   if fm_supervision_claim_held_by_other "$SUPERVISION_CLAIM"; then
     HS_DEFER_REASON="another continuity owner is completing its ownership claim"
@@ -875,7 +903,6 @@ harness_owner_provable() {
     fm_pi_extension_owns_supervision "$STATE" "$FM_ROOT" 2>/dev/null || return 1
     HS_DEFER_REASON="the Pi primary extension owns watcher continuity"
   fi
-  [ "$read_only" = 1 ] || claim_alarm_clear "$observed_episode" || true
   return 0
 }
 
@@ -901,9 +928,14 @@ claim_alarm_escalate_once() {
   local reason=$1 status=0 episode key
   [ -z "$CLAIM_ALARM_RECOVERY_PENDING" ] || claim_alarm_clear "$CLAIM_ALARM_RECOVERY_PENDING" || return 1
   supervisor_lock_acquire "$CLAIM_ALARM_LOCK" || return 1
+  if ! supervisor_lock_acquire "$CLAIM_ALARM_OBSERVATION_LOCK"; then
+    fm_lock_release "$CLAIM_ALARM_LOCK"
+    return 1
+  fi
   episode=$(claim_alarm_episode || true)
   if [ -n "$episode" ] && [ -e "$episode/recovered" ]; then
     if ! claim_alarm_retire_locked "$episode"; then
+      fm_lock_release "$CLAIM_ALARM_OBSERVATION_LOCK"
       fm_lock_release "$CLAIM_ALARM_LOCK"
       return 1
     fi
@@ -911,15 +943,18 @@ claim_alarm_escalate_once() {
   fi
   if [ -z "$episode" ]; then
     if [ -e "$CLAIM_ALARM_EPISODE" ] || [ -L "$CLAIM_ALARM_EPISODE" ]; then
+      fm_lock_release "$CLAIM_ALARM_OBSERVATION_LOCK"
       fm_lock_release "$CLAIM_ALARM_LOCK"
       return 1
     fi
     episode=$(mktemp -d "$STATE/.herdr-supervisor-claim-episode.XXXXXX") || {
+      fm_lock_release "$CLAIM_ALARM_OBSERVATION_LOCK"
       fm_lock_release "$CLAIM_ALARM_LOCK"
       return 1
     }
     if ! ln -s "${episode##*/}" "$CLAIM_ALARM_EPISODE"; then
       rmdir "$episode" 2>/dev/null || true
+      fm_lock_release "$CLAIM_ALARM_OBSERVATION_LOCK"
       fm_lock_release "$CLAIM_ALARM_LOCK"
       return 1
     fi
@@ -931,11 +966,15 @@ claim_alarm_escalate_once() {
     else
       status=$?
     fi
-  elif [ "$(cat "$CLAIM_ALARM" 2>/dev/null || printf '')" != "$key" ]; then
-    if escalate "$reason"; then
-      printf '%s\n' "$key" > "$CLAIM_ALARM" 2>/dev/null || status=$?
-    else
-      status=$?
+    fm_lock_release "$CLAIM_ALARM_OBSERVATION_LOCK"
+  else
+    fm_lock_release "$CLAIM_ALARM_OBSERVATION_LOCK"
+    if [ "$(cat "$CLAIM_ALARM" 2>/dev/null || printf '')" != "$key" ]; then
+      if escalate "$reason"; then
+        printf '%s\n' "$key" > "$CLAIM_ALARM" 2>/dev/null || status=$?
+      else
+        status=$?
+      fi
     fi
   fi
   fm_lock_release "$CLAIM_ALARM_LOCK"
@@ -1625,8 +1664,8 @@ cmd_ensure() {  # <reason>
     # healthy contended claim as a broken one, seven times in 18 hours, while
     # the Pi extension's own arm child held it and the watcher beacon was
     # fresh).
-    if harness_owner_provable; then
-      [ -z "$CLAIM_ALARM_RECOVERY_PENDING" ] || return 1
+    if harness_owner_provable || [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 1 ]; then
+      [ -z "$CLAIM_ALARM_RECOVERY_PENDING" ] && [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 0 ] || return 1
       echo "herdr-supervisor: deferred - $HS_DEFER_REASON"
       return 0
     fi
@@ -1657,8 +1696,9 @@ cmd_ensure() {  # <reason>
       return 1
     fi
   fi
-  if harness_owner_provable; then
+  if harness_owner_provable || [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 1 ]; then
     fm_lock_release "$SUPERVISION_CLAIM"
+    [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 0 ] || return 1
     echo "herdr-supervisor: deferred - $HS_DEFER_REASON"
     return 0
   fi
@@ -2102,6 +2142,8 @@ cmd_run() {
             escalate "config/herdr-supervisor is off but the arm identity remains unknown; retaining the child and supervisor binding"
           elif harness_owner_provable; then
             ledger_append handoff "another continuity owner is provable while the arm identity remains unknown; retaining the child until bounded cleanup"
+          elif [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 1 ]; then
+            ledger_append observation-pending "continuity ownership observation is incomplete; retaining the child until bounded cleanup"
           else
             escalate "the arm identity remains unknown after its bounded wait; retaining the child until bounded cleanup"
           fi
@@ -2128,7 +2170,7 @@ cmd_run() {
       sleep "$IDLE_INTERVAL"
       continue
     fi
-    if harness_owner_provable; then
+    if harness_owner_provable || [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 1 ]; then
       : > "$HEARTBEAT" 2>/dev/null || true
       sleep "$IDLE_INTERVAL"
       continue
@@ -2164,7 +2206,7 @@ cmd_run() {
         # harness_owner_provable check earlier in this iteration and this
         # acquire attempt. Only escalate when no owner is provable, at most
         # once per unresolved episode.
-        if harness_owner_provable; then
+        if harness_owner_provable || [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 1 ]; then
           sleep "$IDLE_INTERVAL"
           continue
         fi
@@ -2180,7 +2222,7 @@ cmd_run() {
         continue
       fi
     fi
-    if harness_owner_provable; then
+    if harness_owner_provable || [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 1 ]; then
       rm -f "$out" 2>/dev/null || true
       LOOP_ARM_OUT=
       fm_lock_release "$SUPERVISION_CLAIM"
@@ -2494,7 +2536,7 @@ cmd_monitor_run() {  # <owner-pid TAB owner-identity>
     fi
 
     : > "$MONITOR_HEARTBEAT" 2>/dev/null || true
-    if [ -n "$CLAIM_ALARM_RECOVERY_PENDING" ]; then
+    if [ -n "$CLAIM_ALARM_RECOVERY_PENDING" ] || [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 1 ]; then
       if ! monitor_sleep "$MONITOR_INTERVAL" "$owner"; then
         monitor_stand_down "home session ended or changed identity"
         return 0

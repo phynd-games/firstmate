@@ -514,6 +514,79 @@ claim_alarm_contended_recovery_test() (
   printf '%s\n' "${BASHPID:-$$}" > "$home/state/.lock"
   touch "$home/state/task.meta"
   printf 'unreadable claim\n' > "$home/state/.supervision-claim.lock"
+  start_contended_owner() {
+  rm -f "$home/state/owner-ready"
+  claim_probe "$home" -c '
+    set --
+    . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+    fm_supervision_claim_acquire "$SUPERVISION_CLAIM" 20 || exit 1
+    trap "fm_lock_release \"\$SUPERVISION_CLAIM\"" EXIT
+    trap "exit 0" TERM INT
+    touch "$STATE/owner-ready"
+    while :; do sleep 0.05; done
+  ' > "$home/owner.out" 2>&1 &
+  owner_pid=$!
+  wait_for 10 test -e "$home/state/owner-ready" || fail "the contended recovery owner did not acquire its claim"
+  }
+  start_contended_monitor() {
+  claim_probe "$home" -c '
+    probe_mode=$1
+    set --
+    . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+    if { [ "$probe_mode" = identity-arrival ] || [ "$probe_mode" = identity-replaced ]; }; then
+      claim_alarm_episode() {
+        local snapshot rc
+        snapshot=$(bash -c ". \"\$FM_SUP_SCRIPT\" \"\" >/dev/null 2>&1 || true; claim_alarm_episode")
+        rc=$?
+        if [ ! -e "$STATE/snapshot-paused" ]; then
+          touch "$STATE/snapshot-paused"
+          deadline=$(( $(date +%s) + 45 ))
+          while [ ! -e "$STATE/snapshot-resume" ]; do
+            [ "$(date +%s)" -lt "$deadline" ] || return 1
+            sleep 0.05
+          done
+        fi
+        printf "%s" "$snapshot"
+        return "$rc"
+      }
+    fi
+    step=0
+    monitor_sleep() {
+      step=$((step + 1))
+      touch "$STATE/monitor-paused-$step"
+      deadline=$(( $(date +%s) + 45 ))
+      while [ ! -e "$STATE/monitor-resume-$step" ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || return 1
+        sleep 0.05
+      done
+    }
+    cmd_monitor_run "$(session_owner_identity)" || exit 1
+    touch "$STATE/monitor-finished"
+  ' _ "$mode" > "$home/monitor.out" 2>&1 &
+  monitor_pid=$!
+  }
+  expected_count=2
+  if [ "$mode" = identity-replaced ]; then
+    (claim_probe "$home" "$ROOT/bin/fm-herdr-supervisor.sh" ensure) \
+      > "$home/initial-episode.out" 2>&1 && fail "the initial unresolved claim reported success"
+    expected_count=3
+  fi
+  if { [ "$mode" = identity-arrival ] || [ "$mode" = identity-replaced ]; }; then
+    start_contended_monitor
+    wait_for 20 test -e "$home/state/snapshot-paused" || fail "the monitor did not capture its initial episode"
+    if [ "$mode" = identity-arrival ]; then
+      assert_absent "$home/state/.herdr-supervisor-claim-episode" "an episode existed before the monitor snapshot"
+    else
+      rm "$home/state/.supervision-claim.lock"
+      start_contended_owner
+      (claim_probe "$home" "$ROOT/bin/fm-herdr-supervisor.sh" ensure) \
+        > "$home/initial-recovery.out" 2>&1 || fail "the initial episode did not recover"
+      kill "$owner_pid"
+      wait "$owner_pid" || fail "the initial recovery owner did not release its claim"
+      owner_pid=
+      printf "unreadable claim\n" > "$home/state/.supervision-claim.lock"
+    fi
+  fi
   claim_probe "$home" -c '
     set --
     . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
@@ -532,17 +605,17 @@ claim_alarm_contended_recovery_test() (
   wait_for 20 test -e "$home/state/writer-paused" || fail "the alarm writer did not pause before queue publication"
   assert_absent "$home/state/.herdr-supervisor-claim-alarm" "the writer suppressed delivery before publication"
   rm "$home/state/.supervision-claim.lock"
-  claim_probe "$home" -c '
-    set --
-    . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
-    fm_supervision_claim_acquire "$SUPERVISION_CLAIM" 20 || exit 1
-    trap "fm_lock_release \"\$SUPERVISION_CLAIM\"" EXIT
-    trap "exit 0" TERM INT
-    touch "$STATE/owner-ready"
-    while :; do sleep 0.05; done
-  ' > "$home/owner.out" 2>&1 &
-  owner_pid=$!
-  wait_for 10 test -e "$home/state/owner-ready" || fail "the contended recovery owner did not acquire its claim"
+  start_contended_owner
+  if [ "$mode" = observation-blocked ]; then
+    printf "unreadable observation lock\n" > "$home/state/.herdr-supervisor-claim-observation.lock"
+    (claim_probe "$home" "$ROOT/bin/fm-herdr-supervisor.sh" ensure) \
+      > "$home/blocked-observation.out" 2>&1 && fail "ensure completed an unserialized owner observation"
+    assert_absent "$home/state/.wake-queue" "an incomplete observation raised a false alarm"
+    (claim_probe "$home" "$ROOT/bin/fm-herdr-supervisor.sh" status) \
+      > "$home/blocked-status.out" 2>&1 || fail "read-only status failed during observation contention"
+    assert_grep 'other-owner: yes' "$home/blocked-status.out" "observation contention hid the live owner from status"
+    rm "$home/state/.herdr-supervisor-claim-observation.lock"
+  fi
   if [ "$mode" = ensure-exit ] || [ "$mode" = ensure-substitution ]; then
     if [ "$mode" = ensure-exit ]; then
       (claim_probe "$home" "$ROOT/bin/fm-herdr-supervisor.sh" ensure) \
@@ -569,27 +642,17 @@ claim_alarm_contended_recovery_test() (
     pass "$mode preserves the recovered episode after process exit"
     exit 0
   fi
-  claim_probe "$home" -c '
-    set --
-    . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
-    step=0
-    monitor_sleep() {
-      step=$((step + 1))
-      touch "$STATE/monitor-paused-$step"
-      deadline=$(( $(date +%s) + 45 ))
-      while [ ! -e "$STATE/monitor-resume-$step" ]; do
-        [ "$(date +%s)" -lt "$deadline" ] || return 1
-        sleep 0.05
-      done
-    }
-    cmd_monitor_run "$(session_owner_identity)" || exit 1
-    touch "$STATE/monitor-finished"
-  ' > "$home/monitor.out" 2>&1 &
-  monitor_pid=$!
+  if { [ "$mode" = identity-arrival ] || [ "$mode" = identity-replaced ]; }; then
+    touch "$home/state/snapshot-resume"
+  else
+    start_contended_monitor
+  fi
   monitor_observed() { [ -e "$home/state/monitor-paused-1" ] || [ -e "$home/state/monitor-finished" ]; }
   wait_for 20 monitor_observed || fail "the monitor did not observe the contended recovery"
-  assert_absent "$home/state/monitor-finished" "monitor completed handoff before recovery bookkeeping persisted"
-  kill -0 "$monitor_pid" || fail "the monitor exited while recovery bookkeeping was pending"
+  if [ "$mode" != identity-arrival ] && [ "$mode" != identity-replaced ]; then
+    assert_absent "$home/state/monitor-finished" "monitor completed handoff before recovery bookkeeping persisted"
+    kill -0 "$monitor_pid" || fail "the monitor exited while recovery bookkeeping was pending"
+  fi
   (claim_probe "$home" -c '
     set --
     . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
@@ -597,7 +660,12 @@ claim_alarm_contended_recovery_test() (
   ') > "$home/status.out" 2>&1 || fail "status failed during recovery contention"
   assert_grep 'other-owner: yes' "$home/status.out" "contention hid the healthy owner"
   assert_absent "$home/state/.herdr-supervisor-claim-alarm" "status mutated the pending alarm"
-  assert_absent "$home/state/.wake-queue" "status queued an alarm during recovery contention"
+  if [ "$mode" = identity-replaced ]; then
+    count=$(grep -c 'herdr-supervisor' "$home/state/.wake-queue")
+    [ "$count" = 1 ] || fail "status or the paused writer changed the earlier queue evidence"
+  else
+    assert_absent "$home/state/.wake-queue" "status queued an alarm during recovery contention"
+  fi
   if [ "$mode" = disappears ]; then
     kill "$owner_pid"
     wait "$owner_pid" || fail "the recovered owner did not release its claim"
@@ -650,7 +718,7 @@ claim_alarm_contended_recovery_test() (
   wait "$monitor_pid" || fail "the monitor did not stop cleanly after recovery"
   monitor_pid=
   count=$(grep -c 'herdr-supervisor' "$home/state/.wake-queue")
-  [ "$count" = 2 ] || fail "contended recovery suppressed the later failure ($count alarms)"
+  [ "$count" = "$expected_count" ] || fail "contended recovery suppressed the later failure ($count alarms)"
   pass "contended recovery retries when the recovered owner $mode"
 )
 
@@ -806,6 +874,9 @@ pass "successful claim acquisition lets a later failure episode alarm again"
 }
 
 case "${1:-}" in
+  --claim-identity-replaced-only) claim_alarm_contended_recovery_test identity-replaced; exit $? ;;
+  --claim-observation-blocked-only) claim_alarm_contended_recovery_test observation-blocked; exit $? ;;
+  --claim-identity-arrival-only) claim_alarm_contended_recovery_test identity-arrival; exit $? ;;
   --claim-ensure-exit-only) claim_alarm_contended_recovery_test ensure-exit; exit $? ;;
   --claim-ensure-substitution-only) claim_alarm_contended_recovery_test ensure-substitution; exit $? ;;
   --claim-stale-recovery-only) claim_alarm_contended_recovery_test stale-retry; exit $? ;;
@@ -835,6 +906,9 @@ claim_alarm_contended_recovery_test disappears || exit 1
 claim_alarm_contended_recovery_test ensure-exit || exit 1
 claim_alarm_contended_recovery_test ensure-substitution || exit 1
 claim_alarm_contended_recovery_test stale-retry || exit 1
+claim_alarm_contended_recovery_test identity-arrival || exit 1
+claim_alarm_contended_recovery_test identity-replaced || exit 1
+claim_alarm_contended_recovery_test observation-blocked || exit 1
 if [ "${1:-}" = --claim-alarms-only ]; then
   exit 0
 fi
