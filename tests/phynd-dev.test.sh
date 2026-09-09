@@ -645,6 +645,424 @@ SH
   pass "Nix-managed Starship renders through the generated interactive zsh configuration"
 }
 
+# REAL_PATH still resolves this host's own real Nix (e.g. /nix/var/nix/profiles/
+# default/bin and ~/.nix-profile/bin), which every "missing Nix" fixture below
+# must not silently fall through to. NIX_FREE_PATH strips any such component so
+# command -v nix genuinely fails until the fake installer "bootstraps" one.
+NIX_FREE_PATH=$(printf '%s' "$REAL_PATH" | tr ':' '\n' | grep -v -i '/nix' | tr '\n' ':')
+NIX_FREE_PATH=${NIX_FREE_PATH%:}
+
+linux_phynd_env() {
+  local home=$1 xdg=$2 state=$3 npm_prefix=$4 fakebin=$5 uname_m=$6 script=$7
+  shift 7
+  HOME="$home" \
+  PHYN_DEV_HOME="$home" \
+  PHYN_DEV_XDG_CONFIG_HOME="$xdg" \
+  PHYN_DEV_STATE_DIR="$state" \
+  PHYN_DEV_NPM_PREFIX="$npm_prefix" \
+  PHYN_DEV_USER="$(id -un)" \
+  PHYN_DEV_UNAME_S=Linux \
+  PHYN_DEV_UNAME_M="$uname_m" \
+  PHYN_DEV_NIX_PROFILE="$fakebin/hm-profile" \
+  PHYN_DEV_SYSTEM_PROFILE="$fakebin/no-such-system-profile" \
+  PATH="$fakebin:$REAL_PATH" \
+  "$script" "$@"
+}
+
+# These exported test fixture variables persist for the rest of this bash
+# process once any Linux install test sets them (export has no function
+# scope), so a later test can otherwise silently inherit an earlier test's
+# now-real fake-nix path or log file. Every Linux install test starts by
+# clearing this exact set before exporting only what it itself needs.
+unset_linux_install_test_env() {
+  unset PHYN_DEV_NIX_BIN PHYN_DEV_HM_OUT PHYN_DEV_CURL_LOG PHYN_DEV_NIX_LOG \
+    PHYN_DEV_HM_ACTIVATE_LOG PHYN_DEV_NIX_STUB_SRC PHYN_DEV_NIX_DAEMON_PROFILE \
+    PHYN_DEV_NIX_DAEMON_PROFILE_SCRIPT PHYN_DEV_HM_PROFILE_ROOT PHYN_DEV_SKIP_TOOLS
+}
+
+# Same contract as linux_phynd_env, but with this host's own real Nix excluded
+# from PATH: for fixtures that must observe a genuinely missing Nix. Also
+# neutralizes the Darwin-only per-user/system profile path defaults (real
+# nix-darwin paths on this host, e.g. /run/current-system/sw/bin's real curl)
+# so refresh_path's prepend can never leak this host's real tools ahead of the
+# fixture's own fakebin.
+linux_phynd_env_no_ambient_nix() {
+  local home=$1 xdg=$2 state=$3 npm_prefix=$4 fakebin=$5 uname_m=$6 script=$7
+  shift 7
+  HOME="$home" \
+  PHYN_DEV_HOME="$home" \
+  PHYN_DEV_XDG_CONFIG_HOME="$xdg" \
+  PHYN_DEV_STATE_DIR="$state" \
+  PHYN_DEV_NPM_PREFIX="$npm_prefix" \
+  PHYN_DEV_USER="$(id -un)" \
+  PHYN_DEV_UNAME_S=Linux \
+  PHYN_DEV_UNAME_M="$uname_m" \
+  PHYN_DEV_NIX_PROFILE="$fakebin/hm-profile" \
+  PHYN_DEV_SYSTEM_PROFILE="$fakebin/no-such-system-profile" \
+  PATH="$fakebin:$NIX_FREE_PATH" \
+  "$script" "$@"
+}
+
+test_host_system_detects_linux_and_refuses_unsupported() {
+  local case_dir out
+  case_dir="$TMP_ROOT/host-system"
+  mkdir -p "$case_dir/home-x86" "$case_dir/home-arm" "$case_dir/home-unsupported-os" \
+    "$case_dir/home-unsupported-arch"
+
+  out=$(HOME="$case_dir/home-x86" PHYN_DEV_UNAME_S=Linux PHYN_DEV_UNAME_M=x86_64 \
+    "$ROOT/phynd-dev" status) || fail "x86_64 Linux dispatch failed: $out"
+  assert_contains "$out" "system:   x86_64-linux" "x86_64 Linux should resolve to x86_64-linux"
+
+  out=$(HOME="$case_dir/home-arm" PHYN_DEV_UNAME_S=Linux PHYN_DEV_UNAME_M=aarch64 \
+    "$ROOT/phynd-dev" status) || fail "aarch64 Linux dispatch failed: $out"
+  assert_contains "$out" "system:   aarch64-linux" "aarch64 Linux should resolve to aarch64-linux"
+
+  if out=$(HOME="$case_dir/home-unsupported-os" PHYN_DEV_UNAME_S=FreeBSD PHYN_DEV_UNAME_M=x86_64 \
+    "$ROOT/phynd-dev" status 2>&1); then
+    fail "an unsupported OS should refuse instead of proceeding: $out"
+  fi
+  assert_contains "$out" "phynd-dev supports macOS" \
+    "an unsupported OS should explain the supported platforms"
+  [ ! -d "$case_dir/home-unsupported-os/.local/state/phynd-dev" ] \
+    || fail "an unsupported OS should refuse before creating any state directory"
+
+  if out=$(HOME="$case_dir/home-unsupported-arch" PHYN_DEV_UNAME_S=Linux PHYN_DEV_UNAME_M=mips64 \
+    "$ROOT/phynd-dev" status 2>&1); then
+    fail "an unsupported Linux architecture should refuse instead of proceeding: $out"
+  fi
+  assert_contains "$out" "Linux (aarch64 or x86_64)" \
+    "an unsupported Linux architecture should name the supported architectures"
+  pass "host_system detects Linux, resolves both architectures, and refuses unsupported OS/architecture before any side effect"
+}
+
+test_linux_install_bootstraps_nix_then_activates_home_manager() {
+  unset_linux_install_test_env
+  local case_dir fixture home xdg state npm_prefix fakebin out
+  local nix_stub_src nix_bin hm_out curl_log nix_log activate_log
+  case_dir="$TMP_ROOT/linux-bootstrap"
+  fixture="$case_dir/repo"
+  home="$case_dir/home"
+  xdg="$home/.config"
+  state="$home/.local/state/phynd-dev"
+  npm_prefix="$home/.local/share/phynd-dev/npm"
+  fakebin="$case_dir/fakebin"
+  nix_bin="$case_dir/bootstrapped-nix/bin/nix"
+  hm_out="$case_dir/hm-generation"
+  curl_log="$case_dir/curl.log"
+  nix_log="$case_dir/nix-build.log"
+  activate_log="$case_dir/activate.log"
+  nix_stub_src="$case_dir/nix-stub"
+  mkdir -p "$home" "$fakebin" "$hm_out"
+  make_phynd_fixture "$ROOT" "$fixture"
+  : > "$curl_log"
+  : > "$nix_log"
+  : > "$activate_log"
+
+  # The fake nix binary the fake installer "installs": handles --version and
+  # the Linux activation path's `nix build ...#homeConfigurations....`.
+  cat > "$nix_stub_src" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' 'nix (fake bootstrapped Linux Nix)'
+  exit 0
+fi
+if [ "${1:-}" = build ]; then
+  printf '%s\n' "$*" >> "${PHYN_DEV_NIX_LOG:?}"
+  printf '%s\n' "${PHYN_DEV_HM_OUT:?}"
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$nix_stub_src"
+
+  # The activation package's own generated script; the real flake output
+  # would contain this, so the test pre-builds only its externally observable
+  # contract (what it links/writes), not Nix's internal derivation machinery.
+  cat > "$hm_out/activate" <<'SH'
+#!/usr/bin/env bash
+printf 'activated\n' >> "${PHYN_DEV_HM_ACTIVATE_LOG:?}"
+# Writes into PHYN_DEV_NIX_PROFILE, not PHYN_DEV_HOME/.nix-profile: this host's
+# own real /etc/profiles/per-user/<user>/bin already provides every one of
+# these tool names for real (this repo's own home.nix, activated on the
+# captain's machine), and refresh_path checks that real per-user path before
+# DEV_HOME_MANAGER_PROFILE/bin, so a stub placed there would never be found
+# first. PHYN_DEV_NIX_PROFILE is checked earlier and is fully test-owned.
+# The real activation script's own generated files live under its own
+# output tree (matching /nix/store/*-home-manager-files/* in production);
+# PHYN_DEV_HM_PROFILE_ROOT points home_manager_file_converged at this fake
+# stand-in for that tree instead of a real, unwritable /nix/store path.
+mkdir -p "$PHYN_DEV_HOME/.config/zsh" "${PHYN_DEV_NIX_PROFILE:?}" "${PHYN_DEV_HM_PROFILE_ROOT:?}"
+printf '%s\n' '# generated by the fake standalone Home Manager activation' \
+  > "${PHYN_DEV_HM_PROFILE_ROOT:?}/zshrc"
+ln -sfn "${PHYN_DEV_HM_PROFILE_ROOT:?}/zshrc" \
+  "$PHYN_DEV_HOME/.config/zsh/.zshrc"
+mkdir -p "$PHYN_DEV_HOME/.local/bin"
+ln -sfn "${PHYN_DEV_ROOT:?}/bin/phynd-dev" "$PHYN_DEV_HOME/.local/bin/phynd-dev"
+for tool in actionlint basedpyright basedpyright-langserver fd fresh fzf gh jq \
+  lua-language-server node npm npx rg rust-analyzer shellcheck starship \
+  treehouse typescript-language-server; do
+  cat > "${PHYN_DEV_NIX_PROFILE:?}/$tool" <<'TOOL'
+#!/usr/bin/env bash
+printf '%s\n' '❯'
+TOOL
+  chmod +x "${PHYN_DEV_NIX_PROFILE:?}/$tool"
+done
+SH
+  chmod +x "$hm_out/activate"
+
+  cat > "$fakebin/curl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${PHYN_DEV_CURL_LOG:?}"
+mkdir -p "$(dirname "${PHYN_DEV_NIX_BIN:?}")"
+cp "${PHYN_DEV_NIX_STUB_SRC:?}" "${PHYN_DEV_NIX_BIN:?}"
+chmod +x "${PHYN_DEV_NIX_BIN:?}"
+SH
+  chmod +x "$fakebin/curl"
+  for tool in npm shasum; do
+    command -v "$tool" >/dev/null 2>&1 || fail "test host is missing $tool, required by this fixture"
+  done
+
+  export PHYN_DEV_NIX_BIN="$nix_bin" PHYN_DEV_HM_OUT="$hm_out" \
+    PHYN_DEV_CURL_LOG="$curl_log" PHYN_DEV_NIX_LOG="$nix_log" \
+    PHYN_DEV_HM_ACTIVATE_LOG="$activate_log" PHYN_DEV_NIX_STUB_SRC="$nix_stub_src" \
+    PHYN_DEV_NIX_DAEMON_PROFILE="$case_dir/no-such-daemon-nix" \
+    PHYN_DEV_NIX_DAEMON_PROFILE_SCRIPT="$case_dir/no-such-daemon-nix.sh" \
+    PHYN_DEV_HM_PROFILE_ROOT="$hm_out/home-files" \
+    PHYN_DEV_SKIP_TOOLS=1
+
+  out=$(linux_phynd_env_no_ambient_nix "$home" "$xdg" "$state" "$npm_prefix" "$fakebin" x86_64 \
+    "$fixture/phynd-dev" install) || fail "Linux install with missing Nix failed: $out"
+  assert_contains "$(cat "$curl_log")" "install.determinate.systems/nix" \
+    "missing Nix on Linux should bootstrap through the Determinate installer"
+  assert_contains "$(cat "$nix_log")" "#homeConfigurations.phynd-dev.activationPackage" \
+    "Linux activation should build the flake's own standalone Home Manager output"
+  [ -s "$activate_log" ] || fail "Linux activation should run the built activation script"
+  [ -L "$home/.config/zsh/.zshrc" ] || fail "Linux activation should link the generated zshrc"
+
+  : > "$curl_log"
+  : > "$nix_log"
+  : > "$activate_log"
+  out=$(linux_phynd_env_no_ambient_nix "$home" "$xdg" "$state" "$npm_prefix" "$fakebin" x86_64 \
+    "$fixture/phynd-dev" install) || fail "second Linux install failed: $out"
+  assert_contains "$out" "already converged" "a converged Linux install should report a no-op"
+  [ ! -s "$curl_log" ] || fail "a converged Linux install should not re-bootstrap Nix"
+  [ ! -s "$nix_log" ] || fail "a converged Linux install should not rebuild the Home Manager profile"
+  pass "phynd-dev bootstraps missing Nix and activates standalone Home Manager on Linux, then converges"
+}
+
+test_linux_existing_nix_is_reused_without_bootstrapping() {
+  unset_linux_install_test_env
+  local case_dir fixture home xdg state npm_prefix fakebin out
+  local hm_out nix_log activate_log
+  case_dir="$TMP_ROOT/linux-existing-nix"
+  fixture="$case_dir/repo"
+  home="$case_dir/home"
+  xdg="$home/.config"
+  state="$home/.local/state/phynd-dev"
+  npm_prefix="$home/.local/share/phynd-dev/npm"
+  fakebin="$case_dir/fakebin"
+  hm_out="$case_dir/hm-generation"
+  nix_log="$case_dir/nix-build.log"
+  activate_log="$case_dir/activate.log"
+  mkdir -p "$home" "$fakebin" "$hm_out"
+  make_phynd_fixture "$ROOT" "$fixture"
+  : > "$nix_log"
+  : > "$activate_log"
+
+  cat > "$fakebin/nix" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' 'nix (fake pre-existing Linux Nix)'
+  exit 0
+fi
+if [ "${1:-}" = build ]; then
+  printf '%s\n' "$*" >> "${PHYN_DEV_NIX_LOG:?}"
+  printf '%s\n' "${PHYN_DEV_HM_OUT:?}"
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$fakebin/nix"
+  cat > "$hm_out/activate" <<'SH'
+#!/usr/bin/env bash
+printf 'activated\n' >> "${PHYN_DEV_HM_ACTIVATE_LOG:?}"
+mkdir -p "$PHYN_DEV_HOME/.config/zsh" "${PHYN_DEV_NIX_PROFILE:?}" "${PHYN_DEV_HM_PROFILE_ROOT:?}"
+printf '%s\n' '# generated' > "${PHYN_DEV_HM_PROFILE_ROOT:?}/zshrc"
+ln -sfn "${PHYN_DEV_HM_PROFILE_ROOT:?}/zshrc" \
+  "$PHYN_DEV_HOME/.config/zsh/.zshrc"
+mkdir -p "$PHYN_DEV_HOME/.local/bin"
+ln -sfn "${PHYN_DEV_ROOT:?}/bin/phynd-dev" "$PHYN_DEV_HOME/.local/bin/phynd-dev"
+for tool in actionlint basedpyright basedpyright-langserver fd fresh fzf gh jq \
+  lua-language-server node npm npx rg rust-analyzer shellcheck starship \
+  treehouse typescript-language-server; do
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "\xe2\x9d\xaf"\n' > "${PHYN_DEV_NIX_PROFILE:?}/$tool"
+  chmod +x "${PHYN_DEV_NIX_PROFILE:?}/$tool"
+done
+SH
+  chmod +x "$hm_out/activate"
+  # No curl fixture at all: bootstrap_nix must never be reached.
+
+  export PHYN_DEV_HM_OUT="$hm_out" PHYN_DEV_NIX_LOG="$nix_log" \
+    PHYN_DEV_HM_ACTIVATE_LOG="$activate_log" \
+    PHYN_DEV_NIX_DAEMON_PROFILE="$case_dir/no-such-daemon-nix" \
+    PHYN_DEV_NIX_DAEMON_PROFILE_SCRIPT="$case_dir/no-such-daemon-nix.sh" \
+    PHYN_DEV_HM_PROFILE_ROOT="$hm_out/home-files" \
+    PHYN_DEV_SKIP_TOOLS=1
+
+  out=$(linux_phynd_env "$home" "$xdg" "$state" "$npm_prefix" "$fakebin" aarch64 \
+    "$fixture/phynd-dev" install) || fail "Linux install with pre-existing Nix failed: $out"
+  assert_contains "$(cat "$nix_log")" "#homeConfigurations.phynd-dev.activationPackage" \
+    "an existing Linux Nix installation should still drive standalone Home Manager activation"
+  [ -s "$activate_log" ] || fail "Linux activation should still run with a pre-existing Nix"
+  pass "phynd-dev reuses a working existing Nix installation on Linux without bootstrapping"
+}
+
+test_linux_nix_install_failure_stops_before_activation() {
+  unset_linux_install_test_env
+  local case_dir fixture home xdg state npm_prefix fakebin out
+  local curl_log nix_log activate_log
+  case_dir="$TMP_ROOT/linux-install-failure"
+  fixture="$case_dir/repo"
+  home="$case_dir/home"
+  xdg="$home/.config"
+  state="$home/.local/state/phynd-dev"
+  npm_prefix="$home/.local/share/phynd-dev/npm"
+  fakebin="$case_dir/fakebin"
+  curl_log="$case_dir/curl.log"
+  nix_log="$case_dir/nix-build.log"
+  activate_log="$case_dir/activate.log"
+  mkdir -p "$home" "$fakebin"
+  make_phynd_fixture "$ROOT" "$fixture"
+  : > "$curl_log"
+  : > "$nix_log"
+  : > "$activate_log"
+
+  cat > "$fakebin/curl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${PHYN_DEV_CURL_LOG:?}"
+exit 1
+SH
+  chmod +x "$fakebin/curl"
+
+  export PHYN_DEV_CURL_LOG="$curl_log" PHYN_DEV_NIX_LOG="$nix_log" \
+    PHYN_DEV_HM_ACTIVATE_LOG="$activate_log" \
+    PHYN_DEV_NIX_DAEMON_PROFILE="$case_dir/no-such-daemon-nix" \
+    PHYN_DEV_NIX_DAEMON_PROFILE_SCRIPT="$case_dir/no-such-daemon-nix.sh" \
+    PHYN_DEV_SKIP_TOOLS=1
+
+  if out=$(linux_phynd_env_no_ambient_nix "$home" "$xdg" "$state" "$npm_prefix" "$fakebin" x86_64 \
+    "$fixture/phynd-dev" install 2>&1); then
+    fail "a failed Nix bootstrap should stop phynd-dev install: $out"
+  fi
+  assert_contains "$(cat "$curl_log")" "install.determinate.systems/nix" \
+    "the failed run should still have attempted the Determinate installer"
+  [ ! -s "$nix_log" ] || fail "activation must not be attempted after a failed Nix install"
+  [ ! -s "$activate_log" ] || fail "the Home Manager activation script must not run after a failed Nix install"
+  pass "phynd-dev reports a failed Linux Nix installation honestly and never reaches activation"
+}
+
+test_darwin_flake_check_still_uses_darwin_configurations() {
+  local case_dir fixture home xdg state npm_prefix nix_log rebuild_log out
+  case_dir="$TMP_ROOT/flake-check-dispatch"
+  fixture="$case_dir/repo"
+  home="$case_dir/home"
+  xdg="$home/.config"
+  state="$home/.local/state/phynd-dev"
+  npm_prefix="$home/.local/share/phynd-dev/npm"
+  nix_log="$case_dir/nix.log"
+  rebuild_log="$case_dir/rebuild.log"
+  mkdir -p "$home"
+  make_phynd_fixture "$ROOT" "$fixture"
+  make_fake_phynd_tools "$case_dir/fakebin"
+  PHYN_TEST_FAKEBIN="$case_dir/fakebin"
+  export PHYN_TEST_FAKEBIN
+  : > "$nix_log"
+  : > "$rebuild_log"
+
+  out=$(phynd_env "$home" "$xdg" "$state" "$npm_prefix" "$nix_log" "$rebuild_log" \
+    "$fixture/phynd-dev" flake-check) || fail "Darwin flake-check failed: $out"
+  assert_contains "$(cat "$nix_log")" "darwin configuration eval" \
+    "Darwin flake-check should evaluate darwinConfigurations, not homeConfigurations"
+  pass "flake-check keeps evaluating darwinConfigurations.phynd-dev on the Darwin dispatch path"
+}
+
+test_linux_flake_check_uses_home_configurations() {
+  local case_dir fixture home xdg state npm_prefix fakebin nix_log out
+  unset_linux_install_test_env
+  case_dir="$TMP_ROOT/linux-flake-check-dispatch"
+  fixture="$case_dir/repo"
+  home="$case_dir/home"
+  xdg="$home/.config"
+  state="$home/.local/state/phynd-dev"
+  npm_prefix="$home/.local/share/phynd-dev/npm"
+  fakebin="$case_dir/fakebin"
+  nix_log="$case_dir/nix.log"
+  mkdir -p "$home" "$fakebin"
+  make_phynd_fixture "$ROOT" "$fixture"
+  : > "$nix_log"
+
+  cat > "$fakebin/nix" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' 'nix (fake Linux flake-check)'
+  exit 0
+fi
+if [ "${1:-}" = flake ] && [ "${2:-}" = check ]; then
+  exit 0
+fi
+if [ "${1:-}" = eval ]; then
+  printf '%s\n' "$*" >> "${PHYN_DEV_NIX_LOG:?}"
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$fakebin/nix"
+  export PHYN_DEV_NIX_LOG="$nix_log"
+
+  out=$(linux_phynd_env "$home" "$xdg" "$state" "$npm_prefix" "$fakebin" x86_64 \
+    "$fixture/phynd-dev" flake-check) || fail "Linux flake-check failed: $out"
+  assert_contains "$(cat "$nix_log")" "#homeConfigurations.phynd-dev.activationPackage.drvPath" \
+    "Linux flake-check should evaluate homeConfigurations.phynd-dev"
+  assert_not_contains "$(cat "$nix_log")" "darwinConfigurations" \
+    "Linux flake-check should never evaluate darwinConfigurations"
+  pass "flake-check evaluates homeConfigurations.phynd-dev on the Linux dispatch path"
+}
+
+test_real_nix_cross_evaluates_linux_home_configuration() {
+  local out
+  if ! PATH="$REAL_PATH" command -v nix >/dev/null 2>&1; then
+    pass "real Nix cross-evaluation of the Linux configuration skipped: no nix on this host"
+    return 0
+  fi
+  # Cross-evaluation from whatever host this runs on (Darwin or Linux): proves
+  # the flake's homeConfigurations.phynd-dev output evaluates for a Linux
+  # system without building it. This is evaluation evidence, not a native
+  # Linux build; native build/activation evidence is out of band (see the
+  # task's self-review report for the disposable-container verification).
+  out=$(PATH="$REAL_PATH" PHYN_DEV_SYSTEM=x86_64-linux PHYN_DEV_USER=phynd \
+    PHYN_DEV_HOME=/home/phynd PHYN_DEV_ROOT="$ROOT" \
+    nix eval --no-write-lock-file --impure --raw \
+    "$ROOT#homeConfigurations.phynd-dev.activationPackage.drvPath" 2>&1) \
+    || fail "real Nix could not cross-evaluate the Linux standalone Home Manager configuration: $out"
+  assert_contains "$out" ".drv" \
+    "cross-evaluating the Linux configuration should resolve to a derivation path"
+  out=$(PATH="$REAL_PATH" PHYN_DEV_SYSTEM=aarch64-linux PHYN_DEV_USER=phynd \
+    PHYN_DEV_HOME=/home/phynd PHYN_DEV_ROOT="$ROOT" \
+    nix eval --no-write-lock-file --impure --raw \
+    "$ROOT#homeConfigurations.phynd-dev.activationPackage.drvPath" 2>&1) \
+    || fail "real Nix could not cross-evaluate the aarch64-linux configuration: $out"
+  assert_contains "$out" ".drv" \
+    "cross-evaluating the aarch64-linux configuration should resolve to a derivation path"
+  out=$(PATH="$REAL_PATH" PHYN_DEV_SYSTEM=aarch64-darwin PHYN_DEV_USER=phynd \
+    PHYN_DEV_HOME=/Users/phynd PHYN_DEV_ROOT="$ROOT" \
+    nix eval --no-write-lock-file --impure --raw \
+    "$ROOT#darwinConfigurations.phynd-dev.config.system.build.toplevel.drvPath" 2>&1) \
+    || fail "real Nix could not still evaluate the preserved Darwin configuration: $out"
+  assert_contains "$out" ".drv" \
+    "the Darwin configuration should still resolve to a derivation path"
+  pass "real Nix evaluates the flake's homeConfigurations.phynd-dev output for both Linux architectures and still evaluates darwinConfigurations.phynd-dev"
+}
+
 test_root_entrypoint_resolves_itself
 test_npm_tools_ignore_stale_path_commands
 test_install_tool_repairs_outdated_no_mistakes
@@ -654,3 +1072,10 @@ test_flake_update_and_check_are_explicit
 test_fresh_effective_config_and_wezterm_load
 test_repo_starship_config_is_usable
 test_starship_is_nix_managed_and_loaded_once
+test_host_system_detects_linux_and_refuses_unsupported
+test_linux_install_bootstraps_nix_then_activates_home_manager
+test_linux_existing_nix_is_reused_without_bootstrapping
+test_linux_nix_install_failure_stops_before_activation
+test_darwin_flake_check_still_uses_darwin_configurations
+test_linux_flake_check_uses_home_configurations
+test_real_nix_cross_evaluates_linux_home_configuration

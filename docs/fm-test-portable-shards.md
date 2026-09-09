@@ -55,13 +55,16 @@ Membership is derived rather than enumerated, so a newly added test lands here b
 
 ## Portable serial CI shards
 
+Since 2026-09-09 these shards, the two portable parallel shards, the coverage guard, and the timing aggregate are no longer automatic GitHub CI jobs: the captain retired those Linux lanes rather than repair them, and `.github/workflows/ci.yml` runs only the repository invariants.
+The lanes remain runner capabilities for deliberate local runs, and the history below records how they were balanced.
+
 On green CI run [30725985757](https://github.com/kunchenguid/firstmate/actions/runs/30725985757), that remainder accumulated 19m04s of script time against a 20-minute job timeout.
 On [PR 1495](https://github.com/kunchenguid/firstmate/pull/1495), its main step ran about 19m51s before the job was cancelled at that boundary.
 `portable-serial-<k>of<n>` splits it across `n` separate CI runners.
 Each shard is still strictly serial in itself, and separate runners mean no two of these stateful scripts ever share a machine, so the split needs no concurrency isolation proof.
 
 `bin/fm-test-run.sh` owns `n` and refuses any lane whose `of<n>` disagrees with it.
-`.github/workflows/ci.yml` derives the same `n` from `strategy.job-total` rather than a literal, so changing the shard count in either file without the other fails the lane loudly instead of leaving part of the required suite unrun.
+While these ran in CI, `.github/workflows/ci.yml` derived the same `n` from `strategy.job-total` rather than a literal, so changing the shard count in either file without the other failed the lane loudly instead of leaving part of the suite unrun.
 
 Assignment is longest-processing-time bin packing over per-script duration hints embedded in `bin/fm-test-run.sh`.
 The hints came from the `fm-test-timing-portable-serial-*` artifacts of green CI run [32491999845](https://github.com/kunchenguid/firstmate/actions/runs/32491999845) on 2026-08-21, where the lane ran 116 scripts in 2541548 ms of serial work.
