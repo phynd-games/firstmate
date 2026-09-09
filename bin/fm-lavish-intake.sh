@@ -1597,18 +1597,18 @@ cmd_carry_forward() {
       || fail "intake evidence already exists for task $child with a different classification"
     local child_have
     child_have=$(printf 'parent_task_id=%s\nartifact=%s\nartifact_sha256=%s\nsource_id=%s\nsequence=%s\nresult=%s\nresult_sha256=%s\nscope_id=%s\nscope_source=%s\nscope_source_sha256=%s\napproval_source=%s\napproval_source_sha256=%s\n' \
-      "$(meta_value "$child_receipt" parent_task_id)" \
+      "$(require_unique_meta "$child_receipt" parent_task_id)" \
       "$(require_unique_meta "$child_receipt" artifact)" \
       "$(require_unique_meta "$child_receipt" artifact_sha256)" \
       "$(require_unique_meta "$child_receipt" source_id)" \
       "$(require_unique_meta "$child_receipt" sequence)" \
       "$(require_unique_meta "$child_receipt" result)" \
       "$(require_unique_meta "$child_receipt" result_sha256)" \
-      "$(meta_value "$child_receipt" scope_id)" \
-      "$(meta_value "$child_receipt" scope_source)" \
-      "$(meta_value "$child_receipt" scope_source_sha256)" \
-      "$(meta_value "$child_receipt" approval_source)" \
-      "$(meta_value "$child_receipt" approval_source_sha256)")
+      "$(require_unique_meta "$child_receipt" scope_id)" \
+      "$(require_unique_meta "$child_receipt" scope_source)" \
+      "$(require_unique_meta "$child_receipt" scope_source_sha256)" \
+      "$(require_unique_meta "$child_receipt" approval_source)" \
+      "$(require_unique_meta "$child_receipt" approval_source_sha256)")
     [ "$child_have" = "$child_want" ] \
       || fail "intake evidence already exists for task $child with different lineage"
     verify_receipt "$child" "$child_receipt" >/dev/null \
