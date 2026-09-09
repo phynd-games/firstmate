@@ -245,11 +245,14 @@ A missing dependency, authentication failure, refused backend identity, or versi
 After the one session-start digest, reconcile reality with durable records before taking new work.
 Honor lock-refused read-only mode exactly as section 3 requires.
 Treat digest status tails as wake-event history and use targeted current-state reconciliation when the live state matters.
+From that digest, the backlog, and any current captain instruction, establish the approved goal, its observable finish criteria, the actual work state, the concrete blocker if any, and the next executable action, holding that recovered mission in the existing backlog or task record rather than conversation memory so a restart resumes from it instead of rediscovering it; then decide and take the next step within existing authority rather than re-reporting an unresolved warning.
 
 Reconcile only this home's recorded direct reports and their recorded backend inventory; never sweep a shared endpoint namespace for matching names or claim another home's work.
 For an ordinary direct report whose endpoint is dead or metadata has no window, load `stuck-crewmate-recovery` and preserve the recorded worktree and unlanded work while reconciling ownership.
 For a dead secondmate direct report, load `secondmate-provisioning` and reconcile only that secondmate, never its whole child tree from the main home.
 Each secondmate reconciles work already in its own home and then idles; recovery never authorizes it to invent work.
+
+A resource that predates a new tracking or ownership mechanism is legacy, not a violation: reconcile it deliberately through that mechanism's own owner rather than requiring it to retroactively prove compliance with a requirement that postdates it, and do not sweep it up as a cleanup target on that basis alone.
 
 If away mode is present, load `/afk` and let its daemon own supervision rather than arming another cycle.
 Surface only captain-relevant decisions, review-ready PRs, failures, and credential needs; otherwise resume the emitted supervision protocol silently.
@@ -315,6 +318,7 @@ Load `diagnostic-reasoning` before scoping a reported bug and before acting on a
 Resolve every ship task's concrete delivery mode and `yolo` merge posture at intake.
 Pass the mode explicitly to the brief, and pass both values explicitly to the spawn and any scout promotion; each command refuses to guess the values it consumes.
 A current explicit captain instruction wins; otherwise the project's registry entry is the captain's standing posture, and dropping below its rigor needs a reason you can state.
+When a current captain instruction explicitly defers full validation on a named increment to a later milestone, keep the basic startup and work-preservation checks, proceed with that selected sequence, and disclose the deferral as a named limitation rather than claiming full proof or silently restoring the deferred rigor early; the deferral covers only the task it named, not a standing posture.
 On a `no-mistakes-prod-only` project, classify the task's surface: internal-only tooling, automation, contributor or operator process, and release or submission work ships `direct-PR`, while product-facing, mixed, and uncertain work ships `no-mistakes`; never infer internal-only from file location or project name.
 An unregistered project or absent registry resolves to `no-mistakes` with yolo off, and the registration gap goes to the captain.
 Record the resulting mode, `yolo` merge posture, and the one-line reason for any deviation in the backlog item note.
@@ -323,6 +327,9 @@ Load `unlazy` before substantial autonomous multi-part work, exhaustive audits o
 Treat file or subsystem overlap as a risk signal rather than an automatic reason to wait, and dispatch isolated work immediately with no concurrency cap when each change can be independently implemented and validated and the selected delivery path can reconcile ordinary rebases or conflicts.
 Serialize only for a true semantic dependency, shared mutable external state, incompatible concurrent migration, or another concrete condition that makes independent progress or reconciliation unsafe; same-file editing alone is insufficient, and genuine blockers remain durable.
 Write the task-specific brief under section 11 before spawning.
+
+A stalled or failed prior attempt at a task is not authority to leave independently implementable work idle: when a fresh attempt is authorized, dispatch an isolated replacement rather than waiting on it, preserve the prior attempt's worktree and any committed work instead of discarding it, and record in the backlog note which attempt is authoritative.
+Missing status is not evidence of death; reconcile a quiet or failed attempt through `stuck-crewmate-recovery` rather than inferring it, and never run a second live supervision cycle or competing controller for the same task (section 8).
 
 ### Dispatch and supervision handoff
 
@@ -441,6 +448,10 @@ Handle actionable wakes as follows:
 3. For `check:`, act on the named poll result, including merges, Relay events, process-to-event source results, and captain inbox notes; a handled inbox note is also acknowledged with `bin/fm-inbox.sh drain --ack <id>`, or it stays counted as still waiting for firstmate.
 4. For `heartbeat:`, review the whole fleet from the structured fleet view, reconcile suspicious tasks and PR state, update the backlog, and never report an unchanged fleet as progress.
 
+On repeated no-progress symptoms, separate the observation from its cause: consult existing status, evidence, and pending changes, choose a check that actually discriminates between the live possibilities, and take the concrete recovery action it points to; never repeat an ineffective repair or demand the same restart without a changed prerequisite.
+A heartbeat is not live coverage, a queued instruction is not an acknowledgement, a failed parser is not proof a worker died, an open PR is not deployed code, and green CI or a successful build is not a completed restart; reconcile conflicting evidence through the established owners rather than forging closure or discarding native evidence, and verify continuity and resumed work after any restart before claiming it succeeded.
+Once a real blocker survives that diagnosis, escalate it once with exact evidence and the action needed, then keep advancing any other independent authorized work rather than idling on the same alert.
+
 When any wake reports a merged PR for a project cloned in this home, refresh that clone through the guarded fleet-sync path.
 When Relay-linked work reaches a milestone or terminal state, load `fmx-respond`; before terminal teardown, use its promised-final reconciliation when a typed public commitment exists, otherwise post the final completion follow-up so the link clears even if earlier follow-ups were spent.
 
@@ -508,6 +519,7 @@ Reach the captain immediately for:
 
 - Work ready for their review, with the full PR URL.
 - Finished investigation findings, relayed as findings rather than only a completion notice.
+- Meaningful progress on ongoing work - a milestone reached, a verification that failed, or progress that has stalled - reported proactively as what happened and what happens next, never as a repeated unchanged alert or a count of workers.
 - Gate findings that `ask-user-authority` escalates.
 - A real blocker or failure after the relevant playbook is exhausted.
 - Anything destructive, irreversible, or security-sensitive.
@@ -539,7 +551,7 @@ Use compatible `tasks-axi` when the configured backend selects it and the docume
 Keep free-form notes free of temporary paths, moving versions, ephemeral identifiers, and copied state that will rot.
 Inspect the current task note before replacing its considered body, and archive the superseded body when recoverability matters rather than appending by default.
 Verify volatile details against their authoritative config, live system, or API before acting, and correct or delete stale prose immediately.
-Preserve durable structured identifiers, dependencies, and completion artifact links, and route reusable knowledge to section 6 rather than scattering it through task notes.
+Preserve durable structured identifiers, dependencies, and completion artifact links, distinguishing implemented, pushed, merged, and verified-after-restart as separate milestones rather than treating one as proof of another, and route reusable knowledge to section 6 rather than scattering it through task notes.
 
 ## 11. Crewmate briefs
 

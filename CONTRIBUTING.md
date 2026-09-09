@@ -9,10 +9,8 @@ We require this to reduce the maintainer's burden of reviewing and merging contr
 `no-mistakes` puts a local git proxy in front of your real remote.
 Pushing through it runs an AI-driven review/test/lint pipeline in an isolated worktree, forwards the push upstream only after every check passes, and opens a clean PR automatically.
 
-A GitHub Actions check (`Require no-mistakes`) runs on PRs targeting `main` and requires both the deterministic signature and a parseable structured attestation from no-mistakes v1.46.0 or newer.
-The attestation must bind to the current PR head commit and report the review, test, and document steps as completed, so a stale attestation, a missing `head_sha`, or a skipped required step fails.
-It evaluates every PR opening and body edit independently, reruns after head synchronization or reopening, and prevents a later edit from replacing an earlier pending compliance check.
-GitHub Actions and Dependabot are exempt so their automation keeps working, but other contributor PRs that do not satisfy the attestation contract will not be reviewed or merged.
+A local `no-mistakes` push is what actually produces a compliant PR: it runs the review/test/document pipeline before forwarding to the parent repo, and its attestation records that step completion.
+The parent repo does not currently run an automated GitHub Actions check enforcing this on every PR; treat the requirement above as the contribution expectation rather than something CI blocks on for you.
 
 ## Workflow
 
@@ -108,7 +106,7 @@ Its header and `--help` own the flags, family labels, lanes, and changed-file ma
 Portable shard balance evidence lives in `docs/fm-test-portable-shards.md`.
 Local no-mistakes Test stays intent-targeted and must not wire `commands.test` to `--all` or a `tests/*.test.sh` walk.
 Family selection is the ordinary local path; `--all` is deliberate full regression only.
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) requires only `Repo invariants` as of 2026-09-09 captain instruction; the portable parallel shards, the portable serial lane's shards, lint, and the coverage guard remain available through `bin/fm-test-run.sh` and the no-mistakes pipeline for deliberate local and pipeline-driven use, not as automatic GitHub Actions checks.
+Automatic CI now runs only the repo invariants job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml); the portable parallel shards, the portable serial lane's shards, and the coverage guard remain available through `bin/fm-test-run.sh` for deliberate local or no-mistakes-driven use, not as an automatic PR gate.
 Use `bin/fm-test-run.sh --list-lanes` for exact lane names and `--help` for `--jobs` rules and required gate-skip flags when reproducing a lane locally.
 Discover tests by listing `tests/*.test.sh`: each is a self-contained bash script named `<subject>.test.sh`, and its header comment describes what it covers, so pass one to `bin/fm-test-run.sh` to focus on a subject with canonical timing output.
 Shared test helpers live in `tests/lib.sh` (reporters, temp roots, git fixtures), `tests/fixtures.sh` (fake toolchain and spawn-world builders), `tests/wake-helpers.sh`, and `tests/secondmate-helpers.sh`.
