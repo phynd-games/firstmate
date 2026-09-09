@@ -330,7 +330,7 @@ claim_probe() {
   HOME="$home" PATH="$FAKEBIN:$PATH" FM_FAKE_HERDR_STATE="$home/fakestate" \
   FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" \
   FM_SUPERVISION_MODEL=extension FM_HERDR_SUPERVISOR_LOCK_TRIES=2 \
-  FM_SUP_SCRIPT="$ROOT/bin/fm-herdr-supervisor.sh" bash "$@"
+  FM_SUP_SCRIPT="$ROOT/bin/fm-herdr-supervisor.sh" exec bash "$@"
 }
 
 claim_alarm_concurrent_test() (
@@ -358,8 +358,10 @@ claim_alarm_concurrent_test() (
 claim_alarm_loop_test() (
   mode=$1
   home=$(new_home "claim-alarm-loop-$mode")
-  loop_pid= owner_pid= loop_job= owner_job=
+  loop_pid= owner_pid=
   trap 'for pid in "$loop_pid" "$owner_pid"; do [ -z "$pid" ] || kill "$pid" 2>/dev/null || true; done; wait' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   printf 'generation=fixture\nmode=active\n' > "$home/state/.herdr-supervisor"
   touch "$home/state/task.meta"
   printf 'unreadable claim\n' > "$home/state/.supervision-claim.lock"
@@ -383,18 +385,18 @@ claim_alarm_loop_test() (
     }
     cmd_run
   ' > "$home/loop.out" 2>&1 &
-  loop_job=$!
+  loop_pid=$!
   wait_for 10 test -s "$home/state/loop-test-pid" || fail "the loop process did not start"
-  loop_pid=$(cat "$home/state/loop-test-pid")
+  [ "$(cat "$home/state/loop-test-pid")" = "$loop_pid" ] || fail "the loop probe is not the registered child"
   wait_for 20 test -e "$home/state/paused-1" || fail "the loop did not reach its failed-claim pause: $(cat "$home/loop.out")"
   assert_grep 'could not be acquired before arming' "$home/state/.wake-queue" \
     "the loop did not publish its initial claim alarm"
   if [ "$mode" = shared ]; then
-    claim_probe "$home" -c '
+    (claim_probe "$home" -c '
       set --
       . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
       cmd_ensure "same episode"
-    ' > "$home/ensure.out" 2>&1 && fail "an unresolved ensure claim reported success"
+    ') > "$home/ensure.out" 2>&1 && fail "an unresolved ensure claim reported success"
     count=$(grep -c 'herdr-supervisor' "$home/state/.wake-queue")
     [ "$count" = 1 ] || fail "ensure and loop published $count alarms for one episode"
   fi
@@ -409,13 +411,13 @@ claim_alarm_loop_test() (
     touch "$STATE/owner-ready"
     while :; do sleep 0.05; done
   ' > "$home/owner.out" 2>&1 &
-  owner_job=$!
+  owner_pid=$!
   wait_for 10 test -e "$home/state/owner-ready" || fail "the recovery owner did not acquire its claim"
-  owner_pid=$(cat "$home/state/owner-test-pid")
+  [ "$(cat "$home/state/owner-test-pid")" = "$owner_pid" ] || fail "the owner probe is not the registered child"
   touch "$home/state/resume-1"
   wait_for 20 test -e "$home/state/paused-2" || fail "the loop did not observe the recovery owner"
   kill "$owner_pid"
-  wait "$owner_job" || fail "the recovery owner failed to release its claim: $(cat "$home/owner.out")"
+  wait "$owner_pid" || fail "the recovery owner failed to release its claim: $(cat "$home/owner.out")"
   owner_pid=
   assert_absent "$home/state/.supervision-claim.lock" "the recovery owner retained its claim"
   printf 'unreadable claim\n' > "$home/state/.supervision-claim.lock"
@@ -425,7 +427,7 @@ claim_alarm_loop_test() (
   [ "$count" = 2 ] || fail "the loop failed to alarm after actual owner recovery ($count alarms)"
   printf 'generation=retired\n' > "$home/state/.herdr-supervisor"
   touch "$home/state/resume-3"
-  wait "$loop_job" || fail "the loop did not stop after generation retirement"
+  wait "$loop_pid" || fail "the loop did not stop after generation retirement"
   loop_pid=
   pass "the $mode loop episode alarms again after a healthy owner comes and goes"
 )
