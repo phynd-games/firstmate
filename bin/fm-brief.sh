@@ -45,6 +45,9 @@
 # report rather than a merge, and a charter is not a delivery contract.
 # --intake and --not-applicable are mutually exclusive. A new ship or scout
 # brief without either carries a required gate and cannot be dispatched.
+# --intake accepts receipts verified by bin/fm-lavish-intake.sh. For carried-forward
+# evidence, the scaffold emits parser-owned "Lavish intake parent" and
+# "Lavish intake scope" lines from the receipt's parent_task_id and scope_id.
 # --not-applicable requires a reason in the form <class>: task=<task-id>;
 # target=<path-like subject>; action=<specific concrete change with multiple
 # meaningful terms>, such as "documentation: task=feature-a1;

@@ -22,7 +22,14 @@
 #           reason. It is never an implicit default.
 # carry-forward
 #           Record evidence that an exact follow-up child task is covered by
-#           an already-accepted, still-verifiable parent receipt. It never
+#           an already-accepted, still-verifiable significant parent receipt
+#           with fully handled captured feedback in this home's state directory.
+#           An exempt or carried-forward receipt cannot serve as the parent.
+#           The child id must be distinct from the parent and safe for task
+#           creation; active child intake or other existing child evidence refuses.
+#           Scope id accepts only letters, digits, dots, underscores, and dashes.
+#           Preflight rejects symlinked paths and hardlinked input files.
+#           It never
 #           captures a new Lavish answer: it carries the parent's existing
 #           source id, sequence, artifact, and result forward unchanged, binds
 #           an explicit MAIN-supplied scope declaration (a scope-source file
@@ -31,18 +38,24 @@
 #           new child receipt atomically. File separation does not require
 #           different contents or independent authors. It never accepts a
 #           caller-supplied hash as proof or infers scope from the text's meaning.
-#           A repeated identical request is
-#           idempotent; a conflicting one refuses without mutating either
+#           While the parent remains verifiable, a repeated identical request is
+#           idempotent; a conflicting parent, scope, or approval refuses without mutating either
 #           receipt. It never releases a captain hold, creates a worker
-#           endpoint, or changes merge authority. Because the parent task may
+#           endpoint, or changes delivery mode or merge authority.
+#           verify and check-brief report carried-forward evidence as
+#           status=submitted, just like directly submitted evidence.
+#           Because the parent task may
 #           later retire and its own receipt and session state may be
 #           removed by teardown, the child receipt copies everything it needs
 #           at carry-forward time and never re-reads the parent receipt file
-#           again; ongoing re-verification depends only on the parent's
-#           original captured-answer artifact and result files continuing to
-#           exist on disk (they must not be deleted while a carried-forward
-#           child still depends on them -- retaining them is an explicit
-#           operational obligation this command cannot enforce by itself).
+#           again. Retain the original captured-answer artifact and result,
+#           their empty handled acknowledgement, and the child's scope-source
+#           and approval-source files unchanged at their recorded paths while
+#           any child depends on them. Verification needs these files, but
+#           not the parent's receipt, session, or live captain-hold binding.
+#           Retaining evidence is an operational obligation this command cannot
+#           enforce by itself; after parent teardown, verify the existing child
+#           receipt rather than rerunning carry-forward.
 # verify    Revalidate receipt, artifact, captured feedback, hashes, and the
 #           process-event acknowledgement before dispatch.
 # check-brief Resolve the brief's explicit intake contract. A contractless brief
@@ -121,10 +134,9 @@ path_has_no_symlink() {
   done
 }
 
-# Stricter than real_file: also refuses a hardlinked file. Used only for the
-# new carry-forward scope/approval source inputs, where a second link would
-# let content change out from under a hash that is supposed to be immutable
-# provenance, without a corresponding change to the file this command hashed.
+# Carry-forward requires unaliased input paths: a hardlink permits writes to
+# the same inode through another name. Hash rechecks still detect byte changes;
+# rejecting aliases does not itself make the underlying file immutable.
 real_file_no_hardlink() {
   local path=$1 real links
   path_has_no_symlink "$path" || return 1

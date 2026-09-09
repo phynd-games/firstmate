@@ -31,7 +31,8 @@ Never infer not-applicable from a missing artifact, a small diff, a file path, o
 
 The artifact must state the product goal, intended users, use cases, scope, non-goals, constraints, visual or product references, key choices and options, acceptance criteria, and open questions.
 The artifact must make choices visible, distinguish selected from queued state, and provide one explicit submit control that queues one keyed answer.
-Existing accepted answers may prefill fields, but the captain must review and submit the current intake again.
+When a new intake is required, existing accepted answers may prefill fields, but the captain must review and submit the current intake again.
+For an already-covered exact follow-up, use the carry-forward policy below.
 
 Before authoring the first HTML revision, read current `lavish-axi --help`, `lavish-axi design`, and every matching playbook, including `input`, `plan`, and `comparison` for this gate.
 Inspect the subject project first and match its current visual system when the artifact represents its UI or product.
@@ -57,39 +58,16 @@ Do not modify fleet-board product code to satisfy this gate.
 
 ## Exact follow-up carry-forward
 
-An exact follow-up child task cannot reuse its parent's receipt directly: `verify` binds a
-receipt to one exact `task_id`, and the parent's captured artifact/result name the parent's
-question, not the child's.
-Use `bin/fm-lavish-intake.sh carry-forward <child-task-id> --parent <parent-task-id> --scope-source
-<path> --scope-id <identifier> --approval-source <path>` instead of a new interactive intake when,
-and only when, the child is a genuine exact follow-up under the classification rule above.
-It requires an existing, still-verifiable, fully handled `significant` parent receipt; it never
-captures a new answer, so the child receipt carries the parent's artifact, result, source id, and
-sequence forward unchanged rather than claiming a new one.
-
-`--scope-source` and `--approval-source` are the explicit MAIN-reviewed declaration: MAIN chooses
-which files state the accepted scope and approval, and the command hashes their exact bytes.
-It does not parse those files for a section, does not accept a caller-supplied hash as proof, and
-never infers whether the text is in scope from its meaning; that judgment is MAIN's to make before
-calling the command, not the command's to infer afterward.
-A repeated identical carry-forward is idempotent; a conflicting one (different parent, scope, or
-approval source for the same child id) refuses without mutating either receipt.
-It never releases a captain hold, creates a worker endpoint, or changes delivery mode or merge
-authority; `verify` and `check-brief` report a carried-forward receipt the same way as a directly
-submitted one, so `fm-brief.sh --intake` and `fm-spawn.sh` need no separate carve-out.
-
-Because the parent task can retire after the child's receipt exists, the child never re-reads the
-parent's own receipt file at verification time; it re-verifies only its own copied hashes against
-the parent's original artifact and result files. Keep those files, and their captured-result
-handled acknowledgement, on disk for as long as any carried-forward child still depends on them --
-deleting them before every dependent child retires breaks that child's evidence.
+Use carry-forward only when MAIN has reviewed the child as an exact follow-up under the classification rule above and explicitly declares its accepted scope and approval.
+MAIN owns that semantic judgment; a successful fingerprint check cannot establish scope inclusion.
+This reuses the existing captain answer and must never be presented as a new one.
+[`bin/fm-lavish-intake.sh --help`](../../../bin/fm-lavish-intake.sh) owns command syntax, parent eligibility, declaration-file requirements, retry behavior, evidence retention, and verification mechanics.
 
 ## Enforcement and compatibility
 
 `bin/fm-brief.sh` carries an explicit Lavish intake contract in new worker instructions.
 `bin/fm-spawn.sh` verifies submitted evidence or an explicit exemption before creating a new worker endpoint.
 `bin/fm-promote.sh` applies the same check when scout work becomes ship work.
-A carried-forward receipt satisfies these same checks: `verify` and `check-brief` report it as `status=submitted`, so it needs no separate carve-out anywhere in this enforcement chain.
 The deterministic evidence owner is `bin/fm-lavish-intake.sh`; this policy owns meaning and procedure, while `captain-hold-lifecycle` owns captain answers and `process-event-sources` owns capture and wake durability.
 
 A new significant task must not dispatch without a verified submitted receipt.
