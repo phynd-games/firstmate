@@ -452,10 +452,17 @@ if [ "$KIND" != secondmate ]; then
         'Before implementation, follow `.agents/skills/lavish-feature-intake/SKILL.md` and obtain a submitted Lavish intake receipt.' \
         'This worker must not implement or dispatch follow-up work while this gate is required.') ;;
     submitted)
+      INTAKE_LINEAGE_LINES=
+      if [ "$(sed -n 's/^classification=//p' "$INTAKE_EVIDENCE" | head -1)" = carried-forward ]; then
+        INTAKE_LINEAGE_LINES=$(printf '%s\n' \
+          "Lavish intake parent: $(sed -n 's/^parent_task_id=//p' "$INTAKE_EVIDENCE" | head -1)" \
+          "Lavish intake scope: $(sed -n 's/^scope_id=//p' "$INTAKE_EVIDENCE" | head -1)")
+      fi
       INTAKE_SECTION=$(printf '%s\n' \
         '# Lavish feature intake gate' \
         'Lavish intake contract: submitted' \
         "Lavish intake evidence: $INTAKE_EVIDENCE" \
+        ${INTAKE_LINEAGE_LINES:+"$INTAKE_LINEAGE_LINES"} \
         'The submitted intake is the accepted product boundary; keep implementation within its scope and acceptance criteria.') ;;
     not-applicable)
       INTAKE_SECTION=$(printf '%s\n' \
@@ -575,7 +582,7 @@ $HERDR_SECTION
 
 # Setup
 You are in a disposable git worktree of $REPO at the exact approved target base recorded for this task, not a moving default branch.
-The spawn has validated and recorded that base; verify the starting `git rev-parse HEAD` against the approved base in this brief or task metadata before branching, and do not reset or rebase onto the default branch.
+The spawn has validated and recorded that base; verify the starting \`git rev-parse HEAD\` against the approved base in this brief or task metadata before branching, and do not reset or rebase onto the default branch.
 
 **Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.
 The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.

@@ -55,6 +55,35 @@ The current interactive fleet-board integration is `bin/fm-bearings-board.sh bui
 Use it as a live ordering example because it builds the stable fleet-board surface, opens Lavish, binds `captain-hold`, and arms `fm-procevent-lavish` without creating another answer or polling system.
 Do not modify fleet-board product code to satisfy this gate.
 
+## Exact follow-up carry-forward
+
+An exact follow-up child task cannot reuse its parent's receipt directly: `verify` binds a
+receipt to one exact `task_id`, and the parent's captured artifact/result name the parent's
+question, not the child's.
+Use `bin/fm-lavish-intake.sh carry-forward <child-task-id> --parent <parent-task-id> --scope-source
+<path> --scope-id <identifier> --approval-source <path>` instead of a new interactive intake when,
+and only when, the child is a genuine exact follow-up under the classification rule above.
+It requires an existing, still-verifiable, fully handled `significant` parent receipt; it never
+captures a new answer, so the child receipt carries the parent's artifact, result, source id, and
+sequence forward unchanged rather than claiming a new one.
+
+`--scope-source` and `--approval-source` are the explicit MAIN-reviewed declaration: MAIN chooses
+which files state the accepted scope and approval, and the command hashes their exact bytes.
+It does not parse those files for a section, does not accept a caller-supplied hash as proof, and
+never infers whether the text is in scope from its meaning; that judgment is MAIN's to make before
+calling the command, not the command's to infer afterward.
+A repeated identical carry-forward is idempotent; a conflicting one (different parent, scope, or
+approval source for the same child id) refuses without mutating either receipt.
+It never releases a captain hold, creates a worker endpoint, or changes delivery mode or merge
+authority; `verify` and `check-brief` report a carried-forward receipt the same way as a directly
+submitted one, so `fm-brief.sh --intake` and `fm-spawn.sh` need no separate carve-out.
+
+Because the parent task can retire after the child's receipt exists, the child never re-reads the
+parent's own receipt file at verification time; it re-verifies only its own copied hashes against
+the parent's original artifact and result files. Keep those files, and their captured-result
+handled acknowledgement, on disk for as long as any carried-forward child still depends on them --
+deleting them before every dependent child retires breaks that child's evidence.
+
 ## Enforcement and compatibility
 
 `bin/fm-brief.sh` carries an explicit Lavish intake contract in new worker instructions.
