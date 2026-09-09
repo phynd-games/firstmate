@@ -26,9 +26,10 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-# shellcheck source=bin/fm-marker-lib.sh
+# Production modules are separate canonical lint roots; keep test analysis local.
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-marker-lib.sh"
-# shellcheck source=bin/fm-pending-reply-lib.sh
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-pending-reply-lib.sh"
 
 SEND="$ROOT/bin/fm-send.sh"
@@ -572,7 +573,9 @@ test_undelivered_records_are_scan_immutable() {
       || fail "undelivered wrong-home check should be inert"
     fm_pending_reply_tick_one "$state" "$corr" busy "$sm_home" \
       || fail "undelivered direct tick should be inert"
+    # shellcheck disable=SC2329 # Called by the imported production library.
     fm_backend_busy_state() { fail "undelivered watcher tick must not probe the backend"; }
+    # shellcheck disable=SC2329 # Called by the imported production library.
     fm_backend_capture() { fail "undelivered watcher tick must not capture the backend"; }
     fm_pending_reply_tick "$state" || fail "undelivered watcher tick should succeed"
     after=$(cat "$rec")
@@ -597,6 +600,7 @@ test_delivery_confirmation_fallback_reconciles() {
     export FM_PENDING_REPLY_NOW=5750
     corr=$(fm_pending_reply_create "$home" "$state" hibit "confirmed delivery")
     rec=$(fm_pending_reply_path "$state" "$corr")
+    # shellcheck disable=SC2329 # Called by the imported production library.
     fm_pending_reply_mark_delivered() { return 1; }
     if fm_pending_reply_confirm_delivery "$state" "$corr"; then
       fail "primary delivery commit failure should be reported"
@@ -608,6 +612,7 @@ test_delivery_confirmation_fallback_reconciles() {
     [ -f "$marker" ] || fail "delivery confirmation fallback marker should persist"
     [ -z "$(fm_pending_reply_get "$rec" delivered_epoch)" ] \
       || fail "failed primary commit should leave delivered_epoch empty"
+    # shellcheck source=/dev/null
     . "$ROOT/bin/fm-pending-reply-lib.sh"
     fm_pending_reply_tick_one "$state" "$corr" unknown \
       || fail "watcher should reconcile the delivery marker"
@@ -695,6 +700,7 @@ test_delivery_confirmation_serializes_with_reconciliation() {
     release="$home/mark-delivered.release"
     hook="$home/mark-delivered-hook.sh"
     cat > "$hook" <<'SH'
+# shellcheck disable=SC2329 # Called by the imported production library.
 fm_pending_reply_mark_delivered() {
   local pending_state=$1 pending_corr=$2 epoch=$3 pending_rec phase
   printf '%s\n' "${BASHPID:-$$}" >> "$FM_TEST_CALLS"
@@ -713,6 +719,7 @@ SH
     # The child-process PID is consumed within this isolated test subshell.
     # shellcheck disable=SC2031
     confirm_pid=$!
+    # shellcheck disable=SC2034 # Bounded retry counter; only the attempt count matters.
     for i in $(seq 1 100); do
       [ -e "$entered" ] && break
       /bin/sleep 0.01
@@ -780,7 +787,7 @@ test_restart_preserves_expectation_and_parent_destination() {
   parent_status=$(fm_pending_reply_get "$rec" parent_status)
   parent_home=$(fm_pending_reply_get "$rec" parent_home)
   # Simulate process restart: re-source library and re-read the same record.
-  # shellcheck source=bin/fm-pending-reply-lib.sh
+  # shellcheck source=/dev/null
   . "$ROOT/bin/fm-pending-reply-lib.sh"
   [ -f "$rec" ] || fail "record must survive restart"
   [ "$(fm_pending_reply_get "$rec" parent_status)" = "$parent_status" ] \
@@ -942,7 +949,9 @@ test_unknown_backend_state_uses_capture_fallback() {
       fm_pending_reply_mark_delivered "$state" "$corr"
       fm_write_secondmate_meta "$state/hibit.meta" "$sm_home" "session:fm-hibit" alpha pi
       [ "$backend" = tmux ] || printf 'backend=%s\n' "$backend" >> "$state/hibit.meta"
+      # shellcheck disable=SC2329 # Called by the imported production library.
       fm_backend_busy_state() { printf 'unknown'; }
+      # shellcheck disable=SC2329 # Called by the imported production library.
       fm_backend_capture() { printf '%s' "$FM_PENDING_TEST_CAPTURE"; }
       # Invoked indirectly through FM_PENDING_REPLY_SEND_HOOK.
       # shellcheck disable=SC2329
@@ -986,7 +995,9 @@ test_kimi_capture_fallback_uses_recorded_harness() (
   corr=$(fm_pending_reply_create "$home" "$state" hibit "kimi fallback")
   fm_pending_reply_mark_delivered "$state" "$corr"
   fm_write_secondmate_meta "$state/hibit.meta" "$sm_home" "session:fm-hibit" alpha kimi
+  # shellcheck disable=SC2329 # Called by the imported production library.
   fm_backend_busy_state() { printf 'unknown'; }
+  # shellcheck disable=SC2329 # Called by the imported production library.
   fm_backend_capture() { printf '%s' "$FM_PENDING_KIMI_CAPTURE"; }
   export FM_PENDING_KIMI_CAPTURE=' 🌑 · Tip: ask Kimi to schedule tasks, e.g. "remind me at 5pm"'
 
@@ -1036,11 +1047,13 @@ test_tick_skips_terminal_and_reuses_target_observation() {
     fm_write_secondmate_meta "$state/escalated.meta" "$home/escalated" "sess:fm-escalated"
     # Runtime overrides called indirectly by the pending-reply tick.
     # shellcheck disable=SC2329
+    # shellcheck disable=SC2329 # Called by the imported production library.
     fm_backend_busy_state() {
       printf '%s\t%s\n' "$1" "$2" >> "$probe_log"
       printf 'busy'
     }
     # shellcheck disable=SC2329
+    # shellcheck disable=SC2329 # Called by the imported production library.
     fm_backend_capture() { fail "native busy observations should not capture"; }
     # shellcheck disable=SC2329
     fm_pending_reply_find_resolve_line() {

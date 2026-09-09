@@ -14,7 +14,24 @@ set -u
 
 TMP=$(fm_test_tmproot fm-supervision-events)
 STATE_DIR="$TMP/state"
-mkdir -p "$STATE_DIR"
+mkdir -p "$STATE_DIR" "$TMP/fakebin" "$TMP/user"
+export HOME="$TMP/user" FM_HOME="$TMP"
+# Exercise the real event-commit capability gate against a private CLI fixture.
+# No ambient Herdr installation or live server may supply this test's verdict.
+cat > "$TMP/fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+session=default
+if [ "${1:-}" = --session ]; then session=$2; shift 2; fi
+case "${1:-} ${2:-}" in
+  'status --json')
+    printf '%s\n' '{"client":{"version":"0.8.2","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}' ;;
+  'session list')
+    printf '{"sessions":[{"name":"%s","running":true}]}\n' "$session" ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$TMP/fakebin/herdr"
+export PATH="$TMP/fakebin:$PATH"
 
 # Source the watcher with an isolated state/home. The guard returns before the
 # lock/loop, so only the functions load.
