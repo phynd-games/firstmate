@@ -901,8 +901,8 @@ claim_alarm_escalate_once() {  # <marker-file> <reason>
   if [ "$(cat "$marker" 2>/dev/null || printf '')" = "$key" ]; then
     return 0
   fi
+  escalate "$reason" || return $?
   printf '%s\n' "$key" > "$marker" 2>/dev/null || true
-  escalate "$reason"
 }
 
 # claim_alarm_clear <marker-file>: the episode resolved (claim acquired, or a

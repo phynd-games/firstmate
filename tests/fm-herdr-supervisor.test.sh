@@ -66,7 +66,7 @@ case "${1:-}" in
     if [ -f "$S/hang" ]; then sleep 300; exit 0; fi
     running=true
     [ ! -f "$S/server-stopped" ] || running=false
-    printf '{"client":{"version":"0.8.2","protocol":16},"server":{"running":%s}}\n' "$running"
+    printf '{"client":{"version":"0.8.2","protocol":16},"server":{"running":%s,"status":"running","compatible":true,"protocol":16}}\n' "$running"
     exit 0
     ;;
   session)
@@ -288,6 +288,46 @@ arm_count_at_least() {  # <home> <n>
 }
 
 FAKEBIN=$(make_fake_herdr "$TMP_ROOT")
+
+claim_alarm_delivery_test() {
+  local home wake_count
+  home=$(new_home claim-alarm-delivery)
+  make_arm_stub "$home/arm.sh" ok
+  printf 'unreadable claim\n' > "$home/state/.supervision-claim.lock"
+  printf 'unreadable queue lock\n' > "$home/state/.wake-queue.lock"
+
+  HOME="$home" FM_HERDR_SUPERVISOR_LOCK_TRIES=2 \
+    run_supervisor "$home" "$FAKEBIN" ensure > "$home/ensure.out" 2>&1 \
+    && fail "an undelivered claim alarm reported success: $(cat "$home/ensure.out")"
+  assert_grep 'queue_persistence=1' "$home/state/.herdr-supervisor-emergency" \
+    "the first claim alarm did not exercise queue persistence failure"
+  assert_absent "$home/state/.herdr-supervisor-claim-alarm-ensure" \
+    "failed alarm delivery suppressed subsequent retries"
+  assert_absent "$home/state/.wake-queue" \
+    "a blocked queue unexpectedly received the alarm"
+
+  rm "$home/state/.wake-queue.lock"
+  HOME="$home" FM_HERDR_SUPERVISOR_LOCK_TRIES=2 \
+    run_supervisor "$home" "$FAKEBIN" ensure > "$home/ensure.out" 2>&1 \
+    && fail "an unresolved claim reported success after queue recovery"
+  assert_grep 'the continuity ownership claim could not be acquired within its bounded retry window' \
+    "$home/state/.wake-queue" "the claim alarm was not retried after queue recovery"
+  assert_grep 'unresolved:' "$home/state/.herdr-supervisor-claim-alarm-ensure" \
+    "successful alarm delivery did not record suppression"
+
+  HOME="$home" FM_HERDR_SUPERVISOR_LOCK_TRIES=2 \
+    run_supervisor "$home" "$FAKEBIN" ensure > "$home/ensure.out" 2>&1 \
+    && fail "a repeatedly unresolved claim reported success"
+  wake_count=$(grep -c 'herdr-supervisor' "$home/state/.wake-queue")
+  [ "$wake_count" -eq 1 ] || fail "successful delivery was repeated ($wake_count wakes)"
+  assert_absent "$home/arm.count" "claim alarm delivery unexpectedly armed a watcher"
+  pass "failed claim alarm delivery retries until persisted, then suppresses repeats"
+}
+
+claim_alarm_delivery_test
+if [ "${1:-}" = --claim-alarm-delivery-only ]; then
+  exit 0
+fi
 
 # =============================================================================
 # 1. A non-herdr home is never eligible and nothing is created.
