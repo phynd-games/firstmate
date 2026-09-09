@@ -45,11 +45,8 @@
 # supervisor heartbeat ALL agree. Anything unreadable, ambiguous, or unknown is
 # unhealthy, never healthy.
 #
-# Every failed or ambiguous establish and every failed arm attempt writes a durable
-# actionable diagnostic to state/.herdr-supervisor-alarm AND appends one
-# `check: herdr-supervisor` record to the durable wake queue, so the lapse
-# reaches the captain through the channels that already exist rather than a new
-# one.
+# docs/herdr-supervisor.md "Recovery" owns alarm publication, claim-failure
+# episode suppression, and recovery semantics.
 #
 # SUPPORTED GUARANTEES AND EXTERNAL PREREQUISITES
 # docs/herdr-supervisor.md is the single owner of that list. In short: this
@@ -1657,13 +1654,8 @@ cmd_ensure() {  # <reason>
     return 0
   fi
   if ! fm_supervision_claim_acquire "$SUPERVISION_CLAIM" "$SUPERVISOR_LOCK_TRIES"; then
-    # A held-but-unacquirable claim is not itself a failure: it is exactly
-    # what a healthy other owner looks like from here. Only escalate when no
-    # owner is provable, and even then at most once per unresolved episode
-    # (2026-09-06 audit finding 3: escalating unconditionally here read a
-    # healthy contended claim as a broken one, seven times in 18 hours, while
-    # the Pi extension's own arm child held it and the watcher beacon was
-    # fresh).
+    # Acquisition failure alone cannot distinguish a healthy competing owner
+    # from an unreadable claim; recheck ownership before reporting failure.
     if harness_owner_provable || [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 1 ]; then
       [ -z "$CLAIM_ALARM_RECOVERY_PENDING" ] && [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 0 ] || return 1
       echo "herdr-supervisor: deferred - $HS_DEFER_REASON"
@@ -2201,11 +2193,7 @@ cmd_run() {
     fi
     if [ "$LOOP_CLAIM_HELD" -eq 0 ]; then
       if ! fm_supervision_claim_acquire "$SUPERVISION_CLAIM" "$SUPERVISOR_LOCK_TRIES"; then
-        # Same false-alarm guard as cmd_ensure above: a held-but-unacquirable
-        # claim can simply mean a healthy other owner grabbed it between the
-        # harness_owner_provable check earlier in this iteration and this
-        # acquire attempt. Only escalate when no owner is provable, at most
-        # once per unresolved episode.
+        # An owner can arrive after this iteration's earlier ownership check.
         if harness_owner_provable || [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 1 ]; then
           sleep "$IDLE_INTERVAL"
           continue

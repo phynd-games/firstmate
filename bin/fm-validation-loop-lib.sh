@@ -261,13 +261,10 @@ _fm_vloop_findings_valid() {  # <evidence-content>
       # The daemon prints one of: "none", "<N> awaiting" (a run parked at a
       # gate), or a severity breakdown with only the present severities
       # (each count >= 1) joined by ", " in fixed descending-severity order
-      # error, warning, info -- verified against the installed daemon output
-      # (no-mistakes axi status, v1.49.0-4-gfeb8cdf): a terminal run printed
-      # "findings: 4 info" and a gate-parked run printed "findings: 2
-      # awaiting". No other order or omitted-severity shape is real daemon
-      # output, so every other string stays rejected. Do not use an
-      # apostrophe anywhere in this awk script; it is embedded in a
-      # single-quoted shell string and an apostrophe would close it early.
+      # error, warning, info. The captured compatibility sample lives in
+      # tests/fm-validation-loop.test.sh; unfamiliar shapes fail closed.
+      # Do not use an apostrophe in this single-quoted awk script: even a
+      # comment would close the shell string early.
       return value == "none" \
         || value ~ /^[1-9][0-9]* awaiting$/ \
         || value ~ /^[1-9][0-9]* info$/ \

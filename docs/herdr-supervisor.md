@@ -108,9 +108,14 @@ Recovery is bounded, idempotent, and generation-safe.
 | Herdr server not running | Refused with a durable diagnostic naming the missing server; no server is ever started from here |
 | Herdr CLI hangs | Bounded and treated as a failed read, so no caller can be wedged |
 
-Every failed or ambiguous establish and every failed arm attempt writes `state/.herdr-supervisor-alarm` and appends one `check: herdr-supervisor` record to the durable wake queue.
+Failed or ambiguous establishment and failed arm attempts use `state/.herdr-supervisor-alarm` and the durable `check: herdr-supervisor` wake queue, with claim-acquisition failures handled per episode below.
+After claim acquisition fails, both `ensure` and the loop recheck for a provable other owner before escalating; a verified live claim holder is grounds to defer even when this process cannot acquire the claim.
+If no owner is provable, one successfully persisted alarm and queue escalation suppresses repeats across `ensure` and the loop for that unresolved episode; failed persistence remains retryable.
+Successful claim acquisition or a mutating observation of a provable other owner ends the episode, allowing a later failure to alarm again.
+Recovery is bound to the observed episode and retained durably during publication contention, so an exiting caller cannot lose recovery and an old retry cannot clear a newer episode.
+Incomplete ownership observation defers action, and the monitor waits for pending recovery bookkeeping before standing down; read-only `status` never changes episode state.
 Rapid-cycle alarms use `state/.herdr-supervisor-rapid-episode` and do not append a self-triggering wake.
-The alarm clears only after three consecutive successful non-rapid cycles, and each alarm is appended to `state/.herdr-supervisor-alarm-history` for per-attempt evidence.
+The actionable alarm clears only after three consecutive successful non-rapid cycles, independently of claim-episode recovery, and each published alarm is appended to `state/.herdr-supervisor-alarm-history`.
 When another owner is provable, the Herdr loop remains alive as a standby and rechecks ownership until it can resume arming.
 That reuses the channels that already exist rather than inventing one, so the lapse reaches the captain through the normal drain.
 
@@ -189,7 +194,8 @@ All under `state/`, all private to the home.
 - `.herdr-supervisor-quarantine.pending.<generation>` - an incomplete create receipt retained when bounded visibility reconciliation cannot prove that Herdr created nothing.
 - `.herdr-supervisor-alarm` - the latest durable actionable diagnostic, retained until three consecutive successful non-rapid cycles prove stability.
 - `.herdr-supervisor-rapid-episode` - the durable marker preventing repeated rapid-cycle alarms in one episode.
-- `.herdr-supervisor-alarm-history` - the append-only per-attempt alarm history.
+- `.herdr-supervisor-claim-alarm`, `.herdr-supervisor-claim-episode`, `.herdr-supervisor-claim-episode.*`, `.herdr-supervisor-claim-alarm.lock`, `.herdr-supervisor-claim-observation.lock` - private claim-episode bookkeeping for the recovery policy above.
+- `.herdr-supervisor-alarm-history` - the append-only published alarm history.
 - `.herdr-supervisor-emergency` - fallback evidence when alarm or queue persistence fails.
 - `.herdr-supervisor-blocked` - the exact arm pid and identity retained while an unresolved arm child prevents safe replacement.
 - `.watch-arm-blocked` - a durable blocked state used when a native arm cannot persist its normal alarm or queue escalation, so fallback ownership is not suppressed.
@@ -201,6 +207,7 @@ All under `state/`, all private to the home.
 ## Regression coverage
 
 `tests/fm-herdr-supervisor.test.sh` drives the real script against a stateful fake Herdr CLI and a scripted arm.
+Its claim-alarm cases cover competing live owners at both acquisition sites, concurrent and cross-caller suppression, persistence retries, episode recovery across process exit and lock contention, and read-only status.
 It proves the central claim by counting arm invocations - one establish must produce many cycles, which is exactly what the incident lacked - and covers deference to away mode and to a loaded Pi extension, standby handoff, idempotent repeat establishes, recycled pids, post-query identity changes, superseded generations, stale heartbeats on a live but stopped supervisor, foreign pane processes, replaced Herdr servers, broken pane bindings, bounded retry with durable escalation, incomplete and partial Herdr responses, quarantine cleanup, retire, beacon separation, and both config gates.
 
 Every gate in that list is mutation-tested: reverting the guard in the script makes its case fail.
