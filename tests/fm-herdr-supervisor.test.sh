@@ -504,6 +504,109 @@ claim_alarm_monitor_test() (
   pass "monitor handoff resets claim alarms while status remains read-only"
 )
 
+claim_alarm_contended_recovery_test() (
+  mode=$1
+  home=$(new_home "claim-alarm-contention-$mode")
+  writer_pid= monitor_pid= owner_pid=
+  trap 'for pid in "$writer_pid" "$monitor_pid" "$owner_pid"; do [ -z "$pid" ] || kill "$pid" 2>/dev/null || true; done; wait' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  printf '%s\n' "${BASHPID:-$$}" > "$home/state/.lock"
+  touch "$home/state/task.meta"
+  printf 'unreadable claim\n' > "$home/state/.supervision-claim.lock"
+  claim_probe "$home" -c '
+    set --
+    . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+    fm_wake_append() {
+      touch "$STATE/writer-paused"
+      deadline=$(( $(date +%s) + 45 ))
+      while [ ! -e "$STATE/writer-resume" ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || return 1
+        sleep 0.05
+      done
+      bash -c '\''. "$FM_SUP_SCRIPT" "" >/dev/null 2>&1 || true; fm_wake_append "$@"'\'' _ "$@"
+    }
+    cmd_ensure "concurrent alarm writer"
+  ' > "$home/writer.out" 2>&1 &
+  writer_pid=$!
+  wait_for 20 test -e "$home/state/writer-paused" || fail "the alarm writer did not pause before queue publication"
+  assert_absent "$home/state/.herdr-supervisor-claim-alarm" "the writer suppressed delivery before publication"
+  rm "$home/state/.supervision-claim.lock"
+  claim_probe "$home" -c '
+    set --
+    . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+    fm_supervision_claim_acquire "$SUPERVISION_CLAIM" 20 || exit 1
+    trap "fm_lock_release \"\$SUPERVISION_CLAIM\"" EXIT
+    trap "exit 0" TERM INT
+    touch "$STATE/owner-ready"
+    while :; do sleep 0.05; done
+  ' > "$home/owner.out" 2>&1 &
+  owner_pid=$!
+  wait_for 10 test -e "$home/state/owner-ready" || fail "the contended recovery owner did not acquire its claim"
+  claim_probe "$home" -c '
+    set --
+    . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+    step=0
+    monitor_sleep() {
+      step=$((step + 1))
+      touch "$STATE/monitor-paused-$step"
+      deadline=$(( $(date +%s) + 45 ))
+      while [ ! -e "$STATE/monitor-resume-$step" ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || return 1
+        sleep 0.05
+      done
+    }
+    cmd_monitor_run "$(session_owner_identity)" || exit 1
+    touch "$STATE/monitor-finished"
+  ' > "$home/monitor.out" 2>&1 &
+  monitor_pid=$!
+  monitor_observed() { [ -e "$home/state/monitor-paused-1" ] || [ -e "$home/state/monitor-finished" ]; }
+  wait_for 20 monitor_observed || fail "the monitor did not observe the contended recovery"
+  assert_absent "$home/state/monitor-finished" "monitor completed handoff before recovery bookkeeping persisted"
+  kill -0 "$monitor_pid" || fail "the monitor exited while recovery bookkeeping was pending"
+  (claim_probe "$home" -c '
+    set --
+    . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+    cmd_status 0
+  ') > "$home/status.out" 2>&1 || fail "status failed during recovery contention"
+  assert_grep 'other-owner: yes' "$home/status.out" "contention hid the healthy owner"
+  assert_absent "$home/state/.herdr-supervisor-claim-alarm" "status mutated the pending alarm"
+  assert_absent "$home/state/.wake-queue" "status queued an alarm during recovery contention"
+  if [ "$mode" = disappears ]; then
+    kill "$owner_pid"
+    wait "$owner_pid" || fail "the recovered owner did not release its claim"
+    owner_pid=
+    printf 'unreadable claim\n' > "$home/state/.supervision-claim.lock"
+  fi
+  touch "$home/state/writer-resume"
+  wait "$writer_pid" && fail "the unresolved writer claim reported success"
+  writer_pid=
+  assert_grep unresolved "$home/state/.herdr-supervisor-claim-alarm" "the writer did not finish its delayed publication"
+  touch "$home/state/monitor-resume-1"
+  if [ "$mode" = disappears ]; then
+    wait_for 20 test -e "$home/state/monitor-paused-2" || fail "the monitor lost recovery after the owner disappeared"
+    rm "$home/state/.lock"
+    touch "$home/state/monitor-resume-2"
+  else
+    wait_for 20 test -e "$home/state/monitor-finished" || fail "the monitor did not finish recovery before handoff"
+    assert_absent "$home/state/.herdr-supervisor-claim-alarm" "handoff retained stale suppression"
+    kill "$owner_pid"
+    wait "$owner_pid" || fail "the recovered owner did not release its claim"
+    owner_pid=
+    printf 'unreadable claim\n' > "$home/state/.supervision-claim.lock"
+    (claim_probe "$home" -c '
+      set --
+      . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+      cmd_ensure "failure after contended recovery"
+    ') > "$home/ensure.out" 2>&1 && fail "the later unresolved claim reported success"
+  fi
+  wait "$monitor_pid" || fail "the monitor did not stop cleanly after recovery"
+  monitor_pid=
+  count=$(grep -c 'herdr-supervisor' "$home/state/.wake-queue")
+  [ "$count" = 2 ] || fail "contended recovery suppressed the later failure ($count alarms)"
+  pass "contended recovery retries when the recovered owner $mode"
+)
+
 claim_alarm_owner_cleanup() {
   [ -n "${LIVE_OWNER_PID:-}" ] || return 0
   kill "$LIVE_OWNER_PID" 2>/dev/null || true
@@ -656,6 +759,11 @@ pass "successful claim acquisition lets a later failure episode alarm again"
 }
 
 case "${1:-}" in
+  --claim-contention-only)
+    claim_alarm_contended_recovery_test remains || exit 1
+    claim_alarm_contended_recovery_test disappears || exit 1
+    exit $?
+    ;;
   --claim-monitor-only) claim_alarm_monitor_test; exit $? ;;
   --claim-owner-only) claim_alarm_owner_tests; exit $? ;;
   --claim-concurrent-only) claim_alarm_concurrent_test; exit $? ;;
@@ -668,10 +776,12 @@ if [ "${1:-}" = --claim-alarm-delivery-only ]; then
   exit 0
 fi
 claim_alarm_owner_tests
-claim_alarm_concurrent_test
-claim_alarm_loop_test shared
-claim_alarm_loop_test recovery
-claim_alarm_monitor_test
+claim_alarm_concurrent_test || exit 1
+claim_alarm_loop_test shared || exit 1
+claim_alarm_loop_test recovery || exit 1
+claim_alarm_monitor_test || exit 1
+claim_alarm_contended_recovery_test remains || exit 1
+claim_alarm_contended_recovery_test disappears || exit 1
 if [ "${1:-}" = --claim-alarms-only ]; then
   exit 0
 fi

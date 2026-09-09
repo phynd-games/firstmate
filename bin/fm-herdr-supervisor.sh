@@ -95,6 +95,7 @@ AWAY_AMBIGUOUS="$STATE/.herdr-away-daemon-ambiguous"
 HANDOFF_AMBIGUOUS="$STATE/.herdr-supervision-handoff-ambiguous"
 CLAIM_ALARM="$STATE/.herdr-supervisor-claim-alarm"
 CLAIM_ALARM_LOCK="$STATE/.herdr-supervisor-claim-alarm.lock"
+CLAIM_ALARM_RECOVERY_PENDING=0
 QUARANTINE_PREFIX="$STATE/.herdr-supervisor-quarantine"
 RECORD_LOCK="$STATE/.herdr-supervisor.lock"
 HEARTBEAT="$STATE/.herdr-supervisor-heartbeat"
@@ -878,6 +879,7 @@ harness_owner_provable() {
 
 claim_alarm_escalate_once() {
   local reason=$1 status=0
+  [ "$CLAIM_ALARM_RECOVERY_PENDING" -eq 0 ] || claim_alarm_clear || return 1
   supervisor_lock_acquire "$CLAIM_ALARM_LOCK" || return 1
   if harness_owner_provable 1; then
     rm -f "$CLAIM_ALARM" 2>/dev/null || status=$?
@@ -894,9 +896,11 @@ claim_alarm_escalate_once() {
 
 claim_alarm_clear() {
   local status=0
+  CLAIM_ALARM_RECOVERY_PENDING=1
   supervisor_lock_acquire "$CLAIM_ALARM_LOCK" || return 1
   rm -f "$CLAIM_ALARM" 2>/dev/null || status=$?
   fm_lock_release "$CLAIM_ALARM_LOCK"
+  [ "$status" -ne 0 ] || CLAIM_ALARM_RECOVERY_PENDING=0
   return "$status"
 }
 
@@ -2425,12 +2429,22 @@ cmd_monitor_run() {  # <owner-pid TAB owner-identity>
       monitor_stand_down "home session ended or changed identity"
       return 0
     fi
-    if harness_owner_provable; then
+    if [ "$CLAIM_ALARM_RECOVERY_PENDING" -eq 1 ]; then
+      claim_alarm_clear || true
+    fi
+    if harness_owner_provable && [ "$CLAIM_ALARM_RECOVERY_PENDING" -eq 0 ]; then
       monitor_stand_down "stood down: $HS_DEFER_REASON"
       return 0
     fi
 
     : > "$MONITOR_HEARTBEAT" 2>/dev/null || true
+    if [ "$CLAIM_ALARM_RECOVERY_PENDING" -eq 1 ]; then
+      if ! monitor_sleep "$MONITOR_INTERVAL" "$owner"; then
+        monitor_stand_down "home session ended or changed identity"
+        return 0
+      fi
+      continue
+    fi
 
     if fm_supervision_needed "$STATE" && ! supervisor_healthy; then
       out=$(cmd_ensure "monitor: ${HS_UNHEALTHY_REASON:-supervisor unhealthy}" 2>&1)
