@@ -432,6 +432,78 @@ claim_alarm_loop_test() (
   pass "the $mode loop episode alarms again after a healthy owner comes and goes"
 )
 
+claim_alarm_monitor_test() (
+  home=$(new_home claim-alarm-monitor)
+  monitor_pid= owner_pid=
+  trap 'for pid in "$monitor_pid" "$owner_pid"; do [ -z "$pid" ] || kill "$pid" 2>/dev/null || true; done; wait' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  printf '%s\n' "${BASHPID:-$$}" > "$home/state/.lock"
+  touch "$home/state/task.meta"
+  printf 'unreadable claim\n' > "$home/state/.supervision-claim.lock"
+  claim_probe "$home" -c '
+    set --
+    . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+    monitor_sleep() {
+      touch "$STATE/monitor-paused"
+      deadline=$(( $(date +%s) + 30 ))
+      while [ ! -e "$STATE/monitor-resume" ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || return 1
+        sleep 0.05
+      done
+    }
+    cmd_monitor_run "$(session_owner_identity)"
+  ' > "$home/monitor.out" 2>&1 &
+  monitor_pid=$!
+  wait_for 20 test -e "$home/state/monitor-paused" || fail "the monitor did not reach its failed-claim pause"
+  assert_grep 'could not be acquired within its bounded retry window' "$home/state/.wake-queue" \
+    "the monitor did not publish its initial claim alarm"
+  cp "$home/state/.herdr-supervisor-claim-alarm" "$home/alarm-before-status"
+  cp "$home/state/.wake-queue" "$home/queue-before-status"
+  rm "$home/state/.supervision-claim.lock"
+  claim_probe "$home" -c '
+    set --
+    . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+    fm_supervision_claim_acquire "$SUPERVISION_CLAIM" 20 || exit 1
+    trap "fm_lock_release \"\$SUPERVISION_CLAIM\"" EXIT
+    trap "exit 0" TERM INT
+    touch "$STATE/owner-ready"
+    while :; do sleep 0.05; done
+  ' > "$home/owner.out" 2>&1 &
+  owner_pid=$!
+  wait_for 10 test -e "$home/state/owner-ready" || fail "the monitor recovery owner did not acquire its claim"
+  (claim_probe "$home" -c '
+    set --
+    . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+    cmd_status 0
+  ') > "$home/status.out" 2>&1 || fail "the read-only status probe failed"
+  assert_grep 'other-owner: yes' "$home/status.out" "status did not recognize the recovered owner"
+  cmp -s "$home/alarm-before-status" "$home/state/.herdr-supervisor-claim-alarm" \
+    || fail "read-only status changed claim alarm suppression"
+  cmp -s "$home/queue-before-status" "$home/state/.wake-queue" \
+    || fail "read-only status changed the durable wake queue"
+  assert_absent "$home/state/.herdr-supervisor-claim-alarm.lock" "read-only status left an alarm lock"
+  touch "$home/state/monitor-resume"
+  wait "$monitor_pid" || fail "the monitor did not stand down for the recovered owner"
+  monitor_pid=
+  assert_grep 'stood down: another continuity owner' "$home/state/.herdr-supervisor.log" \
+    "the monitor did not take its healthy-owner handoff path"
+  assert_absent "$home/state/.herdr-supervisor-monitor" "the monitor retained its record after handoff"
+  kill "$owner_pid"
+  wait "$owner_pid" || fail "the monitor recovery owner failed to release its claim"
+  owner_pid=
+  assert_absent "$home/state/.supervision-claim.lock" "the monitor recovery owner retained its claim"
+  printf 'unreadable claim\n' > "$home/state/.supervision-claim.lock"
+  (claim_probe "$home" -c '
+    set --
+    . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+    cmd_ensure "failure after monitor handoff"
+  ') > "$home/ensure.out" 2>&1 && fail "a later unresolved claim reported success"
+  count=$(grep -c 'herdr-supervisor' "$home/state/.wake-queue")
+  [ "$count" = 2 ] || fail "monitor handoff suppressed the later failure ($count alarms)"
+  pass "monitor handoff resets claim alarms while status remains read-only"
+)
+
 claim_alarm_owner_cleanup() {
   [ -n "${LIVE_OWNER_PID:-}" ] || return 0
   kill "$LIVE_OWNER_PID" 2>/dev/null || true
@@ -584,6 +656,7 @@ pass "successful claim acquisition lets a later failure episode alarm again"
 }
 
 case "${1:-}" in
+  --claim-monitor-only) claim_alarm_monitor_test; exit $? ;;
   --claim-owner-only) claim_alarm_owner_tests; exit $? ;;
   --claim-concurrent-only) claim_alarm_concurrent_test; exit $? ;;
   --claim-shared-only) claim_alarm_loop_test shared; exit $? ;;
@@ -598,6 +671,7 @@ claim_alarm_owner_tests
 claim_alarm_concurrent_test
 claim_alarm_loop_test shared
 claim_alarm_loop_test recovery
+claim_alarm_monitor_test
 if [ "${1:-}" = --claim-alarms-only ]; then
   exit 0
 fi

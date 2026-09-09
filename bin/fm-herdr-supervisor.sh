@@ -824,13 +824,9 @@ harness_owner_provable() {
   HS_DEFER_REASON=
   if fm_supervision_claim_held_by_other "$SUPERVISION_CLAIM"; then
     HS_DEFER_REASON="another continuity owner is completing its ownership claim"
-    return 0
-  fi
-  if fm_supervision_claim_pending "$STATE"; then
+  elif fm_supervision_claim_pending "$STATE"; then
     HS_DEFER_REASON="a native away-mode owner is completing its ownership handoff"
-    return 0
-  fi
-  if fm_supervision_claim_pending_expired_live "$STATE"; then
+  elif fm_supervision_claim_pending_expired_live "$STATE"; then
     HS_DEFER_REASON="a native away-mode handoff reservation expired while its owner remains live"
     if [ "$read_only" = 0 ]; then
       local handoff_key
@@ -840,9 +836,7 @@ harness_owner_provable() {
         escalate "the native away-mode handoff reservation expired while its launcher remains live; refusing a second continuity owner"
       fi
     fi
-    return 0
-  fi
-  if [ -e "$STATE/.afk" ]; then
+  elif [ -e "$STATE/.afk" ]; then
     away_state=$(
       # Runtime source path is intentionally unavailable to static analysis.
       # shellcheck disable=SC1091
@@ -853,7 +847,6 @@ harness_owner_provable() {
       live)
         [ "$read_only" = 1 ] || rm -f "$AWAY_AMBIGUOUS" 2>/dev/null || true
         HS_DEFER_REASON="away mode is active and its daemon owns supervision"
-        return 0
         ;;
       ambiguous)
         away_owner=$(
@@ -871,16 +864,16 @@ harness_owner_provable() {
           escalate "away mode has an ambiguous live daemon lock; refusing a second continuity owner"
         fi
         HS_DEFER_REASON="away mode has an ambiguous live daemon lock; continuity is quarantined"
-        return 0
         ;;
       *) [ "$read_only" = 1 ] || rm -f "$AWAY_AMBIGUOUS" 2>/dev/null || true ;;
     esac
   fi
-  if fm_pi_extension_owns_supervision "$STATE" "$FM_ROOT" 2>/dev/null; then
+  if [ -z "$HS_DEFER_REASON" ]; then
+    fm_pi_extension_owns_supervision "$STATE" "$FM_ROOT" 2>/dev/null || return 1
     HS_DEFER_REASON="the Pi primary extension owns watcher continuity"
-    return 0
   fi
-  return 1
+  [ "$read_only" = 1 ] || claim_alarm_clear || true
+  return 0
 }
 
 claim_alarm_escalate_once() {
@@ -2076,7 +2069,6 @@ cmd_run() {
       continue
     fi
     if harness_owner_provable; then
-      claim_alarm_clear || true
       : > "$HEARTBEAT" 2>/dev/null || true
       sleep "$IDLE_INTERVAL"
       continue
@@ -2113,7 +2105,6 @@ cmd_run() {
         # acquire attempt. Only escalate when no owner is provable, at most
         # once per unresolved episode.
         if harness_owner_provable; then
-          claim_alarm_clear
           sleep "$IDLE_INTERVAL"
           continue
         fi
