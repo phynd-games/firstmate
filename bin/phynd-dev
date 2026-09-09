@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-# phynd-dev - reconcile the pinned macOS Firstmate developer environment.
+# phynd-dev - reconcile the pinned macOS/Linux Firstmate developer environment.
 # Usage: phynd-dev [install|update|switch|flake-update|flake-check|tools|install-tool|launch|status]
 #
-# install (default) bootstraps Determinate Nix when necessary, applies the
-# pinned nix-darwin and Home Manager configuration, installs the npm tools used
-# by Firstmate, and links repository-owned editor configuration safely.
+# install (default) detects the host OS, bootstraps Determinate Nix when
+# necessary, applies the matching pinned Nix configuration - nix-darwin plus
+# Home Manager on macOS, standalone Home Manager on ordinary Linux (not
+# NixOS) - installs the npm tools used by Firstmate, and links
+# repository-owned editor configuration safely.
 # update repeats that reconciliation after repository configuration changes.
 # switch is the activation-only form; flake-update is the explicit lock-file
 # update operation; flake-check evaluates the flake without building it.
 # tools and install-tool reconcile one named tool; launch opens Herdr when run
 # from an interactive terminal; status is read-only.
 # PHYN_DEV_NIX_CUSTOM_CONF optionally overrides the host Nix custom-config path
-# for isolated tests; activation uses /etc/nix/nix.custom.conf by default.
+# for isolated tests; activation uses /etc/nix/nix.custom.conf by default on
+# macOS and is unused on Linux, which has no analogous system Nix config file.
 set -euo pipefail
 
 say() {
@@ -48,7 +51,21 @@ host_system() {
   case "${PHYN_DEV_UNAME_S:-$(uname -s)}-${PHYN_DEV_UNAME_M:-$(uname -m)}" in
     Darwin-arm64) printf 'aarch64-darwin\n' ;;
     Darwin-x86_64) printf 'x86_64-darwin\n' ;;
-    *) die 'phynd-dev supports macOS on Apple Silicon or Intel only' ;;
+    Linux-aarch64|Linux-arm64) printf 'aarch64-linux\n' ;;
+    Linux-x86_64) printf 'x86_64-linux\n' ;;
+    *) die 'phynd-dev supports macOS (Apple Silicon or Intel) or Linux (aarch64 or x86_64) only' ;;
+  esac
+}
+
+# DEV_OS gates every platform-specific behavior below (Darwin activation via
+# nix-darwin/Homebrew vs. standalone Home Manager on ordinary Linux); it is
+# derived once from DEV_SYSTEM's resolved os-arch pair rather than re-matched
+# per call site.
+host_os() {
+  case "$1" in
+    *-darwin) printf 'darwin\n' ;;
+    *-linux) printf 'linux\n' ;;
+    *) die "unrecognized resolved system: $1" ;;
   esac
 }
 
@@ -56,6 +73,7 @@ configure_paths() {
   DEV_ROOT=$1
   DEV_HOME=${PHYN_DEV_HOME:-${HOME:?HOME is required}}
   DEV_SYSTEM=$(host_system)
+  DEV_OS=$(host_os "$DEV_SYSTEM")
   DEV_XDG_CONFIG_HOME=${PHYN_DEV_XDG_CONFIG_HOME:-${XDG_CONFIG_HOME:-$DEV_HOME/.config}}
   DEV_STATE_DIR=${PHYN_DEV_STATE_DIR:-$DEV_HOME/.local/state/phynd-dev}
   DEV_NPM_PREFIX=${PHYN_DEV_NPM_PREFIX:-$DEV_HOME/.local/share/phynd-dev/npm}
@@ -63,9 +81,14 @@ configure_paths() {
   DEV_ACTIVATION_STATE=$DEV_STATE_DIR/activation.sha256
   export PHYN_DEV_ROOT="$DEV_ROOT"
   export PHYN_DEV_USER="${PHYN_DEV_USER:-$(id -un)}"
+  # Darwin: nix-darwin's per-user and system profiles. Linux: standalone Home
+  # Manager's own generation profile, symlinked at ~/.nix-profile by its own
+  # activation script; there is no NixOS system profile in this design
+  # (AGENTS.md: ordinary Linux, not NixOS).
   DEV_NIX_PROFILE=${PHYN_DEV_NIX_PROFILE:-/etc/profiles/per-user/$PHYN_DEV_USER/bin}
   DEV_SYSTEM_PROFILE=${PHYN_DEV_SYSTEM_PROFILE:-/run/current-system/sw/bin}
   DEV_HM_PROFILE_ROOT=${PHYN_DEV_HM_PROFILE_ROOT:-/etc/profiles/per-user/$PHYN_DEV_USER}
+  DEV_HOME_MANAGER_PROFILE=${PHYN_DEV_HOME_MANAGER_PROFILE:-$DEV_HOME/.nix-profile}
   export PHYN_DEV_HOME="$DEV_HOME"
   export PHYN_DEV_SYSTEM="$DEV_SYSTEM"
   export NPM_CONFIG_PREFIX="$DEV_NPM_PREFIX"
@@ -75,18 +98,22 @@ refresh_path() {
   local per_user_profile current_system
   per_user_profile="/etc/profiles/per-user/$PHYN_DEV_USER/bin"
   current_system=$DEV_SYSTEM_PROFILE
-  PATH="$DEV_NPM_PREFIX/bin:$DEV_HOME/.local/bin:$DEV_NIX_PROFILE:$per_user_profile:$current_system:$PATH"
+  PATH="$DEV_NPM_PREFIX/bin:$DEV_HOME/.local/bin:$DEV_NIX_PROFILE:$per_user_profile:$current_system:$DEV_HOME_MANAGER_PROFILE/bin:$PATH"
   export PATH
 }
 
 load_nix() {
-  local profile
+  local profile daemon_bin daemon_profile_script
+  # Both real Determinate Nix defaults on macOS and ordinary Linux; overridable
+  # so isolated tests never see this host's own real Nix installation.
+  daemon_bin=${PHYN_DEV_NIX_DAEMON_PROFILE:-/nix/var/nix/profiles/default/bin/nix}
+  daemon_profile_script=${PHYN_DEV_NIX_DAEMON_PROFILE_SCRIPT:-/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh}
   command -v nix >/dev/null 2>&1 && return 0
   for profile in \
     "${PHYN_DEV_NIX_BIN:-}" \
     "$DEV_NIX_PROFILE/nix" \
     "$DEV_HOME/.local/state/nix/profiles/profile/bin/nix" \
-    /nix/var/nix/profiles/default/bin/nix; do
+    "$daemon_bin"; do
     [ -n "$profile" ] || continue
     if [ -x "$profile" ]; then
       PATH="$(dirname "$profile"):$PATH"
@@ -94,9 +121,9 @@ load_nix() {
       command -v nix >/dev/null 2>&1 && return 0
     fi
   done
-  if [ -r /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+  if [ -r "$daemon_profile_script" ]; then
     # shellcheck source=/dev/null
-    . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+    . "$daemon_profile_script"
   fi
   command -v nix >/dev/null 2>&1
 }
@@ -193,6 +220,13 @@ prepare_nix_custom_conf() {
 }
 
 activation_command() {
+  case "$DEV_OS" in
+    darwin) darwin_activation_command ;;
+    linux) linux_activation_command ;;
+  esac
+}
+
+darwin_activation_command() {
   local rebuild
   prepare_nix_custom_conf
   if command -v darwin-rebuild >/dev/null 2>&1; then
@@ -214,6 +248,24 @@ activation_command() {
       nix run "$DEV_ROOT#darwin-rebuild" -- \
       switch --flake "$DEV_ROOT#phynd-dev" --impure
   fi
+}
+
+# Ordinary Linux (not NixOS) has no system-level activation to run under
+# sudo: standalone Home Manager only ever touches the invoking user's own
+# $HOME, so this needs no privilege escalation and no nix-darwin/Homebrew
+# concept. Building the flake's own homeConfigurations.phynd-dev output and
+# running its generated activate script is the supported bootstrap-free way
+# to apply a standalone Home Manager profile without installing a separate
+# home-manager CLI first.
+linux_activation_command() {
+  local out
+  out=$(nix build --impure --no-link --print-out-paths \
+    "$DEV_ROOT#homeConfigurations.phynd-dev.activationPackage") \
+    || die 'building the pinned Home Manager configuration failed'
+  [ -n "$out" ] || die 'Home Manager build produced no output path'
+  [ -x "$out/activate" ] \
+    || die "Home Manager build did not produce an activation script at $out/activate"
+  "$out/activate"
 }
 
 managed_link_converged() {
@@ -271,7 +323,8 @@ managed_command_converged() {
       for profile in \
         "$DEV_NIX_PROFILE" \
         "/etc/profiles/per-user/$PHYN_DEV_USER/bin" \
-        "$DEV_SYSTEM_PROFILE"; do
+        "$DEV_SYSTEM_PROFILE" \
+        "$DEV_HOME_MANAGER_PROFILE/bin"; do
         case "$path" in
           "$profile"/*) return 0 ;;
         esac
@@ -280,7 +333,8 @@ managed_command_converged() {
     *)
       for profile in \
         "$DEV_NIX_PROFILE" \
-        "/etc/profiles/per-user/$PHYN_DEV_USER/bin"; do
+        "/etc/profiles/per-user/$PHYN_DEV_USER/bin" \
+        "$DEV_HOME_MANAGER_PROFILE/bin"; do
         case "$path" in
           "$profile"/*) return 0 ;;
         esac
@@ -320,6 +374,13 @@ npm_command_converged() {
 }
 
 managed_activation_converged() {
+  case "$DEV_OS" in
+    darwin) managed_activation_converged_darwin ;;
+    linux) managed_activation_converged_linux ;;
+  esac
+}
+
+managed_activation_converged_darwin() {
   local tool
   for tool in \
     actionlint basedpyright basedpyright-langserver fd fresh fzf gh git jq \
@@ -339,6 +400,27 @@ managed_activation_converged() {
   homebrew_package_converged cask opensuperwhisper
 }
 
+# No Homebrew and no curl/git/tmux here: those are Darwin system packages in
+# nix/configuration.nix, out of scope on ordinary Linux where the host OS is
+# expected to already provide them, the same baseline assumption bootstrap_nix
+# already makes about curl on every platform.
+managed_activation_converged_linux() {
+  local tool
+  for tool in \
+    actionlint basedpyright basedpyright-langserver fd fresh fzf gh jq \
+    lua-language-server node npm npx rg rust-analyzer shellcheck starship \
+    treehouse typescript-language-server; do
+    managed_command_converged "$tool" || return 1
+  done
+  managed_link_converged "$DEV_XDG_CONFIG_HOME/fresh/config.json" \
+    "$DEV_ROOT/config/fresh/config.json" || return 1
+  managed_link_converged "$DEV_XDG_CONFIG_HOME/wezterm/wezterm.lua" \
+    "$DEV_ROOT/home/wezterm/wezterm.lua" || return 1
+  managed_link_converged "$DEV_HOME/.local/bin/phynd-dev" \
+    "$DEV_ROOT/bin/phynd-dev" || return 1
+  home_manager_file_converged "$DEV_HOME/.config/zsh/.zshrc"
+}
+
 activate() {
   local hash current
   preserve_existing_zshenv
@@ -350,15 +432,24 @@ activate() {
     current=$(sed -n '1p' "$DEV_ACTIVATION_STATE")
   fi
   if [ "$current" = "$hash" ] && managed_activation_converged; then
-    say 'nix-darwin and Home Manager are already converged'
+    case "$DEV_OS" in
+      darwin) say 'nix-darwin and Home Manager are already converged' ;;
+      linux) say 'the Home Manager environment is already converged' ;;
+    esac
     return 0
   fi
   if [ "${PHYN_DEV_SKIP_ACTIVATION:-0}" = 1 ]; then
     say 'activation skipped by test harness'
   elif [ "${PHYN_DEV_DRY_RUN:-0}" = 1 ]; then
-    say "would apply nix-darwin and Home Manager from $DEV_ROOT"
+    case "$DEV_OS" in
+      darwin) say "would apply nix-darwin and Home Manager from $DEV_ROOT" ;;
+      linux) say "would apply the Home Manager configuration from $DEV_ROOT" ;;
+    esac
   else
-    say 'applying pinned nix-darwin and Home Manager configuration'
+    case "$DEV_OS" in
+      darwin) say 'applying pinned nix-darwin and Home Manager configuration' ;;
+      linux) say 'applying the pinned Home Manager configuration' ;;
+    esac
     activation_command
   fi
   PHYN_DEV_ACTIVATION_CHANGED=1
@@ -552,9 +643,18 @@ flake_check() {
   ensure_nix
   say 'evaluating the pinned flake without building system closures'
   nix flake check --no-build --impure "$DEV_ROOT"
-  nix eval --no-write-lock-file --impure --raw \
-    "$DEV_ROOT#darwinConfigurations.phynd-dev.config.system.build.toplevel.drvPath" \
-    >/dev/null
+  case "$DEV_OS" in
+    darwin)
+      nix eval --no-write-lock-file --impure --raw \
+        "$DEV_ROOT#darwinConfigurations.phynd-dev.config.system.build.toplevel.drvPath" \
+        >/dev/null
+      ;;
+    linux)
+      nix eval --no-write-lock-file --impure --raw \
+        "$DEV_ROOT#homeConfigurations.phynd-dev.activationPackage.drvPath" \
+        >/dev/null
+      ;;
+  esac
 }
 
 ensure_nix() {

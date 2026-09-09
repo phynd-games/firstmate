@@ -31,7 +31,7 @@ Read that repository's root `AGENTS.md` and the most specific app guidance befor
 
 ### Install and launch
 
-For the complete macOS developer environment, use the repository entrypoint:
+For the complete developer environment, use the repository entrypoint; it detects macOS or ordinary Linux (not NixOS) and applies the matching Nix-managed configuration:
 
 ```sh
 git clone https://github.com/phynd-games/firstmate

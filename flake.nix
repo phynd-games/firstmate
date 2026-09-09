@@ -1,5 +1,5 @@
 {
-  description = "phynd-dev macOS workstation and Firstmate environment";
+  description = "phynd-dev macOS/Linux workstation and Firstmate environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
@@ -13,6 +13,7 @@
     determinate.url = "github:DeterminateSystems/determinate";
     determinate.inputs.nixpkgs.follows = "nixpkgs";
 
+    # Darwin-only: wired into darwinConfigurations below, never evaluated on Linux.
     nix-homebrew.url = "github:zhaofengli/nix-homebrew";
 
     treehouse.url = "github:kunchenguid/treehouse";
@@ -30,12 +31,16 @@
       ...
     }:
     let
+      lib = nixpkgs.lib;
       envOr = name: fallback:
         let value = builtins.getEnv name;
         in if value == "" then fallback else value;
-      system = envOr "PHYN_DEV_SYSTEM" "aarch64-darwin";
+      # PHYN_DEV_SYSTEM is exported by bin/phynd-dev from detected uname/arch;
+      # builtins.currentSystem covers direct `nix` invocations outside that script.
+      system = envOr "PHYN_DEV_SYSTEM" builtins.currentSystem;
+      isLinux = lib.hasSuffix "-linux" system;
       user = envOr "PHYN_DEV_USER" "phynd";
-      homeDirectory = envOr "PHYN_DEV_HOME" "/Users/phynd";
+      homeDirectory = envOr "PHYN_DEV_HOME" (if isLinux then "/home/${user}" else "/Users/${user}");
       repoRoot = envOr "PHYN_DEV_ROOT" self.outPath;
     in
     {
@@ -61,7 +66,21 @@
         ];
       };
 
-      packages.${system}.darwin-rebuild = nix-darwin.packages.${system}.darwin-rebuild;
+      # Ordinary Linux (not NixOS): standalone Home Manager applies only the
+      # portable nix/home.nix profile. No Darwin modules, Homebrew, or
+      # darwin-rebuild reach this path; `phynd-dev` activates it with
+      # `home-manager switch`, never `darwin-rebuild`.
+      homeConfigurations."phynd-dev" = home-manager.lib.homeManagerConfiguration {
+        pkgs = nixpkgs.legacyPackages.${system};
+        extraSpecialArgs = {
+          inherit repoRoot treehouse user homeDirectory;
+        };
+        modules = [ ./nix/home.nix ];
+      };
+
+      packages = if isLinux then { } else {
+        ${system}.darwin-rebuild = nix-darwin.packages.${system}.darwin-rebuild;
+      };
       formatter.${system} = nixpkgs.legacyPackages.${system}.nixfmt;
     };
 }
