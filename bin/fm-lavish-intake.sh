@@ -110,12 +110,22 @@ real_dir() {
   printf '%s\n' "$real"
 }
 
+path_has_no_symlink() {
+  local path=$1
+  case "$path" in /*) ;; *) path="$PWD/$path" ;; esac
+  while [ "$path" != / ]; do
+    [ ! -L "$path" ] || return 1
+    path=$(dirname "$path")
+  done
+}
+
 # Stricter than real_file: also refuses a hardlinked file. Used only for the
 # new carry-forward scope/approval source inputs, where a second link would
 # let content change out from under a hash that is supposed to be immutable
 # provenance, without a corresponding change to the file this command hashed.
 real_file_no_hardlink() {
   local path=$1 real links
+  path_has_no_symlink "$path" || return 1
   real=$(real_file "$path") || return 1
   links=$(fm_pr_file_link_count "$real") || return 1
   case "$links" in ''|*[!0-9]*) return 1 ;; esac
@@ -683,7 +693,9 @@ verify_lineage_source() {
   case "$seq" in ''|*[!0-9]*) fail "captured intake result sequence is invalid: $seq" ;; esac
   [ -f "$STATE/procevent-inbox/$sid.$seq.handled" ] && [ ! -L "$STATE/procevent-inbox/$sid.$seq.handled" ] \
     || fail "captured intake result is not durably acknowledged"
-  answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" answers --intake --allow-retired "$result") \
+  [ ! -s "$STATE/procevent-inbox/$sid.$seq.handled" ] \
+    || fail "captured intake acknowledgement is not an empty handled marker"
+  answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" lineage-answers "$result" "$answer_task") \
     || fail "captured intake feedback could not be read"
   case "$answer_rows" in *$'\n'*) fail "captured intake feedback contains multiple answers" ;; esac
   [ -n "$answer_rows" ] || fail "captured intake feedback has no answer"
@@ -1486,6 +1498,34 @@ cmd_exempt() {
   write_receipt "$task" not-applicable "$artifact" "" "$reason"
 }
 
+carry_preflight() {
+  local child=$1 parent=$2 scope_source=$3 approval_source=$4 state_real receipt path key
+  path_has_no_symlink "$STATE" || fail "intake state directory is unsafe: $STATE"
+  state_real=$(real_dir "$STATE") || fail "intake state directory is missing or unsafe: $STATE"
+  real_file_no_hardlink "$scope_source" >/dev/null \
+    || fail "scope source is not a safe regular file: $scope_source"
+  real_file_no_hardlink "$approval_source" >/dev/null \
+    || fail "approval source is not a safe regular file: $approval_source"
+  receipt=$(real_file_no_hardlink "$(receipt_path "$parent")") \
+    || fail "no intake evidence exists or evidence is unsafe for parent task $parent"
+  [ "$(dirname "$receipt")" = "$state_real" ] \
+    || fail "parent intake evidence must live in this home's state directory"
+  for key in artifact result; do
+    if [ "$key" = result ] && [ "$(require_unique_meta "$receipt" classification)" != significant ]; then
+      continue
+    fi
+    path=$(require_unique_meta "$receipt" "$key")
+    real_file_no_hardlink "$path" >/dev/null \
+      || fail "parent $key is missing or unsafe: $path"
+  done
+  path=$(receipt_path "$child")
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    real_file_no_hardlink "$path" >/dev/null || fail "intake evidence is unsafe: $path"
+    [ "$(require_unique_meta "$path" classification)" = carried-forward ] \
+      || fail "intake evidence already exists for task $child with a different classification"
+  fi
+}
+
 CARRY_LOCK_PATH=
 CARRY_LOCK_HELD=0
 carry_cleanup() {
@@ -1529,11 +1569,12 @@ cmd_carry_forward() {
   case "$scope_id" in *[!A-Za-z0-9._-]*) fail "scope id must be path-safe: $scope_id" ;; esac
   [ -n "$approval_source" ] || fail "carry-forward requires --approval-source <path>"
 
-  mkdir -p "$STATE" || fail "cannot create intake state directory"
+  carry_preflight "$child" "$parent" "$scope_source" "$approval_source"
   CARRY_LOCK_PATH=$(intake_lock_path "$child")
   fm_lock_acquire_wait "$CARRY_LOCK_PATH" || fail "could not lock intake task $child"
   CARRY_LOCK_HELD=1
   trap carry_cleanup EXIT
+  carry_preflight "$child" "$parent" "$scope_source" "$approval_source"
 
   intake_state_active_for_task "$child" \
     && fail "cannot carry evidence forward while Lavish intake is active for task $child"
@@ -1561,6 +1602,8 @@ cmd_carry_forward() {
   parent_classification=$(require_unique_meta "$parent_receipt" classification)
   [ "$parent_classification" = significant ] \
     || fail "carry-forward requires a significant parent receipt, not $parent_classification"
+  verify_receipt "$parent" "$parent_receipt" >/dev/null \
+    || fail "parent intake evidence does not verify"
   [ "$(require_unique_meta "$parent_receipt" version)" = "$RECEIPT_VERSION" ] \
     || fail "unsupported parent intake evidence version"
   parent_task_field=$(require_unique_meta "$parent_receipt" task_id)
@@ -1668,12 +1711,12 @@ verify_carried_forward_receipt() {
   [ "$(require_unique_meta "$receipt" feedback)" = carried ] \
     || fail "carried-forward evidence has wrong feedback marker"
   scope_source=$(require_unique_meta "$receipt" scope_source)
-  scope_source=$(real_file "$scope_source") || fail "scope source is missing or unsafe: $scope_source"
+  scope_source=$(real_file_no_hardlink "$scope_source") || fail "scope source is missing or unsafe: $scope_source"
   expected_scope=$(require_unique_meta "$receipt" scope_source_sha256)
   [ "$expected_scope" = "$(sha256_file "$scope_source")" ] \
     || fail "scope source hash does not match evidence"
   approval_source=$(require_unique_meta "$receipt" approval_source)
-  approval_source=$(real_file "$approval_source") || fail "approval source is missing or unsafe: $approval_source"
+  approval_source=$(real_file_no_hardlink "$approval_source") || fail "approval source is missing or unsafe: $approval_source"
   expected_approval=$(require_unique_meta "$receipt" approval_source_sha256)
   [ "$expected_approval" = "$(sha256_file "$approval_source")" ] \
     || fail "approval source hash does not match evidence"

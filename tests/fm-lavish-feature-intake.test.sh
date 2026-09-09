@@ -48,7 +48,7 @@ SH
 run_intake() {
   local home=$1
   shift
-  PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+  PATH="$home/fakebin:$PATH" HOME="$home" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" FM_PROCEVENT_CLAIM_ROOT="$home/claims" \
     FM_LAVISH_CALLS="$home/lavish.calls" \
@@ -60,7 +60,7 @@ run_brief() {
   local home=$1 base_sha
   shift
   base_sha=$(git -C "$ROOT" rev-parse HEAD) || return 1
-  PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+  PATH="$home/fakebin:$PATH" HOME="$home" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" FM_PROCEVENT_CLAIM_ROOT="$home/claims" "$BRIEF" "$@" \
     --approved-base-ref main --approved-base-sha "$base_sha"
@@ -68,7 +68,7 @@ run_brief() {
 
 run_process_event() {
   local home=$1 sid=$2
-  PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+  PATH="$home/fakebin:$PATH" HOME="$home" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" \
     FM_PROCEVENT_CLAIM_ROOT="$home/claims" FM_LAVISH_FIXTURE="$home/lavish-poll.txt" \
     "$ROOT/bin/fm-procevent.sh" start "$sid"
@@ -503,7 +503,7 @@ test_ambiguous_classification_refuses_dispatch() {
 
   mkdir -p "$home/projects/proj"
   set +e
-  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+  out=$(PATH="$home/fakebin:$PATH" HOME="$home" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" FM_SPAWN_NO_GUARD=1 FM_BACKEND=herdr \
     "$SPAWN" ambiguous-a1 "$home/projects/proj" claude --mode no-mistakes --yolo off 2>&1)
@@ -922,12 +922,12 @@ test_ordinary_rearm_refuses_stale_intake_ownership() {
   run_intake "$home" start stale-rearm-a1 --artifact "$artifact" >/dev/null
   sid=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
     "$ROOT/bin/fm-procevent-lavish.sh" source-id "$artifact")
-  PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+  PATH="$home/fakebin:$PATH" HOME="$home" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$home/state" FM_PROCEVENT_CLAIM_ROOT="$home/claims" \
     "$ROOT/bin/fm-procevent-lavish.sh" retire "$artifact" \
     --expect-intake-task stale-rearm-a1 >/dev/null
   set +e
-  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+  out=$(PATH="$home/fakebin:$PATH" HOME="$home" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$home/state" FM_PROCEVENT_CLAIM_ROOT="$home/claims" \
     "$ROOT/bin/fm-procevent-lavish.sh" arm "$artifact" 2>&1)
   rc=$?
@@ -938,7 +938,7 @@ test_ordinary_rearm_refuses_stale_intake_ownership() {
   assert_absent "$home/state/procevent/$sid.source" \
     "stale intake re-arm registered an ordinary source"
   set +e
-  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+  out=$(PATH="$home/fakebin:$PATH" HOME="$home" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" \
     FM_PROCEVENT_CLAIM_ROOT="$home/claims" \
     "$ROOT/bin/fm-procevent.sh" register lavish "$sid" -- \
@@ -1313,77 +1313,183 @@ test_carry_forward_rejects_missing_parent() {
 # Any change to the parent's captured evidence -- the artifact bytes, the
 # result file, or its durable handled acknowledgement -- must stop
 # carry-forward before it writes anything for the child.
+carry_receipts_snapshot() {
+  local home=$1
+  python3 - "$home/state" <<'PYTHON'
+import hashlib
+from pathlib import Path
+import sys
+for path in sorted(Path(sys.argv[1]).glob('*.lavish-intake')):
+    print(path.name, hashlib.sha256(path.read_bytes()).hexdigest())
+PYTHON
+}
+
+carry_tree_snapshot() {
+  python3 - "$1" <<'PYTHON'
+import hashlib
+import os
+import sys
+for root, dirs, files in os.walk(sys.argv[1], followlinks=False):
+    for name in ['.'] + sorted(dirs + files):
+        path = os.path.join(root, name)
+        info = os.lstat(path)
+        content = os.readlink(path) if os.path.islink(path) else ''
+        if os.path.isfile(path) and not os.path.islink(path):
+            with open(path, 'rb') as stream:
+                content = hashlib.sha256(stream.read()).hexdigest()
+        print(path, info.st_mode, info.st_nlink, info.st_mtime_ns, info.st_ctime_ns, content)
+PYTHON
+}
+
+assert_carry_refused() {
+  local home=$1 expected=$2 before out rc
+  shift 2
+  before=$(carry_receipts_snapshot "$home")
+  if out=$(run_intake "$home" carry-forward "$@" 2>&1); then rc=0; else rc=$?; fi
+  [ "$rc" -ne 0 ] || fail "carry-forward accepted invalid input: $expected"
+  assert_contains "$out" "$expected" "carry-forward refused at the wrong gate"
+  [ "$(carry_receipts_snapshot "$home")" = "$before" ] \
+    || fail "refused carry-forward mutated receipts: $expected"
+}
+
 test_carry_forward_rejects_changed_parent_evidence() {
-  local home parent_receipt artifact result sid handled out rc
+  local home receipt artifact result sid handled path gate kind
   home=$(make_home carry-changed-parent)
   make_scope_and_approval "$home" x
-
-  parent_receipt=$(setup_parent_receipt "$home" plan-artifact)
-  artifact=$(sed -n 's/^artifact=//p' "$parent_receipt" | head -1)
-  printf '<!-- tampered -->\n' >> "$artifact"
-  set +e
-  out=$(run_intake "$home" carry-forward journal-artifact --parent plan-artifact \
-    --scope-source "$home/scope-x.md" --scope-id P2a --approval-source "$home/approval-x.md" 2>&1)
-  rc=$?
-  set -e
-  [ "$rc" -ne 0 ] || fail "carry-forward accepted a changed parent artifact"
-  assert_absent "$home/state/journal-artifact.lavish-intake" "changed-artifact attempt left child evidence"
-
-  parent_receipt=$(setup_parent_receipt "$home" plan-result)
-  result=$(sed -n 's/^result=//p' "$parent_receipt" | head -1)
-  printf '\n' >> "$result"
-  set +e
-  out=$(run_intake "$home" carry-forward journal-result --parent plan-result \
-    --scope-source "$home/scope-x.md" --scope-id P2a --approval-source "$home/approval-x.md" 2>&1)
-  rc=$?
-  set -e
-  [ "$rc" -ne 0 ] || fail "carry-forward accepted a changed parent result"
-  assert_absent "$home/state/journal-result.lavish-intake" "changed-result attempt left child evidence"
-
-  parent_receipt=$(setup_parent_receipt "$home" plan-ack)
-  sid=$(sed -n 's/^source_id=//p' "$parent_receipt" | head -1)
+  receipt=$(setup_parent_receipt "$home" plan-evidence)
+  run_intake "$home" verify plan-evidence >/dev/null || fail "parent fixture does not verify"
+  artifact=$(sed -n 's/^artifact=//p' "$receipt")
+  result=$(sed -n 's/^result=//p' "$receipt")
+  sid=$(sed -n 's/^source_id=//p' "$receipt")
   handled="$home/state/procevent-inbox/$sid.1.handled"
-  assert_present "$handled" "fixture setup did not produce a handled marker"
-  rm -f "$handled"
-  set +e
-  out=$(run_intake "$home" carry-forward journal-ack --parent plan-ack \
-    --scope-source "$home/scope-x.md" --scope-id P2a --approval-source "$home/approval-x.md" 2>&1)
-  rc=$?
-  set -e
-  [ "$rc" -ne 0 ] || fail "carry-forward accepted a parent result with no handled acknowledgement"
-  assert_contains "$out" "durably acknowledged" "missing-ack refusal was unclear"
-  assert_absent "$home/state/journal-ack.lavish-intake" "missing-ack attempt left child evidence"
-  pass "Lavish intake: carry-forward rejects changed or unacknowledged parent evidence"
+  for kind in artifact result ack; do
+    case "$kind" in
+      artifact) path=$artifact; gate='artifact hash does not match' ;;
+      result) path=$result; gate='result hash does not match' ;;
+      ack) path=$handled; gate='not an empty handled marker' ;;
+    esac
+    cp "$path" "$home/evidence.saved"
+    printf 'changed evidence\n' >> "$path"
+    assert_carry_refused "$home" "$gate" journal-evidence --parent plan-evidence \
+      --scope-source "$home/scope-x.md" --scope-id P2a --approval-source "$home/approval-x.md"
+    cp "$home/evidence.saved" "$path"
+    rm "$path"
+    case "$kind" in
+      artifact|result) gate="parent $kind is missing or unsafe" ;;
+      ack) gate='not durably acknowledged' ;;
+    esac
+    assert_carry_refused "$home" "$gate" journal-evidence --parent plan-evidence \
+      --scope-source "$home/scope-x.md" --scope-id P2a --approval-source "$home/approval-x.md"
+    cp "$home/evidence.saved" "$path"
+    run_intake "$home" verify plan-evidence >/dev/null || fail "restored parent does not verify"
+  done
+  pass "Lavish intake: carry-forward rejects changed and missing artifact, result, and acknowledgement"
+}
+
+test_carry_forward_requires_complete_parent_verification() {
+  local home receipt result session sid kind gate out path
+  home=$(make_home carry-parent-provenance)
+  receipt=$(setup_parent_receipt "$home" plan-provenance)
+  make_scope_and_approval "$home" x
+  result=$(sed -n 's/^result=//p' "$receipt")
+  sid=$(sed -n 's/^source_id=//p' "$receipt")
+  session="$home/state/plan-provenance.lavish-intake-session"
+  cp "$receipt" "$home/receipt.saved"
+  cp "$session" "$home/session.saved"
+  for kind in adapter inbox sequence session marker; do
+    run_intake "$home" verify plan-provenance >/dev/null || fail "parent fixture does not verify"
+    case "$kind" in
+      adapter)
+        path="${result%.result}.adapter"
+        mv "$path" "$home/adapter.saved"
+        gate='not captured by the Lavish adapter' ;;
+      inbox)
+        path="$home/$(basename "$result")"
+        cp "$result" "$path"
+        sed "s|^result=.*|result=$path|" "$home/receipt.saved" > "$receipt"
+        gate='inside the captured-result inbox' ;;
+      sequence)
+        sed '/^sequence_floor=/d' "$home/session.saved" > "$session"
+        printf 'sequence_floor=1\n' >> "$session"
+        gate='predates the active intake session' ;;
+      session)
+        sed "s/^source_id=.*/source_id=lavish-other/" "$home/session.saved" > "$session"
+        gate='does not match the active intake session' ;;
+      marker)
+        path="$home/state/procevent/$sid.intake"
+        mv "$path" "$home/marker.saved"
+        gate='not durably owned by task' ;;
+    esac
+    if out=$(run_intake "$home" verify plan-provenance 2>&1); then
+      fail "ordinary verify accepted tampered parent $kind"
+    fi
+    assert_contains "$out" "$gate" "ordinary verify refused at the wrong gate"
+    assert_carry_refused "$home" "$gate" journal-provenance --parent plan-provenance \
+      --scope-source "$home/scope-x.md" --scope-id P2a --approval-source "$home/approval-x.md"
+    cp "$home/receipt.saved" "$receipt"
+    cp "$home/session.saved" "$session"
+    case "$kind" in
+      adapter) mv "$home/adapter.saved" "$path" ;;
+      marker) mv "$home/marker.saved" "$path" ;;
+    esac
+  done
+  run_intake "$home" verify plan-provenance >/dev/null || fail "restored parent does not verify"
+  pass "Lavish intake: issuance requires every ordinary parent provenance check"
 }
 
 # scope-source and approval-source are the explicit MAIN declaration; a
 # symlink or a second hard link would let their content drift after the hash
 # in the child receipt was computed, so both are refused up front.
 test_carry_forward_rejects_unsafe_declaration_sources() {
-  local home out rc
+  local home role kind source approval input link before
   home=$(make_home carry-unsafe-sources)
   setup_parent_receipt "$home" plan-d1 >/dev/null
   make_scope_and_approval "$home" x
-  ln -s "$home/scope-x.md" "$home/scope-symlink.md"
-  ln "$home/approval-x.md" "$home/approval-hardlink.md"
+  for role in scope approval; do
+    for kind in symlink hardlink; do
+      source="$home/scope-x.md"
+      approval="$home/approval-x.md"
+      input="$home/$role-x.md"
+      link="$home/$role-$kind.md"
+      if [ "$kind" = symlink ]; then ln -s "$input" "$link"; else ln "$input" "$link"; fi
+      if [ "$role" = scope ]; then source=$link; else approval=$link; fi
+      before=$(carry_tree_snapshot "$home")
+      assert_carry_refused "$home" "$role source is not a safe regular file" journal-d1 --parent plan-d1 \
+        --scope-source "$source" --scope-id P2a --approval-source "$approval"
+      [ "$(carry_tree_snapshot "$home")" = "$before" ] \
+        || fail "unsafe $role $kind caused a filesystem side effect"
+      rm "$link"
+    done
+  done
+  pass "Lavish intake: carry-forward refuses both unsafe declaration roles before filesystem mutation"
+}
 
-  set +e
-  out=$(run_intake "$home" carry-forward journal-d1 --parent plan-d1 \
-    --scope-source "$home/scope-symlink.md" --scope-id P2a --approval-source "$home/approval-x.md" 2>&1)
-  rc=$?
-  set -e
-  [ "$rc" -ne 0 ] || fail "carry-forward accepted a symlinked scope source"
-  assert_contains "$out" "scope source" "symlinked scope-source refusal was unclear"
-
-  set +e
-  out=$(run_intake "$home" carry-forward journal-d1 --parent plan-d1 \
-    --scope-source "$home/scope-x.md" --scope-id P2a --approval-source "$home/approval-hardlink.md" 2>&1)
-  rc=$?
-  set -e
-  [ "$rc" -ne 0 ] || fail "carry-forward accepted a hardlinked approval source"
-  assert_contains "$out" "approval source" "hardlinked approval-source refusal was unclear"
-  assert_absent "$home/state/journal-d1.lavish-intake" "unsafe-source attempts left child evidence"
-  pass "Lavish intake: carry-forward refuses symlinked or hardlinked declaration sources"
+test_carry_forward_preflights_state_and_receipt_paths() {
+  local home before kind path
+  home=$(make_home carry-unsafe-state)
+  setup_parent_receipt "$home" plan-state >/dev/null
+  make_scope_and_approval "$home" x
+  mv "$home/state" "$home/retained-state"
+  ln -s "$home/retained-state" "$home/state"
+  before=$(carry_tree_snapshot "$home")
+  assert_carry_refused "$home" 'state directory is unsafe' journal-state --parent plan-state \
+    --scope-source "$home/scope-x.md" --scope-id P2a --approval-source "$home/approval-x.md"
+  [ "$(carry_tree_snapshot "$home")" = "$before" ] || fail "symlinked state received lock writes"
+  rm "$home/state"
+  mv "$home/retained-state" "$home/state"
+  for kind in parent child; do
+    path="$home/state/plan-state.lavish-intake"
+    [ "$kind" = parent ] || path="$home/state/journal-state.lavish-intake"
+    if [ "$kind" = parent ]; then mv "$path" "$home/receipt.saved"; fi
+    ln -s "$home/receipt.saved" "$path"
+    before=$(carry_tree_snapshot "$home")
+    assert_carry_refused "$home" 'evidence is unsafe' journal-state --parent plan-state \
+      --scope-source "$home/scope-x.md" --scope-id P2a --approval-source "$home/approval-x.md"
+    [ "$(carry_tree_snapshot "$home")" = "$before" ] || fail "unsafe $kind receipt caused lock writes"
+    rm "$path"
+    if [ "$kind" = parent ]; then cp "$home/receipt.saved" "$path"; fi
+  done
+  pass "Lavish intake: state and receipt paths are checked before lock writes"
 }
 
 # A second carry-forward for the same child id with a different scope is a
@@ -1434,57 +1540,132 @@ test_carry_forward_rejects_duplicate_receipt_keys() {
 # verifying after its parent task's own receipt and session state are torn
 # down, because it never re-reads them -- it depends only on the parent's
 # original captured artifact/result files, which teardown does not remove.
+test_lineage_parser_requires_one_exact_captured_answer() {
+  local home out shape gate
+  home=$(make_home lineage-parser)
+  fixture_for "$home" plan-parser feedback feedback-block
+  out=$(HOME="$home" FM_HOME="$home" "$ROOT/bin/fm-procevent-lavish.sh" \
+    lineage-answers "$home/lavish-poll.txt" plan-parser) || fail "retained payload parser requires runtime state"
+  assert_contains "$out" $'plan-parser\tsubmitted\t' "retained parser lost the exact parent answer"
+  for shape in extra wrong-task arbitrary-json malformed duplicate; do
+    case "$shape" in
+      extra) fixture_for "$home" plan-parser feedback extra; gate='another task' ;;
+      wrong-task) fixture_for "$home" other-parent feedback feedback-block; gate='another task' ;;
+      arbitrary-json) printf '{"question":"plan-parser","answer":"submitted"}\n' > "$home/lavish-poll.txt"; gate='exactly one answer' ;;
+      malformed)
+        fixture_for "$home" plan-parser feedback feedback-block
+        printf '  "2","Context data: not-json","form",choice,"bad"\n' >> "$home/lavish-poll.txt"
+        gate='malformed keyed answer' ;;
+      duplicate)
+        fixture_for "$home" plan-parser feedback feedback-block
+        tail -1 "$home/lavish-poll.txt" > "$home/duplicate.row"
+        cat "$home/duplicate.row" >> "$home/lavish-poll.txt"
+        gate='more than one raw keyed answer' ;;
+    esac
+    if out=$(HOME="$home" FM_HOME="$home" "$ROOT/bin/fm-procevent-lavish.sh" \
+      lineage-answers "$home/lavish-poll.txt" plan-parser 2>&1); then
+      fail "retained payload parser accepted $shape"
+    fi
+    assert_contains "$out" "$gate" "retained payload parser refused at the wrong gate"
+  done
+  pass "Lavish intake: retained payload parsing requires one exact captured parent answer"
+}
+
+run_fixture_parent_teardown() {
+  local home=$1 parent=$2 code tool
+  code="$home/teardown-code"
+  mkdir -p "$code"
+  cp -R "$ROOT/bin" "$code/bin"
+  cat >> "$code/bin/fm-backend.sh" <<'SH'
+fm_backend_validate_task_endpoint() {
+  FM_BACKEND_VALIDATED_BACKEND=fixture
+  FM_BACKEND_VALIDATED_TARGET=fixture
+}
+fm_backend_kill() { printf 'fixture endpoint retired\n' >> "$FM_HOME/endpoint.calls"; }
+fm_backend_clear_transition() { :; }
+SH
+  for tool in fm-guard.sh fm-remote-job-reap-orphans.sh fm-home-summary-refresh.sh; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$code/bin/$tool"
+  done
+  fm_write_meta "$home/state/$parent.meta" \
+    "kind=ship" "mode=local-only" "spawn_gen=fixture-parent" \
+    "worktree=$home/retired-worktree" "project=$home/projects/fixture"
+  PATH="$home/fakebin:$PATH" HOME="$home" FM_HOME="$home" FM_ROOT_OVERRIDE="$code" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_CONFIG_OVERRIDE="$home/config" FM_PROCEVENT_CLAIM_ROOT="$home/claims" \
+    FM_LAVISH_CALLS="$home/lavish.calls" "$code/bin/fm-teardown.sh" "$parent"
+}
+
 test_carry_forward_survives_parent_teardown() {
-  local home child_receipt brief
+  local home parent_receipt child_receipt brief sid result artifact retained_before path out
   home=$(make_home carry-teardown)
-  setup_parent_receipt "$home" plan-g1 >/dev/null
+  parent_receipt=$(setup_parent_receipt "$home" plan-g1)
+  sid=$(sed -n 's/^source_id=//p' "$parent_receipt")
+  result=$(sed -n 's/^result=//p' "$parent_receipt")
+  artifact=$(sed -n 's/^artifact=//p' "$parent_receipt")
   make_scope_and_approval "$home" x
   run_intake "$home" carry-forward journal-g1 --parent plan-g1 \
     --scope-source "$home/scope-x.md" --scope-id P2a --approval-source "$home/approval-x.md" >/dev/null
   child_receipt="$home/state/journal-g1.lavish-intake"
   run_brief "$home" journal-g1 firstmate --mode no-mistakes --intake "$child_receipt" >/dev/null
   brief="$home/data/journal-g1/brief.md"
-
-  rm -f "$home/state/plan-g1.lavish-intake" "$home/state/plan-g1.lavish-intake-session"
-
+  assert_present "$home/state/procevent/$sid.intake" "parent fixture lacks the transient intake marker"
+  retained_before=$(shasum -a 256 "$artifact" "$result" "${result%.result}.handled" "$child_receipt")
+  if ! out=$(run_fixture_parent_teardown "$home" plan-g1 2>&1); then
+    fail "public fixture teardown failed: $out"
+  fi
+  assert_contains "$out" 'teardown plan-g1 complete' "public teardown did not complete"
+  assert_contains "$(cat "$home/endpoint.calls")" 'fixture endpoint retired' "teardown did not reach its stubbed runtime boundary"
+  for path in "$parent_receipt" "$home/state/plan-g1.meta" \
+    "$home/state/plan-g1.lavish-intake-session" "$home/state/procevent/$sid.intake" \
+    "$home/state/procevent/$sid.source" "$home/state/decision-bindings/$sid.origin"; do
+    assert_absent "$path" "public teardown retained transient parent state"
+  done
+  [ "$(shasum -a 256 "$artifact" "$result" "${result%.result}.handled" "$child_receipt")" = "$retained_before" ] \
+    || fail "public teardown changed retained lineage evidence"
   [ "$(run_intake "$home" verify journal-g1 --evidence "$child_receipt" | sed -n 's/^status=//p')" = submitted ] \
     || fail "carried-forward evidence stopped verifying after the parent task retired"
   [ "$(run_intake "$home" check-brief journal-g1 "$brief" | sed -n 's/^status=//p')" = submitted ] \
     || fail "carried-forward brief stopped resolving after the parent task retired"
-  pass "Lavish intake: carried-forward lineage keeps verifying after the parent task retires"
+  for path in "$artifact" "$result" "${result%.result}.handled"; do
+    cp "$path" "$home/retained.saved"
+    printf 'changed evidence\n' >> "$path"
+    if out=$(run_intake "$home" check-brief journal-g1 "$brief" 2>&1); then
+      fail "retired lineage accepted changed retained evidence: $path"
+    fi
+    case "$path" in
+      *.handled) assert_contains "$out" 'not an empty handled marker' "retired acknowledgement check failed at the wrong gate" ;;
+      *) assert_contains "$out" 'hash does not match' "retired hash check failed at the wrong gate" ;;
+    esac
+    cp "$home/retained.saved" "$path"
+    rm "$path"
+    if out=$(run_intake "$home" verify journal-g1 2>&1); then
+      fail "retired lineage accepted missing retained evidence: $path"
+    fi
+    case "$path" in
+      *.handled) assert_contains "$out" 'not durably acknowledged' "retired acknowledgement absence failed at the wrong gate" ;;
+      *) assert_contains "$out" 'missing or unsafe' "retired missing file failed at the wrong gate" ;;
+    esac
+    cp "$home/retained.saved" "$path"
+  done
+  run_intake "$home" check-brief journal-g1 "$brief" >/dev/null || fail "restored retained evidence does not verify"
+  pass "Lavish intake: carried-forward lineage survives public parent teardown with isolated external operations"
 }
 
 test_carry_forward_requires_all_declaration_arguments() {
-  local home out rc
+  local home
   home=$(make_home carry-missing-args)
   setup_parent_receipt "$home" plan-h1 >/dev/null
   make_scope_and_approval "$home" x
-
-  set +e
-  out=$(run_intake "$home" carry-forward journal-h1 --parent plan-h1 \
-    --scope-id P2a --approval-source "$home/approval-x.md" 2>&1)
-  rc=$?
-  set -e
-  [ "$rc" -ne 0 ] || fail "carry-forward accepted a missing --scope-source"
-  assert_contains "$out" "scope-source" "missing --scope-source refusal was unclear"
-
-  set +e
-  out=$(run_intake "$home" carry-forward journal-h1 --parent plan-h1 \
-    --scope-source "$home/scope-x.md" --approval-source "$home/approval-x.md" 2>&1)
-  rc=$?
-  set -e
-  [ "$rc" -ne 0 ] || fail "carry-forward accepted a missing --scope-id"
-  assert_contains "$out" "scope-id" "missing --scope-id refusal was unclear"
-
-  set +e
-  out=$(run_intake "$home" carry-forward journal-h1 --parent plan-h1 \
-    --scope-source "$home/scope-x.md" --scope-id P2a 2>&1)
-  rc=$?
-  set -e
-  [ "$rc" -ne 0 ] || fail "carry-forward accepted a missing --approval-source"
-  assert_contains "$out" "approval-source" "missing --approval-source refusal was unclear"
-  assert_absent "$home/state/journal-h1.lavish-intake" "incomplete declaration attempts left child evidence"
-  pass "Lavish intake: carry-forward requires the complete explicit scope and approval declaration"
+  assert_carry_refused "$home" 'requires --parent' journal-h1 \
+    --scope-source "$home/scope-x.md" --scope-id P2a --approval-source "$home/approval-x.md"
+  assert_carry_refused "$home" 'requires --scope-source' journal-h1 --parent plan-h1 \
+    --scope-id P2a --approval-source "$home/approval-x.md"
+  assert_carry_refused "$home" 'requires --scope-id' journal-h1 --parent plan-h1 \
+    --scope-source "$home/scope-x.md" --approval-source "$home/approval-x.md"
+  assert_carry_refused "$home" 'requires --approval-source' journal-h1 --parent plan-h1 \
+    --scope-source "$home/scope-x.md" --scope-id P2a
+  pass "Lavish intake: carry-forward requires parent and every declaration argument without receipt mutation"
 }
 
 # Named focused proof group for the exact-follow-up carry-forward addition:
@@ -1493,6 +1674,11 @@ test_carry_forward_requires_all_declaration_arguments() {
 # public fm-brief.sh/check-brief verification. This intentionally does not
 # cover the rest of the file's pre-existing intake surface -- that remains the
 # default full-suite run below -- so it is a selection, not a regression claim.
+carry_forward_retirement_proof_group() {
+  test_carry_forward_survives_parent_teardown
+  test_carry_forward_requires_all_declaration_arguments
+}
+
 carry_forward_proof_group() {
   test_carry_forward_success_and_followup_brief
   test_carry_forward_rejects_parent_as_child
@@ -1501,10 +1687,12 @@ carry_forward_proof_group() {
   test_carry_forward_rejects_missing_parent
   test_carry_forward_rejects_changed_parent_evidence
   test_carry_forward_rejects_unsafe_declaration_sources
+  test_carry_forward_requires_complete_parent_verification
+  test_carry_forward_preflights_state_and_receipt_paths
   test_carry_forward_rejects_conflicting_repeat
   test_carry_forward_rejects_duplicate_receipt_keys
-  test_carry_forward_survives_parent_teardown
-  test_carry_forward_requires_all_declaration_arguments
+  test_lineage_parser_requires_one_exact_captured_answer
+  carry_forward_retirement_proof_group
   printf '# carry-forward proof group: all cases passed\n'
 }
 
@@ -1555,8 +1743,11 @@ test_carry_forward_requires_significant_parent
 test_carry_forward_rejects_missing_parent
 test_carry_forward_rejects_changed_parent_evidence
 test_carry_forward_rejects_unsafe_declaration_sources
+test_carry_forward_requires_complete_parent_verification
+test_carry_forward_preflights_state_and_receipt_paths
 test_carry_forward_rejects_conflicting_repeat
 test_carry_forward_rejects_duplicate_receipt_keys
+test_lineage_parser_requires_one_exact_captured_answer
 test_carry_forward_survives_parent_teardown
 test_carry_forward_requires_all_declaration_arguments
 printf '# all fm-lavish-feature-intake tests passed\n'
