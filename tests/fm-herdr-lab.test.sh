@@ -8,9 +8,18 @@
 # The only real processes are fixture processes whose pids are captured before
 # any helper call could signal them (at most four per case): the fake server
 # itself, an in-group child, a detached child, and an unrelated process.
-# Every fixture is registered with its birth time, and every fixture signal
-# (cleanup, reaping, and the fake session stop) rechecks that birth first, so
-# a reused pid is reported and left alone rather than killed from a list.
+# Every fixture is registered with the identity captured when it was actually
+# launched (the fake server records its own pid and birth before exec, the
+# fake records each child's birth while that child is still its own live,
+# unreaped child, and the test records its unrelated process the same way),
+# never with a fresh lookup of a historical pid. Every fixture signal
+# (cleanup, reaping, and the fake session stop) rechecks that identity first;
+# a reused pid is reported and left alone, an unreadable process table is
+# unknown and never absence, a failed kill is reported as failed, and an
+# attempted signal is never taken as proof of exit. When any fixture ends
+# unknown, reused, still live, or unsignaled, the test keeps its private
+# fixture directory as evidence instead of deleting it. On Darwin the window
+# between the identity read and the signal that follows it is unavoidable.
 # Every helper invocation runs with a private HOME, FM_HOME, XDG_*, and TMPDIR
 # under the test root in addition to the fake PATH and private state dir.
 # A ps shim on the fake PATH passes through untouched unless a case asks it to
@@ -38,43 +47,125 @@ printf '%s\n' '/home/test/.config/herdr/herdr.sock' > "$FAKE_STATE/default-socke
 : > "$FAKE_LOG"
 : > "$FAKE_TLOG"
 
-# Exec-stable birth of a live pid via the real ps, or nothing when absent.
+# Normalize one ps lstart line to the dash-joined form the helper records.
+birth_normalize() {
+  sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g'
+}
+
+# Exec-stable birth of a pid via the real ps. Exit 0 with the birth on stdout
+# when present, 3 when ps positively found nothing (its exit 1 with no
+# output), and 1 when the inspection itself failed - unknown, never absence.
 fixture_birth() { # <pid>
-  LC_ALL=C "$REAL_PS" -p "$1" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g'
-}
-
-# Register a fixture process by pid and its current birth. Refuses a pid that
-# is not alive, so ownership is always captured on a live, known process.
-fixture_register() { # <pid>
-  local pid=$1 birth
-  birth=$(fixture_birth "$pid")
-  [ -n "$birth" ] || fail "fixture $pid is not alive at registration"
-  FIXTURES+=("$pid|$birth")
-}
-
-# Signal one registered fixture only after its birth still matches; a changed
-# or absent birth is reported and never signaled. Prints the outcome.
-fixture_signal() { # <pid> <recorded-birth> <signal>
-  local pid=$1 recorded=$2 signal=$3 current
-  current=$(fixture_birth "$pid")
-  if [ -z "$current" ]; then
-    printf 'fixture %s absent\n' "$pid"
+  local pid=$1 out rc=0
+  out=$(LC_ALL=C "$REAL_PS" -p "$pid" -o lstart= 2>/dev/null) || rc=$?
+  if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
+    printf '%s\n' "$out" | birth_normalize
     return 0
   fi
-  if [ "$current" != "$recorded" ]; then
-    printf 'fixture pid %s reused (recorded %s, current %s); not signaled\n' "$pid" "$recorded" "$current"
-    return 1
+  if [ "$rc" -eq 1 ] && [ -z "$out" ]; then
+    return 3
   fi
-  kill -"$signal" "$pid" 2>/dev/null || true
-  printf 'fixture %s sent SIG%s\n' "$pid" "$signal"
+  return 1
 }
 
+# Register a fixture by the pid AND birth captured at its actual launch (the
+# fake server's own record, a child's birth read by its parent while it was
+# still that parent's live child, or the receipt the helper authenticated).
+# A fresh lookup is never accepted as ownership: it verifies only that the
+# launch-time identity is still what is live, and refuses otherwise.
+fixture_register() { # <pid> <launch-birth>
+  local pid=$1 launch_birth=$2 current rc=0
+  [ -n "$launch_birth" ] || fail "fixture $pid has no launch-time birth; refusing to invent ownership"
+  current=$(fixture_birth "$pid") || rc=$?
+  case "$rc" in
+    0) [ "$current" = "$launch_birth" ] || fail "fixture pid $pid is now a different process (launch $launch_birth, current $current); refusing to adopt it" ;;
+    3) fail "fixture $pid is positively absent at registration" ;;
+    *) fail "fixture $pid could not be inspected at registration; unknown, not adopted" ;;
+  esac
+  FIXTURES+=("$pid|$launch_birth")
+}
+
+# Signal one registered fixture only after its launch-time identity still
+# matches. Prints the truthful outcome and exits 0 only when the signal was
+# actually delivered or the pid was positively absent; identity change,
+# unknown inspection, and a failed kill all exit non-zero. A delivered signal
+# is not proof of exit: see fixture_wait_absent.
+fixture_signal() { # <pid> <launch-birth> <signal>
+  local pid=$1 recorded=$2 signal=$3 current rc=0
+  current=$(fixture_birth "$pid") || rc=$?
+  case "$rc" in
+    3) printf 'fixture %s positively absent\n' "$pid"; return 0 ;;
+    0) ;;
+    *) printf 'fixture %s unknown (inspection failed); not signaled\n' "$pid"; return 1 ;;
+  esac
+  if [ "$current" != "$recorded" ]; then
+    printf 'fixture pid %s reused (launch %s, current %s); not signaled\n' "$pid" "$recorded" "$current"
+    return 1
+  fi
+  if kill -"$signal" "$pid" 2>/dev/null; then
+    printf 'fixture %s SIG%s delivered\n' "$pid" "$signal"
+    return 0
+  fi
+  printf 'fixture %s SIG%s NOT delivered (kill failed)\n' "$pid" "$signal"
+  return 1
+}
+
+# Poll for positive absence of a fixture for up to about one second. Exit 0
+# only on observed absence, 2 when it is still live, 1 when unknown.
+fixture_wait_absent() { # <pid>
+  local pid=$1 attempt=0 rc
+  while [ "$attempt" -lt 20 ]; do
+    rc=0
+    fixture_birth "$pid" >/dev/null || rc=$?
+    case "$rc" in
+      3) return 0 ;;
+      0) ;;
+      *) return 1 ;;
+    esac
+    "$REAL_SLEEP" 0.05
+    attempt=$((attempt + 1))
+  done
+  return 2
+}
+
+# owned | absent | reused | unknown for a launch-time identity, read-only.
+fixture_state() { # <pid> <launch-birth>
+  local pid=$1 launch_birth=$2 current rc=0
+  current=$(fixture_birth "$pid") || rc=$?
+  case "$rc" in
+    3) printf 'absent' ;;
+    0) if [ -n "$launch_birth" ] && [ "$current" = "$launch_birth" ]; then printf 'owned'; else printf 'reused'; fi ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+# Cleanup: signal every registered fixture after its identity recheck and
+# wait for observed absence. If any fixture is unknown, reused, unsignaled, or
+# still live afterwards, the private fixture directory is RETAINED as evidence
+# and the test exits non-zero instead of claiming a clean run.
 fm_lab_test_cleanup() {
-  local entry
+  local entry pid retained=0 outcome
   for entry in "${FIXTURES[@]:-}"; do
     [ -n "$entry" ] || continue
-    fixture_signal "${entry%%|*}" "${entry#*|}" KILL >&2 || true
+    pid=${entry%%|*}
+    if ! outcome=$(fixture_signal "$pid" "${entry#*|}" KILL); then
+      printf 'cleanup: %s\n' "$outcome" >&2
+      retained=1
+      continue
+    fi
+    printf 'cleanup: %s\n' "$outcome" >&2
+    wait "$pid" 2>/dev/null || true
+    case "$(fixture_wait_absent "$pid"; printf '%s' "$?")" in
+      0) printf 'cleanup: fixture %s observed absent\n' "$pid" >&2 ;;
+      2) printf 'cleanup: fixture %s STILL LIVE after SIGKILL\n' "$pid" >&2; retained=1 ;;
+      *) printf 'cleanup: fixture %s unknown after signal\n' "$pid" >&2; retained=1 ;;
+    esac
   done
+  if [ "$retained" -eq 1 ]; then
+    printf 'cleanup: fixture cleanup NOT proved; retaining evidence in %s\n' "$TMP_ROOT" >&2
+    printf '%s\n' "fixture cleanup not proved at $(date -u +%Y-%m-%dT%H:%M:%SZ); see stderr of the run" > "$TMP_ROOT/RETAINED"
+    exit 1
+  fi
   fm_test_cleanup
 }
 trap fm_lab_test_cleanup EXIT
@@ -113,21 +204,27 @@ case "$1 ${2:-}" in
     fi
     ;;
   "server --session")
-    printf '%s\n' "$$" > "$state/$session.launched"
+    printf '%s %s\n' "$$" "$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$$" -o lstart= | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g')" > "$state/$session.launched"
     if [ "${FM_FAKE_HERDR_SERVER_DELAY:-0}" != 0 ]; then
       "$FM_FAKE_HERDR_REAL_SLEEP" "$FM_FAKE_HERDR_SERVER_DELAY"
     fi
     printf '%s %s\n' "$$" "$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$$" -o lstart= | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g')" > "$state/$session.server"
     printf '%s\n' running > "$state/$session"
     if [ "${FM_FAKE_HERDR_SERVER_CHILDREN:-}" = 1 ]; then
+      # Each child's birth is read by this parent while the child is its own
+      # live, unreaped child, so the pid cannot have been reused yet.
       "$FM_FAKE_HERDR_REAL_SLEEP" 300 &
-      printf '%s\n' "$!" > "$state/$session.child"
+      child=$!
+      printf '%s %s\n' "$child" "$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$child" -o lstart= | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g')" > "$state/$session.child"
       python3 -c 'import os, sys
 os.setsid()
-with open(sys.argv[1], "w") as handle:
+with open(sys.argv[1] + ".pid", "w") as handle:
     handle.write(str(os.getpid()))
 os.execvp(sys.argv[2], sys.argv[2:])' "$state/$session.detached" "$FM_FAKE_HERDR_REAL_SLEEP" 300 &
-      while [ ! -s "$state/$session.detached" ]; do "$FM_FAKE_HERDR_REAL_SLEEP" 0.05; done
+      detached=$!
+      while [ ! -s "$state/$session.detached.pid" ]; do "$FM_FAKE_HERDR_REAL_SLEEP" 0.05; done
+      [ "$(cat "$state/$session.detached.pid")" = "$detached" ] || exit 94
+      printf '%s %s\n' "$detached" "$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$detached" -o lstart= | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g')" > "$state/$session.detached"
     fi
     if [ "${FM_FAKE_HERDR_SERVER_LINGER:-1}" = 1 ]; then
       exec "$FM_FAKE_HERDR_REAL_SLEEP" 300
@@ -148,7 +245,13 @@ os.execvp(sys.argv[2], sys.argv[2:])' "$state/$session.detached" "$FM_FAKE_HERDR
       read -r server_pid server_birth < "$state/$session.server"
       current_birth=$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$server_pid" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g')
       if [ -n "$current_birth" ] && [ "$current_birth" = "$server_birth" ]; then
-        kill -TERM "$server_pid" 2>/dev/null || true
+        if kill -TERM "$server_pid" 2>/dev/null; then
+          printf 'delivered\n' > "$state/$session.stop"
+        else
+          printf 'kill-failed\n' > "$state/$session.stop"
+        fi
+      else
+        printf 'not-signaled\n' > "$state/$session.stop"
       fi
     fi
     ;;
@@ -252,18 +355,23 @@ pid_command() { # <pid>
   "$REAL_PS" -p "$1" -o command= | sed 's/^[[:space:]]*//'
 }
 
-# Kill one registered fixture after its birth recheck, then forget it.
+# Kill one registered fixture after its identity recheck and forget it only
+# once its absence is actually observed; anything else fails with the fixture
+# still registered so cleanup retains the evidence.
 reap_fixture() { # <pid>
-  local pid=$1 remaining=() entry
+  local pid=$1 remaining=() entry found=0 outcome
   for entry in "${FIXTURES[@]:-}"; do
     [ -n "$entry" ] || continue
     if [ "${entry%%|*}" = "$pid" ]; then
-      fixture_signal "$pid" "${entry#*|}" KILL >/dev/null || fail "fixture $pid could not be reaped safely"
+      found=1
+      outcome=$(fixture_signal "$pid" "${entry#*|}" KILL) || fail "fixture $pid not reaped: $outcome"
     else
       remaining+=("$entry")
     fi
   done
+  [ "$found" -eq 1 ] || fail "fixture $pid was never registered"
   wait "$pid" 2>/dev/null || true
+  fixture_wait_absent "$pid" || fail "fixture $pid not observed absent after SIGKILL (status $?)"
   FIXTURES=("${remaining[@]:-}")
 }
 
@@ -406,7 +514,7 @@ test_failed_delete_retains_tripwire() {
 }
 
 test_timed_out_provision_cancels_late_launch() {
-  local name="fm-lab-late-launch-$$" status=0 started ended launched
+  local name="fm-lab-late-launch-$$" status=0 started ended launched launched_birth
   cat > "$FAKEBIN/sleep" <<'SH'
 #!/usr/bin/env bash
 if [ "${FM_FAKE_HERDR_FAST_POLL:-}" = 1 ]; then
@@ -420,11 +528,15 @@ SH
   FM_FAKE_HERDR_FAST_POLL=1 FM_FAKE_HERDR_SERVER_DELAY=30 \
     run_with_fake fm_herdr_lab_provision "$name" >/dev/null 2>&1 || status=$?
   ended=$(date +%s)
-  launched=$(cat "$FAKE_STATE/$name.launched" 2>/dev/null || true)
-  evidence "case=late-launch status=$status elapsed=$((ended - started))s polls=$(grep -c "^status --json" "$FAKE_LOG") launched_pid=${launched:-none} launched_alive=$([ -n "$launched" ] && pid_present "$launched" && printf yes || printf no)"
+  read -r launched launched_birth < "$FAKE_STATE/$name.launched" || launched=
+  evidence "case=late-launch status=$status elapsed=$((ended - started))s polls=$(grep -c "^status --json" "$FAKE_LOG") launched_pid=${launched:-none} launched_state=$(fixture_state "${launched:-0}" "${launched_birth:-}")"
   expect_code 1 "$status" "timed-out provision must fail"
-  [ -n "$launched" ] || fail "fixture expectation: the late server never recorded its pid"
-  pid_present "$launched" && { fixture_register "$launched"; fail "cancelled late launch left server $launched alive"; }
+  [ -n "$launched" ] || fail "fixture expectation: the late server never recorded its identity"
+  case "$(fixture_state "$launched" "$launched_birth")" in
+    absent) : ;;
+    owned) fixture_register "$launched" "$launched_birth"; fail "cancelled late launch left server $launched alive" ;;
+    *) fail "cancelled late launch server $launched is $(fixture_state "$launched" "$launched_birth"); not adopted, evidence retained" ;;
+  esac
   [ "$((ended - started))" -le 20 ] || fail "timed-out provision overran its aggregate budget"
   assert_present "$TRIPWIRES/$name.fleet-state.json" \
     "timed-out provision must retain its tripwire until teardown"
@@ -442,20 +554,34 @@ SH
 # Provision a lingering fake server and print its pid, which the fake wrote
 # itself before exec and which must equal the receipt's bound pid. Callers
 # register the pid as a fixture (this runs in a command substitution).
+# Provision a lingering fake server and print "pid birth" from the fake's own
+# launch-time record, which must agree with the helper's authenticated receipt.
+# Callers register with exactly that identity (this runs in a command
+# substitution).
 provision_lingering() { # <session>
-  local name=$1 pid
+  local name=$1 pid birth launch_pid launch_birth
   run_with_fake fm_herdr_lab_provision "$name" || fail "lingering provision of $name failed"
   pid=$(receipt_field "$name" '.pid')
-  [ "$pid" = "$(cut -d' ' -f1 "$FAKE_STATE/$name.server")" ] || fail "receipt pid $pid is not the server the fake actually started"
-  pid_present "$pid" || fail "lingering server $pid is not alive after provision"
+  birth=$(receipt_field "$name" '.birth')
+  read -r launch_pid launch_birth < "$FAKE_STATE/$name.server"
+  [ "$pid" = "$launch_pid" ] || fail "receipt pid $pid is not the server the fake actually started ($launch_pid)"
+  [ "$birth" = "$launch_birth" ] || fail "receipt birth $birth disagrees with the server's own launch record $launch_birth"
+  printf '%s %s' "$pid" "$birth"
+}
+
+# Register the fixture printed by provision_lingering and echo its pid.
+register_lingering() { # <"pid birth">
+  local pid birth
+  [ -n "$1" ] || fail "lingering provision failed before any identity was recorded (see above)"
+  read -r pid birth <<< "$1"
+  fixture_register "$pid" "$birth"
   printf '%s' "$pid"
 }
 
 test_exec_transition_keeps_identity_and_teardown_terminates_server() {
   local name="fm-lab-exec-identity-$$" pid birth
   : > "$FAKE_LOG"
-  pid=$(provision_lingering "$name")
-  fixture_register "$pid"
+  pid=$(register_lingering "$(provision_lingering "$name")")
   birth=$(receipt_field "$name" '.birth')
   evidence "case=exec-transition pid=$pid recorded_birth=$birth live_birth=$(pid_birth "$pid") live_command=$(pid_command "$pid") described=$(receipt_field "$name" '.command_description')"
   [ "$birth" = "$(pid_birth "$pid")" ] || fail "recorded birth does not match the live process birth"
@@ -477,8 +603,7 @@ test_exec_transition_keeps_identity_and_teardown_terminates_server() {
 test_same_pid_new_birth_is_refused_and_blocks_reprovision() {
   local name="fm-lab-reused-pid-$$" pid status=0 output
   : > "$FAKE_LOG"
-  pid=$(provision_lingering "$name")
-  fixture_register "$pid"
+  pid=$(register_lingering "$(provision_lingering "$name")")
   rm -f "$PS_COUNTER"
   output=$(FM_FAKE_HERDR_STOP_KEEPS_SERVER=1 FM_FAKE_PS_MUTATE_PID="$pid" FM_FAKE_PS_MUTATE_AFTER=0 run_with_fake fm_herdr_lab_teardown "$name" 2>&1) || status=$?
   evidence "case=reused-pid status=$status alive=$(pid_present "$pid" && printf yes || printf no) output=$(printf '%s' "$output" | tr '\n' '|')"
@@ -508,8 +633,7 @@ test_same_pid_new_birth_is_refused_and_blocks_reprovision() {
 test_identity_is_rechecked_immediately_before_each_signal() {
   local name="fm-lab-recheck-$$" pid status=0 output
   : > "$FAKE_LOG"
-  pid=$(provision_lingering "$name")
-  fixture_register "$pid"
+  pid=$(register_lingering "$(provision_lingering "$name")")
   rm -f "$PS_COUNTER"
   # The first identity read answers truthfully so the allocation classifies as
   # owned; the recheck that guards SIGTERM sees a different birth and must
@@ -529,8 +653,7 @@ test_identity_is_rechecked_immediately_before_each_signal() {
 test_unknown_process_state_is_refused_not_treated_as_absent() {
   local name="fm-lab-unknown-$$" pid status=0 output started ended
   : > "$FAKE_LOG"
-  pid=$(provision_lingering "$name")
-  fixture_register "$pid"
+  pid=$(register_lingering "$(provision_lingering "$name")")
   started=$(date +%s)
   output=$(FM_FAKE_HERDR_STOP_KEEPS_SERVER=1 FM_FAKE_PS_HANG=1 run_with_fake fm_herdr_lab_teardown "$name" 2>&1) || status=$?
   ended=$(date +%s)
@@ -547,19 +670,19 @@ test_unknown_process_state_is_refused_not_treated_as_absent() {
 }
 
 test_unrelated_and_detached_processes_survive_while_group_children_are_cleaned() {
-  local name="fm-lab-descendants-$$" pid unrelated child detached
+  local name="fm-lab-descendants-$$" pid unrelated child child_birth detached detached_birth
   : > "$FAKE_LOG"
   python3 -c 'import os, sys
 os.setsid()
 os.execvp(sys.argv[1], sys.argv[1:])' "$REAL_SLEEP" 300 &
   unrelated=$!
-  fixture_register "$unrelated"
-  pid=$(FM_FAKE_HERDR_SERVER_CHILDREN=1 provision_lingering "$name")
-  fixture_register "$pid"
-  child=$(cat "$FAKE_STATE/$name.child")
-  detached=$(cat "$FAKE_STATE/$name.detached")
-  fixture_register "$child"
-  fixture_register "$detached"
+  # Our own live, unreaped child: its birth read now is its launch identity.
+  fixture_register "$unrelated" "$(fixture_birth "$unrelated")"
+  pid=$(register_lingering "$(FM_FAKE_HERDR_SERVER_CHILDREN=1 provision_lingering "$name")")
+  read -r child child_birth < "$FAKE_STATE/$name.child"
+  read -r detached detached_birth < "$FAKE_STATE/$name.detached"
+  fixture_register "$child" "$child_birth"
+  fixture_register "$detached" "$detached_birth"
   evidence "case=descendants server=$pid child=$child detached=$detached unrelated=$unrelated child_pgid=$("$REAL_PS" -p "$child" -o pgid= | tr -d ' ') detached_pgid=$("$REAL_PS" -p "$detached" -o pgid= | tr -d ' ')"
   [ "$("$REAL_PS" -p "$child" -o pgid= | tr -d ' ')" = "$pid" ] || fail "fixture child is not in the server's process group"
   [ "$("$REAL_PS" -p "$detached" -o pgid= | tr -d ' ')" = "$detached" ] || fail "fixture detached child did not leave the server's process group"
@@ -605,7 +728,7 @@ test_hanging_preflight_is_bounded_and_launches_nothing() {
 }
 
 test_hanging_polls_respect_the_aggregate_budget_and_are_clipped() {
-  local name="fm-lab-poll-hang-$$" status=0 started ended polls stamp late=0 pid=''
+  local name="fm-lab-poll-hang-$$" status=0 started ended polls stamp late=0 pid='' pid_birth='' server_state
   : > "$FAKE_LOG"
   : > "$FAKE_TLOG"
   started=$(date +%s)
@@ -618,16 +741,18 @@ test_hanging_polls_respect_the_aggregate_budget_and_are_clipped() {
   while read -r stamp _; do
     [ "$((stamp - started))" -lt 17 ] || late=$((late + 1))
   done < <(grep " status --json" "$FAKE_TLOG")
-  pid=$(cut -d' ' -f1 "$FAKE_STATE/$name.server" 2>/dev/null || true)
-  if [ -n "$pid" ] && ! pid_present "$pid"; then
-    pid=''
-  fi
-  evidence "case=poll-hang status=$status elapsed=$((ended - started))s polls=$polls polls_started_inside_reserve=$late leftover_pid=${pid:-none}"
+  read -r pid pid_birth < "$FAKE_STATE/$name.server" || pid=
+  server_state=$(fixture_state "${pid:-0}" "${pid_birth:-}")
+  evidence "case=poll-hang status=$status elapsed=$((ended - started))s polls=$polls polls_started_inside_reserve=$late launched_pid=${pid:-none} launched_state=$server_state"
   expect_code 1 "$status" "hanging polls must fail provision"
   [ "$((ended - started))" -le 20 ] || fail "provision with hanging polls overran its 20-second aggregate budget including cleanup"
   [ "$polls" -ge 5 ] || fail "expected at least five nominal 3-second polls inside the budget, saw $polls"
   [ "$late" -eq 0 ] || fail "$late poll(s) started inside the cleanup reserve"
-  [ -z "$pid" ] || { fixture_register "$pid"; fail "hanging-poll cancellation left the lab server running as $pid"; }
+  case "$server_state" in
+    absent) : ;;
+    owned) fixture_register "$pid" "$pid_birth"; fail "hanging-poll cancellation left the lab server running as $pid" ;;
+    *) fail "hanging-poll server $pid is $server_state after cancellation; not adopted, evidence retained" ;;
+  esac
   assert_absent "$(receipt_of "$name")" "cancelled allocation retained its receipt"
   run_with_fake fm_herdr_lab_teardown "$name" || fail "teardown after the hanging-poll failure failed"
   pass "fm-herdr-lab: hanging polls are clipped to the budget and cleanup fits inside the reserve"
