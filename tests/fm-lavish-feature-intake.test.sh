@@ -775,9 +775,9 @@ test_verified_exemption_revalidates_reason() {
     >/dev/null
   receipt=$home/state/verified-exemption-a1.lavish-intake
   marker=$home/state/verified-exemption-a1.lavish-intake-classification
-  sed -i '' 's/^reason=.*/reason=skip/' "$receipt" "$marker"
+  perl -pi -e 's/^reason=.*/reason=skip/' "$receipt" "$marker"
   artifact_hash=$(shasum -a 256 "$marker" | awk '{print $1}')
-  sed -i '' "s/^artifact_sha256=.*/artifact_sha256=$artifact_hash/" "$receipt"
+  perl -pi -e "s/^artifact_sha256=.*/artifact_sha256=$artifact_hash/" "$receipt"
   set +e
   out=$(run_intake "$home" verify verified-exemption-a1 --evidence "$receipt" 2>&1)
   rc=$?
@@ -1112,7 +1112,7 @@ test_pending_release_requires_durable_resolution() {
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "setup release failure unexpectedly succeeded"
-  sed -i '' 's/^phase=released$/phase=held/' "$pending" \
+  perl -pi -e 's/^phase=released$/phase=held/' "$pending" \
     "$home/state/pending-proof-a1.lavish-intake-owner"
   (cd "$home" && tasks-axi unhold pending-proof-a1 >/dev/null)
   set +e
