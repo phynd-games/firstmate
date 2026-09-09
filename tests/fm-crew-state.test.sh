@@ -1548,6 +1548,72 @@ test_missing_run_head_falls_back_to_current_state() {
   pass "missing run head falls back instead of matching by branch"
 }
 
+test_terminal_severity_summaries() {
+  reset_fakes
+  local d outcome scalar expected out
+  d=$(new_case terminal-severity-summaries)
+  make_repo_on_branch "$d/wt" fm/severity-summary
+  make_fakebin "$d" >/dev/null
+  # Exercise the native endpoint preflight against an isolated CLI fixture.
+  cat > "$d/fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  'status --json')
+    printf '%s\n' '{"client":{"version":"0.8.2","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}' ;;
+  'session list')
+    printf '%s\n' '{"sessions":[{"name":"severity-test","running":true}]}' ;;
+  'pane get')
+    printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","terminal_id":"term1"}}}' ;;
+  *) exit 1 ;;
+esac
+SH
+  fm_write_meta "$d/state/severity.meta" "window=severity-test:w1:p1" \
+    "worktree=$d/wt" "project=$d/wt" "kind=ship" "backend=herdr" \
+    "endpoint_task_id=severity" "herdr_session=severity-test" \
+    "herdr_workspace_id=w1" "herdr_tab_id=w1:t1" "herdr_pane_id=w1:p1" "herdr_terminal_id=term1"
+  for outcome in passed failed; do
+    expected=$outcome
+    [ "$outcome" != passed ] || expected=done
+    for scalar in '4 info' '1 error, 2 warning, 3 info'; do
+      FM_FAKE_AXI_STATUS="run:
+  id: \"01RUN\"
+  branch: fm/severity-summary
+  status: completed
+  head: \"$FM_FAKE_RUN_HEAD\"
+  pr: \"\"
+  findings: $scalar
+outcome: $outcome"
+      out=$(run_crew_state "$d" severity)
+      printf 'outcome=%s; findings=%s\n%s\n' "$outcome" "$scalar" "$out"
+      assert_contains "$out" "state: $expected" "severity summary preserves terminal verdict"
+      assert_contains "$out" 'source: run-step' "severity summary remains authoritative"
+    done
+  done
+  for scalar in '1 unknown' '1 info, 1 warning' '4 info
+  findings: 4 info'; do
+    FM_FAKE_AXI_STATUS="run:
+  id: \"01RUN\"
+  branch: fm/severity-summary
+  status: completed
+  head: \"$FM_FAKE_RUN_HEAD\"
+  pr: \"\"
+  findings: $scalar
+outcome: passed"
+    out=$(run_crew_state "$d" severity)
+    printf 'malformed findings=%s\n%s\n' "$scalar" "$out"
+    assert_contains "$out" 'state: unknown' "malformed summary cannot report success"
+    assert_contains "$out" 'unreadable validation run evidence' "malformed summary names evidence failure"
+  done
+  reset_fakes
+  pass "crew-state preserves terminal severity summaries and refuses malformed evidence"
+}
+
+if [ "${1:-}" = --terminal-severity-only ]; then
+  test_terminal_severity_summaries
+  exit 0
+fi
+
+test_terminal_severity_summaries
 test_active_run_is_authoritative
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded

@@ -808,6 +808,7 @@ assert_absent "$HOMEB/state/.herdr-supervisor-alarm" \
   "a healthy live claim holder must not raise an alarm"
 assert_absent "$HOMEB/state/.wake-queue" \
   "a healthy live claim holder must not queue a wake"
+cat "$ENSURE_OUT_LIVE"
 pass "a live, identity-verified other owner defers cmd_ensure without a false alarm"
 
 # --- 3b. an unknown (unstealable, unprovable) claim record alarms, and the
@@ -846,6 +847,7 @@ assert_grep 'rc2=1' "$ENSURE_OUT_UNKNOWN" \
 WAKE_COUNT=$(grep -c 'herdr-supervisor' "$HOMEC/state/.wake-queue" 2>/dev/null || true)
 [ "${WAKE_COUNT:-0}" -eq 1 ] || fail \
   "an unresolved claim episode alarmed ${WAKE_COUNT:-0} times across two polls, expected exactly 1"
+cat "$ENSURE_OUT_UNKNOWN" "$HOMEC/state/.wake-queue"
 pass "an unknown claim record alarms once, and the same unresolved episode does not alarm twice"
 
 # --- 3c. after the episode resolves, a later genuinely new failure alarms
@@ -869,11 +871,68 @@ assert_grep 'rc3=1' "$HOMEC/ensure-reappear.out" \
   "the reappearance probe did not observe the same still-unresolved failure"
 [ "${WAKE_COUNT2:-0}" -eq 2 ] || fail \
   "clearing the dedupe key did not let a new failure episode alarm again (count=${WAKE_COUNT2:-0})"
+cat "$HOMEC/ensure-reappear.out" "$HOMEC/state/.wake-queue"
 pass "successful claim acquisition lets a later failure episode alarm again"
 
 }
 
+# The competing owner arrives after the loop's first ownership check but
+# before its acquisition attempt, exercising the second check at the arm path.
+claim_alarm_loop_arrival_test() (
+  home=$(new_home claim-alarm-loop-arrival)
+  loop_pid= owner_pid=
+  trap 'for pid in "$loop_pid" "$owner_pid"; do [ -z "$pid" ] || kill "$pid" 2>/dev/null || true; done; wait' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  printf 'generation=fixture\nmode=active\n' > "$home/state/.herdr-supervisor"
+  touch "$home/state/task.meta"
+  claim_probe "$home" -c '
+    set --
+    . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+    LOOP_GENERATION=fixture
+    IDLE_INTERVAL=123
+    loop_launch_wait() { return 0; }
+    eval "$(declare -f fm_supervision_claim_acquire | sed "1s/fm_supervision_claim_acquire/original_claim_acquire/")"
+    fm_supervision_claim_acquire() {
+      touch "$STATE/before-acquire"
+      deadline=$(( $(date +%s) + 30 ))
+      while [ ! -e "$STATE/owner-ready" ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || exit 1
+        command sleep 0.05
+      done
+      original_claim_acquire "$@"
+    }
+    sleep() {
+      if [ "$1" = 123 ]; then exit 0; fi
+      command sleep "$@"
+    }
+    cmd_run
+  ' > "$home/loop.out" 2>&1 &
+  loop_pid=$!
+  wait_for 10 test -e "$home/state/before-acquire" || fail "the loop did not reach claim acquisition"
+  claim_probe "$home" -c '
+    set --
+    . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+    fm_supervision_claim_acquire "$SUPERVISION_CLAIM" 20 || exit 1
+    trap "fm_lock_release \"\$SUPERVISION_CLAIM\"" EXIT
+    trap "exit 0" TERM INT
+    touch "$STATE/owner-ready"
+    while :; do sleep 0.05; done
+  ' > "$home/owner.out" 2>&1 &
+  owner_pid=$!
+  wait "$loop_pid" || fail "the loop failed during owner arrival: $(cat "$home/loop.out")"
+  loop_pid=
+  assert_absent "$home/state/.wake-queue" "a live owner arriving before arming raised a false alarm"
+  assert_absent "$home/state/.herdr-supervisor-alarm" "a live owner arriving before arming raised an emergency"
+  printf 'loop owner-arrival: wake queue absent; emergency alarm absent\n'
+  kill "$owner_pid"
+  wait "$owner_pid" || fail "the arriving owner did not release its claim"
+  owner_pid=
+  pass "the arm path rechecks a live owner arriving during claim acquisition"
+)
+
 case "${1:-}" in
+  --claim-loop-arrival-only) claim_alarm_loop_arrival_test; exit $? ;;
   --claim-identity-replaced-only) claim_alarm_contended_recovery_test identity-replaced; exit $? ;;
   --claim-observation-blocked-only) claim_alarm_contended_recovery_test observation-blocked; exit $? ;;
   --claim-identity-arrival-only) claim_alarm_contended_recovery_test identity-arrival; exit $? ;;
@@ -897,6 +956,7 @@ if [ "${1:-}" = --claim-alarm-delivery-only ]; then
   exit 0
 fi
 claim_alarm_owner_tests
+claim_alarm_loop_arrival_test || exit 1
 claim_alarm_concurrent_test || exit 1
 claim_alarm_loop_test shared || exit 1
 claim_alarm_loop_test recovery || exit 1
