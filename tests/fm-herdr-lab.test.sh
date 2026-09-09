@@ -26,6 +26,7 @@
 # hang or to rewrite one pid's birth time, which is how pid reuse and an
 # unreadable process table are simulated without touching any real process.
 set -u
+umask 077
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -43,9 +44,13 @@ FIXTURES=()
 PRIVATE_HOME="$TMP_ROOT/home"
 mkdir -p "$FAKE_STATE" "$PRIVATE_HOME/fm-home" "$PRIVATE_HOME/xdg-config" "$PRIVATE_HOME/xdg-state" "$PRIVATE_HOME/xdg-cache" "$PRIVATE_HOME/xdg-data" "$PRIVATE_HOME/xdg-runtime" "$PRIVATE_HOME/tmp"
 chmod 700 "$PRIVATE_HOME/xdg-runtime"
-printf '%s\n' '/home/test/.config/herdr/herdr.sock' > "$FAKE_STATE/default-socket"
+printf '%s\n' "$TMP_ROOT/default.sock" > "$FAKE_STATE/default-socket"
 : > "$FAKE_LOG"
 : > "$FAKE_TLOG"
+python3 -c 'import os, socket, sys
+os.chdir(os.path.dirname(sys.argv[1]))
+s = socket.socket(socket.AF_UNIX)
+s.bind(os.path.basename(sys.argv[1]))' "$TMP_ROOT/default.sock"
 
 # Mark this run's private fixture directory as evidence that must survive
 # cleanup, naming why. Called on every path where a process identity is
@@ -74,11 +79,14 @@ birth_normalize() {
 # when present, 3 when ps positively found nothing (its exit 1 with no
 # output), and 1 when the inspection itself failed - unknown, never absence.
 fixture_birth() { # <pid>
-  local pid=$1 out rc=0
+  local pid=$1 out rc=0 wday mon day clock year state
   case "${pid:-}" in ''|*[!0-9]*|0) return 1 ;; esac
-  out=$(LC_ALL=C "$REAL_PS" -p "$pid" -o lstart= 2>/dev/null) || rc=$?
+  out=$(LC_ALL=C "$REAL_PS" -p "$pid" -o lstart= -o stat= 2>/dev/null) || rc=$?
   if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
-    printf '%s\n' "$out" | birth_normalize
+    read -r wday mon day clock year state <<< "$out"
+    case "$state" in Z*) return 3 ;; esac
+    [ -n "$year" ] && [ -n "$state" ] || return 1
+    printf '%s-%s-%s-%s-%s\n' "$wday" "$mon" "$day" "$clock" "$year"
     return 0
   fi
   if [ "$rc" -eq 1 ] && [ -z "$out" ]; then
@@ -93,7 +101,7 @@ fixture_birth() { # <pid>
 # A fresh lookup is never accepted as ownership: it verifies only that the
 # launch-time identity is still what is live, and refuses otherwise.
 fixture_register() { # <pid> <launch-birth>
-  local pid=$1 launch_birth=$2 current rc=0
+  local pid=$1 launch_birth=$2 current rc=0 entry
   fixture_identity_valid "$pid" "$launch_birth" || {
     retain_evidence "registration refused: invalid identity pid='${pid:-}' birth='${launch_birth:-}'"
     fail "fixture identity pid='${pid:-}' birth='${launch_birth:-}' is invalid; refusing to invent ownership"
@@ -115,6 +123,7 @@ fixture_register() { # <pid> <launch-birth>
       fail "fixture $pid could not be inspected at registration; unknown, not adopted"
       ;;
   esac
+  for entry in "${FIXTURES[@]:-}"; do [ "$entry" != "$pid|$launch_birth" ] || return 0; done
   FIXTURES+=("$pid|$launch_birth")
 }
 
@@ -125,6 +134,7 @@ fixture_register() { # <pid> <launch-birth>
 # is not proof of exit: see fixture_wait_absent.
 fixture_signal() { # <pid> <launch-birth> <signal>
   local pid=$1 recorded=$2 signal=$3 current rc=0
+  fixture_identity_valid "$pid" "$recorded" || { printf 'invalid fixture identity'; return 1; }
   current=$(fixture_birth "$pid") || rc=$?
   case "$rc" in
     3) printf 'fixture %s positively absent\n' "$pid"; return 0 ;;
@@ -183,6 +193,7 @@ settle_launched() { # <label> <pid> <launch-birth>
   case "$state" in
     absent) return 0 ;;
     owned)
+      retain_evidence "$label left server $pid alive"
       fixture_register "$pid" "$launch_birth"
       fail "$label left server $pid alive"
       ;;
@@ -198,7 +209,27 @@ settle_launched() { # <label> <pid> <launch-birth>
 # still live afterwards, the private fixture directory is RETAINED as evidence
 # and the test exits non-zero instead of claiming a clean run.
 fm_lab_test_cleanup() {
-  local entry pid retained=0 outcome
+  local initial_status=$? entry pid retained=0 outcome record launch_birth found
+  [ "$initial_status" -eq 0 ] || retain_evidence "test exited $initial_status; launch records retained"
+  for record in "$FAKE_STATE"/*.launched "$FAKE_STATE"/*.child "$FAKE_STATE"/*.detached; do
+    [ -f "$record" ] || continue
+    pid= launch_birth=
+    read -r pid launch_birth < "$record" || true
+    if fixture_identity_valid "$pid" "$launch_birth"; then
+      found=0
+      for entry in "${FIXTURES[@]:-}"; do [ "$entry" != "$pid|$launch_birth" ] || found=1; done
+      [ "$found" -eq 1 ] || FIXTURES+=("$pid|$launch_birth")
+    else
+      retain_evidence "invalid launch record $record"
+    fi
+  done
+  for record in "$TRIPWIRES"/*.allocation.json "$TRIPWIRES"/*.allocation.json.pending; do
+    [ -f "$record" ] || continue
+    pid=$(jq -r '.pid // empty' "$record") || pid=
+    if [ -z "$pid" ] || [ ! -s "$FAKE_STATE/$pid.launched" ]; then
+      retain_evidence "allocation lacks an accountable fixture launch: $record pid=$pid"
+    fi
+  done
   for entry in "${FIXTURES[@]:-}"; do
     [ -n "$entry" ] || continue
     pid=${entry%%|*}
@@ -208,7 +239,6 @@ fm_lab_test_cleanup() {
       continue
     fi
     printf 'cleanup: %s\n' "$outcome" >&2
-    wait "$pid" 2>/dev/null || true
     case "$(fixture_wait_absent "$pid"; printf '%s' "$?")" in
       0) printf 'cleanup: fixture %s observed absent\n' "$pid" >&2 ;;
       2) printf 'cleanup: fixture %s STILL LIVE after SIGKILL\n' "$pid" >&2; retained=1 ;;
@@ -222,6 +252,10 @@ fm_lab_test_cleanup() {
     printf 'cleanup: evidence RETAINED in %s (%s)\n' "$TMP_ROOT" "$(tr '\n' ';' < "$TMP_ROOT/RETAINED" 2>/dev/null)" >&2
     exit 1
   fi
+  if compgen -G "$TRIPWIRES/*.fleet-state.json" >/dev/null; then
+    printf 'evidence: failed lifecycle records preserved in %s\n' "$TMP_ROOT" >&2
+    return 0
+  fi
   fm_test_cleanup
 }
 trap fm_lab_test_cleanup EXIT
@@ -234,6 +268,22 @@ set -eu
 printf '%s\n' "$*" >> "$FM_FAKE_HERDR_LOG"
 printf '%s %s\n' "$(date +%s)" "$*" >> "$FM_FAKE_HERDR_TLOG"
 state=$FM_FAKE_HERDR_STATE
+record_birth() {
+  local pid=$1 out rc=0
+  case "$pid" in ''|0|*[!0-9]*) return 1 ;; esac
+  out=$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$pid" -o lstart= 2>/dev/null) || rc=$?
+  [ "$rc" -eq 0 ] && [ -n "$out" ] || return 1
+  printf '%s\n' "$out" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g'
+}
+record_launch() {
+  local pid=$1 path=$2 birth
+  if ! birth=$(record_birth "$pid"); then
+    printf 'launch identity unknown pid %s\n' "$pid" >> "$FM_FAKE_ROOT/RETAINED"
+    return 1
+  fi
+  printf '%s %s\n' "$pid" "$birth" > "$path"
+  printf '%s %s\n' "$pid" "$birth" > "$state/$pid.launched"
+}
 last=
 for arg in "$@"; do
   previous=$last
@@ -250,6 +300,16 @@ fi
 
 case "$1 ${2:-}" in
   "session list")
+    if [ "${FM_FAKE_HERDR_SERVER_LINGER:-1}" != 0 ] && [ -f "$state/$session.server" ]; then
+      read -r pid birth < "$state/$session.server"
+      case "$pid" in ''|0|*[!0-9]*) exit 95 ;; esac
+      [ -n "$birth" ] || exit 95
+      rc=0
+      out=$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$pid" -o stat= 2>/dev/null) || rc=$?
+      if { [ "$rc" -eq 1 ] && [ -z "$out" ]; } || [[ "$out" =~ ^[[:space:]]*Z ]]; then
+        if [ "$lab_state" = running ]; then lab_state=stopped; fi
+      fi
+    fi
     if [ "$lab_state" = absent ] || [ "$lab_state" = deleted ]; then
       jq -nc --arg socket "$default_socket" '{sessions:[{default:true,name:"default",running:true,socket_path:$socket}]}'
     else
@@ -260,33 +320,52 @@ case "$1 ${2:-}" in
     fi
     ;;
   "server --session")
-    printf '%s %s\n' "$$" "$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$$" -o lstart= | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g')" > "$state/$session.launched"
+    record_launch "$$" "$state/$session.launched"
     if [ "${FM_FAKE_HERDR_SERVER_DELAY:-0}" != 0 ]; then
       "$FM_FAKE_HERDR_REAL_SLEEP" "$FM_FAKE_HERDR_SERVER_DELAY"
     fi
-    printf '%s %s\n' "$$" "$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$$" -o lstart= | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g')" > "$state/$session.server"
-    printf '%s\n' running > "$state/$session"
+    cp "$state/$session.launched" "$state/$session.server"
     if [ "${FM_FAKE_HERDR_SERVER_CHILDREN:-}" = 1 ]; then
       # Each child's birth is read by this parent while the child is its own
       # live, unreaped child, so the pid cannot have been reused yet.
       "$FM_FAKE_HERDR_REAL_SLEEP" 300 &
       child=$!
-      printf '%s %s\n' "$child" "$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$child" -o lstart= | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g')" > "$state/$session.child"
+      record_launch "$child" "$state/$session.child"
       python3 -c 'import os, sys
 os.setsid()
 with open(sys.argv[1] + ".pid", "w") as handle:
     handle.write(str(os.getpid()))
 os.execvp(sys.argv[2], sys.argv[2:])' "$state/$session.detached" "$FM_FAKE_HERDR_REAL_SLEEP" 300 &
       detached=$!
+      record_launch "$detached" "$state/$session.detached"
       while [ ! -s "$state/$session.detached.pid" ]; do "$FM_FAKE_HERDR_REAL_SLEEP" 0.05; done
       [ "$(cat "$state/$session.detached.pid")" = "$detached" ] || exit 94
-      printf '%s %s\n' "$detached" "$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$detached" -o lstart= | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g')" > "$state/$session.detached"
+    fi
+    printf '%s\n' running > "$state/$session"
+    if [ "${FM_FAKE_HERDR_SERVER_IGNORE_TERM:-}" = 1 ]; then
+      exec python3 -c 'import os, signal, sys, time
+signal.signal(signal.SIGTERM, lambda *_: open(sys.argv[1], "w").close())
+open(sys.argv[2], "w").close()
+time.sleep(300)' "$state/$session.term" "$state/$session.term-ready"
     fi
     if [ "${FM_FAKE_HERDR_SERVER_LINGER:-1}" = 1 ]; then
       exec "$FM_FAKE_HERDR_REAL_SLEEP" 300
     fi
     ;;
   "status --json")
+    if [ "${FM_FAKE_HERDR_SERVER_LINGER:-1}" = 0 ]; then
+      read -r pid birth < "$state/$session.launched"
+      case "$pid" in ''|0|*[!0-9]*) exit 95 ;; esac
+      [ -n "$birth" ] || exit 95
+      for ((i=0; i<40; i++)); do
+        rc=0
+        out=$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$pid" -o stat= 2>/dev/null) || rc=$?
+        if { [ "$rc" -eq 1 ] && [ -z "$out" ]; } || [[ "$out" =~ ^[[:space:]]*Z ]]; then
+          break
+        fi
+        "$FM_FAKE_HERDR_REAL_SLEEP" 0.01
+      done
+    fi
     if [ "$lab_state" = running ]; then
       printf '%s\n' '{"server":{"running":true}}'
     else
@@ -296,18 +375,41 @@ os.execvp(sys.argv[2], sys.argv[2:])' "$state/$session.detached" "$FM_FAKE_HERDR
   "session stop")
     [ "$3" = "$session" ] || exit 91
     printf '%s\n' stopped > "$state/$session"
+    : > "$state/$session.stopped"
     # The fake stops only the exact server it started: same pid AND same birth.
     if [ "${FM_FAKE_HERDR_STOP_KEEPS_SERVER:-}" != 1 ] && [ -s "$state/$session.server" ]; then
       read -r server_pid server_birth < "$state/$session.server"
-      current_birth=$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$server_pid" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g')
-      if [ -n "$current_birth" ] && [ "$current_birth" = "$server_birth" ]; then
-        if kill -TERM "$server_pid" 2>/dev/null; then
-          printf 'delivered\n' > "$state/$session.stop"
-        else
-          printf 'kill-failed\n' > "$state/$session.stop"
-        fi
+      case "$server_pid" in ''|0|*[!0-9]*) printf 'invalid stop identity\n' >> "$FM_FAKE_ROOT/RETAINED"; exit 95 ;; esac
+      [ -n "$server_birth" ] || { printf 'empty stop birth\n' >> "$FM_FAKE_ROOT/RETAINED"; exit 95; }
+      rc=0
+      raw=$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$server_pid" -o lstart= 2>/dev/null) || rc=$?
+      if [ "$rc" -eq 1 ] && [ -z "$raw" ]; then
+        printf 'absent\n' > "$state/$session.stop"
       else
-        printf 'not-signaled\n' > "$state/$session.stop"
+        current_birth=$(printf '%s\n' "$raw" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g')
+        if [ "$rc" -ne 0 ] || [ "$current_birth" != "$server_birth" ]; then
+          printf 'not-signaled\n' > "$state/$session.stop"
+          printf 'stop pid %s unknown or reused\n' "$server_pid" >> "$FM_FAKE_ROOT/RETAINED"
+          exit 95
+        fi
+        if ! kill -TERM "$server_pid" 2>/dev/null; then
+          printf 'kill-failed\n' > "$state/$session.stop"
+          printf 'stop signal not delivered pid %s\n' "$server_pid" >> "$FM_FAKE_ROOT/RETAINED"
+          exit 95
+        fi
+        printf 'delivered\n' > "$state/$session.stop"
+        gone=0
+        for ((i=0; i<40; i++)); do
+          rc=0
+          out=$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$server_pid" -o stat= 2>/dev/null) || rc=$?
+          if { [ "$rc" -eq 1 ] && [ -z "$out" ]; } || [[ "$out" =~ ^[[:space:]]*Z ]]; then gone=1; break; fi
+          [ "$rc" -eq 0 ] || break
+          "$FM_FAKE_HERDR_REAL_SLEEP" 0.01
+        done
+        if [ "$gone" -ne 1 ]; then
+          printf 'stop exit unproved pid %s\n' "$server_pid" >> "$FM_FAKE_ROOT/RETAINED"
+          exit 95
+        fi
       fi
     fi
     ;;
@@ -331,6 +433,7 @@ cat > "$FAKEBIN/ps" <<'SH'
 if [ "${FM_FAKE_PS_HANG:-}" = 1 ]; then
   "$FM_FAKE_HERDR_REAL_SLEEP" 300
 fi
+if [ "${FM_FAKE_PS_PARTIAL:-}" = 1 ]; then printf 'partial observation\n'; exit 1; fi
 rc=0
 out=$("$FM_FAKE_PS_REAL" "$@") || rc=$?
 if [ -n "${FM_FAKE_PS_MUTATE_PID:-}" ]; then
@@ -344,7 +447,7 @@ if [ -n "${FM_FAKE_PS_MUTATE_PID:-}" ]; then
     count=$(cat "$FM_FAKE_PS_COUNTER" 2>/dev/null || printf 0)
     count=$((count + 1))
     printf '%s\n' "$count" > "$FM_FAKE_PS_COUNTER"
-    if [ "$count" -gt "${FM_FAKE_PS_MUTATE_AFTER:-0}" ]; then
+    if [ "$count" -gt "${FM_FAKE_PS_MUTATE_AFTER:-0}" ] && { [ -z "${FM_FAKE_PS_AFTER_TERM:-}" ] || [ -e "$FM_FAKE_PS_AFTER_TERM" ]; }; then
       out=$(printf '%s\n' "$out" | sed -E 's/([0-9]{2}:[0-9]{2}:[0-9]{2}) [0-9]{4}/\1 1999/')
     fi
   fi
@@ -358,6 +461,7 @@ chmod +x "$FAKEBIN/ps"
 . "$ROOT/bin/fm-herdr-lab.sh"
 
 run_with_fake() {
+  local result=0
   HOME="$PRIVATE_HOME" \
     FM_HOME="$PRIVATE_HOME/fm-home" \
     XDG_CONFIG_HOME="$PRIVATE_HOME/xdg-config" \
@@ -367,6 +471,10 @@ run_with_fake() {
     XDG_RUNTIME_DIR="$PRIVATE_HOME/xdg-runtime" \
     TMPDIR="$PRIVATE_HOME/tmp" \
     PATH="$FAKEBIN:$PATH" \
+    FM_FAKE_ROOT="$TMP_ROOT" \
+    FM_FAKE_PS_PARTIAL="${FM_FAKE_PS_PARTIAL:-}" \
+    FM_FAKE_PS_AFTER_TERM="${FM_FAKE_PS_AFTER_TERM:-}" \
+    FM_FAKE_HERDR_SERVER_IGNORE_TERM="${FM_FAKE_HERDR_SERVER_IGNORE_TERM:-}" \
     FM_FAKE_HERDR_STATE="$FAKE_STATE" \
     FM_FAKE_HERDR_LOG="$FAKE_LOG" \
     FM_FAKE_HERDR_TLOG="$FAKE_TLOG" \
@@ -384,7 +492,23 @@ run_with_fake() {
     FM_FAKE_PS_MUTATE_PID="${FM_FAKE_PS_MUTATE_PID:-}" \
     FM_FAKE_PS_MUTATE_AFTER="${FM_FAKE_PS_MUTATE_AFTER:-}" \
     FM_HERDR_LAB_STATE_DIR="$TRIPWIRES" \
-    "$@"
+    "$@" || result=$?
+  account_launches || return 1
+  return "$result"
+}
+
+account_launches() {
+  local record pid birth entry found
+  for record in "$FAKE_STATE"/*.launched "$FAKE_STATE"/*.child "$FAKE_STATE"/*.detached; do
+    [ -f "$record" ] || continue
+    pid= birth=
+    read -r pid birth < "$record" || true
+    fixture_identity_valid "$pid" "$birth" || { retain_evidence "invalid launch record $record"; return 1; }
+    found=0
+    for entry in "${FIXTURES[@]:-}"; do [ "$entry" != "$pid|$birth" ] || found=1; done
+    [ "$found" -eq 0 ] || continue
+    FIXTURES+=("$pid|$birth")
+  done
 }
 
 evidence() {
@@ -400,7 +524,7 @@ receipt_field() { # <session> <jq>
 }
 
 pid_present() { # <pid>
-  "$REAL_PS" -p "$1" -o pid= >/dev/null 2>&1
+  fixture_birth "$1" >/dev/null 2>&1
 }
 
 pid_birth() { # <pid>
@@ -429,7 +553,6 @@ reap_fixture() { # <pid>
     fi
   done
   [ "$found" -eq 1 ] || fail "fixture $pid was never registered"
-  wait "$pid" 2>/dev/null || true
   fixture_wait_absent "$pid" || {
     retain_evidence "reap unproved: fixture $pid not observed absent after SIGKILL (status $?)"
     fail "fixture $pid not observed absent after SIGKILL"
@@ -497,6 +620,7 @@ test_provision_run_and_guarded_teardown() {
 
   run_with_fake fm_herdr_lab_teardown "$name" || fail "guarded teardown failed"
   [ "$(cat "$FAKE_STATE/$name")" = deleted ] || fail "teardown did not delete the lab session"
+  [ "$(cat "$FAKE_STATE/$name.stop")" = delivered ] || fail "fake stop did not confirm delivery"
   assert_absent "$TRIPWIRES/$name.fleet-state.json" "successful teardown left its tripwire behind"
   assert_absent "$(receipt_of "$name")" "successful teardown left its allocation receipt behind"
 
@@ -519,6 +643,27 @@ test_provision_run_and_guarded_teardown() {
   pass "fm-herdr-lab: provisioning, scoped calls, guarded teardown, and fleet tripwire are deterministic"
 }
 
+test_private_state_and_required_socket_identity() {
+  local name="fm-lab-private-state-$$" status=0
+  (umask 022; run_with_fake fm_herdr_lab_provision "$name") || fail "private state provision failed"
+  account_launches || fail "private-state launch accountability failed"
+  python3 -c 'import os, stat, sys
+for p in sys.argv[1:]:
+    s = os.lstat(p)
+    assert s.st_uid == os.getuid() and not s.st_mode & 0o077' "$TRIPWIRES" "$(receipt_of "$name")" || fail "helper created public state"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "private state cleanup failed"
+  chmod 755 "$TRIPWIRES"
+  run_with_fake fm_herdr_lab_provision "fm-lab-unsafe-state-$$" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "unsafe existing state must be refused"
+  chmod 700 "$TRIPWIRES"
+  printf '%s\n' "$TMP_ROOT/missing.sock" > "$FAKE_STATE/default-socket"
+  status=0
+  run_with_fake fm_herdr_lab_prepare "fm-lab-no-socket-$$" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "missing required socket identity must be refused"
+  printf '%s\n' "$TMP_ROOT/default.sock" > "$FAKE_STATE/default-socket"
+  pass "fm-herdr-lab: state is private and a real socket identity is required"
+}
+
 test_missing_tripwire_blocks_destruction() {
   local name="fm-lab-no-tripwire-$$" status=0 before after
   printf '%s\n' running > "$FAKE_STATE/$name"
@@ -539,26 +684,34 @@ test_changed_default_trips_after_teardown() {
   run_with_fake fm_herdr_lab_teardown "$name" >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "changed default fleet state must fail teardown"
   assert_present "$TRIPWIRES/$name.fleet-state.json" "failed tripwire should retain evidence"
-  printf '%s\n' '/home/test/.config/herdr/herdr.sock' > "$FAKE_STATE/default-socket"
-  rm -f "$TRIPWIRES/$name.fleet-state.json"
+  printf '%s\n' "$TMP_ROOT/default.sock" > "$FAKE_STATE/default-socket"
   pass "fm-herdr-lab: changed default fleet state is a hard failure"
 }
 
 test_stopped_owned_lab_can_reprovision() {
-  local name="fm-lab-reprovision-$$"
+  local name="fm-lab-reprovision-$$" child='' birth='' detached='' detached_birth=''
   : > "$FAKE_LOG"
-  run_with_fake fm_herdr_lab_provision "$name" || fail "initial provision failed"
+  FM_FAKE_HERDR_SERVER_CHILDREN=1 run_with_fake fm_herdr_lab_provision "$name" || fail "initial provision failed"
+  read -r child birth < "$FAKE_STATE/$name.child"
+  read -r detached detached_birth < "$FAKE_STATE/$name.detached"
+  fixture_register "$child" "$birth"
+  fixture_register "$detached" "$detached_birth"
   run_with_fake fm_herdr_lab_stop "$name" || fail "guarded stop failed"
   [ "$(cat "$FAKE_STATE/$name")" = stopped ] || fail "guarded stop did not stop the lab session"
   assert_present "$TRIPWIRES/$name.fleet-state.json" "stop removed the lab ownership tripwire"
   # The first server exited on its own, so its receipt records a positively
   # absent pid; that is the one state that may clear before re-provision.
   assert_present "$(receipt_of "$name")" "stop removed the allocation receipt"
+  pid_present "$child" || fail "fixture stop did not leave its group child"
   run_with_fake fm_herdr_lab_provision "$name" || fail "re-provision after guarded stop failed"
+  pid_present "$child" && fail "re-provision discarded outstanding group custody"
+  pid_present "$detached" || fail "re-provision signaled a detached process"
   assert_present "$(receipt_of "$name")" "re-provision did not record a fresh allocation receipt"
   [ "$(cat "$FAKE_STATE/$name")" = running ] || fail "re-provision did not restart the stopped lab session"
   assert_present "$TRIPWIRES/$name.fleet-state.json" "re-provision removed the lab ownership tripwire"
   run_with_fake fm_herdr_lab_teardown "$name" || fail "teardown after re-provision failed"
+  reap_fixture "$child"
+  reap_fixture "$detached"
   pass "fm-herdr-lab: an owned stopped lab can re-provision safely"
 }
 
@@ -679,7 +832,7 @@ test_same_pid_new_birth_is_refused_and_blocks_reprovision() {
   pid_present "$pid" || fail "reused-pid refusal signaled the process anyway"
   assert_present "$(receipt_of "$name")" "reused-pid refusal dropped the allocation receipt"
   assert_present "$TRIPWIRES/$name.fleet-state.json" "reused-pid refusal dropped the tripwire"
-  grep -q "^session delete $name" "$FAKE_LOG" || fail "fixture expectation: the lab session should have been deleted before reconciliation"
+  grep -Eq "^session (stop|delete) $name" "$FAKE_LOG" && fail "reused allocation reached destruction"
 
   : > "$FAKE_LOG"
   status=0
@@ -703,6 +856,7 @@ test_identity_is_rechecked_immediately_before_each_signal() {
   provision_lingering "$name"
   pid=$LINGER_PID
   rm -f "$PS_COUNTER"
+  printf 'deleted\n' > "$FAKE_STATE/$name"
   # The first identity read answers truthfully so the allocation classifies as
   # owned; the recheck that guards SIGTERM sees a different birth and must
   # refuse without signaling.
@@ -716,6 +870,65 @@ test_identity_is_rechecked_immediately_before_each_signal() {
   pid_present "$pid" && fail "truthful teardown left the server running"
   reap_fixture "$pid"
   pass "fm-herdr-lab: every signal is preceded by its own identity recheck"
+}
+
+test_delete_rechecks_allocation_after_stop() {
+  local name="fm-lab-delete-recheck-$$" pid status=0 output
+  provision_lingering "$name"
+  pid=$LINGER_PID
+  : > "$FAKE_LOG"
+  output=$(FM_FAKE_HERDR_STOP_KEEPS_SERVER=1 FM_FAKE_PS_MUTATE_PID="$pid" FM_FAKE_PS_MUTATE_AFTER=0 \
+    FM_FAKE_PS_AFTER_TERM="$FAKE_STATE/$name.stopped" run_with_fake fm_herdr_lab_teardown "$name" 2>&1) || status=$?
+  expect_code 1 "$status" "delete must refuse a replaced allocation after stop"
+  grep -q "^session stop $name" "$FAKE_LOG" || fail "case never reached stop"
+  grep -q "^session delete $name" "$FAKE_LOG" && fail "delete skipped allocation recheck"
+  pid_present "$pid" || fail "replacement refusal signaled server"
+  assert_present "$(receipt_of "$name")" "delete refusal lost receipt"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "truthful retry failed"
+  reap_fixture "$pid"
+  pass "fm-herdr-lab: delete independently rechecks custody after stop"
+}
+
+test_escalation_and_descendant_signal_rechecks() {
+  local name="fm-lab-kill-recheck-$$" pid status=0 output child='' birth='' detached='' detached_birth='' attempt
+  FM_FAKE_HERDR_SERVER_IGNORE_TERM=1 provision_lingering "$name"
+  pid=$LINGER_PID
+  for ((attempt=0; attempt<40; attempt++)); do
+    [ ! -e "$FAKE_STATE/$name.term-ready" ] || break
+    "$REAL_SLEEP" 0.05
+  done
+  assert_present "$FAKE_STATE/$name.term-ready" "TERM-ignoring fixture did not start"
+  printf 'deleted\n' > "$FAKE_STATE/$name"
+  output=$(FM_FAKE_PS_MUTATE_PID="$pid" FM_FAKE_PS_MUTATE_AFTER=0 FM_FAKE_PS_AFTER_TERM="$FAKE_STATE/$name.term" \
+    run_with_fake fm_herdr_lab_teardown "$name" 2>&1) || status=$?
+  expect_code 1 "$status" "changed identity before escalation must refuse KILL"
+  assert_present "$FAKE_STATE/$name.term" "escalation case never delivered TERM"
+  assert_contains "$output" "refusing SIGKILL" "escalation did not recheck identity"
+  pid_present "$pid" || fail "failed KILL recheck still killed server"
+  assert_present "$(receipt_of "$name")" "escalation refusal lost custody"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "truthful escalation cleanup failed"
+  reap_fixture "$pid"
+
+  name="fm-lab-child-recheck-$$"
+  FM_FAKE_HERDR_SERVER_CHILDREN=1 provision_lingering "$name"
+  pid=$LINGER_PID
+  read -r child birth < "$FAKE_STATE/$name.child"
+  read -r detached detached_birth < "$FAKE_STATE/$name.detached"
+  fixture_register "$child" "$birth"
+  fixture_register "$detached" "$detached_birth"
+  printf 'deleted\n' > "$FAKE_STATE/$name"
+  rm -f "$PS_COUNTER"
+  status=0
+  output=$(FM_FAKE_PS_MUTATE_PID="$child" FM_FAKE_PS_MUTATE_AFTER=1 run_with_fake fm_herdr_lab_teardown "$name" 2>&1) || status=$?
+  expect_code 1 "$status" "changed descendant identity must refuse TERM"
+  assert_contains "$output" "refusing SIGTERM" "descendant did not receive its own signal recheck"
+  pid_present "$child" || fail "failed descendant recheck still signaled child"
+  assert_present "$(receipt_of "$name")" "descendant refusal lost custody"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "truthful descendant cleanup failed"
+  reap_fixture "$pid"
+  reap_fixture "$child"
+  reap_fixture "$detached"
+  pass "fm-herdr-lab: escalation and descendant signals independently recheck identity"
 }
 
 test_unknown_process_state_is_refused_not_treated_as_absent() {
@@ -732,6 +945,11 @@ test_unknown_process_state_is_refused_not_treated_as_absent() {
   pid_present "$pid" || fail "unknown state was treated as permission to signal"
   assert_present "$(receipt_of "$name")" "unknown state dropped the allocation receipt"
   [ "$((ended - started))" -le 20 ] || fail "unknown-state refusal overran the aggregate budget"
+  status=0
+  output=$(FM_FAKE_PS_PARTIAL=1 run_with_fake fm_herdr_lab_teardown "$name" 2>&1) || status=$?
+  expect_code 1 "$status" "exit 1 with partial ps output must remain unknown"
+  pid_present "$pid" || fail "partial ps output authorized signaling"
+  assert_present "$(receipt_of "$name")" "partial ps output discarded custody"
   run_with_fake fm_herdr_lab_teardown "$name" || fail "teardown after the process table recovered failed"
   pid_present "$pid" && fail "recovered teardown left the server running"
   reap_fixture "$pid"
@@ -777,9 +995,10 @@ test_server_that_exits_at_start_is_positively_absent() {
   local name="fm-lab-server-exit-$$" status=0 output
   : > "$FAKE_LOG"
   output=$(FM_FAKE_HERDR_SERVER_LINGER=0 run_with_fake fm_herdr_lab_provision "$name" 2>&1) || status=$?
+  account_launches || fail "early-exit launch accountability failed"
   evidence "case=server-exit status=$status output=$(printf '%s' "$output" | tr '\n' '|')"
   expect_code 1 "$status" "a server that exits at start must fail provision"
-  assert_absent "$(receipt_of "$name")" "a positively absent server left a receipt behind"
+  assert_present "$(receipt_of "$name")" "failed readiness discarded custody before native teardown"
   assert_present "$TRIPWIRES/$name.fleet-state.json" "failed provision must keep the tripwire for teardown"
   run_with_fake fm_herdr_lab_teardown "$name" || fail "teardown after the server exit failed"
   assert_absent "$TRIPWIRES/$name.fleet-state.json" "teardown after the server exit left the tripwire"
@@ -823,7 +1042,7 @@ test_hanging_polls_respect_the_aggregate_budget_and_are_clipped() {
   [ "$polls" -ge 5 ] || fail "expected at least five nominal 3-second polls inside the budget, saw $polls"
   [ "$late" -eq 0 ] || fail "$late poll(s) started inside the cleanup reserve"
   settle_launched "hanging-poll cancellation" "$pid" "$pid_birth"
-  assert_absent "$(receipt_of "$name")" "cancelled allocation retained its receipt"
+  assert_present "$(receipt_of "$name")" "cancelled allocation discarded the remaining native session custody"
   run_with_fake fm_herdr_lab_teardown "$name" || fail "teardown after the hanging-poll failure failed"
   pass "fm-herdr-lab: hanging polls are clipped to the budget and cleanup fits inside the reserve"
 }
@@ -848,12 +1067,18 @@ test_hanging_stop_is_bounded_and_never_reaches_delete() {
 test_socket_generation_change_is_the_primary_failure_even_when_cleanup_fails() {
   local name="fm-lab-generation-$$" status=0 output socket="$TMP_ROOT/default-generation.sock" before after
   : > "$FAKE_LOG"
-  : > "$socket"
+  python3 -c 'import os, socket, sys
+os.chdir(os.path.dirname(sys.argv[1]))
+s = socket.socket(socket.AF_UNIX)
+s.bind(os.path.basename(sys.argv[1]))' "$socket"
   printf '%s\n' "$socket" > "$FAKE_STATE/default-socket"
   run_with_fake fm_herdr_lab_provision "$name" || fail "generation fixture provision failed"
   before=$(jq -r '.socket_identity' "$TRIPWIRES/$name.fleet-state.json")
-  rm -f "$socket"
-  : > "$socket"
+  mv "$socket" "$socket.old"
+  python3 -c 'import os, socket, sys
+os.chdir(os.path.dirname(sys.argv[1]))
+s = socket.socket(socket.AF_UNIX)
+s.bind(os.path.basename(sys.argv[1]))' "$socket"
   after=$(run_with_fake fm_herdr_lab_fleet_state "$name" | jq -r '.socket_identity')
   evidence "case=generation before=$before after=$after"
   [ "$before" != "$after" ] || fail "fixture expectation: replacing the socket file did not change its identity"
@@ -863,8 +1088,7 @@ test_socket_generation_change_is_the_primary_failure_even_when_cleanup_fails() {
   assert_contains "$output" "session delete failed" "the cleanup failure was not reported"
   assert_contains "$output" "also failed" "the tripwire failure was not kept primary over the cleanup failure"
   assert_present "$TRIPWIRES/$name.fleet-state.json" "tripwire failure dropped the evidence"
-  printf '%s\n' '/home/test/.config/herdr/herdr.sock' > "$FAKE_STATE/default-socket"
-  rm -f "$TRIPWIRES/$name.fleet-state.json" "$(receipt_of "$name")" "$FAKE_STATE/$name"
+  printf '%s\n' "$TMP_ROOT/default.sock" > "$FAKE_STATE/default-socket"
   pass "fm-herdr-lab: a re-bound default socket trips even when every CLI field is unchanged, and stays primary"
 }
 
@@ -903,6 +1127,7 @@ test_cli_entrypoint_matches_sourced_contract() {
 
 test_refuses_unsafe_names
 test_provision_run_and_guarded_teardown
+test_private_state_and_required_socket_identity
 test_missing_tripwire_blocks_destruction
 test_changed_default_trips_after_teardown
 test_stopped_owned_lab_can_reprovision
@@ -911,6 +1136,8 @@ test_timed_out_provision_cancels_late_launch
 test_exec_transition_keeps_identity_and_teardown_terminates_server
 test_same_pid_new_birth_is_refused_and_blocks_reprovision
 test_identity_is_rechecked_immediately_before_each_signal
+test_delete_rechecks_allocation_after_stop
+test_escalation_and_descendant_signal_rechecks
 test_unknown_process_state_is_refused_not_treated_as_absent
 test_unrelated_and_detached_processes_survive_while_group_children_are_cleaned
 test_server_that_exits_at_start_is_positively_absent

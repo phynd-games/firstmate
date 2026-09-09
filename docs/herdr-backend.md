@@ -312,8 +312,8 @@ An environment-only session selection can silently reach a different running ser
 It provisions only non-default names beginning with `fm-lab-`, appends an explicit `--session` to allowed task commands, refuses caller-supplied session flags and server/session lifecycle subcommands, and performs destructive stop/delete only through its guarded lifecycle actions.
 Immediately before every destructive call it re-queries the named session and refuses empty, missing, literal `default`, or `default:true` identities.
 Its before/after tripwire requires the live default-session snapshot to remain byte-identical, including the OS identity of the default socket file, and it states the server-generation gap the Herdr CLI cannot fill rather than claiming it.
-Provision binds the exact server it launched in a private allocation receipt at launch time and rechecks that identity before every signal, so cleanup never guesses a pid, sweeps a process group blindly, or clears a receipt it has not proved absent.
-Provision, stop, and teardown each run under one aggregate budget that starts before their first call and reserves cleanup inside it; the script header owns the exact bounds and receipt contract.
+Provision binds the exact server it launched in a private allocation receipt at launch time and rechecks allocation and target identities before every signal or destructive call, retaining unresolved descendants across retries and allowing only the recorded parent or orphan reparenting to pid 1; Darwin retains an unavoidable read-to-signal race.
+Provision, stop, and teardown each run under one aggregate budget that starts before their first call and reserves cleanup inside it; the script header owns the exact bounds and receipt contract, and retained fixture evidence must be copied before the shared test orphan reaper can remove directories after its one-hour age limit.
 
 The helper's header and `--help` own exact commands.
 Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never duplicate the destructive policy.

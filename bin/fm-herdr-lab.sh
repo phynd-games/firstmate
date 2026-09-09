@@ -90,12 +90,48 @@ fm_herdr_lab_state_dir() {
   printf '%s' "${FM_HERDR_LAB_STATE_DIR:-${TMPDIR:-/tmp}/fm-herdr-lab-${UID}}"
 }
 
+fm_herdr_lab_private_state() {
+  local directory
+  directory=$(fm_herdr_lab_state_dir)
+  (umask 077; mkdir -p "$directory") || return 1
+  fm_herdr_lab_timed 1 python3 -c 'import os, stat, sys
+p = sys.argv[1]
+s = os.lstat(p)
+if not stat.S_ISDIR(s.st_mode) or s.st_uid != os.getuid() or s.st_mode & 0o077:
+    sys.exit(1)
+for entry in os.scandir(p):
+    s = entry.stat(follow_symlinks=False)
+    if not stat.S_ISREG(s.st_mode) or s.st_uid != os.getuid() or s.st_mode & 0o077 or s.st_nlink != 1:
+        sys.exit(1)' "$directory" || {
+    fm_herdr_lab_error "unsafe existing lab state directory or object: $directory"
+    return 1
+  }
+}
+
+fm_herdr_lab_timed() {
+  local wanted=$1 seconds remaining
+  shift
+  remaining=$(( $(fm_herdr_lab_remaining) - FM_HERDR_LAB_RESERVE - 1 ))
+  [ "$remaining" -ge 1 ] || return 124
+  seconds=$wanted
+  [ "$seconds" -le "$remaining" ] || seconds=$remaining
+  fm_run_timed "$seconds" "$@"
+}
+
+fm_herdr_lab_pause() {
+  fm_herdr_lab_clip 1 >/dev/null || return 124
+  fm_herdr_lab_timed 1 sleep "$1"
+}
+
 fm_herdr_lab_tripwire_path() { # <session>
   printf '%s/%s.fleet-state.json' "$(fm_herdr_lab_state_dir)" "$1"
 }
 
 fm_herdr_lab_receipt_path() { # <session>
-  printf '%s/%s.allocation.json' "$(fm_herdr_lab_state_dir)" "$1"
+  local path
+  path="$(fm_herdr_lab_state_dir)/$1.allocation.json"
+  if [ ! -f "$path" ] && [ -f "$path.pending" ]; then path="$path.pending"; fi
+  printf '%s' "$path"
 }
 
 fm_herdr_lab_marker_path() { # <session>
@@ -162,7 +198,7 @@ fm_herdr_lab_raw() { # <session> <herdr arguments...>
     fm_herdr_lab_error "aggregate deadline exhausted before: herdr $*"
     return 124
   }
-  fm_run_timed "$seconds" env HERDR_SESSION="$name" herdr "$@" --session "$name"
+  fm_herdr_lab_timed "$seconds" env HERDR_SESSION="$name" herdr "$@" --session "$name"
 }
 
 fm_herdr_lab_session_list() { # <session>
@@ -171,20 +207,26 @@ fm_herdr_lab_session_list() { # <session>
 
 fm_herdr_lab_socket_identity() { # <path>
   local path=$1 identity
-  [ -n "$path" ] && [ -e "$path" ] || { printf 'absent'; return 0; }
+  [ -n "$path" ] && [ -S "$path" ] || return 1
   case "$(uname 2>/dev/null)" in
-    Darwin|*BSD*) identity=$(stat -f '%d:%i' "$path" 2>/dev/null) || identity= ;;
-    *) identity=$(stat -c '%d:%i' "$path" 2>/dev/null) || identity= ;;
+    Darwin|*BSD*) identity=$(fm_herdr_lab_timed 1 stat -f '%d:%i' "$path" 2>/dev/null) || return 1 ;;
+    *) identity=$(fm_herdr_lab_timed 1 stat -c '%d:%i' "$path" 2>/dev/null) || return 1 ;;
   esac
-  printf '%s' "${identity:-unreadable}"
+  [[ "$identity" =~ ^[0-9]+:[0-9]+$ ]] || return 1
+  printf '%s' "$identity"
 }
 
 fm_herdr_lab_fleet_state() { # <session>
-  local name=$1 sessions snapshot socket identity
+  local name=$1 sessions
   sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {
     fm_herdr_lab_error "cannot read Herdr sessions for the fleet-state tripwire"
     return 1
   }
+  fm_herdr_lab_snapshot_fleet_state "$sessions"
+}
+
+fm_herdr_lab_snapshot_fleet_state() {
+  local sessions=$1 snapshot socket identity
   snapshot=$(printf '%s' "$sessions" | jq -c '
     [.sessions[]? | select(.default == true)]
     | if length == 1 and .[0].name == "default" and .[0].running == true
@@ -197,13 +239,16 @@ fm_herdr_lab_fleet_state() { # <session>
     return 1
   }
   socket=$(printf '%s' "$snapshot" | jq -r '.socket_path // empty' 2>/dev/null)
-  identity=$(fm_herdr_lab_socket_identity "$socket")
+  identity=$(fm_herdr_lab_socket_identity "$socket") || {
+    fm_herdr_lab_error "FLEET-STATE TRIPWIRE FAILED: required socket OS identity unavailable"
+    return 1
+  }
   printf '%s' "$snapshot" | jq -c --arg identity "$identity" \
     '. + {socket_identity: $identity, server_generation: "unsupported-by-cli"}'
 }
 
 fm_herdr_lab_prepare() { # <session>
-  local name=$1 sessions state_dir tripwire
+  local name=$1 sessions
   fm_herdr_lab_validate_name "$name" || return 1
   command -v herdr >/dev/null 2>&1 || { fm_herdr_lab_error "herdr is required"; return 1; }
   command -v jq >/dev/null 2>&1 || { fm_herdr_lab_error "jq is required"; return 1; }
@@ -212,19 +257,23 @@ fm_herdr_lab_prepare() { # <session>
     fm_herdr_lab_error "cannot list Herdr sessions before provisioning '$name'"
     return 1
   }
+  fm_herdr_lab_private_state || return 1
+  fm_herdr_lab_prepare_from_sessions "$name" "$sessions"
+}
+
+fm_herdr_lab_prepare_from_sessions() {
+  local name=$1 sessions=$2 tripwire
   if printf '%s' "$sessions" | jq -e --arg name "$name" '.sessions[]? | select(.name == $name)' >/dev/null 2>&1; then
     fm_herdr_lab_error "session '$name' already exists; refusing to adopt or overwrite it"
     return 1
   fi
 
-  state_dir=$(fm_herdr_lab_state_dir)
   tripwire=$(fm_herdr_lab_tripwire_path "$name")
-  mkdir -p "$state_dir" || return 1
   [ ! -e "$tripwire" ] || {
     fm_herdr_lab_error "tripwire already exists for '$name'; refusing ambiguous ownership"
     return 1
   }
-  fm_herdr_lab_fleet_state "$name" > "$tripwire" || {
+  (umask 077; set -C; fm_herdr_lab_snapshot_fleet_state "$sessions" > "$tripwire") || {
     rm -f "$tripwire"
     return 1
   }
@@ -286,11 +335,11 @@ fm_herdr_lab_cli() { # <session> <herdr arguments...>
 
 fm_herdr_lab_proc_identity() { # <pid>
   local pid=$1 out rc=0 wday mon day time year ppid pgid stat
-  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  out=$(fm_run_timed 1 env LC_ALL=C ps -p "$pid" -o lstart= -o ppid= -o pgid= -o stat= 2>/dev/null) || rc=$?
+  case "$pid" in ''|0|*[!0-9]*) return 1 ;; esac
+  out=$(fm_herdr_lab_timed 1 env LC_ALL=C ps -p "$pid" -o lstart= -o ppid= -o pgid= -o stat= 2>/dev/null) || rc=$?
   case "$rc" in
     0) ;;
-    1) return 3 ;;
+    1) [ -z "$out" ] && return 3; return 1 ;;
     *) return 1 ;;
   esac
   read -r wday mon day time year ppid pgid stat _ <<< "$out"
@@ -311,7 +360,7 @@ fm_herdr_lab_identity_field() { # <identity> <field>
 # when the table could not be read.
 fm_herdr_lab_group_members() { # <pgid>
   local pgid=$1 table
-  table=$(fm_run_timed 1 env LC_ALL=C ps -e -o pid=,pgid=,stat= 2>/dev/null) || return 1
+  table=$(fm_herdr_lab_timed 1 env LC_ALL=C ps -e -o pid=,pgid=,stat= 2>/dev/null) || return 1
   printf '%s\n' "$table" | awk -v group="$pgid" '$2 == group && $1 != group && $3 !~ /^Z/ { print $1 }'
 }
 
@@ -342,6 +391,9 @@ fm_herdr_lab_allocation_state() { # <pid> <recorded-birth> <recorded-pgid>
 # Exit 0 sent, 3 positively absent, 2 identity changed (refused), 1 unknown.
 fm_herdr_lab_signal_verified() { # <pid> <identity> <signal>
   local pid=$1 expected=$2 signal=$3 current rc=0
+  if [ -n "${FM_HERDR_LAB_CANCELLING:-}" ] && [ "$pid" != "${FM_HERDR_LAB_LEADER:-}" ]; then
+    fm_herdr_lab_verify_allocation "$FM_HERDR_LAB_CANCELLING" || return 1
+  fi
   current=$(fm_herdr_lab_proc_identity "$pid") || rc=$?
   case "$rc" in
     3) return 3 ;;
@@ -351,11 +403,18 @@ fm_herdr_lab_signal_verified() { # <pid> <identity> <signal>
       return 1
       ;;
   esac
+  if [ "$(fm_herdr_lab_identity_field "$current" ppid)" = 1 ]; then
+    expected="birth=$(fm_herdr_lab_identity_field "$expected" birth) ppid=1 pgid=$(fm_herdr_lab_identity_field "$expected" pgid)"
+  fi
   [ "$current" = "$expected" ] || {
     fm_herdr_lab_error "pid $pid no longer matches its recorded identity; refusing SIG$signal (recorded: $expected; current: $current)"
     return 2
   }
-  kill -"$signal" "$pid" 2>/dev/null || return 3
+  fm_herdr_lab_clip 1 >/dev/null || return 1
+  kill -"$signal" "$pid" 2>/dev/null || {
+    fm_herdr_lab_error "SIG$signal to pid $pid was not delivered; absence unproved"
+    return 1
+  }
 }
 
 # Poll until <pid> is positively absent or the grace window, clipped to the
@@ -364,13 +423,14 @@ fm_herdr_lab_wait_absent() { # <pid> <grace-seconds>
   local pid=$1 grace=$2 end rc
   grace=$(fm_herdr_lab_clip "$grace") || grace=0
   end=$(( $(fm_herdr_lab_now) + grace ))
-  while :; do
+  while [ "$(fm_herdr_lab_now)" -lt "$end" ]; do
     rc=0
     fm_herdr_lab_proc_identity "$pid" >/dev/null 2>&1 || rc=$?
     [ "$rc" -ne 3 ] || return 0
     [ "$(fm_herdr_lab_now)" -lt "$end" ] || return 1
-    sleep 0.1
+    fm_herdr_lab_pause 0.1 || return 1
   done
+  return 1
 }
 
 # TERM, wait, then KILL one process, rechecking identity before each signal.
@@ -407,7 +467,7 @@ fm_herdr_lab_write_receipt() { # <session> <jq-program> <jq args...>
   shift 2
   receipt=$(fm_herdr_lab_receipt_path "$name")
   tmp="$receipt.tmp.$$"
-  if jq -nc "$@" "$program" > "$tmp" 2>/dev/null && mv -f "$tmp" "$receipt"; then
+  if (umask 077; set -C; jq -nc "$@" "$program" > "$tmp") 2>/dev/null && mv -f "$tmp" "$receipt"; then
     return 0
   fi
   rm -f "$tmp"
@@ -420,118 +480,196 @@ fm_herdr_lab_write_receipt() { # <session> <jq-program> <jq args...>
 # identity recheck, then remove the receipt only when everything it accounted
 # for is positively absent. Anything unknown, reused, or surviving retains the
 # receipt and fails.
-fm_herdr_lab_cancel_allocation() { # <session>
-  local name=$1 receipt pid birth pgid identity member members survivors
+fm_herdr_lab_capture_members() {
+  local name=$1 receipt members member identity rc targets original
   receipt=$(fm_herdr_lab_receipt_path "$name")
-  [ -f "$receipt" ] || {
-    fm_herdr_lab_error "no allocation receipt for '$name'; refusing to signal anything"
-    return 1
-  }
-  pid=$(fm_herdr_lab_read_receipt "$name" '.pid')
-  birth=$(fm_herdr_lab_read_receipt "$name" '.birth')
-  pgid=$(fm_herdr_lab_read_receipt "$name" '.pgid')
-  case "$pid" in ''|null|*[!0-9]*)
-    fm_herdr_lab_error "allocation receipt for '$name' is unreadable; retaining it"
-    return 1 ;;
-  esac
+  [ "$(jq -r '.pgid' "$receipt")" = "$(jq -r '.pid' "$receipt")" ] || return 1
+  targets=$(jq -c '.targets // []' "$receipt") || return 1
+  members=$(fm_herdr_lab_group_members "$(jq -r '.pgid' "$receipt")") || return 1
+  FM_HERDR_LAB_GROUP_MEMBERS=$members
+  original=$targets
+  targets=$(printf '%s' "$targets" | jq -c --arg members "$members" \
+    '. as $old | . + [$members | split("\n")[] | select(length > 0) | . as $pid | select(all($old[]; .pid != $pid)) | {pid:., identity:""}]') || return 1
+  fm_herdr_lab_write_receipt "$name" "\$receipt + {targets:\$targets}" \
+    --argjson receipt "$(cat "$receipt")" --argjson targets "$targets" || return 1
+  for member in $members; do
+    fm_herdr_lab_clip 1 >/dev/null || return 1
+    if printf '%s' "$original" | jq -e --arg pid "$member" '.[] | select(.pid == $pid)' >/dev/null; then continue; fi
+    rc=0
+    identity=$(fm_herdr_lab_proc_identity "$member") || rc=$?
+    if [ "$rc" -eq 3 ]; then
+      targets=$(printf '%s' "$targets" | jq -c --arg pid "$member" '[.[] | select(.pid != $pid)]') || return 1
+    else
+      targets=$(printf '%s' "$targets" | jq -c --arg pid "$member" --arg identity "$identity" \
+        'map(if .pid == $pid then .identity = $identity else . end)') || return 1
+    fi
+    fm_herdr_lab_write_receipt "$name" "\$receipt + {targets:\$targets}" \
+      --argjson receipt "$(cat "$receipt")" --argjson targets "$targets" || return 1
+    [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || return 1
+  done
+}
+
+fm_herdr_lab_verify_allocation() {
+  local name=$1 receipt pid birth pgid parent current_parent
+  receipt=$(fm_herdr_lab_receipt_path "$name")
+  pid=$(jq -r '.pid' "$receipt" 2>/dev/null) || return 1
+  birth=$(jq -r '.birth' "$receipt") || return 1
+  pgid=$(jq -r '.pgid' "$receipt") || return 1
+  parent=$(jq -r '.ppid' "$receipt") || return 1
+  case "$pid" in ''|0|null|*[!0-9]*) return 1 ;; esac
   fm_herdr_lab_allocation_state "$pid" "$birth" "$pgid"
   case "$FM_HERDR_LAB_ALLOCATION_STATE" in
     owned)
-      identity=$FM_HERDR_LAB_CURRENT_IDENTITY
-      fm_herdr_lab_terminate_verified "$pid" "$identity" || {
-        fm_herdr_lab_error "lab server pid $pid was not proved gone; retaining allocation receipt"
-        return 1
-      }
+      current_parent=$(fm_herdr_lab_identity_field "$FM_HERDR_LAB_CURRENT_IDENTITY" ppid)
+      [ "$current_parent" = "$parent" ] || [ "$current_parent" = 1 ] || return 1
       ;;
     absent) ;;
-    reused)
-      fm_herdr_lab_error "pid $pid is now a different process (recorded birth=$birth pgid=$pgid; current: $FM_HERDR_LAB_CURRENT_IDENTITY); refusing to signal it and retaining the receipt"
-      return 1
-      ;;
-    *)
-      fm_herdr_lab_error "cannot read the state of lab server pid $pid; refusing to signal it and retaining the receipt"
-      return 1
-      ;;
+    reused) fm_herdr_lab_error "pid $pid is now a different process; retaining allocation receipt"; return 1 ;;
+    *) fm_herdr_lab_error "cannot read the state of lab server pid $pid; retaining allocation receipt"; return 1 ;;
   esac
-  wait "$pid" 2>/dev/null || true
-  # Descendants are accountable only inside the child's own process group,
-  # which exists only when the child proved its setsid (pgid == pid).
-  if [ "$pgid" = "$pid" ]; then
-    members=$(fm_herdr_lab_group_members "$pgid") || {
-      fm_herdr_lab_error "cannot read the process table to account for lab descendants; retaining allocation receipt"
-      return 1
-    }
-    for member in $members; do
-      identity=$(fm_herdr_lab_proc_identity "$member" 2>/dev/null) || continue
-      [ "$(fm_herdr_lab_identity_field "$identity" pgid)" = "$pgid" ] || continue
-      fm_herdr_lab_terminate_verified "$member" "$identity" || true
-    done
-    survivors=$(fm_herdr_lab_group_members "$pgid") || {
-      fm_herdr_lab_error "cannot confirm the lab process group is empty; retaining allocation receipt"
-      return 1
-    }
-    [ -z "$survivors" ] || {
-      fm_herdr_lab_error "lab process group $pgid still has live members: $(printf '%s' "$survivors" | tr '\n' ' '); retaining allocation receipt"
+}
+
+fm_herdr_lab_destructive_guard() {
+  local name=$1 receipt sessions native socket running
+  fm_herdr_lab_verify_allocation "$name" || return 1
+  receipt=$(fm_herdr_lab_receipt_path "$name")
+  sessions=$(fm_herdr_lab_session_list "$name") || return 1
+  native=$(printf '%s' "$sessions" | jq -c --arg name "$name" \
+    '[.sessions[]? | select(.name == $name and .default == false)] | if length == 1 then .[0] else empty end')
+  [ -n "$native" ] || return 1
+  socket=$(jq -r '.native.socket_path // empty' "$receipt")
+  running=$(printf '%s' "$native" | jq -r '.running')
+  if [ -n "$socket" ]; then
+    [ "$(printf '%s' "$native" | jq -r '.socket_path')" = "$socket" ] || return 1
+  else
+    [ "$FM_HERDR_LAB_ALLOCATION_STATE" = owned ] || [ "$running" = false ] || return 1
+  fi
+  [ "$FM_HERDR_LAB_ALLOCATION_STATE" != absent ] || [ "$running" = false ] || return 1
+  fm_herdr_lab_capture_members "$name" || return 1
+  fm_herdr_lab_verify_allocation "$name"
+}
+
+fm_herdr_lab_cancel_allocation() {
+  local name=$1 receipt pid pgid identity member targets survivors unresolved=0 rc entry sessions
+  local FM_HERDR_LAB_CANCELLING=$1 FM_HERDR_LAB_LEADER
+  receipt=$(fm_herdr_lab_receipt_path "$name")
+  fm_herdr_lab_verify_allocation "$name" || return 1
+  pid=$(jq -r '.pid' "$receipt")
+  FM_HERDR_LAB_LEADER=$pid
+  pgid=$(jq -r '.pgid' "$receipt")
+  identity=$FM_HERDR_LAB_CURRENT_IDENTITY
+  fm_herdr_lab_capture_members "$name" || {
+    fm_herdr_lab_error "cannot account for descendants of pid $pid; retaining allocation receipt"
+    return 1
+  }
+  if [ "$FM_HERDR_LAB_ALLOCATION_STATE" = owned ]; then
+    fm_herdr_lab_terminate_verified "$pid" "$identity" || {
+      fm_herdr_lab_error "lab server pid $pid was not proved gone; retaining allocation receipt"
       return 1
     }
   fi
-  rm -f "$receipt"
+  targets=$(jq -c '.targets[]?' "$receipt") || return 1
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    member=$(printf '%s' "$entry" | jq -r '.pid')
+    identity=$(printf '%s' "$entry" | jq -r '.identity')
+    rc=0
+    fm_herdr_lab_proc_identity "$member" >/dev/null || rc=$?
+    [ "$rc" -ne 3 ] || continue
+    if [ "$rc" -ne 0 ] || [ "$(fm_herdr_lab_identity_field "$identity" pgid)" != "$pgid" ] \
+      || ! fm_herdr_lab_verify_allocation "$name" \
+      || ! fm_herdr_lab_terminate_verified "$member" "$identity"; then
+      fm_herdr_lab_error "descendant pid $member unproved (recorded: $identity); retaining allocation receipt"
+      unresolved=1
+    fi
+  done <<< "$targets"
+  fm_herdr_lab_capture_members "$name" || return 1
+  survivors=$FM_HERDR_LAB_GROUP_MEMBERS
+  if [ -n "$survivors" ] || [ "$unresolved" -ne 0 ]; then
+    fm_herdr_lab_error "lab process group $pgid has unresolved members: $survivors; retaining allocation receipt"
+    return 1
+  fi
+  fm_herdr_lab_verify_allocation "$name" || return 1
+  [ "$FM_HERDR_LAB_ALLOCATION_STATE" = absent ] || return 1
+  fm_herdr_lab_clip 1 >/dev/null || return 1
+  sessions=$(fm_herdr_lab_session_list "$name") || return 1
+  if printf '%s' "$sessions" | jq -e --arg name "$name" '.sessions[]? | select(.name == $name)' >/dev/null; then
+    return 0
+  fi
+  rm -f "$receipt" "$(fm_herdr_lab_marker_path "$name")" "$(fm_herdr_lab_marker_path "$name").accepted"
 }
 
 # Launch the named server as a direct child and bind its identity before any
 # poll. Exit 0 with the receipt written; 1 when the child could not be bound
 # (it is either positively gone or already recorded for cancellation).
-fm_herdr_lab_allocate() { # <session>
-  local name=$1 marker server_pid content='' identity rc=0 ppid pgid birth allocated marker_end
+fm_herdr_lab_allocate() {
+  local name=$1 marker server_pid content='' identity='' rc=0 ppid pgid birth allocated marker_end receipt pending record
+  fm_herdr_lab_private_state || return 1
+  fm_herdr_lab_clip 3 >/dev/null || return 1
   marker=$(fm_herdr_lab_marker_path "$name")
-  rm -f "$marker" "$marker.tmp"
+  receipt=$(fm_herdr_lab_receipt_path "$name")
+  pending="$receipt.pending"
+  (umask 077; set -C; : > "$pending") || return 1
   allocated=$(fm_herdr_lab_now)
-  marker_end=$(( allocated + $(fm_herdr_lab_clip 2 || printf 0) ))
-  # The child owns its own session before it becomes the server, and it proves
-  # that ordering by writing its pid to the marker between setsid and exec.
-  python3 -c 'import os, sys
+  marker_end=$(( allocated + $(fm_herdr_lab_clip 2) ))
+  rm -f "$marker" "$marker.accepted" "$marker.tmp"
+  (umask 077; exec python3 -c 'import os, sys, time
+marker, end = sys.argv[1], int(sys.argv[2])
+if time.time() >= end:
+    sys.exit(1)
 os.setsid()
-marker = sys.argv[1]
-with open(marker + ".tmp", "w") as handle:
+with open(marker + ".tmp", "x") as handle:
     handle.write(str(os.getpid()))
 os.replace(marker + ".tmp", marker)
-os.execvp(sys.argv[2], sys.argv[2:])' \
-    "$marker" env HERDR_SESSION="$name" herdr server --session "$name" >/dev/null 2>&1 &
+while time.time() < end:
+    try:
+        with open(marker + ".accepted") as handle:
+            if handle.read() == str(os.getpid()):
+                os.execvp(sys.argv[3], sys.argv[3:])
+    except FileNotFoundError:
+        pass
+    time.sleep(0.01)
+sys.exit(1)' "$marker" "$marker_end" env HERDR_SESSION="$name" herdr server --session "$name") >/dev/null 2>&1 &
   server_pid=$!
-  while :; do
+  while [ "$(fm_herdr_lab_now)" -lt "$marker_end" ]; do
     content=$(cat "$marker" 2>/dev/null) || content=
     [ "$content" != "$server_pid" ] || break
-    [ "$(fm_herdr_lab_now)" -lt "$marker_end" ] || break
-    sleep 0.05
+    fm_herdr_lab_pause 0.05 || break
   done
-  rm -f "$marker"
   identity=$(fm_herdr_lab_proc_identity "$server_pid") || rc=$?
   if [ "$rc" -eq 3 ]; then
-    wait "$server_pid" 2>/dev/null || true
+    rm -f "$pending" "$marker"
     fm_herdr_lab_error "lab server for '$name' exited before its identity could be bound"
     return 1
   fi
-  ppid=$(fm_herdr_lab_identity_field "$identity" ppid 2>/dev/null) || ppid=
-  pgid=$(fm_herdr_lab_identity_field "$identity" pgid 2>/dev/null) || pgid=
-  birth=$(fm_herdr_lab_identity_field "$identity" birth 2>/dev/null) || birth=
-  if [ "$rc" -ne 0 ] || [ "$ppid" != "${BASHPID:-$$}" ] || { [ "$content" = "$server_pid" ] && [ "$pgid" != "$server_pid" ]; }; then
-    # Record what is known so cancellation can refuse or recheck it, then fail.
-    # shellcheck disable=SC2016  # jq program: $name and friends are jq variables.
-    fm_herdr_lab_write_receipt "$name" \
-      '{name: $name, pid: $pid, birth: $birth, ppid: $ppid, pgid: $pgid, own_group: false, allocated_epoch: $allocated, deadline_epoch: $deadline, command_description: $command, native: null}' \
-      --arg name "$name" --argjson pid "$server_pid" --arg birth "${birth:-unknown}" --arg ppid "${ppid:-unknown}" \
-      --arg pgid "${pgid:-unknown}" --argjson allocated "$allocated" --argjson deadline "$FM_HERDR_LAB_DEADLINE" \
-      --arg command "herdr server --session $name" || true
-    fm_herdr_lab_error "lab server for '$name' (pid $server_pid) could not be bound as an owned direct child (${identity:-unreadable}); retaining its receipt"
+  ppid=$(fm_herdr_lab_identity_field "$identity" ppid) || ppid=unknown
+  pgid=$(fm_herdr_lab_identity_field "$identity" pgid) || pgid=unknown
+  birth=$(fm_herdr_lab_identity_field "$identity" birth) || birth=unknown
+  record=$(jq -nc --arg name "$name" --argjson pid "$server_pid" --arg birth "$birth" \
+    --arg ppid "$ppid" --arg pgid "$pgid" --argjson allocated "$allocated" --argjson deadline "$FM_HERDR_LAB_DEADLINE" \
+    --arg command "herdr server --session $name" \
+    '{name:$name,pid:$pid,birth:$birth,ppid:($ppid|try tonumber catch $ppid),pgid:($pgid|try tonumber catch $pgid),own_group:($pgid == ($pid|tostring)),allocated_epoch:$allocated,deadline_epoch:$deadline,command_description:$command,native:null}')
+  if [ -z "$record" ] || ! printf '%s\n' "$record" > "$pending"; then
+    fm_herdr_lab_error "allocation publication failed: pid $server_pid identity $identity; receipt not published; record=$record"
+    [ "$rc" -ne 0 ] || fm_herdr_lab_terminate_verified "$server_pid" "$identity" || true
     return 1
   fi
-  # shellcheck disable=SC2016  # jq program: $name and friends are jq variables.
-  fm_herdr_lab_write_receipt "$name" \
-    '{name: $name, pid: $pid, birth: $birth, ppid: ($ppid | tonumber), pgid: ($pgid | tonumber), own_group: $own, allocated_epoch: $allocated, deadline_epoch: $deadline, command_description: $command, native: null}' \
-    --arg name "$name" --argjson pid "$server_pid" --arg birth "$birth" --arg ppid "$ppid" --arg pgid "$pgid" \
-    --argjson own "$([ "$pgid" = "$server_pid" ] && printf true || printf false)" \
-    --argjson allocated "$allocated" --argjson deadline "$FM_HERDR_LAB_DEADLINE" \
-    --arg command "herdr server --session $name" || return 1
+  if [ "$rc" -ne 0 ] || [ "$content" != "$server_pid" ] || [ "$ppid" != "${BASHPID:-$$}" ] || [ "$pgid" != "$server_pid" ]; then
+    fm_herdr_lab_error "unbound allocation pid $server_pid identity $identity; evidence retained at $pending"
+    if [ "$rc" -eq 0 ] && [ "$ppid" = "${BASHPID:-$$}" ] && [ "$pgid" = "$server_pid" ]; then
+      fm_herdr_lab_cancel_allocation "$name" || true
+    fi
+    return 1
+  fi
+  if ! mv -f "$pending" "$receipt"; then
+    fm_herdr_lab_error "cannot publish allocation receipt for pid $server_pid ($identity); pending evidence at $pending"
+    fm_herdr_lab_cancel_allocation "$name" || true
+    return 1
+  fi
+  if ! (umask 077; set -C; printf '%s' "$server_pid" > "$marker.accepted"); then
+    fm_herdr_lab_cancel_allocation "$name" || true
+    return 1
+  fi
 }
 
 # Bind the native evidence Herdr supplies for the running lab: its socket_path
@@ -549,19 +687,24 @@ fm_herdr_lab_bind_native() { # <session>
     fm_herdr_lab_error "lab session '$name' reported running but session list has no single non-default running record for it"
     return 1
   }
+  fm_herdr_lab_verify_allocation "$name" || return 1
+  [ "$FM_HERDR_LAB_ALLOCATION_STATE" = owned ] || return 1
   receipt=$(fm_herdr_lab_receipt_path "$name")
   # shellcheck disable=SC2016  # jq program: $receipt, $native, $bound are jq variables.
   fm_herdr_lab_write_receipt "$name" '$receipt + {native: ($native + {bound_epoch: $bound})}' \
-    --argjson receipt "$(cat "$receipt")" --argjson native "$native" --argjson bound "$(fm_herdr_lab_now)"
+    --argjson receipt "$(cat "$receipt")" --argjson native "$native" --argjson bound "$(fm_herdr_lab_now)" || return 1
+  fm_herdr_lab_verify_allocation "$name" || return 1
+  [ "$FM_HERDR_LAB_ALLOCATION_STATE" = owned ]
 }
 
 fm_herdr_lab_provision_impl() { # <session>
-  local name=$1 sessions tripwire running attempt receipt pid
+  local name=$1 sessions tripwire running=false attempt receipt pid status_json poll_status
   fm_herdr_lab_validate_name "$name" || return 1
   command -v herdr >/dev/null 2>&1 || { fm_herdr_lab_error "herdr is required"; return 1; }
   command -v jq >/dev/null 2>&1 || { fm_herdr_lab_error "jq is required"; return 1; }
   command -v python3 >/dev/null 2>&1 || { fm_herdr_lab_error "python3 is required for isolated provision ownership"; return 1; }
   command -v ps >/dev/null 2>&1 || { fm_herdr_lab_error "ps is required for provision ownership"; return 1; }
+  fm_herdr_lab_private_state || return 1
   receipt=$(fm_herdr_lab_receipt_path "$name")
   if [ -e "$receipt" ]; then
     # Only a positively absent server clears a retained receipt; anything
@@ -569,7 +712,10 @@ fm_herdr_lab_provision_impl() { # <session>
     pid=$(fm_herdr_lab_read_receipt "$name" '.pid')
     fm_herdr_lab_allocation_state "$pid" "$(fm_herdr_lab_read_receipt "$name" '.birth')" "$(fm_herdr_lab_read_receipt "$name" '.pgid')"
     case "$FM_HERDR_LAB_ALLOCATION_STATE" in
-      absent) rm -f "$receipt" ;;
+      absent)
+        fm_herdr_lab_cancel_allocation "$name" || return 1
+        rm -f "$receipt"
+        ;;
       owned)
         fm_herdr_lab_error "retained allocation receipt for '$name': its server pid $pid is still alive; reconcile it with teardown before provisioning again"
         return 1
@@ -600,14 +746,16 @@ fm_herdr_lab_provision_impl() { # <session>
     }
     fm_herdr_lab_check_tripwire "$name" || return 1
   else
-    fm_herdr_lab_prepare "$name" || return 1
+    fm_herdr_lab_prepare_from_sessions "$name" "$sessions" || return 1
   fi
 
   fm_herdr_lab_allocate "$name" || return 1
   attempt=0
   FM_HERDR_LAB_RESERVE=$FM_HERDR_LAB_CLEANUP_RESERVE_SECS
   while [ "$attempt" -lt "$FM_HERDR_LAB_MAX_POLLS" ] && fm_herdr_lab_clip 1 >/dev/null 2>&1; do
-    running=$(fm_herdr_lab_cli "$name" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null) || running=false
+    poll_status=0
+    status_json=$(fm_herdr_lab_cli "$name" status --json 2>/dev/null) || poll_status=$?
+    running=$(printf '%s' "$status_json" | jq -r '.server.running // false' 2>/dev/null) || running=false
     if [ "$running" = true ]; then
       if fm_herdr_lab_refuse_if_default "$name" && fm_herdr_lab_bind_native "$name"; then
         FM_HERDR_LAB_RESERVE=0
@@ -615,13 +763,13 @@ fm_herdr_lab_provision_impl() { # <session>
       fi
       break
     fi
-    sleep 0.2
+    if [ "$poll_status" -ne 124 ]; then fm_herdr_lab_pause 0.2 || break; fi
     attempt=$((attempt + 1))
   done
   FM_HERDR_LAB_RESERVE=0
   fm_herdr_lab_cancel_allocation "$name" || true
   if [ "$running" = true ]; then
-    fm_herdr_lab_error "lab session '$name' reported running but could not be verified as a non-default owned lab; cancelled"
+    fm_herdr_lab_error "lab session '$name' reported running but could not be verified as a non-default owned lab; cancellation attempted"
   else
     fm_herdr_lab_error "lab session '$name' did not report running within the $FM_HERDR_LAB_BUDGET_SECS-second aggregate budget"
   fi
@@ -664,7 +812,8 @@ fm_herdr_lab_stop_impl() { # <session>
     fm_herdr_lab_error "missing fleet-state tripwire for '$name'; refusing stop"
     return 1
   }
-  fm_herdr_lab_refuse_if_default "$name" || return 1
+  fm_herdr_lab_private_state || return 1
+  fm_herdr_lab_destructive_guard "$name" || return 1
   fm_herdr_lab_raw "$name" session stop "$name" --json
 }
 
@@ -685,6 +834,7 @@ fm_herdr_lab_reconcile_receipt() { # <session>
 fm_herdr_lab_teardown_impl() { # <session>
   local name=$1 tripwire sessions delete_status=0 cleanup_failed=0
   fm_herdr_lab_validate_name "$name" || return 1
+  fm_herdr_lab_private_state || return 1
   tripwire=$(fm_herdr_lab_tripwire_path "$name")
   [ -f "$tripwire" ] || {
     fm_herdr_lab_error "missing fleet-state tripwire for '$name'; refusing destructive calls"
@@ -697,12 +847,11 @@ fm_herdr_lab_teardown_impl() { # <session>
   if printf '%s' "$sessions" | jq -e --arg name "$name" '.sessions[]? | select(.name == $name)' >/dev/null 2>&1; then
     # Never turn a failed/uncertain stop into an attempted delete. Preserve the
     # tripwire so an operator can reconcile the exact named lab safely.
-    if ! fm_herdr_lab_stop_impl "$name" >/dev/null 2>&1; then
+    if ! fm_herdr_lab_stop_impl "$name" >/dev/null; then
       fm_herdr_lab_error "session stop failed for '$name'; not attempting delete"
       cleanup_failed=1
     else
-      sleep 0.2
-      if ! fm_herdr_lab_refuse_if_default "$name"; then
+      if ! fm_herdr_lab_destructive_guard "$name"; then
         cleanup_failed=1
       else
         fm_herdr_lab_raw "$name" session delete "$name" --json >/dev/null 2>&1 || delete_status=$?
