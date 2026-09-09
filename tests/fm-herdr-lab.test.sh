@@ -40,6 +40,8 @@ TRIPWIRES="$TMP_ROOT/tripwires"
 PS_COUNTER="$TMP_ROOT/ps.counter"
 REAL_SLEEP=$(command -v sleep)
 REAL_PS=$(command -v ps)
+REAL_PYTHON=$(command -v python3)
+REAL_MV=$(command -v mv)
 FIXTURES=()
 PRIVATE_HOME="$TMP_ROOT/home"
 mkdir -p "$FAKE_STATE" "$PRIVATE_HOME/fm-home" "$PRIVATE_HOME/xdg-config" "$PRIVATE_HOME/xdg-state" "$PRIVATE_HOME/xdg-cache" "$PRIVATE_HOME/xdg-data" "$PRIVATE_HOME/xdg-runtime" "$PRIVATE_HOME/tmp"
@@ -211,7 +213,7 @@ settle_launched() { # <label> <pid> <launch-birth>
 fm_lab_test_cleanup() {
   local initial_status=$? entry pid retained=0 outcome record launch_birth found
   [ "$initial_status" -eq 0 ] || retain_evidence "test exited $initial_status; launch records retained"
-  for record in "$FAKE_STATE"/*.launched "$FAKE_STATE"/*.child "$FAKE_STATE"/*.detached; do
+  for record in "$FAKE_STATE"/*.launched "$FAKE_STATE"/*.child "$FAKE_STATE"/*.detached "$FAKE_STATE"/*.delay; do
     [ -f "$record" ] || continue
     pid= launch_birth=
     read -r pid launch_birth < "$record" || true
@@ -225,7 +227,7 @@ fm_lab_test_cleanup() {
   done
   for record in "$TRIPWIRES"/*.allocation.json "$TRIPWIRES"/*.allocation.json.pending; do
     [ -f "$record" ] || continue
-    pid=$(jq -r '.pid // empty' "$record") || pid=
+    pid=$(jq -r '.pid // .rejected_observation.pid // empty' "$record") || pid=
     if [ -z "$pid" ] || [ ! -s "$FAKE_STATE/$pid.launched" ]; then
       retain_evidence "allocation lacks an accountable fixture launch: $record pid=$pid"
     fi
@@ -322,7 +324,10 @@ case "$1 ${2:-}" in
   "server --session")
     record_launch "$$" "$state/$session.launched"
     if [ "${FM_FAKE_HERDR_SERVER_DELAY:-0}" != 0 ]; then
-      "$FM_FAKE_HERDR_REAL_SLEEP" "$FM_FAKE_HERDR_SERVER_DELAY"
+      "$FM_FAKE_HERDR_REAL_SLEEP" "$FM_FAKE_HERDR_SERVER_DELAY" &
+      delay=$!
+      record_launch "$delay" "$state/$session.delay"
+      wait "$delay"
     fi
     cp "$state/$session.launched" "$state/$session.server"
     if [ "${FM_FAKE_HERDR_SERVER_CHILDREN:-}" = 1 ]; then
@@ -425,6 +430,35 @@ esac
 SH
 chmod +x "$FAKEBIN/herdr"
 
+cat > "$FAKEBIN/python3" <<'SH'
+#!/usr/bin/env bash
+set -eu
+if [[ "${3:-}" = *.allocation.setsid ]]; then
+  raw=$(LC_ALL=C "$FM_FAKE_PS_REAL" -p "$$" -o lstart=) || {
+    printf 'launcher identity unknown pid %s\n' "$$" >> "$FM_FAKE_ROOT/RETAINED"
+    exit 95
+  }
+  birth=$(printf '%s\n' "$raw" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/-/g')
+  [ -n "$birth" ] || { printf 'empty launcher birth\n' >> "$FM_FAKE_ROOT/RETAINED"; exit 95; }
+  printf '%s %s\n' "$$" "$birth" > "$FM_FAKE_HERDR_STATE/$$.launched"
+  if [ -n "${FM_FAKE_LAUNCH_RECORD:-}" ]; then
+    printf '%s %s\n' "$$" "$birth" > "$FM_FAKE_LAUNCH_RECORD"
+  fi
+fi
+exec "$FM_FAKE_PYTHON_REAL" "$@"
+SH
+chmod +x "$FAKEBIN/python3"
+
+cat > "$FAKEBIN/mv" <<'SH'
+#!/usr/bin/env bash
+if [ "${FM_FAKE_PUBLISH_FAIL:-}" = 1 ] && [[ "${2:-}" = *.allocation.json.pending ]]; then
+  printf '%s\n' "$*" >> "$FM_FAKE_HERDR_STATE/publication-attempts"
+  exit 96
+fi
+exec "$FM_FAKE_MV_REAL" "$@"
+SH
+chmod +x "$FAKEBIN/mv"
+
 cat > "$FAKEBIN/ps" <<'SH'
 #!/usr/bin/env bash
 # Pass-through ps shim. FM_FAKE_PS_HANG=1 hangs every call; FM_FAKE_PS_MUTATE_PID
@@ -436,6 +470,13 @@ fi
 if [ "${FM_FAKE_PS_PARTIAL:-}" = 1 ]; then printf 'partial observation\n'; exit 1; fi
 rc=0
 out=$("$FM_FAKE_PS_REAL" "$@") || rc=$?
+if [ "${FM_FAKE_REJECT_LAUNCH:-}" = 1 ] && [ -s "$FM_FAKE_LAUNCH_RECORD" ]; then
+  read -r launcher birth < "$FM_FAKE_LAUNCH_RECORD"
+  if [ "${1:-}" = -p ] && [ "${2:-}" = "$launcher" ]; then
+    printf '%s\n' "$launcher" >> "$FM_FAKE_LAUNCH_RECORD.probes"
+    out=$(printf '%s\n' "$out" | awk '{$5=1999; $6=1; print}')
+  fi
+fi
 if [ -n "${FM_FAKE_PS_MUTATE_PID:-}" ]; then
   target=0
   previous=
@@ -472,6 +513,11 @@ run_with_fake() {
     TMPDIR="$PRIVATE_HOME/tmp" \
     PATH="$FAKEBIN:$PATH" \
     FM_FAKE_ROOT="$TMP_ROOT" \
+    FM_FAKE_PYTHON_REAL="$REAL_PYTHON" \
+    FM_FAKE_MV_REAL="$REAL_MV" \
+    FM_FAKE_LAUNCH_RECORD="${FM_FAKE_LAUNCH_RECORD:-}" \
+    FM_FAKE_REJECT_LAUNCH="${FM_FAKE_REJECT_LAUNCH:-}" \
+    FM_FAKE_PUBLISH_FAIL="${FM_FAKE_PUBLISH_FAIL:-}" \
     FM_FAKE_PS_PARTIAL="${FM_FAKE_PS_PARTIAL:-}" \
     FM_FAKE_PS_AFTER_TERM="${FM_FAKE_PS_AFTER_TERM:-}" \
     FM_FAKE_HERDR_SERVER_IGNORE_TERM="${FM_FAKE_HERDR_SERVER_IGNORE_TERM:-}" \
@@ -499,7 +545,7 @@ run_with_fake() {
 
 account_launches() {
   local record pid birth entry found
-  for record in "$FAKE_STATE"/*.launched "$FAKE_STATE"/*.child "$FAKE_STATE"/*.detached; do
+  for record in "$FAKE_STATE"/*.launched "$FAKE_STATE"/*.child "$FAKE_STATE"/*.detached "$FAKE_STATE"/*.delay; do
     [ -f "$record" ] || continue
     pid= birth=
     read -r pid birth < "$record" || true
@@ -729,7 +775,7 @@ test_failed_delete_retains_tripwire() {
 }
 
 test_timed_out_provision_cancels_late_launch() {
-  local name="fm-lab-late-launch-$$" status=0 started ended launched='' launched_birth=''
+  local name="fm-lab-late-launch-$$" status=0 started ended launched='' launched_birth='' delay='' delay_birth=''
   cat > "$FAKEBIN/sleep" <<'SH'
 #!/usr/bin/env bash
 if [ "${FM_FAKE_HERDR_FAST_POLL:-}" = 1 ]; then
@@ -744,6 +790,9 @@ SH
     run_with_fake fm_herdr_lab_provision "$name" >/dev/null 2>&1 || status=$?
   ended=$(date +%s)
   read -r launched launched_birth < "$FAKE_STATE/$name.launched" || true
+  read -r delay delay_birth < "$FAKE_STATE/$name.delay" || true
+  settle_launched "cancelled late-launch delay" "$delay" "$delay_birth"
+  evidence "case=late-launch-delay pid=$delay state=$(fixture_state "$delay" "$delay_birth")"
   evidence "case=late-launch status=$status elapsed=$((ended - started))s polls=$(grep -c "^status --json" "$FAKE_LOG") launched_pid=${launched:-none} launched_state=$(fixture_state "$launched" "$launched_birth")"
   expect_code 1 "$status" "timed-out provision must fail"
   settle_launched "cancelled late launch" "$launched" "$launched_birth"
@@ -1106,6 +1155,78 @@ test_run_is_bounded_per_call() {
   pass "fm-herdr-lab: run keeps its per-call bound and rejects bounds outside 1..3"
 }
 
+test_rejected_launcher_never_becomes_cleanup_authority() {
+  local name="fm-lab-rejected-launch-$$" status=0 pid='' birth='' before output
+  local FM_FAKE_LAUNCH_RECORD="$FAKE_STATE/rejected-launcher"
+  local FM_FAKE_REJECT_LAUNCH=1 FM_FAKE_PUBLISH_FAIL=1
+  run_with_fake fm_herdr_lab_provision "$name" > "$TMP_ROOT/rejected-launch.log" 2>&1 || status=$?
+  read -r pid birth < "$FM_FAKE_LAUNCH_RECORD" || true
+  fixture_identity_valid "$pid" "$birth" || { retain_evidence "rejected launcher lacks launch identity"; fail "missing launcher identity"; }
+  expect_code 1 "$status" "replaced launch observation must be refused"
+  jq -e --argjson pid "$pid" '.rejected_observation.pid == $pid and .pid == null' \
+    "$(receipt_of "$name").pending" >/dev/null || fail "rejected observation became custody"
+  assert_absent "$FAKE_STATE/publication-attempts" "rejected observation reached publication failure cancellation"
+  before=$(wc -l < "$FM_FAKE_LAUNCH_RECORD.probes")
+  status=0
+  run_with_fake fm_herdr_lab_teardown "$name" > "$TMP_ROOT/rejected-teardown.log" 2>&1 || status=$?
+  expect_code 1 "$status" "rejected evidence must refuse later teardown"
+  [ "$(wc -l < "$FM_FAKE_LAUNCH_RECORD.probes")" = "$before" ] || fail "teardown probed rejected custody"
+  output=$(cat "$TMP_ROOT/rejected-teardown.log")
+  assert_contains "$output" "no authenticated custody" "teardown accepted rejected observation"
+  status=0
+  run_with_fake fm_herdr_lab_provision "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "rejected evidence must block re-provision"
+  assert_present "$(receipt_of "$name").pending" "rejected evidence was discarded"
+  reap_fixture "$pid"
+  settle_launched "rejected launcher fixture" "$pid" "$birth"
+  evidence "case=rejected-launch pid=$pid teardown_status=1 rejected_probes=$before later_probes=$(wc -l < "$FM_FAKE_LAUNCH_RECORD.probes") state=absent"
+  pass "fm-herdr-lab: rejected launch observations never authorize publication or later cleanup"
+}
+
+test_authenticated_publication_failure_cancels_launcher() {
+  local name="fm-lab-publish-failure-$$" status=0 pid='' birth=''
+  local FM_FAKE_LAUNCH_RECORD="$FAKE_STATE/publish-launcher" FM_FAKE_PUBLISH_FAIL=1
+  run_with_fake fm_herdr_lab_provision "$name" > "$TMP_ROOT/publication-failure.log" 2>&1 || status=$?
+  read -r pid birth < "$FM_FAKE_LAUNCH_RECORD" || true
+  settle_launched "publication failure cancellation" "$pid" "$birth"
+  expect_code 1 "$status" "publication failure must fail provision"
+  assert_present "$FAKE_STATE/publication-attempts" "publication failure was not exercised"
+  assert_absent "$FAKE_STATE/$name.launched" "unpublished allocation was released to start the server"
+  assert_absent "$(receipt_of "$name")" "failed publication created a receipt"
+  assert_absent "$(receipt_of "$name").pending" "proved cancellation left pending custody"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "teardown after publication failure failed"
+  evidence "case=publication-failure pid=$pid status=$status state=absent"
+  pass "fm-herdr-lab: authenticated publication failure cancels the launcher before server exec"
+}
+
+test_large_retained_target_list_stops_at_original_deadline() {
+  local name="fm-lab-large-targets-$$" status=0 started ended receipt pid output birth=
+  provision_lingering "$name"
+  pid=$LINGER_PID
+  run_with_fake fm_herdr_lab_stop "$name" || fail "large-target fixture stop failed"
+  receipt=$(receipt_of "$name")
+  python3 -c 'import json, sys
+p = sys.argv[1]
+with open(p) as f:
+    r = json.load(f)
+i = "birth={birth} ppid={ppid} pgid={pgid}".format(**r)
+r["targets"] = [{"pid": str(r["pid"]), "identity": i}] * 10000
+with open(p, "w") as f:
+    json.dump(r, f)' "$receipt"
+  started=$(date +%s)
+  run_with_fake fm_herdr_lab_teardown "$name" > "$TMP_ROOT/large-targets.log" 2>&1 || status=$?
+  ended=$(date +%s)
+  output=$(cat "$TMP_ROOT/large-targets.log")
+  evidence "case=large-targets pid=$pid status=$status elapsed=$((ended - started))s targets=$(jq '.targets | length' "$receipt")"
+  expect_code 1 "$status" "an unprocessed target list must retain custody"
+  [ "$((ended - started))" -le 20 ] || fail "large retained list overran original deadline"
+  assert_contains "$output" "unprocessed targets retained" "large list did not exercise the target deadline boundary"
+  [ "$(jq '.targets | length' "$receipt")" = 10000 ] || fail "unprocessed suffix was discarded"
+  read -r pid birth < "$FAKE_STATE/$name.server" || true
+  settle_launched "large-target fixture" "$pid" "$birth"
+  pass "fm-herdr-lab: large retained target lists stop at the original deadline with custody intact"
+}
+
 test_cli_entrypoint_matches_sourced_contract() {
   local name output status=0
   name=$(run_with_fake "$ROOT/bin/fm-herdr-lab.sh" name cli-entry) || fail "CLI name failed"
@@ -1146,4 +1267,7 @@ test_hanging_polls_respect_the_aggregate_budget_and_are_clipped
 test_hanging_stop_is_bounded_and_never_reaches_delete
 test_socket_generation_change_is_the_primary_failure_even_when_cleanup_fails
 test_run_is_bounded_per_call
+test_rejected_launcher_never_becomes_cleanup_authority
+test_authenticated_publication_failure_cancels_launcher
+test_large_retained_target_list_stops_at_original_deadline
 test_cli_entrypoint_matches_sourced_contract

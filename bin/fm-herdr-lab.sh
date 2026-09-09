@@ -459,63 +459,63 @@ fm_herdr_lab_read_receipt() { # <session> <jq-field>
   local receipt
   receipt=$(fm_herdr_lab_receipt_path "$1")
   [ -f "$receipt" ] || return 1
-  jq -r "$2" "$receipt" 2>/dev/null
+  fm_herdr_lab_timed 1 jq -r "$2" "$receipt" 2>/dev/null
 }
 
-fm_herdr_lab_write_receipt() { # <session> <jq-program> <jq args...>
+fm_herdr_lab_update_receipt() {
   local name=$1 program=$2 receipt tmp
   shift 2
+  fm_herdr_lab_clip 1 >/dev/null || return 1
   receipt=$(fm_herdr_lab_receipt_path "$name")
-  tmp="$receipt.tmp.$$"
-  if (umask 077; set -C; jq -nc "$@" "$program" > "$tmp") 2>/dev/null && mv -f "$tmp" "$receipt"; then
+  tmp=$(mktemp "$receipt.tmp.XXXXXX") || return 1
+  if fm_herdr_lab_timed 1 jq -c "$@" "$program" "$receipt" > "$tmp" \
+    && fm_herdr_lab_timed 1 mv -f "$tmp" "$receipt"; then
     return 0
   fi
   rm -f "$tmp"
-  fm_herdr_lab_error "cannot write allocation receipt for '$name'"
+  fm_herdr_lab_error "cannot update allocation receipt for '$name'; retaining custody"
   return 1
 }
 
-# Consume the allocation receipt for <session>: terminate the recorded direct
-# child and each remaining member of its own process group, each after its own
-# identity recheck, then remove the receipt only when everything it accounted
-# for is positively absent. Anything unknown, reused, or surviving retains the
-# receipt and fails.
 fm_herdr_lab_capture_members() {
-  local name=$1 receipt members member identity rc targets original
+  local name=$1 receipt members member identity rc new_members pgid
   receipt=$(fm_herdr_lab_receipt_path "$name")
-  [ "$(jq -r '.pgid' "$receipt")" = "$(jq -r '.pid' "$receipt")" ] || return 1
-  targets=$(jq -c '.targets // []' "$receipt") || return 1
-  members=$(fm_herdr_lab_group_members "$(jq -r '.pgid' "$receipt")") || return 1
+  pgid=$(fm_herdr_lab_timed 1 jq -er 'select(.pgid == .pid) | .pgid' "$receipt") || return 1
+  members=$(fm_herdr_lab_group_members "$pgid") || return 1
   FM_HERDR_LAB_GROUP_MEMBERS=$members
-  original=$targets
-  targets=$(printf '%s' "$targets" | jq -c --arg members "$members" \
-    '. as $old | . + [$members | split("\n")[] | select(length > 0) | . as $pid | select(all($old[]; .pid != $pid)) | {pid:., identity:""}]') || return 1
-  fm_herdr_lab_write_receipt "$name" "\$receipt + {targets:\$targets}" \
-    --argjson receipt "$(cat "$receipt")" --argjson targets "$targets" || return 1
-  for member in $members; do
+  [ -n "$members" ] || return 0
+  new_members=$(fm_herdr_lab_timed 1 jq -r --arg members "$members" \
+    "(.targets // [] | map(.pid) | INDEX(.)) as \$old | \$members | split(\"\\n\")[] | select(length > 0) | select(\$old[.] == null)" "$receipt") || return 1
+  [ -n "$new_members" ] || return 0
+  fm_herdr_lab_update_receipt "$name" \
+    ".targets = ((.targets // []) + [\$members | split(\"\\n\")[] | {pid:., identity:\"\"}])" \
+    --arg members "$new_members" || return 1
+  for member in $new_members; do
     fm_herdr_lab_clip 1 >/dev/null || return 1
-    if printf '%s' "$original" | jq -e --arg pid "$member" '.[] | select(.pid == $pid)' >/dev/null; then continue; fi
     rc=0
     identity=$(fm_herdr_lab_proc_identity "$member") || rc=$?
     if [ "$rc" -eq 3 ]; then
-      targets=$(printf '%s' "$targets" | jq -c --arg pid "$member" '[.[] | select(.pid != $pid)]') || return 1
+      fm_herdr_lab_update_receipt "$name" ".targets |= map(select(.pid != \$pid))" --arg pid "$member" || return 1
     else
-      targets=$(printf '%s' "$targets" | jq -c --arg pid "$member" --arg identity "$identity" \
-        'map(if .pid == $pid then .identity = $identity else . end)') || return 1
+      fm_herdr_lab_update_receipt "$name" ".targets |= map(if .pid == \$pid then .identity = \$identity else . end)" \
+        --arg pid "$member" --arg identity "$identity" || return 1
     fi
-    fm_herdr_lab_write_receipt "$name" "\$receipt + {targets:\$targets}" \
-      --argjson receipt "$(cat "$receipt")" --argjson targets "$targets" || return 1
     [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || return 1
   done
 }
 
 fm_herdr_lab_verify_allocation() {
-  local name=$1 receipt pid birth pgid parent current_parent
+  local name=$1 receipt pid birth pgid parent current_parent fields
   receipt=$(fm_herdr_lab_receipt_path "$name")
-  pid=$(jq -r '.pid' "$receipt" 2>/dev/null) || return 1
-  birth=$(jq -r '.birth' "$receipt") || return 1
-  pgid=$(jq -r '.pgid' "$receipt") || return 1
-  parent=$(jq -r '.ppid' "$receipt") || return 1
+  fields=$(fm_herdr_lab_timed 1 jq -er '
+    select(.pid > 0 and (.pid | type) == "number" and .pgid == .pid
+      and (.ppid | type) == "number" and .ppid > 0
+      and (.birth | type) == "string" and (.birth | length) > 0)
+    | [.pid, .birth, .pgid, .ppid] | @tsv' "$receipt" 2>/dev/null) || {
+    fm_herdr_lab_error "allocation receipt for '$name' contains no authenticated custody; retaining evidence"
+    return 1
+  }
+  IFS=$'\t' read -r pid birth pgid parent <<< "$fields"
   case "$pid" in ''|0|null|*[!0-9]*) return 1 ;; esac
   fm_herdr_lab_allocation_state "$pid" "$birth" "$pgid"
   case "$FM_HERDR_LAB_ALLOCATION_STATE" in
@@ -530,14 +530,13 @@ fm_herdr_lab_verify_allocation() {
 }
 
 fm_herdr_lab_destructive_guard() {
-  local name=$1 receipt sessions native socket running
+  local name=$1 sessions native socket running
   fm_herdr_lab_verify_allocation "$name" || return 1
-  receipt=$(fm_herdr_lab_receipt_path "$name")
   sessions=$(fm_herdr_lab_session_list "$name") || return 1
   native=$(printf '%s' "$sessions" | jq -c --arg name "$name" \
     '[.sessions[]? | select(.name == $name and .default == false)] | if length == 1 then .[0] else empty end')
   [ -n "$native" ] || return 1
-  socket=$(jq -r '.native.socket_path // empty' "$receipt")
+  socket=$(fm_herdr_lab_read_receipt "$name" '.native.socket_path // empty') || return 1
   running=$(printf '%s' "$native" | jq -r '.running')
   if [ -n "$socket" ]; then
     [ "$(printf '%s' "$native" | jq -r '.socket_path')" = "$socket" ] || return 1
@@ -550,13 +549,13 @@ fm_herdr_lab_destructive_guard() {
 }
 
 fm_herdr_lab_cancel_allocation() {
-  local name=$1 receipt pid pgid identity member targets survivors unresolved=0 rc entry sessions
+  local name=$1 receipt pid pgid identity targets_file survivors rc=0 sessions
   local FM_HERDR_LAB_CANCELLING=$1 FM_HERDR_LAB_LEADER
   receipt=$(fm_herdr_lab_receipt_path "$name")
   fm_herdr_lab_verify_allocation "$name" || return 1
-  pid=$(jq -r '.pid' "$receipt")
+  pid=$(fm_herdr_lab_read_receipt "$name" '.pid') || return 1
   FM_HERDR_LAB_LEADER=$pid
-  pgid=$(jq -r '.pgid' "$receipt")
+  pgid=$pid
   identity=$FM_HERDR_LAB_CURRENT_IDENTITY
   fm_herdr_lab_capture_members "$name" || {
     fm_herdr_lab_error "cannot account for descendants of pid $pid; retaining allocation receipt"
@@ -568,24 +567,17 @@ fm_herdr_lab_cancel_allocation() {
       return 1
     }
   fi
-  targets=$(jq -c '.targets[]?' "$receipt") || return 1
-  while IFS= read -r entry; do
-    [ -n "$entry" ] || continue
-    member=$(printf '%s' "$entry" | jq -r '.pid')
-    identity=$(printf '%s' "$entry" | jq -r '.identity')
-    rc=0
-    fm_herdr_lab_proc_identity "$member" >/dev/null || rc=$?
-    [ "$rc" -ne 3 ] || continue
-    if [ "$rc" -ne 0 ] || [ "$(fm_herdr_lab_identity_field "$identity" pgid)" != "$pgid" ] \
-      || ! fm_herdr_lab_verify_allocation "$name" \
-      || ! fm_herdr_lab_terminate_verified "$member" "$identity"; then
-      fm_herdr_lab_error "descendant pid $member unproved (recorded: $identity); retaining allocation receipt"
-      unresolved=1
-    fi
-  done <<< "$targets"
+  targets_file=$(mktemp "$receipt.targets.XXXXXX") || return 1
+  if fm_herdr_lab_timed 1 jq -r '.targets[]? | [.pid, .identity] | @tsv' "$receipt" > "$targets_file"; then
+    fm_herdr_lab_cancel_targets "$name" "$pgid" "$targets_file" || rc=$?
+  else
+    rc=1
+  fi
+  rm -f "$targets_file"
+  [ "$rc" -eq 0 ] || return 1
   fm_herdr_lab_capture_members "$name" || return 1
   survivors=$FM_HERDR_LAB_GROUP_MEMBERS
-  if [ -n "$survivors" ] || [ "$unresolved" -ne 0 ]; then
+  if [ -n "$survivors" ]; then
     fm_herdr_lab_error "lab process group $pgid has unresolved members: $survivors; retaining allocation receipt"
     return 1
   fi
@@ -599,11 +591,32 @@ fm_herdr_lab_cancel_allocation() {
   rm -f "$receipt" "$(fm_herdr_lab_marker_path "$name")" "$(fm_herdr_lab_marker_path "$name").accepted"
 }
 
+fm_herdr_lab_cancel_targets() {
+  local name=$1 pgid=$2 file=$3 member identity rc unresolved=0
+  while IFS=$'\t' read -r member identity; do
+    fm_herdr_lab_clip 1 >/dev/null || {
+      fm_herdr_lab_error "deadline exhausted while reconciling descendants of $pgid; unprocessed targets retained"
+      return 1
+    }
+    [ -n "$member" ] || continue
+    rc=0
+    fm_herdr_lab_proc_identity "$member" >/dev/null || rc=$?
+    [ "$rc" -ne 3 ] || continue
+    if [ "$rc" -ne 0 ] || [ "$(fm_herdr_lab_identity_field "$identity" pgid)" != "$pgid" ] \
+      || ! fm_herdr_lab_verify_allocation "$name" \
+      || ! fm_herdr_lab_terminate_verified "$member" "$identity"; then
+      fm_herdr_lab_error "descendant pid $member unproved (recorded: $identity); retaining allocation receipt"
+      unresolved=1
+    fi
+  done < "$file"
+  [ "$unresolved" -eq 0 ]
+}
+
 # Launch the named server as a direct child and bind its identity before any
 # poll. Exit 0 with the receipt written; 1 when the child could not be bound
 # (it is either positively gone or already recorded for cancellation).
 fm_herdr_lab_allocate() {
-  local name=$1 marker server_pid content='' identity='' rc=0 ppid pgid birth allocated marker_end receipt pending record
+  local name=$1 marker server_pid content='' identity='' rc=0 ppid pgid birth allocated marker_end acceptance_end receipt pending record
   fm_herdr_lab_private_state || return 1
   fm_herdr_lab_clip 3 >/dev/null || return 1
   marker=$(fm_herdr_lab_marker_path "$name")
@@ -612,10 +625,11 @@ fm_herdr_lab_allocate() {
   (umask 077; set -C; : > "$pending") || return 1
   allocated=$(fm_herdr_lab_now)
   marker_end=$(( allocated + $(fm_herdr_lab_clip 2) ))
+  acceptance_end=$(( FM_HERDR_LAB_DEADLINE - FM_HERDR_LAB_CLEANUP_RESERVE_SECS ))
   rm -f "$marker" "$marker.accepted" "$marker.tmp"
   (umask 077; exec python3 -c 'import os, sys, time
-marker, end = sys.argv[1], int(sys.argv[2])
-if time.time() >= end:
+marker, startup_end, end = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+if time.time() >= startup_end:
     sys.exit(1)
 os.setsid()
 with open(marker + ".tmp", "x") as handle:
@@ -625,11 +639,11 @@ while time.time() < end:
     try:
         with open(marker + ".accepted") as handle:
             if handle.read() == str(os.getpid()):
-                os.execvp(sys.argv[3], sys.argv[3:])
+                os.execvp(sys.argv[4], sys.argv[4:])
     except FileNotFoundError:
         pass
     time.sleep(0.01)
-sys.exit(1)' "$marker" "$marker_end" env HERDR_SESSION="$name" herdr server --session "$name") >/dev/null 2>&1 &
+sys.exit(1)' "$marker" "$marker_end" "$acceptance_end" env HERDR_SESSION="$name" herdr server --session "$name") >/dev/null 2>&1 &
   server_pid=$!
   while [ "$(fm_herdr_lab_now)" -lt "$marker_end" ]; do
     content=$(cat "$marker" 2>/dev/null) || content=
@@ -645,23 +659,25 @@ sys.exit(1)' "$marker" "$marker_end" env HERDR_SESSION="$name" herdr server --se
   ppid=$(fm_herdr_lab_identity_field "$identity" ppid) || ppid=unknown
   pgid=$(fm_herdr_lab_identity_field "$identity" pgid) || pgid=unknown
   birth=$(fm_herdr_lab_identity_field "$identity" birth) || birth=unknown
-  record=$(jq -nc --arg name "$name" --argjson pid "$server_pid" --arg birth "$birth" \
-    --arg ppid "$ppid" --arg pgid "$pgid" --argjson allocated "$allocated" --argjson deadline "$FM_HERDR_LAB_DEADLINE" \
+  if [ "$rc" -ne 0 ] || [ "$content" != "$server_pid" ] || [ "$ppid" != "${BASHPID:-$$}" ] || [ "$pgid" != "$server_pid" ] || [ -z "$birth" ] || [ "$birth" = unknown ]; then
+    fm_herdr_lab_timed 1 jq -nc --argjson pid "$server_pid" --arg identity "$identity" \
+      --arg marker "$content" --argjson deadline "$FM_HERDR_LAB_DEADLINE" \
+      "{rejected_observation:{pid:\$pid,identity:\$identity,marker:\$marker,deadline_epoch:\$deadline}}" > "$pending" || true
+    fm_herdr_lab_error "unbound allocation pid $server_pid (observed: $identity); non-authorizing evidence at $pending"
+    return 1
+  fi
+  record=$(fm_herdr_lab_timed 1 jq -nc --arg name "$name" --argjson pid "$server_pid" --arg birth "$birth" \
+    --argjson ppid "$ppid" --argjson pgid "$pgid" --argjson allocated "$allocated" --argjson deadline "$FM_HERDR_LAB_DEADLINE" \
     --arg command "herdr server --session $name" \
-    '{name:$name,pid:$pid,birth:$birth,ppid:($ppid|try tonumber catch $ppid),pgid:($pgid|try tonumber catch $pgid),own_group:($pgid == ($pid|tostring)),allocated_epoch:$allocated,deadline_epoch:$deadline,command_description:$command,native:null}')
+    "{name:\$name,pid:\$pid,birth:\$birth,ppid:\$ppid,pgid:\$pgid,own_group:true,allocated_epoch:\$allocated,deadline_epoch:\$deadline,command_description:\$command,native:null}")
   if [ -z "$record" ] || ! printf '%s\n' "$record" > "$pending"; then
-    fm_herdr_lab_error "allocation publication failed: pid $server_pid identity $identity; receipt not published; record=$record"
-    [ "$rc" -ne 0 ] || fm_herdr_lab_terminate_verified "$server_pid" "$identity" || true
+    fm_herdr_lab_error "allocation publication failed: authenticated pid $server_pid identity $identity; receipt not published; record=$record"
+    fm_herdr_lab_terminate_verified "$server_pid" "$identity" || {
+      fm_herdr_lab_error "authenticated allocation pid $server_pid not proved absent after publication failure"
+    }
     return 1
   fi
-  if [ "$rc" -ne 0 ] || [ "$content" != "$server_pid" ] || [ "$ppid" != "${BASHPID:-$$}" ] || [ "$pgid" != "$server_pid" ]; then
-    fm_herdr_lab_error "unbound allocation pid $server_pid identity $identity; evidence retained at $pending"
-    if [ "$rc" -eq 0 ] && [ "$ppid" = "${BASHPID:-$$}" ] && [ "$pgid" = "$server_pid" ]; then
-      fm_herdr_lab_cancel_allocation "$name" || true
-    fi
-    return 1
-  fi
-  if ! mv -f "$pending" "$receipt"; then
+  if ! fm_herdr_lab_timed 1 mv -f "$pending" "$receipt"; then
     fm_herdr_lab_error "cannot publish allocation receipt for pid $server_pid ($identity); pending evidence at $pending"
     fm_herdr_lab_cancel_allocation "$name" || true
     return 1
@@ -676,7 +692,7 @@ sys.exit(1)' "$marker" "$marker_end" env HERDR_SESSION="$name" herdr server --se
 # and running flag from session list. Only fields the CLI actually returns are
 # recorded; nothing is inferred from the name.
 fm_herdr_lab_bind_native() { # <session>
-  local name=$1 sessions native receipt
+  local name=$1 sessions native
   sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {
     fm_herdr_lab_error "cannot read the lab session record to bind native evidence for '$name'"
     return 1
@@ -689,10 +705,8 @@ fm_herdr_lab_bind_native() { # <session>
   }
   fm_herdr_lab_verify_allocation "$name" || return 1
   [ "$FM_HERDR_LAB_ALLOCATION_STATE" = owned ] || return 1
-  receipt=$(fm_herdr_lab_receipt_path "$name")
-  # shellcheck disable=SC2016  # jq program: $receipt, $native, $bound are jq variables.
-  fm_herdr_lab_write_receipt "$name" '$receipt + {native: ($native + {bound_epoch: $bound})}' \
-    --argjson receipt "$(cat "$receipt")" --argjson native "$native" --argjson bound "$(fm_herdr_lab_now)" || return 1
+  fm_herdr_lab_update_receipt "$name" ".native = (\$native + {bound_epoch:\$bound})" \
+    --argjson native "$native" --argjson bound "$(fm_herdr_lab_now)" || return 1
   fm_herdr_lab_verify_allocation "$name" || return 1
   [ "$FM_HERDR_LAB_ALLOCATION_STATE" = owned ]
 }
