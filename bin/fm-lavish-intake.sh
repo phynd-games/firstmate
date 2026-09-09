@@ -6,6 +6,8 @@
 #   fm-lavish-intake.sh start <task-id> --artifact <artifact.html> [--reason <text>]
 #   fm-lavish-intake.sh record <task-id> --artifact <artifact.html> --result <result>
 #   fm-lavish-intake.sh exempt <task-id> --reason '<class>: task=<task-id>; target=<path-like subject>; action=<specific concrete change>'
+#   fm-lavish-intake.sh carry-forward <child-task-id> --parent <parent-task-id> \
+#     --scope-source <path> --scope-id <identifier> --approval-source <path>
 #   fm-lavish-intake.sh verify <task-id> [--evidence <receipt>]
 #   fm-lavish-intake.sh check-brief <task-id> <brief.md>
 #
@@ -18,6 +20,42 @@
 #           acknowledge the exact captured result.
 # exempt    Record an explicit not-applicable classification and its concrete
 #           reason. It is never an implicit default.
+# carry-forward
+#           Record evidence that an exact follow-up child task is covered by
+#           an already-accepted, still-verifiable significant parent receipt
+#           with fully handled captured feedback in this home's state directory.
+#           An exempt or carried-forward receipt cannot serve as the parent.
+#           The child id must be distinct from the parent and safe for task
+#           creation; active child intake or other existing child evidence refuses.
+#           Scope id accepts only letters, digits, dots, underscores, and dashes.
+#           Preflight rejects symlinked paths and hardlinked input files.
+#           It never
+#           captures a new Lavish answer: it carries the parent's existing
+#           source id, sequence, artifact, and result forward unchanged, binds
+#           an explicit MAIN-supplied scope declaration (a scope-source file
+#           plus a scope id, and a separate approval-source file with a distinct
+#           canonical path) by hashing their exact bytes, and publishes one
+#           new child receipt atomically. File separation does not require
+#           different contents or independent authors. It never accepts a
+#           caller-supplied hash as proof or infers scope from the text's meaning.
+#           While the parent remains verifiable, a repeated identical request is
+#           idempotent; a conflicting parent, scope, or approval refuses without mutating either
+#           receipt. It never releases a captain hold, creates a worker
+#           endpoint, or changes delivery mode or merge authority.
+#           verify and check-brief report carried-forward evidence as
+#           status=submitted, just like directly submitted evidence.
+#           Because the parent task may
+#           later retire and its own receipt and session state may be
+#           removed by teardown, the child receipt copies everything it needs
+#           at carry-forward time and never re-reads the parent receipt file
+#           again. Retain the original captured-answer artifact and result,
+#           their empty handled acknowledgement, and the child's scope-source
+#           and approval-source files unchanged at their recorded paths while
+#           any child depends on them. Verification needs these files, but
+#           not the parent's receipt, session, or live captain-hold binding.
+#           Retaining evidence is an operational obligation this command cannot
+#           enforce by itself; after parent teardown, verify the existing child
+#           receipt rather than rerunning carry-forward.
 # verify    Revalidate receipt, artifact, captured feedback, hashes, and the
 #           process-event acknowledgement before dispatch.
 # check-brief Resolve the brief's explicit intake contract. A contractless brief
@@ -84,6 +122,28 @@ real_dir() {
   [ -d "$path" ] && [ ! -L "$path" ] || return 1
   real=$(perl -MCwd=realpath -e '$p = realpath($ARGV[0]); defined($p) or exit 1; print "$p\n"' "$path" 2>/dev/null) || return 1
   [ -d "$real" ] && [ ! -L "$real" ] || return 1
+  printf '%s\n' "$real"
+}
+
+path_has_no_symlink() {
+  local path=$1
+  case "$path" in /*) ;; *) path="$PWD/$path" ;; esac
+  while [ "$path" != / ]; do
+    [ ! -L "$path" ] || return 1
+    path=$(dirname "$path")
+  done
+}
+
+# Carry-forward requires unaliased input paths: a hardlink permits writes to
+# the same inode through another name. Hash rechecks still detect byte changes;
+# rejecting aliases does not itself make the underlying file immutable.
+real_file_no_hardlink() {
+  local path=$1 real links
+  path_has_no_symlink "$path" || return 1
+  real=$(real_file "$path") || return 1
+  links=$(fm_pr_file_link_count "$real") || return 1
+  case "$links" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$links" -eq 1 ] || return 1
   printf '%s\n' "$real"
 }
 
@@ -622,6 +682,53 @@ validate_intake_payload() {
   ' "$task" || fail "captured feedback lacks a complete submitted intake payload"
 }
 
+
+# Content-only recheck of a captured Lavish answer, keyed by the task whose
+# question the payload actually names. Unlike result_is_captured_feedback, it
+# never reads that task's *.lavish-intake-session state and never checks a
+# live captain-hold binding, so it keeps working after the answering task has
+# been torn down (session and binding state are teardown-owned; the captured
+# result file, its handled acknowledgement, and the receipt's own hashes are
+# not). This is what makes a carried-forward child receipt's lineage
+# reverifiable after its parent task retires.
+verify_lineage_source() {
+  local answer_task=$1 artifact=$2 artifact_sha=$3 result=$4 result_sha=$5
+  local sid seq answer_rows answer_row key answer_rest answer mode payload
+  artifact=$(real_file "$artifact") || fail "intake artifact is missing or unsafe: $artifact"
+  [ "$artifact_sha" = "$(sha256_file "$artifact")" ] \
+    || fail "intake artifact hash does not match evidence"
+  artifact_fields_present "$artifact" "$answer_task"
+  result=$(real_file "$result") || fail "captured intake result is missing or unsafe: $result"
+  [ "$result_sha" = "$(sha256_file "$result")" ] \
+    || fail "captured intake result hash does not match evidence"
+  sid=$(fm_procevent_result_source_id "$result")
+  seq=$(fm_procevent_result_sequence "$result")
+  fm_procevent_source_id_valid "$sid" || fail "captured intake result source id is invalid: $sid"
+  case "$seq" in ''|*[!0-9]*) fail "captured intake result sequence is invalid: $seq" ;; esac
+  [ -f "$STATE/procevent-inbox/$sid.$seq.handled" ] && [ ! -L "$STATE/procevent-inbox/$sid.$seq.handled" ] \
+    || fail "captured intake result is not durably acknowledged"
+  [ ! -s "$STATE/procevent-inbox/$sid.$seq.handled" ] \
+    || fail "captured intake acknowledgement is not an empty handled marker"
+  answer_rows=$("$SCRIPT_DIR/fm-procevent-lavish.sh" lineage-answers "$result" "$answer_task") \
+    || fail "captured intake feedback could not be read"
+  case "$answer_rows" in *$'\n'*) fail "captured intake feedback contains multiple answers" ;; esac
+  [ -n "$answer_rows" ] || fail "captured intake feedback has no answer"
+  answer_row=$answer_rows
+  key=${answer_row%%$'\t'*}
+  answer_rest=${answer_row#*$'\t'}
+  answer=${answer_rest%%$'\t'*}
+  answer_rest=${answer_rest#*$'\t'}
+  answer_rest=${answer_rest#*$'\t'}
+  mode=$answer_rest
+  [ "$key" = "$answer_task" ] || fail "captured intake feedback answers a different task"
+  [ "$answer" = submitted ] || fail "captured intake feedback is not a submitted answer"
+  [ "$mode" = release ] || fail "captured intake feedback is not a release answer"
+  payload=$("$SCRIPT_DIR/fm-procevent-lavish.sh" intake "$result" "$answer_task") \
+    || fail "captured intake feedback lacks the intake submission payload"
+  validate_intake_payload "$payload" "$answer_task"
+  printf '%s\t%s\n' "$sid" "$seq"
+}
+
 result_is_captured_feedback() {
   local result=$1 artifact=$2 task=$3 retired=${4-} sid seq adapter inbox parent answer_rows found=0 key answer label close payload session_source sequence_floor marker
   result=$(real_file "$result") || fail "captured result is not a regular file: $result"
@@ -818,7 +925,6 @@ START_PROVISIONAL_HOLD_REASON=
 START_HOLD_CREATED=0
 START_BINDING_CREATED=0
 START_SESSION_CREATED=0
-START_LAVISH_SESSION_OPENED=0
 START_SOURCE_PREEXISTING=0
 START_SOURCE_MARKER_CREATED=0
 START_SOURCE_LOCK_PATH=
@@ -1151,10 +1257,10 @@ cmd_start() {
   case "$hold_kind" in
     ''|null|\"null\"|-|\"-\") hold_kind= ;;
   esac
-  [ "$state" != done ] || fail "task $task is already closed"
-  if [ "$state" != done ] && [ "$hold_kind" = captain ]; then
+  [ "$state" != "done" ] || fail "task $task is already closed"
+  if [ "$state" != "done" ] && [ "$hold_kind" = captain ]; then
     fail "task $task already carries an unrelated captain hold"
-  elif [ "$state" != done ] && [ -n "$hold_kind" ] && [ "$hold_kind" != - ]; then
+  elif [ "$state" != "done" ] && [ -n "$hold_kind" ] && [ "$hold_kind" != - ]; then
     fail "task $task already carries a non-captain hold"
   else
     START_PROVISIONAL_HOLD_REASON=$START_HOLD_REASON
@@ -1311,12 +1417,12 @@ cmd_record() {
   esac
   case "$pending_phase" in
     held)
-      if [ "$state" != done ] && [ "$hold_kind" = captain ]; then
+      if [ "$state" != "done" ] && [ "$hold_kind" = captain ]; then
         intake_hold_matches "$task" \
           || fail "intake captain-hold ownership is no longer proven"
         owner_token=$(meta_value "$pending" owner_token)
         owner_route=1
-      elif [ "$state" != done ] && [ -n "$hold_kind" ]; then
+      elif [ "$state" != "done" ] && [ -n "$hold_kind" ]; then
         fail "pending intake completion task $task carries another active hold"
       else
         owner_token=$(meta_value "$pending" owner_token)
@@ -1328,7 +1434,7 @@ cmd_record() {
       fi
       ;;
     released)
-      [ "$state" = done ] || [ -z "$hold_kind" ] \
+      [ "$state" = "done" ] || [ -z "$hold_kind" ] \
         || fail "pending intake completion task $task carries another active hold"
       owner_token=$(meta_value "$pending" owner_token)
       "$SCRIPT_DIR/fm-captain-hold.sh" intake-resolution "$task" "$owner_token" \
@@ -1406,6 +1512,238 @@ cmd_exempt() {
   write_receipt "$task" not-applicable "$artifact" "" "$reason"
 }
 
+require_separate_declaration_sources() {
+  [ "$1" != "$2" ] || fail "scope source and approval source must be separate files"
+}
+
+carry_preflight() {
+  local child=$1 parent=$2 scope_source=$3 approval_source=$4 state_real receipt path key
+  local scope_real approval_real
+  path_has_no_symlink "$STATE" || fail "intake state directory is unsafe: $STATE"
+  state_real=$(real_dir "$STATE") || fail "intake state directory is missing or unsafe: $STATE"
+  scope_real=$(real_file_no_hardlink "$scope_source") \
+    || fail "scope source is not a safe regular file: $scope_source"
+  approval_real=$(real_file_no_hardlink "$approval_source") \
+    || fail "approval source is not a safe regular file: $approval_source"
+  require_separate_declaration_sources "$scope_real" "$approval_real"
+  receipt=$(real_file_no_hardlink "$(receipt_path "$parent")") \
+    || fail "no intake evidence exists or evidence is unsafe for parent task $parent"
+  [ "$(dirname "$receipt")" = "$state_real" ] \
+    || fail "parent intake evidence must live in this home's state directory"
+  for key in artifact result; do
+    if [ "$key" = result ] && [ "$(require_unique_meta "$receipt" classification)" != significant ]; then
+      continue
+    fi
+    path=$(require_unique_meta "$receipt" "$key")
+    real_file_no_hardlink "$path" >/dev/null \
+      || fail "parent $key is missing or unsafe: $path"
+  done
+  path=$(receipt_path "$child")
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    real_file_no_hardlink "$path" >/dev/null || fail "intake evidence is unsafe: $path"
+    [ "$(require_unique_meta "$path" classification)" = carried-forward ] \
+      || fail "intake evidence already exists for task $child with a different classification"
+  fi
+}
+
+CARRY_LOCK_PATH=
+CARRY_LOCK_HELD=0
+carry_cleanup() {
+  if [ "$CARRY_LOCK_HELD" -eq 1 ]; then
+    fm_lock_release "$CARRY_LOCK_PATH" || true
+    CARRY_LOCK_HELD=0
+  fi
+}
+
+# Freezes, at the moment of the call, everything a carried-forward child
+# receipt needs so its own future verification never has to re-read the
+# parent's receipt file (removed by teardown once the parent task lands) --
+# only the parent's original artifact/result files and their handled
+# acknowledgement, which this command's own header documents as an ongoing
+# retention obligation.
+cmd_carry_forward() {
+  local child=${1-} parent='' scope_source='' scope_id='' approval_source=''
+  shift || true
+  validate_task_id "$child"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --parent) [ "$#" -ge 2 ] || fail "--parent requires a task id"; parent=$2; shift 2 ;;
+      --parent=*) parent=${1#*=}; shift ;;
+      --scope-source) [ "$#" -ge 2 ] || fail "--scope-source requires a path"; scope_source=$2; shift 2 ;;
+      --scope-source=*) scope_source=${1#*=}; shift ;;
+      --scope-id) [ "$#" -ge 2 ] || fail "--scope-id requires an identifier"; scope_id=$2; shift 2 ;;
+      --scope-id=*) scope_id=${1#*=}; shift ;;
+      --approval-source) [ "$#" -ge 2 ] || fail "--approval-source requires a path"; approval_source=$2; shift 2 ;;
+      --approval-source=*) approval_source=${1#*=}; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) fail "unknown carry-forward argument: $1" ;;
+    esac
+  done
+  [ -n "$parent" ] || fail "carry-forward requires --parent <task-id>"
+  validate_task_id "$parent"
+  [ "$child" != "$parent" ] || fail "carry-forward child must differ from parent: $child"
+  fm_task_id_creation_valid "$child" || fail "child task id is not safe to create: $child"
+  [ -n "$scope_source" ] || fail "carry-forward requires --scope-source <path>"
+  [ -n "$scope_id" ] || fail "carry-forward requires --scope-id <identifier>"
+  validate_one_line "scope id" "$scope_id"
+  case "$scope_id" in *[!A-Za-z0-9._-]*) fail "scope id must be path-safe: $scope_id" ;; esac
+  [ -n "$approval_source" ] || fail "carry-forward requires --approval-source <path>"
+
+  carry_preflight "$child" "$parent" "$scope_source" "$approval_source"
+  CARRY_LOCK_PATH=$(intake_lock_path "$child")
+  fm_lock_acquire_wait "$CARRY_LOCK_PATH" || fail "could not lock intake task $child"
+  CARRY_LOCK_HELD=1
+  trap carry_cleanup EXIT
+  carry_preflight "$child" "$parent" "$scope_source" "$approval_source"
+
+  intake_state_active_for_task "$child" \
+    && fail "cannot carry evidence forward while Lavish intake is active for task $child"
+
+  local scope_source_real approval_source_real scope_source_hash approval_source_hash
+  scope_source_real=$(real_file_no_hardlink "$scope_source") \
+    || fail "scope source is not a safe regular file: $scope_source"
+  approval_source_real=$(real_file_no_hardlink "$approval_source") \
+    || fail "approval source is not a safe regular file: $approval_source"
+  scope_source_hash=$(sha256_file "$scope_source_real")
+  approval_source_hash=$(sha256_file "$approval_source_real")
+
+  # Require an existing, still-verifiable, fully handled significant parent
+  # receipt. This is the only source of approval authority here: carry-forward
+  # never captures a new answer and never accepts a caller-supplied hash as
+  # proof of scope, so it cannot itself elevate an arbitrary task to captain
+  # approval.
+  local parent_receipt parent_classification parent_task_field
+  local parent_artifact parent_artifact_hash parent_result parent_result_hash parent_sid parent_seq
+  parent_receipt=$(receipt_path "$parent")
+  parent_receipt=$(real_file "$parent_receipt") \
+    || fail "no intake evidence exists for parent task $parent"
+  [ "$(dirname "$parent_receipt")" = "$(real_dir "$STATE")" ] \
+    || fail "parent intake evidence must live in this home's state directory"
+  parent_classification=$(require_unique_meta "$parent_receipt" classification)
+  [ "$parent_classification" = significant ] \
+    || fail "carry-forward requires a significant parent receipt, not $parent_classification"
+  verify_receipt "$parent" "$parent_receipt" >/dev/null \
+    || fail "parent intake evidence does not verify"
+  [ "$(require_unique_meta "$parent_receipt" version)" = "$RECEIPT_VERSION" ] \
+    || fail "unsupported parent intake evidence version"
+  parent_task_field=$(require_unique_meta "$parent_receipt" task_id)
+  [ "$parent_task_field" = "$parent" ] \
+    || fail "parent intake evidence names a different task"
+  [ "$(require_unique_meta "$parent_receipt" feedback)" = captured ] \
+    || fail "parent intake evidence has wrong feedback marker"
+  parent_artifact=$(require_unique_meta "$parent_receipt" artifact)
+  parent_artifact_hash=$(require_unique_meta "$parent_receipt" artifact_sha256)
+  parent_result=$(require_unique_meta "$parent_receipt" result)
+  parent_result_hash=$(require_unique_meta "$parent_receipt" result_sha256)
+  parent_sid=$(require_unique_meta "$parent_receipt" source_id)
+  parent_seq=$(require_unique_meta "$parent_receipt" sequence)
+  verify_lineage_source "$parent" "$parent_artifact" "$parent_artifact_hash" \
+    "$parent_result" "$parent_result_hash" >/dev/null
+  [ "$(fm_procevent_result_source_id "$(real_file "$parent_result")")" = "$parent_sid" ] \
+    || fail "parent result source identity changed"
+  [ "$(fm_procevent_result_sequence "$(real_file "$parent_result")")" = "$parent_seq" ] \
+    || fail "parent result sequence changed"
+
+  local child_receipt child_want
+  child_receipt=$(receipt_path "$child")
+  child_want=$(printf 'parent_task_id=%s\nartifact=%s\nartifact_sha256=%s\nsource_id=%s\nsequence=%s\nresult=%s\nresult_sha256=%s\nscope_id=%s\nscope_source=%s\nscope_source_sha256=%s\napproval_source=%s\napproval_source_sha256=%s\n' \
+    "$parent" "$parent_artifact" "$parent_artifact_hash" "$parent_sid" "$parent_seq" \
+    "$parent_result" "$parent_result_hash" "$scope_id" "$scope_source_real" "$scope_source_hash" \
+    "$approval_source_real" "$approval_source_hash")
+
+  if [ -e "$child_receipt" ] || [ -L "$child_receipt" ]; then
+    [ -f "$child_receipt" ] && [ ! -L "$child_receipt" ] \
+      || fail "intake evidence is unsafe: $child_receipt"
+    [ "$(require_unique_meta "$child_receipt" task_id)" = "$child" ] \
+      || fail "intake evidence already exists for task $child"
+    [ "$(require_unique_meta "$child_receipt" classification)" = carried-forward ] \
+      || fail "intake evidence already exists for task $child with a different classification"
+    local child_have
+    child_have=$(printf 'parent_task_id=%s\nartifact=%s\nartifact_sha256=%s\nsource_id=%s\nsequence=%s\nresult=%s\nresult_sha256=%s\nscope_id=%s\nscope_source=%s\nscope_source_sha256=%s\napproval_source=%s\napproval_source_sha256=%s\n' \
+      "$(require_unique_meta "$child_receipt" parent_task_id)" \
+      "$(require_unique_meta "$child_receipt" artifact)" \
+      "$(require_unique_meta "$child_receipt" artifact_sha256)" \
+      "$(require_unique_meta "$child_receipt" source_id)" \
+      "$(require_unique_meta "$child_receipt" sequence)" \
+      "$(require_unique_meta "$child_receipt" result)" \
+      "$(require_unique_meta "$child_receipt" result_sha256)" \
+      "$(require_unique_meta "$child_receipt" scope_id)" \
+      "$(require_unique_meta "$child_receipt" scope_source)" \
+      "$(require_unique_meta "$child_receipt" scope_source_sha256)" \
+      "$(require_unique_meta "$child_receipt" approval_source)" \
+      "$(require_unique_meta "$child_receipt" approval_source_sha256)")
+    [ "$child_have" = "$child_want" ] \
+      || fail "intake evidence already exists for task $child with different lineage"
+    verify_receipt "$child" "$child_receipt" >/dev/null \
+      || fail "existing carried-forward intake evidence for $child does not verify"
+    printf 'carried-forward: %s\n' "$child_receipt"
+    return 0
+  fi
+
+  local tmp
+  tmp=$(mktemp "$STATE/.lavish-intake.XXXXXX") || fail "cannot stage intake receipt"
+  {
+    printf 'version=%s\n' "$RECEIPT_VERSION"
+    printf 'task_id=%s\n' "$child"
+    printf 'classification=carried-forward\n'
+    printf 'parent_task_id=%s\n' "$parent"
+    printf 'artifact=%s\n' "$parent_artifact"
+    printf 'artifact_sha256=%s\n' "$parent_artifact_hash"
+    printf 'source_id=%s\n' "$parent_sid"
+    printf 'sequence=%s\n' "$parent_seq"
+    printf 'result=%s\n' "$parent_result"
+    printf 'result_sha256=%s\n' "$parent_result_hash"
+    printf 'feedback=carried\n'
+    printf 'scope_id=%s\n' "$scope_id"
+    printf 'scope_source=%s\n' "$scope_source_real"
+    printf 'scope_source_sha256=%s\n' "$scope_source_hash"
+    printf 'approval_source=%s\n' "$approval_source_real"
+    printf 'approval_source_sha256=%s\n' "$approval_source_hash"
+  } > "$tmp"
+  chmod 0600 "$tmp"
+  mv -f -- "$tmp" "$child_receipt"
+  verify_receipt "$child" "$child_receipt" >/dev/null \
+    || fail "newly written carried-forward evidence for $child failed self-verification"
+  printf 'carried-forward: %s\n' "$child_receipt"
+}
+
+# A carried-forward child receipt never claims a new captured Lavish answer:
+# its artifact/result/source/sequence are the parent's, copied at
+# carry-forward time. So its artifact_fields_present and captured-feedback
+# checks must run against the *parent* task id recorded in the receipt, not
+# the child's own id, and must not depend on the parent task's own live
+# session state (see verify_lineage_source).
+verify_carried_forward_receipt() {
+  local task=$1 receipt=$2 artifact=$3
+  local parent result expected_result scope_source approval_source expected_scope expected_approval
+  parent=$(require_unique_meta "$receipt" parent_task_id)
+  validate_task_id "$parent"
+  [ "$parent" != "$task" ] || fail "carried-forward evidence names its own task as parent"
+  result=$(require_unique_meta "$receipt" result)
+  expected_result=$(require_unique_meta "$receipt" result_sha256)
+  verify_lineage_source "$parent" "$artifact" "$(require_unique_meta "$receipt" artifact_sha256)" \
+    "$result" "$expected_result" >/dev/null
+  result=$(real_file "$result") || fail "carried-forward captured result is missing or unsafe: $result"
+  [ "$(fm_procevent_result_source_id "$result")" = "$(require_unique_meta "$receipt" source_id)" ] \
+    || fail "carried-forward result source identity changed"
+  [ "$(fm_procevent_result_sequence "$result")" = "$(require_unique_meta "$receipt" sequence)" ] \
+    || fail "carried-forward result sequence changed"
+  [ "$(require_unique_meta "$receipt" feedback)" = carried ] \
+    || fail "carried-forward evidence has wrong feedback marker"
+  scope_source=$(require_unique_meta "$receipt" scope_source)
+  scope_source=$(real_file_no_hardlink "$scope_source") || fail "scope source is missing or unsafe: $scope_source"
+  expected_scope=$(require_unique_meta "$receipt" scope_source_sha256)
+  [ "$expected_scope" = "$(sha256_file "$scope_source")" ] \
+    || fail "scope source hash does not match evidence"
+  approval_source=$(require_unique_meta "$receipt" approval_source)
+  approval_source=$(real_file_no_hardlink "$approval_source") || fail "approval source is missing or unsafe: $approval_source"
+  require_separate_declaration_sources "$scope_source" "$approval_source"
+  expected_approval=$(require_unique_meta "$receipt" approval_source_sha256)
+  [ "$expected_approval" = "$(sha256_file "$approval_source")" ] \
+    || fail "approval source hash does not match evidence"
+  require_unique_meta "$receipt" scope_id >/dev/null
+}
+
 verify_receipt() {
   local task=$1 receipt=$2 allow_unhandled=${3-} classification artifact result sid seq expected_artifact expected_result key value reason
   validate_task_id "$task"
@@ -1413,9 +1751,10 @@ verify_receipt() {
   [ "$(dirname "$receipt")" = "$(real_dir "$STATE")" ] \
     || fail "intake evidence must live in this home's state directory"
   classification=$(require_unique_meta "$receipt" classification)
-  [ "$classification" = significant ] || {
-    [ "$classification" = not-applicable ] || fail "unknown intake classification: $classification"
-  }
+  case "$classification" in
+    significant|not-applicable|carried-forward) ;;
+    *) fail "unknown intake classification: $classification" ;;
+  esac
   [ "$(require_unique_meta "$receipt" version)" = "$RECEIPT_VERSION" ] \
     || fail "unsupported intake evidence version"
   [ "$(require_unique_meta "$receipt" task_id)" = "$task" ] \
@@ -1435,6 +1774,11 @@ verify_receipt() {
     [ "$(require_unique_meta "$receipt" feedback)" = not-applicable ] \
       || fail "not-applicable evidence has wrong feedback marker"
     printf 'status=not-applicable\nreason=%s\n' "$reason"
+    return 0
+  fi
+  if [ "$classification" = carried-forward ]; then
+    verify_carried_forward_receipt "$task" "$receipt" "$artifact"
+    printf 'status=submitted\nevidence=%s\n' "$receipt"
     return 0
   fi
   artifact_fields_present "$artifact" "$task"
@@ -1511,6 +1855,7 @@ case "${1-}" in
   start) shift; cmd_start "$@" ;;
   record) shift; cmd_record "$@" ;;
   exempt) shift; cmd_exempt "$@" ;;
+  carry-forward) shift; cmd_carry_forward "$@" ;;
   verify) shift; cmd_verify "$@" ;;
   check-brief) shift; cmd_check_brief "$@" ;;
   -h|--help|help) usage ;;
