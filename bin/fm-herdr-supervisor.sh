@@ -93,13 +93,8 @@ LAUNCHER="$STATE/.herdr-supervisor-launch.sh"
 PENDING="$STATE/.herdr-supervisor-pending-cleanup"
 AWAY_AMBIGUOUS="$STATE/.herdr-away-daemon-ambiguous"
 HANDOFF_AMBIGUOUS="$STATE/.herdr-supervision-handoff-ambiguous"
-# Claim-acquire-failure alarm dedupe, same key-file idiom as AWAY_AMBIGUOUS and
-# HANDOFF_AMBIGUOUS above: escalate once per distinct (unresolved episode,
-# generation) pair instead of once per poll, and clear the marker the moment
-# the episode resolves (acquired, or a healthy other owner becomes provable)
-# so a later, genuinely new failure still escalates.
-CLAIM_ALARM_ENSURE="$STATE/.herdr-supervisor-claim-alarm-ensure"
-CLAIM_ALARM_LOOP="$STATE/.herdr-supervisor-claim-alarm-loop"
+CLAIM_ALARM="$STATE/.herdr-supervisor-claim-alarm"
+CLAIM_ALARM_LOCK="$STATE/.herdr-supervisor-claim-alarm.lock"
 QUARANTINE_PREFIX="$STATE/.herdr-supervisor-quarantine"
 RECORD_LOCK="$STATE/.herdr-supervisor.lock"
 HEARTBEAT="$STATE/.herdr-supervisor-heartbeat"
@@ -888,28 +883,28 @@ harness_owner_provable() {
   return 1
 }
 
-# claim_alarm_escalate_once <marker-file> <reason>: escalate a claim-acquire
-# failure at most once per (marker-file, generation) pair. A genuinely
-# unresolved failure keeps recurring on every poll with no proved healthy
-# owner (harness_owner_provable already returned false at the call site); this
-# keeps that from becoming one durable wake per poll. The generation changes
-# only when a NEW supervisor binding is established, so a later, genuinely new
-# failure episode - one that starts after a real recovery - still escalates.
-claim_alarm_escalate_once() {  # <marker-file> <reason>
-  local marker=$1 reason=$2 key
-  key="unresolved:$(record_get generation || printf none)"
-  if [ "$(cat "$marker" 2>/dev/null || printf '')" = "$key" ]; then
-    return 0
+claim_alarm_escalate_once() {
+  local reason=$1 status=0
+  supervisor_lock_acquire "$CLAIM_ALARM_LOCK" || return 1
+  if harness_owner_provable 1; then
+    rm -f "$CLAIM_ALARM" 2>/dev/null || status=$?
+  elif [ "$(cat "$CLAIM_ALARM" 2>/dev/null || printf '')" != unresolved ]; then
+    if escalate "$reason"; then
+      printf '%s\n' unresolved > "$CLAIM_ALARM" 2>/dev/null || status=$?
+    else
+      status=$?
+    fi
   fi
-  escalate "$reason" || return $?
-  printf '%s\n' "$key" > "$marker" 2>/dev/null || true
+  fm_lock_release "$CLAIM_ALARM_LOCK"
+  return "$status"
 }
 
-# claim_alarm_clear <marker-file>: the episode resolved (claim acquired, or a
-# healthy other owner became provable) - clear the dedupe key so the NEXT
-# distinct failure escalates instead of being read as the same old episode.
-claim_alarm_clear() {  # <marker-file>
-  rm -f "$1" 2>/dev/null || true
+claim_alarm_clear() {
+  local status=0
+  supervisor_lock_acquire "$CLAIM_ALARM_LOCK" || return 1
+  rm -f "$CLAIM_ALARM" 2>/dev/null || status=$?
+  fm_lock_release "$CLAIM_ALARM_LOCK"
+  return "$status"
 }
 
 herdr_blocked_clear() {
@@ -1578,15 +1573,18 @@ cmd_ensure() {  # <reason>
     # the Pi extension's own arm child held it and the watcher beacon was
     # fresh).
     if harness_owner_provable; then
-      claim_alarm_clear "$CLAIM_ALARM_ENSURE"
+      claim_alarm_clear || return 1
       echo "herdr-supervisor: deferred - $HS_DEFER_REASON"
       return 0
     fi
-    claim_alarm_escalate_once "$CLAIM_ALARM_ENSURE" \
+    claim_alarm_escalate_once \
       "the continuity ownership claim could not be acquired within its bounded retry window"
     return 1
   fi
-  claim_alarm_clear "$CLAIM_ALARM_ENSURE"
+  if ! claim_alarm_clear; then
+    fm_lock_release "$SUPERVISION_CLAIM"
+    return 1
+  fi
   if ! fm_supervision_claim_pending_reclaim "$STATE"; then
     fm_lock_release "$SUPERVISION_CLAIM"
     escalate "the expired away-mode ownership handoff could not be reconciled"
@@ -2078,6 +2076,7 @@ cmd_run() {
       continue
     fi
     if harness_owner_provable; then
+      claim_alarm_clear || true
       : > "$HEARTBEAT" 2>/dev/null || true
       sleep "$IDLE_INTERVAL"
       continue
@@ -2114,17 +2113,21 @@ cmd_run() {
         # acquire attempt. Only escalate when no owner is provable, at most
         # once per unresolved episode.
         if harness_owner_provable; then
-          claim_alarm_clear "$CLAIM_ALARM_LOOP"
+          claim_alarm_clear
           sleep "$IDLE_INTERVAL"
           continue
         fi
-        claim_alarm_escalate_once "$CLAIM_ALARM_LOOP" \
+        claim_alarm_escalate_once \
           "the continuity ownership claim could not be acquired before arming"
         sleep "$IDLE_INTERVAL"
         continue
       fi
       LOOP_CLAIM_HELD=1
-      claim_alarm_clear "$CLAIM_ALARM_LOOP"
+      if ! claim_alarm_clear; then
+        loop_release_claim || true
+        sleep "$IDLE_INTERVAL"
+        continue
+      fi
     fi
     if harness_owner_provable; then
       rm -f "$out" 2>/dev/null || true
