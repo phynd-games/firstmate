@@ -86,7 +86,6 @@ MR_HOST=gitlab.example
 MR_PATH=group/subgroup/project
 MR_PROJECT_URL="https://$MR_HOST/$MR_PATH"
 MR_URL="$MR_PROJECT_URL/-/merge_requests/7"
-MR_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 MR_STALE_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 JQ_BIN=$(command -v jq) || fail "these tests read glab's JSON with the real jq, which was not found"
@@ -96,6 +95,9 @@ REAL_MV=$(command -v mv) || fail "these tests need mv to simulate a failed poll 
 # fakebin with a gh-axi mock that records how it was invoked. Echoes the case dir.
 make_case() {
   local name=$1 case_dir fakebin target_head target_repository substrate_head empty_digest base_head merge_base_sha changed_digest
+  # Identical fixture content has an identical reviewed head across cases.
+  local GIT_AUTHOR_DATE='2026-09-01T00:00:00Z' GIT_COMMITTER_DATE='2026-09-01T00:00:00Z'
+  export GIT_AUTHOR_DATE GIT_COMMITTER_DATE
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
   mkdir -p "$case_dir/state" "$case_dir/home/data/task-x1" "$case_dir/wt" "$case_dir/substrate" "$fakebin"
@@ -203,7 +205,10 @@ add_gh_mocks() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
-  "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
+  "pr merge")
+    [ "${FM_TEST_DROP_GH_ON_MERGE:-0}" != 1 ] || rm "${FM_TEST_GH_LOG%/*}/fakebin/gh"
+    printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}"
+    ;;
   "pr view")
     [ "$#" -eq 5 ] && [ "${4:-}" = --repo ] || exit 2
     printf 'pull_request:\n  number: %s\n  state: %s\n' "$3" "${FM_TEST_GH_MERGE_STATE:-merged}"
@@ -310,7 +315,9 @@ SH
 # glab mock recording every invocation together with the GITLAB_HOST it was
 # given, so a test can prove the instance came from the URL. `mr view` answers
 # from the case's JSON payload; marker files in the case dir drive the failure
-# modes, so no test has to leak environment into a shared runner.
+# modes, so no test has to leak environment into a shared runner. The first
+# response satisfies readiness; later responses exercise the merge owner's
+# independent live read, including changes since readiness was recorded.
 add_glab_mock() {
   local case_dir=$1
   cat > "$case_dir/fakebin/glab" <<'SH'
@@ -319,6 +326,11 @@ printf 'GITLAB_HOST=%s %s\n' "${GITLAB_HOST-<unset>}" "$*" >> "$FM_TEST_GLAB_LOG
 case_dir=$(dirname "$FM_TEST_GLAB_JSON")
 case "${1:-} ${2:-}" in
   "mr view")
+    if [ ! -e "$case_dir/glab-readiness-read" ]; then
+      : > "$case_dir/glab-readiness-read"
+      cat "$case_dir/mr-ready.json"
+      exit 0
+    fi
     [ ! -e "$case_dir/glab-view-fails" ] || exit 1
     if [ -e "$case_dir/glab-merge-called" ] && [ ! -e "$case_dir/glab-stays-open" ]; then
       cat "$case_dir/mr-post.json"
@@ -368,7 +380,7 @@ write_mr_json() {
   fi
   printf '{"iid":7,"state":"%s","detailed_merge_status":"%s","has_conflicts":%s,' \
     "$state" "$detail" "$conflicts" > "$file"
-  printf '"blocking_discussions_resolved":%s,"sha":"%s","head_pipeline":%s}\n' \
+  printf '"blocking_discussions_resolved":%s,"sha":"%s","target_branch":"main","head_pipeline":%s}\n' \
     "$discussions" "$head" "$pipeline" >> "$file"
 }
 
@@ -383,6 +395,8 @@ make_gitlab_case() {
   add_glab_mock "$case_dir"
   : > "$case_dir/gh-axi.log"
   : > "$case_dir/glab.log"
+  git -C "$case_dir/wt" remote set-url origin "$MR_PROJECT_URL.git"
+  write_mr_json "$case_dir/mr-ready.json"
   write_mr_json "$case_dir/mr.json" "$@"
   write_mr_json "$case_dir/mr-post.json" state=merged
   printf '%s\n' "$case_dir"
@@ -944,24 +958,28 @@ test_github_fallback_view_refusal_says_the_queue_was_unobservable() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
-  "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
+  "pr merge")
+    [ "${FM_TEST_DROP_GH_ON_MERGE:-0}" != 1 ] || rm "${FM_TEST_GH_LOG%/*}/fakebin/gh"
+    printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}"
+    ;;
   "pr view") printf 'pull_request:\n  number: %s\n  state: open\n' "$3" ;;
 esac
 exit 0
 SH
   chmod +x "$case_dir/fakebin/gh-axi"
-  rm "$case_dir/fakebin/gh"
   ghless_path="$case_dir/path-without-gh"
   mirror_path_without "$ghless_path" gh "$case_dir/fakebin"
   : > "$case_dir/gh-axi.log"
 
   set +e
-  PATH="$ghless_path" run_pr_merge "$case_dir" task-x1 \
+  FM_TEST_DROP_GH_ON_MERGE=1 PATH="$ghless_path" run_pr_merge "$case_dir" task-x1 \
     https://github.com/example/repo/pull/73 -- --auto --merge \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
 
+  assert_absent "$case_dir/fakebin/gh" "outcome fixture must remove gh during the merge call"
+  assert_grep 'headRefOid' "$case_dir/gh.log" "readiness must verify the head before gh disappears"
   expect_code 1 "$rc" "github-fallback-unobservable-queue: an unproved merge must fail"
   assert_grep 'isInMergeQueue=unknown' "$case_dir/stderr" \
     "github-fallback-unobservable-queue: refusal did not name the concrete observed state"
@@ -1074,15 +1092,15 @@ test_github_failed_merge_names_an_observed_landed_state() {
   pass "fm-pr-merge names a landed state hiding behind a failed GitHub merge command"
 }
 
-test_github_without_gh_still_uses_gh_axi_merge() {
+test_github_missing_gh_refuses_before_merge() {
   local case_dir ghless_path rc
-  case_dir=$(make_case github-without-gh)
-  mkdir -p "$case_dir/wt"
-  add_gh_mocks "$case_dir" 4141414141414141414141414141414141414141
+  case_dir=$(make_case github-no-gh-before-readiness)
+  add_gh_mocks "$case_dir"
   rm "$case_dir/fakebin/gh"
   ghless_path="$case_dir/path-without-gh"
   mirror_path_without "$ghless_path" gh "$case_dir/fakebin"
   : > "$case_dir/gh-axi.log"
+  cp "$case_dir/state/task-x1.meta" "$case_dir/meta-before"
 
   set +e
   PATH="$ghless_path" run_pr_merge "$case_dir" task-x1 \
@@ -1091,6 +1109,36 @@ test_github_without_gh_still_uses_gh_axi_merge() {
   rc=$?
   set -e
 
+  expect_code 1 "$rc" "missing gh must refuse before readiness"
+  assert_grep 'GitHub PR head could not be verified' "$case_dir/stderr" \
+    "missing gh must name the unverified head"
+  [ ! -s "$case_dir/gh-axi.log" ] || fail "an unverified head reached the forge merge call"
+  cmp -s "$case_dir/meta-before" "$case_dir/state/task-x1.meta" \
+    || fail "an unverified head changed task metadata"
+  assert_absent "$case_dir/state/task-x1.check.sh" "an unverified head armed a merge poll"
+  pass "fm-pr-merge refuses an unavailable head reader before merging or recording state"
+}
+
+# The head reader remains available for readiness, then the merge mock removes
+# it. Only the post-merge outcome is allowed to use the gh-axi fallback.
+test_github_gh_disappears_after_readiness_still_verifies_merge() {
+  local case_dir ghless_path rc
+  case_dir=$(make_case github-without-gh)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 4141414141414141414141414141414141414141
+  ghless_path="$case_dir/path-without-gh"
+  mirror_path_without "$ghless_path" gh "$case_dir/fakebin"
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  FM_TEST_DROP_GH_ON_MERGE=1 PATH="$ghless_path" run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/60 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  assert_absent "$case_dir/fakebin/gh" "outcome fixture must remove gh during the merge call"
+  assert_grep 'headRefOid' "$case_dir/gh.log" "readiness must verify the head before gh disappears"
   expect_code 0 "$rc" "github-without-gh: gh-axi can prove a landed merge without gh"
   assert_grep 'pr merge 60 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     "github-without-gh: the configured merge abstraction was not invoked"
@@ -1098,18 +1146,22 @@ test_github_without_gh_still_uses_gh_axi_merge() {
     "github-without-gh: the gh-axi fallback did not verify the landed state"
   assert_grep 'verified: https://github.com/example/repo/pull/60 is merged' \
     "$case_dir/stdout" "github-without-gh: the fallback did not report the proven merge"
-  pass "fm-pr-merge reaches and verifies the gh-axi merge path without gh"
+  pass "fm-pr-merge verifies the gh-axi outcome when gh disappears after readiness"
 }
 
-test_github_without_gh_failed_read_keeps_bookkeeping() {
+test_github_gh_disappears_after_readiness_failed_read_keeps_bookkeeping() {
   local case_dir ghless_path rc
   case_dir=$(make_case github-without-gh-read-fails)
   mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir"
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
-  "pr merge") exit 0 ;;
+  "pr merge")
+    rm "${FM_TEST_GH_LOG%/*}/fakebin/gh"
+    exit 0
+    ;;
   "pr view") exit 1 ;;
 esac
 exit 0
@@ -1120,12 +1172,14 @@ SH
   : > "$case_dir/gh-axi.log"
 
   set +e
-  PATH="$ghless_path" run_pr_merge "$case_dir" task-x1 \
+  FM_TEST_DROP_GH_ON_MERGE=1 PATH="$ghless_path" run_pr_merge "$case_dir" task-x1 \
     https://github.com/example/repo/pull/61 \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
 
+  assert_absent "$case_dir/fakebin/gh" "outcome fixture must remove gh during the merge call"
+  assert_grep 'headRefOid' "$case_dir/gh.log" "readiness must verify the head before gh disappears"
   expect_code 1 "$rc" "github-without-gh-read-fails: an unreadable outcome must fail"
   assert_grep 'pr merge 61 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     "github-without-gh-read-fails: the merge call did not happen before the failed read"
@@ -1135,7 +1189,7 @@ SH
     "github-without-gh-read-fails: a landed merge lost its PR metadata"
   assert_present "$case_dir/state/task-x1.check.sh" \
     "github-without-gh-read-fails: a landed merge lost its merge poll"
-  pass "fm-pr-merge preserves bookkeeping when gh is absent and the fallback read fails"
+  pass "fm-pr-merge preserves bookkeeping when gh disappears after readiness and the fallback read fails"
 }
 
 test_github_zero_exit_queue_required_refuses_with_exact_retry() {
@@ -1333,10 +1387,8 @@ test_extra_merge_args_forwarded() {
 }
 
 test_missing_meta_refuses_before_merge() {
-  local case_dir fakebin rc
-  case_dir="$TMP_ROOT/missing-meta"
-  fakebin="$case_dir/fakebin"
-  mkdir -p "$case_dir/state" "$fakebin"
+  local case_dir rc
+  case_dir=$(make_case missing-meta)
   add_gh_mocks "$case_dir" 3333333333333333333333333333333333333333
   : > "$case_dir/gh-axi.log"
 
@@ -1529,6 +1581,7 @@ test_method_equals_merge_method_not_overridden() {
 test_parses_pr_url_for_gh_axi() {
   local case_dir
   case_dir=$(make_case url-parsing)
+  git -C "$case_dir/wt" remote set-url origin https://github.com/my-org/my-repo.git
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" 6666666666666666666666666666666666666666
   : > "$case_dir/gh-axi.log"
@@ -1572,6 +1625,7 @@ test_gitlab_host_comes_from_the_url() {
   project_url="https://$host/$path"
   url="$project_url/-/merge_requests/31"
   case_dir=$(make_gitlab_case gitlab-host-from-url)
+  git -C "$case_dir/wt" remote set-url origin "$project_url.git"
 
   set +e
   run_pr_merge "$case_dir" task-x1 "$url" \
@@ -2145,6 +2199,10 @@ test_secondmate_without_parent_binding_is_loud() {
   pass "a secondmate home that cannot report upward says so instead of merging in silence"
 }
 
+# Read the actual commit produced by the deterministic fixture, never a caller-
+# supplied placeholder SHA. Every GitLab response and assertion binds to it.
+MR_HEAD=$(case_dir=$(make_case gitlab-reviewed-head); git -C "$case_dir/wt" rev-parse HEAD)
+
 test_github_zero_exit_queue_required_refuses_with_exact_retry
 test_github_closed_unqueued_outcome_omits_retry_flags
 test_github_agreeing_queue_rules_keep_retry_guidance
@@ -2167,8 +2225,9 @@ test_github_failed_merge_never_claims_armed_auto_merge
 test_github_failed_merge_with_queue_flags_never_claims_acceptance
 test_github_failed_gh_read_falls_back_to_gh_axi
 test_github_failed_merge_names_an_observed_landed_state
-test_github_without_gh_still_uses_gh_axi_merge
-test_github_without_gh_failed_read_keeps_bookkeeping
+test_github_missing_gh_refuses_before_merge
+test_github_gh_disappears_after_readiness_still_verifies_merge
+test_github_gh_disappears_after_readiness_failed_read_keeps_bookkeeping
 test_github_merged_outcome_is_verified
 test_github_verified_merge_requires_poll_recording
 test_github_queued_outcome_is_verified
