@@ -40,6 +40,8 @@ The same rationality applies to the Pi supervision branch's captain-facing routi
 ## Regression coverage
 
 `tests/fm-validation-loop.test.sh` pins near-complete continuation, the repeated-finding stop, the unknown-state stop, the stale-pipeline-evidence stop, the recovery handoff, the threshold semantics, and the watcher's decorated limit surface.
+Its findings-grammar cases pin the status compatibility rules owned by `_fm_vloop_findings_valid` in `bin/fm-validation-loop-lib.sh`, including the captured daemon sample and malformed-summary refusal.
+`tests/fm-crew-state.test.sh` verifies that terminal severity summaries preserve passed and failed verdicts while malformed summaries remain unreadable evidence.
 `tests/fm-branch-supervision.test.sh` and `tests/fm-pi-branch-extension.test.sh` pin the note-coalescing gate and its extension wiring.
 
 ## Closure sequence

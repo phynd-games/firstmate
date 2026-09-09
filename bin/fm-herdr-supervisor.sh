@@ -45,11 +45,8 @@
 # supervisor heartbeat ALL agree. Anything unreadable, ambiguous, or unknown is
 # unhealthy, never healthy.
 #
-# Every failed or ambiguous establish and every failed arm attempt writes a durable
-# actionable diagnostic to state/.herdr-supervisor-alarm AND appends one
-# `check: herdr-supervisor` record to the durable wake queue, so the lapse
-# reaches the captain through the channels that already exist rather than a new
-# one.
+# docs/herdr-supervisor.md "Recovery" owns alarm publication, claim-failure
+# episode suppression, and recovery semantics.
 #
 # SUPPORTED GUARANTEES AND EXTERNAL PREREQUISITES
 # docs/herdr-supervisor.md is the single owner of that list. In short: this
@@ -93,6 +90,12 @@ LAUNCHER="$STATE/.herdr-supervisor-launch.sh"
 PENDING="$STATE/.herdr-supervisor-pending-cleanup"
 AWAY_AMBIGUOUS="$STATE/.herdr-away-daemon-ambiguous"
 HANDOFF_AMBIGUOUS="$STATE/.herdr-supervision-handoff-ambiguous"
+CLAIM_ALARM="$STATE/.herdr-supervisor-claim-alarm"
+CLAIM_ALARM_LOCK="$STATE/.herdr-supervisor-claim-alarm.lock"
+CLAIM_ALARM_EPISODE="$STATE/.herdr-supervisor-claim-episode"
+CLAIM_ALARM_RECOVERY_PENDING=
+CLAIM_ALARM_OBSERVATION_LOCK="$STATE/.herdr-supervisor-claim-observation.lock"
+CLAIM_ALARM_OBSERVATION_PENDING=0
 QUARANTINE_PREFIX="$STATE/.herdr-supervisor-quarantine"
 RECORD_LOCK="$STATE/.herdr-supervisor.lock"
 HEARTBEAT="$STATE/.herdr-supervisor-heartbeat"
@@ -581,7 +584,11 @@ HERDR_LOADED=0
 herdr_load() {
   [ "$HERDR_LOADED" -eq 0 ] || return 0
   backend_load || return 1
-  fm_backend_source herdr >/dev/null 2>&1 || return 1
+  # Loading must not probe the server: herdr_identity owns the bounded native
+  # checks and their failure reporting. The generic dispatcher probes during
+  # load, turning a stopped server into successful "not eligible" here.
+  # shellcheck source=/dev/null
+  . "$SCRIPT_DIR/backends/herdr.sh" || return 1
   HERDR_LOADED=1
 }
 
@@ -658,6 +665,10 @@ herdr_identity() {
     echo "herdr session '$HS_SESSION' has no running server, so there is no pane to host watcher continuity in; start it and rerun" >&2
     return 1
   fi
+  fm_backend_herdr_server_status_healthy "$status" || {
+    echo "herdr session '$HS_SESSION' has incompatible or unreadable server capabilities" >&2
+    return 1
+  }
 
   sessions=$(hs_herdr "$HS_SESSION" session list --json 2>/dev/null) || sessions=
   [ -n "$sessions" ] || {
@@ -818,17 +829,40 @@ hs_config_preference() {
 # this home right now. Only positive, durable evidence counts; the absence of
 # evidence is never read as the presence of an owner.
 harness_owner_provable() {
+  local read_only=${1:-0} observed_episode current_episode status=0
+  if [ "$read_only" = 1 ]; then
+    harness_owner_detect 1
+    return $?
+  fi
+  CLAIM_ALARM_OBSERVATION_PENDING=0
+  observed_episode=$(claim_alarm_episode || true)
+  if ! supervisor_lock_acquire "$CLAIM_ALARM_OBSERVATION_LOCK"; then
+    CLAIM_ALARM_OBSERVATION_PENDING=1
+    return 2
+  fi
+  current_episode=$(claim_alarm_episode || true)
+  [ "$current_episode" = "$observed_episode" ] || observed_episode=$current_episode
+  if ! harness_owner_detect 0; then
+    fm_lock_release "$CLAIM_ALARM_OBSERVATION_LOCK"
+    return 1
+  fi
+  CLAIM_ALARM_RECOVERY_PENDING=$observed_episode
+  if [ -n "$observed_episode" ]; then
+    { : > "$observed_episode/recovered"; } 2>/dev/null || status=1
+  fi
+  fm_lock_release "$CLAIM_ALARM_OBSERVATION_LOCK"
+  [ "$status" -ne 0 ] || claim_alarm_clear "$observed_episode" || true
+  return 0
+}
+
+harness_owner_detect() {
   local read_only=${1:-0} away_state away_pid away_owner away_recorded away_current away_key
   HS_DEFER_REASON=
   if fm_supervision_claim_held_by_other "$SUPERVISION_CLAIM"; then
     HS_DEFER_REASON="another continuity owner is completing its ownership claim"
-    return 0
-  fi
-  if fm_supervision_claim_pending "$STATE"; then
+  elif fm_supervision_claim_pending "$STATE"; then
     HS_DEFER_REASON="a native away-mode owner is completing its ownership handoff"
-    return 0
-  fi
-  if fm_supervision_claim_pending_expired_live "$STATE"; then
+  elif fm_supervision_claim_pending_expired_live "$STATE"; then
     HS_DEFER_REASON="a native away-mode handoff reservation expired while its owner remains live"
     if [ "$read_only" = 0 ]; then
       local handoff_key
@@ -838,9 +872,7 @@ harness_owner_provable() {
         escalate "the native away-mode handoff reservation expired while its launcher remains live; refusing a second continuity owner"
       fi
     fi
-    return 0
-  fi
-  if [ -e "$STATE/.afk" ]; then
+  elif [ -e "$STATE/.afk" ]; then
     away_state=$(
       # Runtime source path is intentionally unavailable to static analysis.
       # shellcheck disable=SC1091
@@ -851,7 +883,6 @@ harness_owner_provable() {
       live)
         [ "$read_only" = 1 ] || rm -f "$AWAY_AMBIGUOUS" 2>/dev/null || true
         HS_DEFER_REASON="away mode is active and its daemon owns supervision"
-        return 0
         ;;
       ambiguous)
         away_owner=$(
@@ -869,16 +900,108 @@ harness_owner_provable() {
           escalate "away mode has an ambiguous live daemon lock; refusing a second continuity owner"
         fi
         HS_DEFER_REASON="away mode has an ambiguous live daemon lock; continuity is quarantined"
-        return 0
         ;;
       *) [ "$read_only" = 1 ] || rm -f "$AWAY_AMBIGUOUS" 2>/dev/null || true ;;
     esac
   fi
-  if fm_pi_extension_owns_supervision "$STATE" "$FM_ROOT" 2>/dev/null; then
+  if [ -z "$HS_DEFER_REASON" ]; then
+    fm_pi_extension_owns_supervision "$STATE" "$FM_ROOT" 2>/dev/null || return 1
     HS_DEFER_REASON="the Pi primary extension owns watcher continuity"
-    return 0
   fi
-  return 1
+  return 0
+}
+
+claim_alarm_episode() {
+  local name suffix
+  [ -L "$CLAIM_ALARM_EPISODE" ] || return 1
+  name=$(readlink "$CLAIM_ALARM_EPISODE") || return 1
+  case "$name" in .herdr-supervisor-claim-episode.*) ;; *) return 1 ;; esac
+  suffix=${name#.herdr-supervisor-claim-episode.}
+  case "$suffix" in ''|*[!A-Za-z0-9]*) return 1 ;; esac
+  [ -d "$STATE/$name" ] && [ ! -L "$STATE/$name" ] || return 1
+  printf '%s' "$STATE/$name"
+}
+
+claim_alarm_retire_locked() {
+  local episode=$1
+  [ "$(claim_alarm_episode || true)" = "$episode" ] || return 0
+  rm -f "$CLAIM_ALARM" "$CLAIM_ALARM_EPISODE" || return 1
+  rm -rf "$episode"
+}
+
+claim_alarm_escalate_once() {
+  local reason=$1 status=0 episode key
+  [ -z "$CLAIM_ALARM_RECOVERY_PENDING" ] || claim_alarm_clear "$CLAIM_ALARM_RECOVERY_PENDING" || return 1
+  supervisor_lock_acquire "$CLAIM_ALARM_LOCK" || return 1
+  if ! supervisor_lock_acquire "$CLAIM_ALARM_OBSERVATION_LOCK"; then
+    fm_lock_release "$CLAIM_ALARM_LOCK"
+    return 1
+  fi
+  episode=$(claim_alarm_episode || true)
+  if [ -n "$episode" ] && [ -e "$episode/recovered" ]; then
+    if ! claim_alarm_retire_locked "$episode"; then
+      fm_lock_release "$CLAIM_ALARM_OBSERVATION_LOCK"
+      fm_lock_release "$CLAIM_ALARM_LOCK"
+      return 1
+    fi
+    episode=
+  fi
+  if [ -z "$episode" ]; then
+    if [ -e "$CLAIM_ALARM_EPISODE" ] || [ -L "$CLAIM_ALARM_EPISODE" ]; then
+      fm_lock_release "$CLAIM_ALARM_OBSERVATION_LOCK"
+      fm_lock_release "$CLAIM_ALARM_LOCK"
+      return 1
+    fi
+    episode=$(mktemp -d "$STATE/.herdr-supervisor-claim-episode.XXXXXX") || {
+      fm_lock_release "$CLAIM_ALARM_OBSERVATION_LOCK"
+      fm_lock_release "$CLAIM_ALARM_LOCK"
+      return 1
+    }
+    if ! ln -s "${episode##*/}" "$CLAIM_ALARM_EPISODE"; then
+      rmdir "$episode" 2>/dev/null || true
+      fm_lock_release "$CLAIM_ALARM_OBSERVATION_LOCK"
+      fm_lock_release "$CLAIM_ALARM_LOCK"
+      return 1
+    fi
+  fi
+  key="unresolved:${episode##*/}"
+  if harness_owner_provable 1; then
+    if : > "$episode/recovered"; then
+      claim_alarm_retire_locked "$episode" || status=$?
+    else
+      status=$?
+    fi
+    fm_lock_release "$CLAIM_ALARM_OBSERVATION_LOCK"
+  else
+    fm_lock_release "$CLAIM_ALARM_OBSERVATION_LOCK"
+    if [ "$(cat "$CLAIM_ALARM" 2>/dev/null || printf '')" != "$key" ]; then
+      if escalate "$reason"; then
+        printf '%s\n' "$key" > "$CLAIM_ALARM" 2>/dev/null || status=$?
+      else
+        status=$?
+      fi
+    fi
+  fi
+  fm_lock_release "$CLAIM_ALARM_LOCK"
+  return "$status"
+}
+
+claim_alarm_clear() {
+  local episode=${1-$(claim_alarm_episode || true)} status=0
+  CLAIM_ALARM_RECOVERY_PENDING=$episode
+  [ -n "$episode" ] || return 0
+  if ! { : > "$episode/recovered"; } 2>/dev/null; then
+    if [ "$(claim_alarm_episode || true)" != "$episode" ]; then
+      CLAIM_ALARM_RECOVERY_PENDING=
+      return 0
+    fi
+    return 1
+  fi
+  supervisor_lock_acquire "$CLAIM_ALARM_LOCK" || return 1
+  claim_alarm_retire_locked "$episode" || status=$?
+  fm_lock_release "$CLAIM_ALARM_LOCK"
+  [ "$status" -ne 0 ] || CLAIM_ALARM_RECOVERY_PENDING=
+  return "$status"
 }
 
 herdr_blocked_clear() {
@@ -1539,7 +1662,19 @@ cmd_ensure() {  # <reason>
     return 0
   fi
   if ! fm_supervision_claim_acquire "$SUPERVISION_CLAIM" "$SUPERVISOR_LOCK_TRIES"; then
-    escalate "the continuity ownership claim could not be acquired within its bounded retry window"
+    # Acquisition failure alone cannot distinguish a healthy competing owner
+    # from an unreadable claim; recheck ownership before reporting failure.
+    if harness_owner_provable || [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 1 ]; then
+      [ -z "$CLAIM_ALARM_RECOVERY_PENDING" ] && [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 0 ] || return 1
+      echo "herdr-supervisor: deferred - $HS_DEFER_REASON"
+      return 0
+    fi
+    claim_alarm_escalate_once \
+      "the continuity ownership claim could not be acquired within its bounded retry window"
+    return 1
+  fi
+  if ! claim_alarm_clear; then
+    fm_lock_release "$SUPERVISION_CLAIM"
     return 1
   fi
   if ! fm_supervision_claim_pending_reclaim "$STATE"; then
@@ -1561,8 +1696,9 @@ cmd_ensure() {  # <reason>
       return 1
     fi
   fi
-  if harness_owner_provable; then
+  if harness_owner_provable || [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 1 ]; then
     fm_lock_release "$SUPERVISION_CLAIM"
+    [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 0 ] || return 1
     echo "herdr-supervisor: deferred - $HS_DEFER_REASON"
     return 0
   fi
@@ -2006,6 +2142,8 @@ cmd_run() {
             escalate "config/herdr-supervisor is off but the arm identity remains unknown; retaining the child and supervisor binding"
           elif harness_owner_provable; then
             ledger_append handoff "another continuity owner is provable while the arm identity remains unknown; retaining the child until bounded cleanup"
+          elif [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 1 ]; then
+            ledger_append observation-pending "continuity ownership observation is incomplete; retaining the child until bounded cleanup"
           else
             escalate "the arm identity remains unknown after its bounded wait; retaining the child until bounded cleanup"
           fi
@@ -2032,7 +2170,7 @@ cmd_run() {
       sleep "$IDLE_INTERVAL"
       continue
     fi
-    if harness_owner_provable; then
+    if harness_owner_provable || [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 1 ]; then
       : > "$HEARTBEAT" 2>/dev/null || true
       sleep "$IDLE_INTERVAL"
       continue
@@ -2063,13 +2201,24 @@ cmd_run() {
     fi
     if [ "$LOOP_CLAIM_HELD" -eq 0 ]; then
       if ! fm_supervision_claim_acquire "$SUPERVISION_CLAIM" "$SUPERVISOR_LOCK_TRIES"; then
-        escalate "the continuity ownership claim could not be acquired before arming"
+        # An owner can arrive after this iteration's earlier ownership check.
+        if harness_owner_provable || [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 1 ]; then
+          sleep "$IDLE_INTERVAL"
+          continue
+        fi
+        claim_alarm_escalate_once \
+          "the continuity ownership claim could not be acquired before arming"
         sleep "$IDLE_INTERVAL"
         continue
       fi
       LOOP_CLAIM_HELD=1
+      if ! claim_alarm_clear; then
+        loop_release_claim || true
+        sleep "$IDLE_INTERVAL"
+        continue
+      fi
     fi
-    if harness_owner_provable; then
+    if harness_owner_provable || [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 1 ]; then
       rm -f "$out" 2>/dev/null || true
       LOOP_ARM_OUT=
       fm_lock_release "$SUPERVISION_CLAIM"
@@ -2374,12 +2523,22 @@ cmd_monitor_run() {  # <owner-pid TAB owner-identity>
       monitor_stand_down "home session ended or changed identity"
       return 0
     fi
-    if harness_owner_provable; then
+    if [ -n "$CLAIM_ALARM_RECOVERY_PENDING" ]; then
+      claim_alarm_clear "$CLAIM_ALARM_RECOVERY_PENDING" || true
+    fi
+    if harness_owner_provable && [ -z "$CLAIM_ALARM_RECOVERY_PENDING" ]; then
       monitor_stand_down "stood down: $HS_DEFER_REASON"
       return 0
     fi
 
     : > "$MONITOR_HEARTBEAT" 2>/dev/null || true
+    if [ -n "$CLAIM_ALARM_RECOVERY_PENDING" ] || [ "$CLAIM_ALARM_OBSERVATION_PENDING" -eq 1 ]; then
+      if ! monitor_sleep "$MONITOR_INTERVAL" "$owner"; then
+        monitor_stand_down "home session ended or changed identity"
+        return 0
+      fi
+      continue
+    fi
 
     if fm_supervision_needed "$STATE" && ! supervisor_healthy; then
       out=$(cmd_ensure "monitor: ${HS_UNHEALTHY_REASON:-supervisor unhealthy}" 2>&1)

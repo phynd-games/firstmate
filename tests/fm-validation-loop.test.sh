@@ -284,6 +284,120 @@ EOF
   pass "malformed evidence stop: incomplete run evidence fails closed at the absorb boundary"
 }
 
+# Regression for the 2026-09-06 audit's finding 1: _fm_vloop_findings_valid
+# rejected the daemon's own real "findings: N <severity>" grammar, so every
+# terminal run carrying findings read as unreadable evidence. This pins the
+# exact real sample (no-mistakes v1.49.0-4-gfeb8cdf), realistic
+# info/awaiting/none/multi-severity mixtures, and rejects malformed shapes
+# (garbage, duplicate scalar, wrong order, zero count, unknown severity word).
+test_findings_grammar_accepts_real_daemon_output() {
+  local ev dir state
+
+  # Positive: the byte-for-byte real sample captured from
+  # `no-mistakes axi status` (run 01M1SKRKCG5BVV9H1CYRR3HW4S, cancelled).
+  ev='run:
+  id: "01M1SKRKCG5BVV9H1CYRR3HW4S"
+  branch: fm/remove-firstmate-dashboard
+  status: cancelled
+  head: f89f5d62
+  pr: "https://github.com/phynd-games/firstmate/pull/8"
+  findings: 4 info
+  steps[9]{step,status,findings,duration_ms}:
+    intent,completed,0,0
+    rebase,completed,0,846
+    review,completed,0,1071493
+    test,completed,4,471486
+    document,completed,0,133028
+    lint,completed,0,17366
+    push,completed,0,1988
+    pr,completed,0,68068
+    ci,failed,0,5916289
+outcome: cancelled
+error: "cancelled: aborted by user"'
+  fm_vloop_evidence_valid "$ev" || fail "the real captured findings: 4 info sample was rejected"
+
+  # Synthetic envelope around the historically observed "2 awaiting" scalar.
+  # The branch/head below are fixture values, not a fresh production capture.
+  # The already-accepted "N awaiting" shape must remain accepted.
+  ev='run:
+  id: "01M129CWE6EDP7Y4GSDZ9KYE85"
+  branch: fm/loop
+  status: fix_review
+  head: abc1234
+  pr: ""
+  findings: 2 awaiting'
+  fm_vloop_evidence_valid "$ev" || fail "the synthetic findings: 2 awaiting envelope was rejected"
+
+  # Positive: none, and realistic multi-severity mixtures in the daemon's
+  # fixed descending severity order (error, warning, info), one severity
+  # omitted whenever its count is zero.
+  for scalar in 'none' '1 error' '1 warning' '2 warning, 1 info' \
+    '1 error, 1 warning' '1 error, 1 info' '1 error, 2 warning, 3 info'; do
+    ev="run:
+  id: \"01RUN\"
+  branch: fm/loop
+  status: completed
+  head: abc1234
+  pr: \"\"
+  findings: $scalar
+outcome: passed"
+    fm_vloop_evidence_valid "$ev" \
+      || fail "a realistic findings grammar mixture was rejected: $scalar"
+  done
+
+  # Negative: garbage, wrong severity order, an unknown severity word, a
+  # zero count, and a scalar that omits the required "N " count are rejected.
+  for scalar in 'garbage' '1 info, 1 warning' '1 info, 1 error' \
+    '1 unknown' '0 info' '0 awaiting' 'info' 'awaiting' \
+    '1 info, 1 info' '1 error, 1 error' '1 warning, 0 info'; do
+    ev="run:
+  id: \"01RUN\"
+  branch: fm/loop
+  status: completed
+  head: abc1234
+  pr: \"\"
+  findings: $scalar
+outcome: passed"
+    fm_vloop_evidence_valid "$ev" \
+      && fail "an invalid findings grammar was accepted: $scalar"
+  done
+
+  # Negative: a duplicated findings scalar stays rejected even when both
+  # lines are individually valid real grammar.
+  ev='run:
+  id: "01RUN"
+  branch: fm/loop
+  status: completed
+  head: abc1234
+  pr: ""
+  findings: 4 info
+  findings: 2 awaiting
+outcome: passed'
+  fm_vloop_evidence_valid "$ev" && fail "a duplicated findings scalar was accepted"
+
+  # Synthetic terminal envelope retaining the captured run id and scalar.
+  # Exercise fm_vloop_observe, the caller fm-crew-state.sh relies on; this
+  # changed branch/head/outcome is not the historical production record.
+  dir=$(make_case vloop-real-findings-grammar); state="$dir/state"
+  local realfile="$dir/real-ev"
+  cat > "$realfile" <<'EOF'
+run:
+  id: "01M1SKRKCG5BVV9H1CYRR3HW4S"
+  branch: fm/loop
+  status: completed
+  head: "abc1234"
+  pr: ""
+  findings: 4 info
+outcome: passed
+EOF
+  fm_vloop_observe "$state" real-findings "$realfile" \
+    || fail "fm_vloop_observe rejected accepted-run evidence with real findings"
+  [ "$(fm_vloop_reason "$state" real-findings)" = '' ] \
+    || fail "accepted-run evidence with real findings recorded a stop reason: $(fm_vloop_reason "$state" real-findings)"
+
+  pass "findings grammar: historical daemon output is accepted, malformed shapes are rejected"
+}
+
 test_malformed_journal_stop() {
   local state fakebin dir
   dir=$(make_case vloop-malformed-journal); state="$dir/state"; fakebin="$dir/fakebin"
@@ -922,9 +1036,17 @@ ack_wake_cycle() {
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation"
 }
 
+enable_legacy_watcher_fixture() {
+  # These retained-adapter tests use only wake-helpers' fake tmux executable.
+  # The policy marker must belong to each private state directory.
+  printf '%s' firstmate-herdr-legacy-test-runner-v1 > "$1/.fm-backend-legacy-test-runner"
+  export FM_BACKEND_LEGACY_TEST_LANE=1
+}
+
 test_watcher_surfaces_validation_loop_limit() {
   local dir state fakebin out failed_out marker_failure_out drain_out capture_file window key pane_hash ev pid
   dir=$(make_case vloop-watcher); state="$dir/state"; fakebin="$dir/fakebin"
+  enable_legacy_watcher_fixture "$state"
   out="$dir/watch.out"; failed_out="$dir/watch-failed.out"; marker_failure_out="$dir/marker-failure.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
   window="test:fm-loopy"
   printf 'static validation pane' > "$capture_file"
@@ -993,6 +1115,7 @@ test_watcher_surfaces_validation_loop_limit() {
 test_watcher_surfaces_limit_after_generic_stale() {
   local dir state fakebin first_out out capture_file window key pane_hash ev pid
   dir=$(make_case vloop-watcher-stale-then-limit); state="$dir/state"; fakebin="$dir/fakebin"
+  enable_legacy_watcher_fixture "$state"
   first_out="$dir/first.out"; out="$dir/second.out"; capture_file="$dir/pane.txt"
   window="test:fm-stale-then-limit"
   printf 'static validation pane' > "$capture_file"
@@ -1037,6 +1160,7 @@ test_watcher_surfaces_limit_after_generic_stale() {
 test_watcher_surfaces_signal_validation_loop_limit() {
   local dir state fakebin out drain_out capture_file window ev pid
   dir=$(make_case vloop-signal-limit); state="$dir/state"; fakebin="$dir/fakebin"
+  enable_legacy_watcher_fixture "$state"
   out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
   window="test:fm-signal-limit"
   printf 'quiet validation pane' > "$capture_file"
@@ -1067,10 +1191,21 @@ test_watcher_surfaces_signal_validation_loop_limit() {
   pass "watcher: a no-verb signal carries the validation-loop breach reason"
 }
 
+case "${1:-}" in
+  --findings-only) test_findings_grammar_accepts_real_daemon_output; exit $? ;;
+  --watcher-limits-only)
+    test_watcher_surfaces_validation_loop_limit
+    test_watcher_surfaces_limit_after_generic_stale
+    test_watcher_surfaces_signal_validation_loop_limit
+    exit 0
+    ;;
+esac
+
 test_near_complete_continuation
 test_repeated_finding_stop
 test_unknown_state_stop
 test_malformed_evidence_stop
+test_findings_grammar_accepts_real_daemon_output
 test_malformed_journal_stop
 test_terminal_transition_stops_before_reactivation
 test_journal_state_matrix
