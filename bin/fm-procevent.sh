@@ -167,6 +167,97 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-procevent-lib.sh
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
+# shellcheck source=bin/fm-launch-record-lib.sh
+. "$SCRIPT_DIR/fm-launch-record-lib.sh"
+
+# --- launch record: pre-fork attempt accounting for every runner -------------
+# The per-source claim stays the runner's authority for duplicates and its
+# result files for completion; the launch record (state/.launch-procevent-<id>,
+# docs/launch-records.md) adds what they cannot say: that a runner was about to
+# be forked (written before the fork), which process it became (pid plus start
+# identity, after the claim), that its long wait actually started (`ready`
+# is recorded right before the adapter command runs - a result would only be
+# completion evidence), and how it ended. A fork that finds the claim held
+# closes its launch as failed with no effect. Recording never blocks a start;
+# an unrecordable attempt is noted on stderr and the claim remains its account.
+pe_launch_subject() {  # <source-id> -> helper name (lowercase, hyphenated, bounded)
+  local id=$1 clean
+  clean=$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | cut -c1-40)
+  clean=${clean#-}
+  printf 'procevent-%s-%s' "${clean:-src}" "$(printf '%s' "$id" | cksum | cut -d' ' -f1)"
+}
+pe_launch() {  # <source-id> <command> [args...]
+  local id=$1 command=$2
+  shift 2
+  fm_launch_record "$command" --helper "$(pe_launch_subject "$id")" "$@" 2>/dev/null
+}
+pe_launch_note() {
+  printf 'procevent: launch record: %s\n' "$1" >&2
+}
+pe_launch_intend() {  # <source-id> <mode> -> exports FM_PROCEVENT_LAUNCH_ID to the child
+  local id=$1 mode=$2 out rc line pid
+  local -a launcher_args=()
+  FM_PROCEVENT_LAUNCH_ID=
+  fm_launch_record_available >/dev/null 2>&1 || { pe_launch_note "unavailable (python3 or owner missing); the claim is this attempt's only account"; return 0; }
+  out=$(fm_launch_record check --helper "$(pe_launch_subject "$id")" 2>/dev/null)
+  rc=$?
+  case "$rc" in
+    0) ;;
+    3)
+      pid=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid=//p' | head -n 1)
+      if [ -n "$pid" ] && fm_pid_alive "$pid"; then
+        # The claim will refuse this fork; the running launch keeps its record.
+        pe_launch_note "runner pid $pid still runs for $id; this attempt is not a new launch"
+        return 0
+      fi
+      if [ -n "$pid" ]; then
+        pe_launch "$id" exit --current --reason "runner pid $pid gone at the next start (observed)" >/dev/null || true
+      else
+        pe_launch "$id" reconcile --current --verdict launcher-gone --evidence "fork interrupted before the runner claimed the source" >/dev/null || true
+      fi
+      ;;
+    *) pe_launch_note "unreadable (rc $rc); the claim is this attempt's only account"; return 0 ;;
+  esac
+  while IFS= read -r line; do
+    launcher_args+=("$line")
+  done < <(fm_launch_record_launcher_args)
+  out=$(fm_launch_record intend --helper "$(pe_launch_subject "$id")" --owner fm-procevent.sh --origin "$mode" \
+    "${launcher_args[@]}" --field "label=$id" 2>&1) \
+    || { pe_launch_note "intent not recorded for $id (${out:-no detail}); the claim is this attempt's only account"; return 0; }
+  FM_PROCEVENT_LAUNCH_ID=${out##*launch=}
+  FM_PROCEVENT_LAUNCH_ID=${FM_PROCEVENT_LAUNCH_ID%%[[:space:]]*}
+  export FM_PROCEVENT_LAUNCH_ID
+}
+pe_launch_claimed() {  # <source-id> - the child, after its claim: pid plus identity
+  local digest='' identity
+  [ -n "${FM_PROCEVENT_LAUNCH_ID:-}" ] || return 0
+  identity=$(fm_pid_identity "$$" 2>/dev/null || true)
+  [ -z "$identity" ] || digest=$(printf '%s' "$identity" | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())' 2>/dev/null || true)
+  pe_launch "$1" created --launch "$FM_PROCEVENT_LAUNCH_ID" --identity-source process --identity "pid=$$" ${digest:+--identity "pid_identity_sha256=$digest"} >/dev/null \
+    || pe_launch_note "created not recorded for $1"
+}
+pe_launch_started() {  # <source-id> - the long wait is about to begin
+  [ -n "${FM_PROCEVENT_LAUNCH_ID:-}" ] || return 0
+  pe_launch "$1" ready --launch "$FM_PROCEVENT_LAUNCH_ID" --source runner-claimed >/dev/null \
+    || pe_launch_note "start not recorded for $1"
+}
+pe_launch_refused() {  # <source-id> <reason> - the claim was held; nothing ran
+  [ -n "${FM_PROCEVENT_LAUNCH_ID:-}" ] || return 0
+  pe_launch "$1" fail --launch "$FM_PROCEVENT_LAUNCH_ID" --reason "$2" --effect none >/dev/null || true
+  FM_PROCEVENT_LAUNCH_ID=
+}
+pe_launch_exit() {  # <source-id> <code>
+  [ -n "${FM_PROCEVENT_LAUNCH_ID:-}" ] || return 0
+  pe_launch "$1" exit --launch "$FM_PROCEVENT_LAUNCH_ID" --reason "runner finished" --code "$2" >/dev/null || true
+  FM_PROCEVENT_LAUNCH_ID=
+}
+pe_launch_retire() {  # <source-id> - the source is gone; its record leaves with it
+  local subject
+  subject=$(pe_launch_subject "$1")
+  fm_launch_record retire --helper "$subject" --current --reason "source retired" >/dev/null 2>&1 || true
+  rm -f -- "$STATE/.launch-$subject" "$STATE/.launch-$subject.lock" 2>/dev/null || true
+  rmdir -- "$STATE/.launch-$subject.lock" 2>/dev/null || true
+}
 
 REG=$(fm_procevent_registry_dir "$STATE")
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
@@ -621,6 +712,7 @@ isolate_runner() {  # <wait|detach> <source-id>
     my $status = $?;
     exit(128 + ($status & 127)) if $status & 127;
     exit($status >> 8);'
+  pe_launch_intend "$id" "$mode"
   if [ "$mode" = wait ]; then
     exec perl -e "$program" "$mode" "$SCRIPT_DIR/fm-procevent.sh" _start "$id"
   fi
@@ -708,13 +800,15 @@ cmd_start() {
     0) ;;
     2)
       claim_home=${FM_PROCEVENT_CLAIM_HOME:-}
+      pe_launch_refused "$id" "source already owned by ${claim_home:-unknown}; this runner ran nothing"
       [ -n "$claim_home" ] && [ "$claim_home" = "$FM_HOME" ] \
         || die "source is already owned by another home: ${claim_home:-unknown}"
       printf 'already owned: %s\n' "$id"
       exit 0
       ;;
-    *) die "cannot claim source: $id" ;;
+    *) pe_launch_refused "$id" "the source could not be claimed; this runner ran nothing"; die "cannot claim source: $id" ;;
   esac
+  pe_launch_claimed "$id"
   CLAIM_ID=$id
   CLAIM_HOME=$FM_HOME
   CLAIM_PID=$$
@@ -722,6 +816,7 @@ cmd_start() {
   CLAIM_REG_IDENTITY=$FM_PROCEVENT_CLAIM_REG_IDENTITY
   STAGED_OUTPUT=
   release_start_claim() {
+    pe_launch_exit "$CLAIM_ID" "$?"
     extension_lifecycle_lock_release 2>/dev/null || true
     [ -z "$STAGED_OUTPUT" ] || rm -f -- "$STAGED_OUTPUT"
     fm_procevent_source_lock_acquire "$CLAIM_ID" 2>/dev/null || return 0
@@ -775,6 +870,7 @@ cmd_start() {
   # sentinel defined while sharing the no-result branch below under `set -u`.
   local truncated=0 capture_state='' durable='' reservation_terminal='' reservation_silent=''
   if [ "$extension_owner" -eq 1 ]; then
+    pe_launch_started "$id"
     capture_state=$(perl "$SCRIPT_DIR/fm-procevent-extension-capture.pl" \
       9 8 6 "$id" "$adapter" "$FM_PROCEVENT_EXTENSION_ID" \
       "$FM_PROCEVENT_EXTENSION_VERSION" "$FM_PROCEVENT_EXTENSION_CAPABILITY_VERSION" \
@@ -798,6 +894,7 @@ EOF
     [ ! -e "$out" ] && [ ! -L "$out" ] || die "cannot safely stage output"
     (umask 077; : > "$out") || die "cannot stage output"
     STAGED_OUTPUT=$out
+    pe_launch_started "$id"
     "${ARGV[@]}" 2>/dev/null | perl -e '
       use strict;
       use warnings;
@@ -939,6 +1036,7 @@ retire_owned_terminal_source() {  # <source-id>
     && fm_procevent_claim_mark_terminal_locked "$id" "$CLAIM_HOME" "$CLAIM_PID" "$CLAIM_TOKEN"; then
     if rm -f -- "$registration" && [ ! -e "$registration" ] && [ ! -L "$registration" ]; then
       fm_procevent_claim_release_locked "$id" "$CLAIM_HOME" "$CLAIM_PID" "$CLAIM_TOKEN" || status=1
+      pe_launch_retire "$id"
     else
       status=1
     fi
@@ -1282,6 +1380,7 @@ cmd_retire() {
   fi
   rm -f -- "$(source_file "$id")"
   rm -f -- "$(runner_file "$id")"
+  pe_launch_retire "$id"
   fm_procevent_source_lock_release "$id"
   # A retired source produces no further answer, so drop any decision binding it
   # carried. Generic and idempotent: the binding owner is asked to forget this

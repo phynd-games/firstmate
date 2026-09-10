@@ -15,6 +15,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=bin/fm-wake-lib.sh disable=SC1091
+FM_WAKE_LIB_NO_STATE_MKDIR=1 . "$ROOT/bin/fm-wake-lib.sh"
 
 READER="$ROOT/bin/fm-docs-reader.sh"
 TMP_ROOT=$(fm_test_tmproot fm-docs-reader)
@@ -598,6 +600,82 @@ test_ensure_converges_theme_on_live_reader() {
   pass "ensure converges a changed theme override into the running reader without a restart"
 }
 
+# The reader's launch record (bin/fm-launch-record.py) and identity binding:
+# intent is on disk before the server process exists, the owner record carries
+# the process's start identity and the launch record its digest, readiness is
+# the token probe, stop and an observed death are recorded, a legacy record
+# without identity is upgraded from the token probe rather than trusted, and a
+# recycled pid carrying another identity is never signaled.
+test_launch_record_and_identity_binding() {
+  local home base pid identity recorded wrap="$TMP_ROOT/wrap-observe" real_python first sleeper line
+  home=$(new_home launch-record)
+  real_python=$(command -v python3)
+  mkdir -p "$wrap"
+  cat > "$wrap/python3" <<'SH'
+#!/usr/bin/env bash
+# Observe, at every launch-record call, whether this home's mkdocs already runs.
+running=no
+pgrep -f "mkdocs serve -f ${FM_TEST_OBSERVE_CONFIG:?}" >/dev/null 2>&1 && running=yes
+for a in "$@"; do
+  case "$a" in intend|created|ready|stop|exit) printf '%s mkdocs_running=%s\n' "$a" "$running" >> "${FM_TEST_OBSERVE_LOG:?}"; break ;; esac
+done
+exec "${FM_TEST_REAL_PYTHON:?}" "$@"
+SH
+  chmod +x "$wrap/python3"
+  : > "$home/observe.log"
+  base=$(FM_TEST_OBSERVE_CONFIG="$home/state/docs-reader/mkdocs.yml" FM_TEST_OBSERVE_LOG="$home/observe.log" \
+    FM_TEST_REAL_PYTHON="$real_python" FM_LAUNCH_RECORD_PYTHON="$wrap/python3" ensure_url "$home")
+  grep -q '^intend mkdocs_running=no$' "$home/observe.log" || fail "the intent must be recorded before the reader process exists: $(cat "$home/observe.log")"
+  grep -q '^ready mkdocs_running=yes$' "$home/observe.log" || fail "readiness must be recorded while the reader runs (positive control): $(cat "$home/observe.log")"
+  pid=$(awk -F= '$1 == "pid" {print $2}' "$home/state/.docs-reader")
+  recorded=$(awk -F= '$1 == "pid_identity" {sub(/^[^=]*=/, ""); print}' "$home/state/.docs-reader")
+  identity=$(fm_pid_identity "$pid")
+  [ -n "$recorded" ] || fail "the owner record must carry the reader's start identity"
+  [ "$recorded" = "$identity" ] || fail "the recorded identity must equal fm_pid_identity of the reader pid"
+  launch() { python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" get --helper docs-reader "$1" 2>/dev/null; }
+  [ "$(launch launch.phase)" = ready ] || fail "the launch record must read ready, got '$(launch launch.phase)'"
+  [ "$(launch launch.identity.pid)" = "$pid" ] || fail "the launch record must bind the reader pid"
+  [ "$(launch launch.readiness.source)" = loopback-token-probe ] || fail "readiness must come from the token probe"
+  grep -q "$(printf '%s' "$identity" | cut -c1-24)" "$home/state/.launch-docs-reader" && fail "the launch record must hold only a digest of the identity"
+  [ "$(launch launch.identity.pid_identity_sha256)" = "$(printf '%s' "$identity" | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode()).hexdigest())')" ] \
+    || fail "the launch record digest must be the sha256 of the recorded identity"
+  first=$(launch launch.id)
+  # A deliberate stop.
+  reader "$home" stop >/dev/null || fail "stop failed"
+  [ "$(launch launch.phase)" = stopped ] || fail "stop must record stopped, got '$(launch launch.phase)'"
+  kill -0 "$pid" 2>/dev/null && fail "stop must end the reader"
+  # A reader that died: the next ensure records the observed exit and a new launch.
+  base=$(ensure_url "$home")
+  pid=$(awk -F= '$1 == "pid" {print $2}' "$home/state/.docs-reader")
+  kill "$pid"
+  wait_until 10 sh -c "! kill -0 $pid 2>/dev/null" || fail "could not end the reader for the exit case"
+  base=$(ensure_url "$home")
+  python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" show --helper docs-reader | grep -q 'previous launch=.* phase=exited' \
+    || fail "a dead reader must be recorded as an observed exit before its replacement"
+  [ "$(launch launch.phase)" = ready ] || fail "the replacement must read ready"
+  # A legacy owner record without identity, naming the live reader: ensure
+  # upgrades it from the token probe instead of starting a second server.
+  pid=$(awk -F= '$1 == "pid" {print $2}' "$home/state/.docs-reader")
+  sed -i.bak '/^pid_identity=/d' "$home/state/.docs-reader" && rm -f "$home/state/.docs-reader.bak"
+  [ "$(ensure_url "$home")" = "$base" ] || fail "a legacy record for the live reader must keep the URL"
+  [ "$(awk -F= '$1 == "pid" {print $2}' "$home/state/.docs-reader")" = "$pid" ] || fail "a legacy record must be adopted, not replaced by a second server"
+  [ "$(awk -F= '$1 == "pid_identity" {sub(/^[^=]*=/, ""); print}' "$home/state/.docs-reader")" = "$(fm_pid_identity "$pid")" ] || fail "the adopted record must gain the live reader's identity"
+  # A recycled pid: a live process with the recorded pid but another start
+  # identity is never signaled, and the record is forgotten.
+  reader "$home" stop >/dev/null || fail "stop failed"
+  sleep 300 &
+  sleeper=$!
+  printf 'pid=%s\npid_identity=%s\nport=1\nurl=http://127.0.0.1:1/\nhome=%s\nconfig=%s\npython=%s\nstarted=0\n' \
+    "$sleeper" "some other process identity" "$(cd -P "$home" && pwd -P)" "$home/state/docs-reader/mkdocs.yml" "$FM_DOCS_READER_PYTHON" \
+    > "$home/state/.docs-reader"
+  line=$(reader "$home" stop)
+  kill -0 "$sleeper" 2>/dev/null || fail "stop signaled a recycled pid whose identity does not match: $line"
+  assert_contains "$line" "process untouched" "stop must leave a non-matching identity alone: $line"
+  [ ! -e "$home/state/.docs-reader" ] || fail "the non-matching record must be dropped"
+  kill "$sleeper" 2>/dev/null || true
+  pass "the reader records intent before its process, binds pid plus start identity, and records stop and observed exit"
+}
+
 test_url_helper_path_safety
 test_active_content_is_inert
 test_serves_only_markdown_and_images
@@ -608,4 +686,5 @@ test_no_writes_into_data_and_source_unchanged
 test_disabled_paths_print_no_url
 test_navigation_scales_with_inventory
 test_ensure_converges_theme_on_live_reader
+test_launch_record_and_identity_binding
 test_install_from_pinned_requirements

@@ -203,6 +203,7 @@ herdr_pane_id=<pane-id>
 A Herdr pane id contains a colon, so the adapter splits `window=` on the first colon only.
 The recorded pane is the operational fast path.
 Workspace and tab ids support verification and cleanup but are not inferred from mutable labels during normal operation.
+The task's launch record (`state/<id>.launch`) holds the same exact ids from the moment Herdr returned them, plus the intent that preceded the create request and the readiness and terminal outcomes that followed; [`launch-records.md`](launch-records.md) owns that contract and the adapter's `fm_backend_herdr_create_note` is the seam that reports an issued create and its ids to the launch owner.
 
 ## Current transport behavior
 
@@ -325,6 +326,7 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - Ghost and placeholder recognition uses ANSI de-emphasis when available; an unstyled glyph row carrying trailing non-idle text fails safely to `unknown`.
 - Mid-session secondmate agent-process liveness is not implemented.
 - Only a Herdr pane can host the away-mode supervisor terminal.
+- A create request carries no client id, so a lost `tab create` or `workspace create` response can leave a created container; the launch record keeps that as an uncertain outcome and the next launch settles it from the exact recorded or exact-label pane ([`launch-records.md`](launch-records.md)).
 
 ## Regression entry points
 

@@ -185,6 +185,8 @@ Signalling that group is safe precisely because only an absent leader reaches th
 This was found by four orphaned runners, elapsed 6-13 minutes, left by a suite whose fixture source never completed.
 `tests/fm-procevent.test.sh` now covers both paths, and three consecutive suite runs leave zero runners, zero fixture children, and zero stray claims.
 
+Each runner start also leaves a launch record (`state/.launch-procevent-<source>-<checksum>`, [`../launch-records.md`](../launch-records.md)): intent before the fork, the claiming runner's pid and start identity, readiness when the long wait actually begins (a result is completion, not a start), the exit code, and a failed-with-no-effect outcome for a fork the claim refused; retiring the source removes the record.
+
 ## Portability finding
 
 `setsid` is **not present on macOS**, so it cannot establish the runner's process group.

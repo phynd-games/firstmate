@@ -34,6 +34,7 @@ A no-mistakes run matched to the crew's branch and current code remains authorit
 
 When no authoritative run accounts for the task, inspect only its recorded backend and worktree inventory.
 Use the Herdr-owned endpoint and worktree checks through `bin/fm-crew-state.sh` and the exact task metadata.
+Read the task's launch record with `bin/fm-launch-record.py --home <home> show --task <id>` for the exact endpoint it bound, its readiness verdict, and any open obligation from an interrupted launch; a live agent on that pane refuses a second spawn, so recover through relaunch or teardown rather than launching again (`docs/launch-records.md`).
 Herdr is the sole supported runtime; legacy tmux, zellij, cmux, and Orca records are read-only and must not be operated or probed through their retained adapters.
 Do not sweep another home's endpoints or infer ownership from a matching window label.
 

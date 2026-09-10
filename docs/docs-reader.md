@@ -31,7 +31,8 @@ MkDocs with nh3 and Pygments is 18 pinned packages and roughly 60 MB resident, a
 - Live updates: creating, editing, renaming, or deleting a Markdown file anywhere under `data/`, including in a new folder, updates the pages and navigation without a restart, and the browser reloads on its own.
 - Stable per-file URLs: `data/<dir>/<name>.md` is `/<dir>/<name>/`, and `index.md` or `README.md` is its directory's URL, so relative `.md` links and `#anchors` between reports work.
 - No writes into `data/`: the configuration, theme override, runtime, and log live under `state/docs-reader/`, and the built site lives in a private temporary directory.
-- Nothing unidentified is ever stopped: the reader signals only a process it can prove is its own MkDocs server for this home.
+- Nothing unidentified is ever stopped: the reader signals only a process whose pid and start identity match what it recorded when it started or adopted that server, never a pid or command-name match alone; a record written before identity was captured is upgraded only when the recorded port answers with this home's token.
+- Every start is accountable: the reader's launch record (`state/.launch-docs-reader`, [`launch-records.md`](launch-records.md)) holds the intent before the process is forked, the pid plus identity digest once it exists, readiness from the token probe, and the stop or observed exit that ended it.
 - Updates converge in place: `ensure` re-copies the tracked theme override and regenerates the configuration only when their content changed, and the configuration carries a digest of the override, so a running reader rebuilds with a new override on its own instead of needing a restart.
 
 ## Runtime and installation

@@ -63,6 +63,8 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-launch-record-lib.sh
+. "$SCRIPT_DIR/fm-launch-record-lib.sh"
 
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 WATCH_LOCK="$STATE/.watch.lock"
@@ -84,6 +86,94 @@ CYCLE_LOG_LOCK="$STATE/.watch-cycle-exits.lock"
 CYCLE_LOG_MAX_BYTES=${FM_WATCH_CYCLE_LOG_MAX_BYTES:-262144}
 CYCLE_LOG_KEEP_LINES=${FM_WATCH_CYCLE_LOG_KEEP_LINES:-1000}
 ARM_PID=${BASHPID:-$$}
+
+# --- launch record: durable attempt accounting for every forked cycle ------
+# The singleton lock and the cycle ledger stay the watcher's authority for
+# duplicates and outcomes; the launch record (state/.launch-watcher,
+# docs/launch-records.md) adds the one thing they cannot: an account written
+# BEFORE the fork, so an arm interrupted before its child claims the lock still
+# leaves evidence of the attempt. The successor chain is kept as it is: a
+# successor supersedes the running predecessor's launch instead of being
+# refused as a duplicate, and the predecessor's real exit is annotated later.
+# Recording never blocks arming - an unrecordable attempt is noted on stderr
+# and in this cycle's ledger reason - because losing supervision to a record
+# failure would be the larger loss; the ledger row remains its account.
+WA_LAUNCH_ID=
+WA_LAUNCH_UNRECORDED=0
+wa_launch() {  # <command> [args...]
+  local command=$1
+  shift
+  fm_launch_record "$command" --helper watcher "$@" 2>/dev/null
+}
+wa_launch_note() {
+  printf 'watcher: launch record: %s\n' "$1" >&2
+}
+wa_identity_digest() {  # <pid> -> sha256 of fm_pid_identity, or empty
+  local identity
+  identity=$(fm_pid_identity "$1" 2>/dev/null || true)
+  [ -n "$identity" ] || return 0
+  printf '%s' "$identity" | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())' 2>/dev/null || true
+}
+wa_launch_intend() {
+  local out rc line pid digest origin=cycle
+  local -a launcher_args=()
+  fm_launch_record_available >/dev/null 2>&1 || { WA_LAUNCH_UNRECORDED=1; wa_launch_note "unavailable (python3 or owner missing); the cycle ledger is this attempt's only account"; return 0; }
+  out=$(fm_launch_record check --helper watcher 2>/dev/null)
+  rc=$?
+  case "$rc" in
+    0) ;;
+    3)
+      pid=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid=//p' | head -n 1)
+      digest=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid_identity_sha256=//p' | head -n 1)
+      if [ -n "$pid" ] && fm_pid_alive "$pid" && [ -n "$digest" ] && [ "$(wa_identity_digest "$pid")" = "$digest" ]; then
+        wa_launch supersede --current --reason "successor cycle armed by arm $ARM_PID while watcher pid $pid still runs" >/dev/null \
+          || { WA_LAUNCH_UNRECORDED=1; wa_launch_note "the running predecessor's launch could not be superseded"; return 0; }
+      elif [ -n "$pid" ]; then
+        wa_launch exit --current --reason "watcher pid $pid gone at the next arm (observed)" >/dev/null \
+          || { WA_LAUNCH_UNRECORDED=1; wa_launch_note "the previous cycle's exit could not be recorded"; return 0; }
+      else
+        wa_launch reconcile --current --verdict launcher-gone --evidence "arm interrupted before its child was recorded; the singleton lock holds no such child" >/dev/null \
+          || { WA_LAUNCH_UNRECORDED=1; wa_launch_note "the interrupted attempt could not be reconciled"; return 0; }
+      fi
+      ;;
+    *) WA_LAUNCH_UNRECORDED=1; wa_launch_note "unreadable (rc $rc); the cycle ledger is this attempt's only account"; return 0 ;;
+  esac
+  [ -z "${FM_WATCH_PREDECESSOR_ARM_PID:-}" ] || origin=successor
+  while IFS= read -r line; do
+    launcher_args+=("$line")
+  done < <(fm_launch_record_launcher_args)
+  out=$(fm_launch_record intend --helper watcher --owner fm-watch-arm.sh --origin "$origin" "${launcher_args[@]}" \
+    ${FM_WATCH_PREDECESSOR_ARM_PID:+--field "predecessor=$FM_WATCH_PREDECESSOR_ARM_PID"} 2>&1) \
+    || { WA_LAUNCH_UNRECORDED=1; wa_launch_note "intent not recorded (${out:-no detail}); the cycle ledger is this attempt's only account"; return 0; }
+  WA_LAUNCH_ID=${out##*launch=}
+  WA_LAUNCH_ID=${WA_LAUNCH_ID%%[[:space:]]*}
+}
+wa_launch_created() {  # <child-pid> <child-identity>
+  local digest=''
+  [ -n "$WA_LAUNCH_ID" ] || return 0
+  [ -z "$2" ] || digest=$(printf '%s' "$2" | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())' 2>/dev/null || true)
+  wa_launch created --launch "$WA_LAUNCH_ID" --identity-source process --identity "pid=$1" ${digest:+--identity "pid_identity_sha256=$digest"} >/dev/null \
+    || wa_launch_note "created not recorded for launch $WA_LAUNCH_ID"
+}
+wa_launch_ready() {
+  [ -n "$WA_LAUNCH_ID" ] || return 0
+  wa_launch ready --launch "$WA_LAUNCH_ID" --source watcher-beacon >/dev/null \
+    || wa_launch_note "ready not recorded for launch $WA_LAUNCH_ID"
+}
+wa_launch_outcome() {  # <exit-code> <reason>
+  [ -n "$WA_LAUNCH_ID" ] || return 0
+  case "$2" in
+    *unconfirmed*|*abandon*)
+      wa_launch fail --launch "$WA_LAUNCH_ID" --reason "$2" --effect unknown >/dev/null \
+        || wa_launch_note "uncertain outcome not recorded for launch $WA_LAUNCH_ID"
+      ;;
+    *)
+      wa_launch exit --launch "$WA_LAUNCH_ID" --reason "$2" --code "$1" >/dev/null \
+        || wa_launch_note "exit not recorded for launch $WA_LAUNCH_ID"
+      ;;
+  esac
+  WA_LAUNCH_ID=
+}
 case "$CYCLE_LOG_MAX_BYTES" in ''|*[!0-9]*|0) CYCLE_LOG_MAX_BYTES=262144 ;; esac
 case "$CYCLE_LOG_KEEP_LINES" in ''|*[!0-9]*|0) CYCLE_LOG_KEEP_LINES=1000 ;; esac
 
@@ -158,6 +248,7 @@ cycle_signal_name() {
 cycle_log_append() {
   local exit_code=$1 signal=$2 reason=$3 successor=$4 ended_at beacon_age lock_after size tmp raw i
   [ "$cycle_active" -eq 1 ] || return 0
+  [ "$WA_LAUNCH_UNRECORDED" -eq 0 ] || reason="$reason+launch-unrecorded"
   ended_at=$(date +%s)
   beacon_age=$(fm_path_age "$BEAT")
   lock_after=$(lock_snapshot)
@@ -198,6 +289,7 @@ cycle_log_append() {
       ;;
   esac
   fm_lock_release "$CYCLE_LOG_LOCK"
+  [ "$cycle_origin" = attached ] || wa_launch_outcome "$exit_code" "$reason"
   cycle_active=0
 }
 
@@ -703,6 +795,7 @@ child_out=$(mktemp "$STATE/.watch-arm-output.XXXXXX") || {
   echo "watcher: FAILED - no live watcher with a fresh beacon"
   exit 1
 }
+wa_launch_intend
 if [ -n "${FM_WATCH_PREDECESSOR_ARM_PID:-}" ]; then
   FM_WATCH_HANDLING_SUCCESSOR=1 "$WATCH" >"$child_out" &
 else
@@ -710,6 +803,7 @@ else
 fi
 child=$!
 child_identity=$(fm_pid_identity "$child" 2>/dev/null || true)
+wa_launch_created "$child" "$child_identity"
 cycle_begin "$child" started "$child_identity"
 child_done=0
 
@@ -790,6 +884,7 @@ while :; do
         exit 1
       fi
       cycle_mark_predecessor_successor "started:$child"
+      wa_launch_ready
       if [ -n "$handling_generation" ]; then
         echo "watcher: started pid=$child (beacon fresh) recovery-generation=$handling_generation"
       else

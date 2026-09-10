@@ -71,6 +71,9 @@ It is not deterministic across the verified adapters: codex and grok resume only
 4. **Stop the old agent** through the `exit` verb, with its postcondition.
 5. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which adopts the recorded endpoint and worktree instead of creating either, clears the previous harness's per-task wiring, and arms a fresh busy generation.
 
+The task's launch record follows the same transaction: the proven stop in step 4 records the previous launch as stopped, and the replacement is a new launch with `origin=relaunch` bound to the same endpoint, so a failed replacement never reads as a running agent ([`launch-records.md`](launch-records.md)).
+`exit` records a stopped outcome after its postcondition is proven; a record write failure is reported, never hidden.
+
 Switching harness is therefore one ordinary relaunch rather than a separate mechanism.
 
 ### Failure and rollback

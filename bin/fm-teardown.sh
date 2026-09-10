@@ -169,6 +169,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-launch-record-lib.sh
+. "$SCRIPT_DIR/fm-launch-record-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-lock-lib.sh
@@ -692,11 +694,31 @@ remote_secondmate_teardown() {
   grep -vE "^- $ID( |$)" "$SECONDMATE_REG" > "$tmp" || true
   mv -f -- "$tmp" "$SECONDMATE_REG"
   status_retire_presentation_task "$STATE" "$ID" || return 1
+  teardown_retire_launch_record
   fm_backlog_atomic_transition remove "$STATE/$ID.meta" "task record" "$STATE" || return 1
   rm -f -- "$STATE/$ID.turn-ended" "$STATE/$ID.validation-loop" \
-    "$STATE/.branch-note-sig-$ID"
+    "$STATE/.branch-note-sig-$ID" "$STATE/$ID.launch"
+  rm -rf -- "$STATE/$ID.launch.lock"
   printf 'teardown %s complete (remote %s:%s)\n' "$ID" "$remote_host" "$remote_home"
   return 0
+}
+
+# teardown_retire_launch_record: the task's launch record (bin/fm-launch-record.py
+# owns the contract) gets its retired outcome before the record leaves with the
+# other volatile task state below. Teardown has already proven the endpoint gone
+# or refused, so the record is evidence, never the cleanup authority; a task
+# launched before the contract simply has none.
+teardown_retire_launch_record() {
+  local out rc
+  [ -e "$STATE/$ID.launch" ] || return 0
+  set +e
+  out=$(fm_launch_record retire --task "$ID" --current --reason "teardown" 2>&1)
+  rc=$?
+  set -e
+  case "$rc" in
+    0|3) ;;
+    *) echo "warning: task $ID's launch record could not record its retirement (${out:-no detail}); the record is removed with the task's other runtime state" >&2 ;;
+  esac
 }
 
 remote_secondmate_herdr_preflight() {
@@ -3006,7 +3028,9 @@ fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 status_retire_presentation_task "$STATE" "$ID" || exit 1
-rm -f "$STATE/$ID.turn-ended" \
+teardown_retire_launch_record
+rm -rf "$STATE/$ID.launch.lock"
+rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.launch" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
   "$STATE/$ID.muse-session-current" "$STATE/$ID.cursor-session" \

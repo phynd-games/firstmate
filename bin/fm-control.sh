@@ -126,6 +126,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-launch-record-lib.sh
+. "$SCRIPT_DIR/fm-launch-record-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
@@ -466,6 +468,25 @@ verify_interrupt_running() {
     proof=agent-alive
   fi
   printf '%s' "$proof"
+}
+
+# control_record_stop: a deliberate stop through this plane closes the task's
+# open launch record (bin/fm-launch-record.py owns the contract). The agent
+# state proven above is the authority; the record is the retained outcome. A
+# task launched before the contract has no record, and a record already
+# settled reports nothing - neither is a failure. A write failure is reported,
+# never hidden, because a record still reading ready after a proven stop is
+# what the next launcher would otherwise have to reconcile from native state.
+control_record_stop() {  # <reason>
+  local out rc
+  set +e
+  out=$(fm_launch_record stop --task "$ID" --current --reason "$1" 2>&1)
+  rc=$?
+  set -e
+  case "$rc" in
+    0|3) ;;
+    *) echo "warning: task $ID's launch record could not record the stop (${out:-no detail}); reconcile $STATE/$ID.launch by hand" >&2 ;;
+  esac
 }
 
 do_interrupt() {
@@ -866,6 +887,7 @@ do_relaunch() {
   journal_write stopping "${CHECKPOINT_LINES[@]}" "$note_line"
   exit_result=$(do_exit)
   journal_write exited "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
+  control_record_stop "fm-control relaunch stopped the previous agent ($exit_result)"
 
   # The launch owner (fm-spawn --relaunch) clears the previous incarnation's
   # per-task harness wiring before arming the new one, so nothing to do here.
@@ -914,6 +936,7 @@ case "$VERB" in
     ;;
   exit)
     result=$(do_exit)
+    control_record_stop "fm-control exit ($result)"
     echo "$result $ID harness=$HARNESS backend=$BACKEND endpoint=$T worktree=$WT"
     ;;
   relaunch)

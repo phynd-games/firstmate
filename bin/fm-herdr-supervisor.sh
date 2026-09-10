@@ -78,6 +78,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 . "$SCRIPT_DIR/fm-supervision-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-launch-record-lib.sh
+. "$SCRIPT_DIR/fm-launch-record-lib.sh"
 
 RECORD="$STATE/.herdr-supervisor"
 # The loop publishes its own process identity to a SEPARATE file. Two writers
@@ -1079,6 +1081,72 @@ shell_quote() {
   printf "'"
 }
 
+# --- launch record mirror -------------------------------------------------------
+# bin/fm-launch-record.py owns the fleet-wide launch-record contract. This
+# script's own pending-cleanup record is, and stays, the cleanup authority for
+# its exact workspace; the launch record is the uniform retained outcome the
+# rest of the fleet inspects (intent before create, native ids, readiness,
+# failed/stopped/exited). Because the owner-native intent already refuses
+# creation when it cannot be persisted, the mirror is best-effort: a mirror
+# write failure is ledgered, never a second reason to refuse continuity.
+hs_launch() {  # <command> [args...]
+  local command=$1
+  shift
+  fm_launch_record "$command" --helper herdr-supervisor "$@" >/dev/null 2>&1
+}
+
+hs_launch_settle_open() {  # <reason> - close any open launch as an observed exit
+  local out rc
+  out=$(fm_launch_record check --helper herdr-supervisor 2>/dev/null)
+  rc=$?
+  [ "$rc" -eq 3 ] || return 0
+  hs_launch exit --current --reason "$1" || hs_launch reconcile --current --verdict manual --evidence "$1" || true
+}
+
+hs_launch_intend() {  # <generation>
+  local out line
+  local -a launcher_args=()
+  fm_launch_record_available >/dev/null 2>&1 || { ledger_append launch-record "unavailable: python3 or owner missing"; return 0; }
+  hs_launch_settle_open "superseded by a new establish (generation $1)"
+  while IFS= read -r line; do
+    launcher_args+=("$line")
+  done < <(fm_launch_record_launcher_args)
+  out=$(fm_launch_record intend --helper herdr-supervisor --owner fm-herdr-supervisor.sh --origin ensure \
+    "${launcher_args[@]}" --field "generation=$1" 2>&1) || {
+    ledger_append launch-record "intent not recorded: $(ledger_clean_field "$out")"
+    return 0
+  }
+  HS_LAUNCH_ID=${out##*launch=}
+  HS_LAUNCH_ID=${HS_LAUNCH_ID%%[[:space:]]*}
+}
+
+hs_launch_created() {  # <workspace> <tab> <pane>
+  [ -n "${HS_LAUNCH_ID:-}" ] || return 0
+  hs_launch created --launch "$HS_LAUNCH_ID" --identity-source native-response \
+    --identity backend=herdr --identity "session=$HS_SESSION" --identity "socket_identity=$HS_SOCKET_IDENTITY" \
+    --identity "workspace_id=$1" --identity "tab_id=$2" --identity "pane_id=$3" \
+    || ledger_append launch-record "created not recorded for launch $HS_LAUNCH_ID"
+}
+
+hs_launch_ready() {  # <loop-pid>
+  [ -n "${HS_LAUNCH_ID:-}" ] || return 0
+  hs_launch ready --launch "$HS_LAUNCH_ID" --source herdr-pane-process-info --field "status=loop-pid-$1" \
+    || ledger_append launch-record "ready not recorded for launch $HS_LAUNCH_ID"
+}
+
+hs_launch_failed() {  # <reason>
+  local effect=cleaned
+  [ -n "${HS_LAUNCH_ID:-}" ] || return 0
+  if [ -f "$PENDING" ] || [ -f "$RECORD" ]; then
+    effect=unknown
+  fi
+  hs_launch fail --launch "$HS_LAUNCH_ID" --reason "$1" --effect "$effect" \
+    || ledger_append launch-record "failure not recorded for launch $HS_LAUNCH_ID"
+  HS_LAUNCH_ID=
+}
+
+HS_LAUNCH_ID=
+
 establish() {  # <reason>
   local reason=$1 generation out workspace tab pane cmd deadline pid detail label
 
@@ -1119,6 +1187,7 @@ establish() {  # <reason>
     echo "herdr-supervisor: FAILED - the supervisor create intent could not be persisted" >&2
     return 1
   }
+  hs_launch_intend "$generation"
 
   out=$(hs_herdr "$HS_SESSION" workspace create \
     --cwd "$FM_ROOT" --label "$label" --no-focus 2>/dev/null) || out=
@@ -1189,6 +1258,7 @@ establish() {  # <reason>
     echo "herdr-supervisor: FAILED - the supervisor record could not be updated" >&2
     return 1
   }
+  hs_launch_created "$workspace" "$tab" "$pane"
   pending_clear || true
 
   # `exec` so the pane's tracked foreground process IS the loop: Herdr's own
@@ -1270,6 +1340,7 @@ establish() {  # <reason>
     if [ "$(record_get generation || printf '')" = "$generation" ] && supervisor_healthy; then
       ledger_append established "generation=$generation pane=$pane workspace=$workspace"
       pid=$(live_get loop_pid || printf '')
+      hs_launch_ready "$pid"
       echo "herdr-supervisor: started generation=$generation pane=$pane pid=$pid"
       return 0
     fi
@@ -1410,6 +1481,7 @@ retire_binding_locked() {  # <reason> [signal-owner]
   fi
   pending_clear || true
   ledger_append retired "$reason"
+  hs_launch stop --current --reason "retired: $(ledger_clean_field "$reason")" || true
   rm -f "$HEARTBEAT" 2>/dev/null || true
   launcher_clear
   return 0
@@ -1590,6 +1662,7 @@ cmd_ensure() {  # <reason>
     return 0
   fi
   ledger_append establish-required "${HS_UNHEALTHY_REASON:-unknown}"
+  hs_launch_settle_open "supervisor unhealthy at ensure: $(ledger_clean_field "${HS_UNHEALTHY_REASON:-unknown}")"
   if ! reconcile_previous_locked; then
     fm_lock_release "$RECORD_LOCK"
     fm_lock_release "$SUPERVISION_CLAIM"
@@ -1597,6 +1670,7 @@ cmd_ensure() {  # <reason>
   fi
   establish "$reason (${HS_UNHEALTHY_REASON:-no prior record})"
   rc=$?
+  [ "$rc" -eq 0 ] || hs_launch_failed "establish failed (rc $rc)"
   fm_lock_release "$RECORD_LOCK"
   fm_lock_release "$SUPERVISION_CLAIM"
   return "$rc"
@@ -2258,6 +2332,72 @@ session_owner_identity() {
   printf '%s\t%s' "$pid" "$(fm_pid_identity "$pid" 2>/dev/null || printf '')"
 }
 
+# The monitor's launch record (bin/fm-launch-record.py): intent before the
+# detach, pid plus start identity once its own record proves it healthy, and
+# an observed exit when it stands down. Best-effort like the supervisor's own
+# mirror above; the monitor record and lock stay the operational authority.
+HS_MONITOR_LAUNCH_ID=
+
+hs_monitor_launch() {  # <command> [args...]
+  local command=$1
+  shift
+  fm_launch_record "$command" --helper herdr-supervisor-monitor "$@" >/dev/null 2>&1
+}
+
+hs_monitor_launch_intend() {
+  local out line pid digest current
+  local -a launcher_args=()
+  HS_MONITOR_LAUNCH_ID=
+  fm_launch_record_available >/dev/null 2>&1 || return 0
+  out=$(fm_launch_record check --helper herdr-supervisor-monitor 2>/dev/null)
+  if [ $? -eq 3 ]; then
+    pid=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid=//p' | head -n 1)
+    digest=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid_identity_sha256=//p' | head -n 1)
+    current=
+    if [ -n "$pid" ] && fm_pid_alive "$pid"; then
+      current=$(fm_pid_identity "$pid" 2>/dev/null | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().rstrip("\n").encode("utf-8","surrogateescape")).hexdigest())' 2>/dev/null)
+    fi
+    if [ -n "$digest" ] && [ "$current" = "$digest" ]; then
+      # The recorded monitor process is alive with its recorded identity but
+      # monitor_healthy said otherwise; leave the record for the operator.
+      ledger_append launch-record "monitor launch left open: recorded pid $pid still carries its identity"
+      return 0
+    fi
+    hs_monitor_launch exit --current --reason "monitor process gone before a new start (observed)" \
+      || hs_monitor_launch reconcile --current --verdict manual --evidence "open monitor launch without a provable process" || true
+  fi
+  while IFS= read -r line; do
+    launcher_args+=("$line")
+  done < <(fm_launch_record_launcher_args)
+  out=$(fm_launch_record intend --helper herdr-supervisor-monitor --owner fm-herdr-supervisor.sh --origin ensure \
+    "${launcher_args[@]}" 2>&1) || {
+    ledger_append launch-record "monitor intent not recorded: $(ledger_clean_field "$out")"
+    return 0
+  }
+  HS_MONITOR_LAUNCH_ID=${out##*launch=}
+  HS_MONITOR_LAUNCH_ID=${HS_MONITOR_LAUNCH_ID%%[[:space:]]*}
+}
+
+hs_monitor_launch_confirmed() {  # <pid> <pid-identity>
+  local digest
+  [ -n "$HS_MONITOR_LAUNCH_ID" ] || return 0
+  digest=$(printf '%s' "$2" | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())' 2>/dev/null)
+  if hs_monitor_launch created --launch "$HS_MONITOR_LAUNCH_ID" --identity-source process \
+      --identity "pid=$1" --identity "pid_identity_sha256=${digest:-unknown}"; then
+    hs_monitor_launch ready --launch "$HS_MONITOR_LAUNCH_ID" --source monitor-record-heartbeat \
+      || ledger_append launch-record "monitor launch $HS_MONITOR_LAUNCH_ID readiness could not be recorded"
+  else
+    ledger_append launch-record "monitor launch $HS_MONITOR_LAUNCH_ID identity could not be recorded"
+  fi
+}
+
+hs_monitor_launch_unconfirmed() {  # <reason>
+  [ -n "$HS_MONITOR_LAUNCH_ID" ] || return 0
+  hs_monitor_launch fail --launch "$HS_MONITOR_LAUNCH_ID" --reason "$1" --effect unknown \
+    || ledger_append launch-record "monitor launch $HS_MONITOR_LAUNCH_ID failure not recorded"
+  HS_MONITOR_LAUNCH_ID=
+}
+
 cmd_monitor() {  # <reason>
   local reason=$1 owner deadline
   if ! supervisor_eligible; then
@@ -2272,6 +2412,9 @@ cmd_monitor() {  # <reason>
     echo "herdr-supervisor: monitor not started - no live session owns this home" >&2
     return 1
   }
+  # Intent before the detach: a monitor that never confirms leaves an
+  # inspectable uncertain launch instead of a silent detached process.
+  hs_monitor_launch_intend
 
   # `ensure` is called from inside a command substitution on the session-start
   # path, so a started monitor that retained ANY inherited descriptor would wedge
@@ -2293,12 +2436,14 @@ cmd_monitor() {  # <reason>
   while :; do
     if monitor_healthy; then
       ledger_append monitor-started "pid=$(monitor_field pid) $reason"
+      hs_monitor_launch_confirmed "$(monitor_field pid)" "$(monitor_field pid_identity)"
       echo "herdr-supervisor: monitor started pid=$(monitor_field pid)"
       return 0
     fi
     [ "$(date +%s)" -lt "$deadline" ] || break
     sleep 0.3
   done
+  hs_monitor_launch_unconfirmed "the detached monitor did not confirm within 10s; a monitor process may still exist"
   escalate "the always-running monitor did not confirm within 10s (${MONITOR_UNHEALTHY_REASON:-no reason recorded})"
   echo "herdr-supervisor: FAILED - the monitor did not confirm" >&2
   return 1
@@ -2306,6 +2451,7 @@ cmd_monitor() {  # <reason>
 
 monitor_stand_down() {  # <why>
   ledger_append monitor-exit "$1"
+  hs_monitor_launch exit --current --reason "monitor stood down: $(ledger_clean_field "$1")" || true
   rm -f "$MONITOR" "$MONITOR_HEARTBEAT" 2>/dev/null || true
   fm_lock_release "$MONITOR_LOCK" || true
 }

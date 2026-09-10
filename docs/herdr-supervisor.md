@@ -196,6 +196,8 @@ All under `state/`, all private to the home.
 - An arm whose process identity cannot be confirmed remains a tracked blocked child after bounded termination attempts, with durable escalation until that child exits safely.
 - `.herdr-supervisor.log` - a bounded lifecycle ledger.
   Diagnostic evidence only, written best-effort, and never read as authority for any decision, so an observability failure cannot stall supervision.
+- `.launch-herdr-supervisor` and `.launch-herdr-supervisor-monitor` - the fleet-wide launch records ([`launch-records.md`](launch-records.md)): for the loop a projection of the pending-cleanup and binding records above, which remain the authority, and for the monitor the intent written before its detach, its pid plus start identity once healthy, and its observed exit.
+  They are inspection records only: the pending-cleanup receipt above stays the cleanup authority, the mirror is written best-effort (a mirror write failure is ledgered, never a second refusal), and a refused create the supervisor keeps as pending intent reads uncertain there, exactly as it reads here.
 - `.lock-pid-identity` - the process-instance identity paired with the Pi session lock.
 
 ## Regression coverage
