@@ -37,12 +37,36 @@ set -u
 # shellcheck source=tests/herdr-test-safety.sh
 . "$(dirname "${BASH_SOURCE[0]}")/herdr-test-safety.sh"
 
+# Prepare and verify the launch-owner fixture before any native lifecycle call.
+# This portable check also runs without the live opt-in, so intake defects fail
+# locally even when provisioning the named lab is unavailable.
+TMP_ROOT=$(fm_test_tmproot fm-launch-record-live)
+owner_home="$TMP_ROOT/owner-home"
+owner_bin="$TMP_ROOT/owner-bin"
+mkdir -p "$owner_home/state" "$owner_home/data" "$owner_home/config" "$owner_bin"
+printf 'herdr\n' > "$owner_home/config/backend"
+printf 'off\n' > "$owner_home/config/herdr-presentation-spaces"
+printf 'manual\n' > "$owner_home/config/backlog-backend"
+FM_HOME="$owner_home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$owner_home/state" \
+  FM_DATA_OVERRIDE="$owner_home/data" FM_CONFIG_OVERRIDE="$owner_home/config" \
+  "$ROOT/bin/fm-brief.sh" launch-live project --scout \
+  --not-applicable "configuration: task=launch-live; target=tests/fm-launch-record-herdr-live-e2e.test.sh launch-owner fixture; action=exercise retained launch obligation" >/dev/null \
+  || fail "could not prepare the launch-owner fixture"
+fixture_out=$(FM_HOME="$owner_home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$owner_home/state" \
+  FM_DATA_OVERRIDE="$owner_home/data" FM_CONFIG_OVERRIDE="$owner_home/config" \
+  "$ROOT/bin/fm-lavish-intake.sh" check-brief launch-live "$owner_home/data/launch-live/brief.md") \
+  || fail "launch-owner fixture failed intake verification"
+assert_contains "$fixture_out" "status=not-applicable" "launch-owner fixture must retain its intake classification"
+pass "launch-owner fixture prepares and verifies through the intake owner"
+
 if [ "${FM_LAUNCH_RECORD_LIVE:-0}" != 1 ]; then
   echo "skip: set FM_LAUNCH_RECORD_LIVE=1 to run the live Herdr launch-record boundary check"
   exit 0
 fi
 command -v herdr >/dev/null 2>&1 || { echo "skip: herdr not found"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
+
+fm_git_worktree "$TMP_ROOT/owner-project" "$TMP_ROOT/owner-worktree" fm/launch-live
 
 herdr_forget_inherited_pane
 unset HERDR_BIN_PATH
@@ -54,7 +78,6 @@ trap 'herdr_finish_test "$?" "$SESSION"' EXIT
 
 lab() { "$LAB" run "$SESSION" "$@"; }
 
-TMP_ROOT=$(fm_test_tmproot fm-launch-record-live)
 version=$(herdr --version 2>/dev/null | head -n 1)
 printf 'herdr: %s\n' "$version"
 
@@ -160,18 +183,6 @@ lab pane run "$pane" "(sleep 3 &)" >/dev/null || fail "pane run failed"
 sleep 0.7
 strict && rc=0 || rc=$?
 printf 'observed: detached (reparented) background process -> strict proof rc %s (the documented boundary: not detectable natively)\n' "$rc"
-owner_home="$TMP_ROOT/owner-home"
-owner_bin="$TMP_ROOT/owner-bin"
-mkdir -p "$owner_home/state" "$owner_home/data" "$owner_home/config" "$owner_bin"
-printf 'herdr\n' > "$owner_home/config/backend"
-printf 'off\n' > "$owner_home/config/herdr-presentation-spaces"
-printf 'manual\n' > "$owner_home/config/backlog-backend"
-fm_git_worktree "$TMP_ROOT/owner-project" "$TMP_ROOT/owner-worktree" fm/launch-live
-FM_HOME="$owner_home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$owner_home/state" \
-  FM_DATA_OVERRIDE="$owner_home/data" FM_CONFIG_OVERRIDE="$owner_home/config" \
-  "$ROOT/bin/fm-brief.sh" launch-live project --scout \
-  --not-applicable "configuration: task=launch-live; target=named lab; action=exercise retained launch obligation" >/dev/null \
-  || fail "could not prepare the launch-owner fixture"
 owner_record() {
   python3 "$ROOT/bin/fm-launch-record.py" --state "$owner_home/state" "$@" --task launch-live
 }
