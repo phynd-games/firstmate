@@ -225,8 +225,8 @@ pe_launch_intend() {
         pe_launch "$id" exit --current --reason "runner pid $pid gone at the next start (observed)" >/dev/null \
           || { pe_launch_note "the previous runner's exit could not be recorded for $id"; return 1; }
       else
-        pe_launch "$id" reconcile --current --verdict launcher-gone --evidence "fork interrupted before the runner claimed the source" >/dev/null \
-          || { pe_launch_note "the interrupted attempt could not be reconciled for $id"; return 1; }
+        pe_launch_note "the previous launch for $id has no process identity; native inspection is required"
+        return 1
       fi
       ;;
     *) pe_launch_note "record unreadable for $id (rc $rc)"; return 1 ;;
@@ -266,10 +266,12 @@ pe_launch_exit() {  # <source-id> <code>
   FM_PROCEVENT_LAUNCH_ID=
 }
 pe_launch_retire() {  # <source-id> - the source is gone; its record leaves with it
-  local subject
+  local subject launch
   subject=$(pe_launch_subject "$1")
-  fm_launch_record retire --helper "$subject" --current --reason "source retired" >/dev/null 2>&1 || true
-  rm -f -- "$STATE/.launch-$subject" 2>/dev/null || true
+  [ -e "$STATE/.launch-$subject" ] || return 0
+  launch=$(fm_launch_record get --helper "$subject" launch.id) || return 1
+  fm_launch_record retire --helper "$subject" --launch "$launch" --reason "source retired" --remove >/dev/null || return 1
+  FM_PROCEVENT_LAUNCH_ID=
 }
 
 REG=$(fm_procevent_registry_dir "$STATE")
@@ -710,31 +712,45 @@ publish_pending() {  # [result-file-to-skip]
 }
 
 isolate_runner() {  # <wait|detach> <source-id>
-  local mode=$1 id=$2 program
+  local mode=$1 id=$2 program runner rc
   # shellcheck disable=SC2016 # Perl owns every $ expression in this literal program.
-  program='my $mode = shift @ARGV;
-    defined(my $pid = fork) or exit 125;
-    if ($pid == 0) {
-      setpgrp(0, 0) or exit 125;
-      $ENV{FM_PROCEVENT_RUNNER_GROUP} = $$;
-      exec @ARGV;
-      exit 125;
-    }
-    exit 0 if $mode eq "detach";
-    waitpid($pid, 0) == $pid or exit 125;
-    my $status = $?;
-    exit(128 + ($status & 127)) if $status & 127;
-    exit($status >> 8);'
+  program='setpgrp(0, 0) or exit 125;
+    $ENV{FM_PROCEVENT_RUNNER_GROUP} = $$;
+    exec @ARGV;
+    exit 125;'
+  while :; do
+    fm_procevent_source_lock_acquire "$id" try
+    rc=$?
+    [ "$rc" -ne 0 ] || break
+    [ "$rc" -eq 1 ] || die "cannot lock source: $id"
+    [ "$(pe_launch "$id" get launch.phase)" != intended ] \
+      || die "a launch is already pending for $id; refusing another runner"
+    sleep 0.1
+  done
+  if [ ! -f "$(source_file "$id")" ] || [ -L "$(source_file "$id")" ]; then
+    fm_procevent_source_lock_release "$id"
+    die "source is not registered: $id"
+  fi
+  FM_PROCEVENT_LAUNCH_REG_IDENTITY=$(fm_pr_file_identity "$(source_file "$id")") || {
+    fm_procevent_source_lock_release "$id"
+    die "registration is unreadable: $id"
+  }
+  export FM_PROCEVENT_LAUNCH_REG_IDENTITY
   pe_launch_intend "$id" "$mode"
-  case $? in
+  rc=$?
+  case "$rc" in
     0) ;;
-    2) printf 'already owned: %s\n' "$id"; return 0 ;;
-    *) die "launch intent could not be persisted for $id; refusing to start a runner the record cannot account for" ;;
+    2) fm_procevent_source_lock_release "$id"; printf 'already owned: %s\n' "$id"; return 0 ;;
+    *) fm_procevent_source_lock_release "$id"; die "launch intent could not be persisted for $id; refusing to start a runner the record cannot account for" ;;
   esac
   if [ "$mode" = wait ]; then
-    exec perl -e "$program" "$mode" "$SCRIPT_DIR/fm-procevent.sh" _start "$id"
+    perl -e "$program" "$SCRIPT_DIR/fm-procevent.sh" _start "$id" &
+  else
+    perl -e "$program" "$SCRIPT_DIR/fm-procevent.sh" _start "$id" >/dev/null 2>&1 &
   fi
-  perl -e "$program" "$mode" "$SCRIPT_DIR/fm-procevent.sh" _start "$id" >/dev/null 2>&1 &
+  runner=$!
+  fm_procevent_source_lock_release "$id"
+  [ "$mode" != wait ] || wait "$runner"
 }
 
 require_runner_group() {
@@ -764,6 +780,12 @@ cmd_start() {
   if [ ! -f "$(source_file "$id")" ] || [ -L "$(source_file "$id")" ]; then
     fm_procevent_source_lock_release "$id"
     die "source is not registered: $id"
+  fi
+  if [ "${FM_PROCEVENT_LAUNCH_REG_IDENTITY:-}" != "$(fm_pr_file_identity "$(source_file "$id")")" ] \
+    || [ -z "${FM_PROCEVENT_LAUNCH_ID:-}" ] \
+    || [ "$(pe_launch "$id" get launch.id)" != "$FM_PROCEVENT_LAUNCH_ID" ]; then
+    fm_procevent_source_lock_release "$id"
+    die "source or launch changed before the runner claimed it: $id"
   fi
   if ! adapter=$(read_adapter "$id"); then
     fm_procevent_source_lock_release "$id"
@@ -813,6 +835,9 @@ cmd_start() {
   esac
   fm_procevent_claim_acquire_locked "$id" "$FM_HOME" "$$" "$(source_file "$id")"
   claimed=$?
+  if [ "$claimed" -eq 0 ]; then
+    pe_launch_claimed "$id"
+  fi
   fm_procevent_source_lock_release "$id"
   case "$claimed" in
     0) ;;
@@ -826,7 +851,6 @@ cmd_start() {
       ;;
     *) pe_launch_refused "$id" "the source could not be claimed; this runner ran nothing"; die "cannot claim source: $id" ;;
   esac
-  pe_launch_claimed "$id"
   CLAIM_ID=$id
   CLAIM_HOME=$FM_HOME
   CLAIM_PID=$$
@@ -1054,7 +1078,7 @@ retire_owned_terminal_source() {  # <source-id>
     && fm_procevent_claim_mark_terminal_locked "$id" "$CLAIM_HOME" "$CLAIM_PID" "$CLAIM_TOKEN"; then
     if rm -f -- "$registration" && [ ! -e "$registration" ] && [ ! -L "$registration" ]; then
       fm_procevent_claim_release_locked "$id" "$CLAIM_HOME" "$CLAIM_PID" "$CLAIM_TOKEN" || status=1
-      pe_launch_retire "$id"
+      pe_launch_retire "$id" || status=1
     else
       status=1
     fi
@@ -1398,7 +1422,7 @@ cmd_retire() {
   fi
   rm -f -- "$(source_file "$id")"
   rm -f -- "$(runner_file "$id")"
-  pe_launch_retire "$id"
+  pe_launch_retire "$id" || { fm_procevent_source_lock_release "$id"; die "launch retirement failed: $id"; }
   fm_procevent_source_lock_release "$id"
   # A retired source produces no further answer, so drop any decision binding it
   # carried. Generic and idempotent: the binding owner is asked to forget this

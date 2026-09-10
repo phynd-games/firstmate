@@ -101,6 +101,7 @@ SERVE_LOG="$READER_DIR/serve.log"
 REQUIREMENTS="$FM_ROOT/defaults/docs-reader-requirements.txt"
 THEME_SRC="$FM_ROOT/defaults/docs-reader-theme"
 HOOKS="$SCRIPT_DIR/fm-docs-reader-hooks.py"
+SERVER="$SCRIPT_DIR/fm-docs-reader-serve.py"
 
 FM_DOCS_READER_PORT_TRIES=${FM_DOCS_READER_PORT_TRIES:-10}
 FM_DOCS_READER_READY_SECS=${FM_DOCS_READER_READY_SECS:-20}
@@ -248,7 +249,8 @@ dr_launch_settle_open() {  # <check-output>
   if [ -n "$pid" ]; then
     dr_launch exit --current --reason "reader process gone at the next ensure (observed)" >/dev/null 2>&1 || return 1
   else
-    dr_launch reconcile --current --verdict launcher-gone --evidence "no process identity was recorded before the launcher exited" >/dev/null 2>&1 || return 1
+    printf 'reader launch has no process identity; native inspection is required before another start\n' >&2
+    return 1
   fi
 }
 
@@ -573,7 +575,7 @@ start_server() {  # <python> - prints the URL on success
     # naming this port, not a silent orphan on the loopback interface.
     dr_launch_intend ensure --field port="$port" || return 1
     printf '\n[%s] fm-docs-reader starting on 127.0.0.1:%s\n' "$(date -u +%FT%TZ)" "$port" >> "$SERVE_LOG"
-    nohup "$python" -m mkdocs serve -f "$MKDOCS_CONFIG" -a "127.0.0.1:$port" \
+    nohup "$python" "$SERVER" --state "$STATE" --launch "$DR_LAUNCH_ID" --config "$MKDOCS_CONFIG" --port "$port" \
       >> "$SERVE_LOG" 2>&1 </dev/null &
     pid=$!
     if wait_ready "$pid" "$port"; then
@@ -586,12 +588,6 @@ start_server() {  # <python> - prints the URL on success
         dr_launch_fail "start identity for pid $pid could not be read; process ended" cleaned
         continue
       fi
-      dr_launch_created "$pid" "$port" "$identity" process || {
-        kill "$pid" 2>/dev/null || true
-        wait "$pid" 2>/dev/null || true
-        dr_launch_fail "process identity could not be recorded; process ended" cleaned
-        return 1
-      }
       record_write "$pid" "$port" "$python" "$identity"
       dr_launch_ready
       printf 'http://127.0.0.1:%s/\n' "$port"
@@ -630,6 +626,7 @@ ensure_locked() {
     return 1
   fi
   [ -n "$DATA_REAL" ] || { printf 'data directory missing: %s\n' "$DATA" >&2; return 1; }
+  [ -f "$SERVER" ] || { printf 'reader server entry point missing: %s\n' "$SERVER" >&2; return 1; }
   [ -f "$HOOKS" ] || { printf 'hooks missing: %s\n' "$HOOKS" >&2; return 1; }
   write_site_config "$python" || { printf 'could not write %s\n' "$MKDOCS_CONFIG" >&2; return 1; }
   if url=$(start_server "$python"); then
@@ -698,8 +695,24 @@ cmd_stop() {
   with_lock stop_locked
 }
 
+dr_restore_owner_for_stop() {
+  local out rc pid port digest identity current
+  out=$(dr_launch check 2>/dev/null)
+  rc=$?
+  [ "$rc" -eq 3 ] || return 1
+  pid=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid=//p')
+  port=$(printf '%s\n' "$out" | sed -n 's/^identity\.port=//p')
+  digest=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid_identity_sha256=//p')
+  [ -n "$pid" ] && [ -n "$port" ] && [ -n "$digest" ] || return 1
+  identity=$(fm_pid_identity "$pid" 2>/dev/null) || return 1
+  current=$(printf '%s' "$identity" | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())') || return 1
+  [ "$current" = "$digest" ] || return 1
+  record_write "$pid" "$port" "" "$identity"
+}
+
 stop_locked() {
   local pid
+  [ -f "$RECORD" ] || dr_restore_owner_for_stop || true
   pid=$(record_get pid)
   if [ -z "$pid" ]; then
     printf 'DOCS_READER: nothing recorded to stop\n'

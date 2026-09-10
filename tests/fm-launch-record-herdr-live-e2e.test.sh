@@ -49,11 +49,7 @@ unset HERDR_BIN_PATH
 
 LAB="$ROOT/bin/fm-herdr-lab.sh"
 SESSION=$("$LAB" name launch-record)
-teardown() {
-  "$LAB" teardown "$SESSION" || printf 'not ok - lab teardown or fleet-state tripwire failed for %s\n' "$SESSION" >&2
-  fm_test_cleanup
-}
-trap teardown EXIT
+trap 'herdr_finish_test "$?" "$SESSION"' EXIT
 "$LAB" provision "$SESSION" || fail "could not provision lab session $SESSION"
 
 lab() { "$LAB" run "$SESSION" "$@"; }

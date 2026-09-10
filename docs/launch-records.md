@@ -25,6 +25,7 @@ The record closes that gap by being written before the first external creation c
 
 Records are private JSON, mode 0600, replaced atomically, and refused when the path is a symlink or not a regular file.
 Their sibling `.lock` files retain a stable inode across retirement so concurrent writers continue to share one kernel lock.
+Cleanup uses `retire --launch <id> --remove` to record retirement and remove only that exact launch under the same lock; a successor with another launch id is preserved.
 Each holds the current launch plus a bounded history of its transitions and a bounded list of previous launches with their outcomes, so the last few terminal results of a subject survive its next launch.
 
 ## One launch, in order
@@ -70,7 +71,7 @@ Every selected entry point below either uses the contract or is listed as unsupp
 | `bin/fm-spawn.sh --relaunch` (via `bin/fm-control.sh relaunch`) | a new launch with `origin=relaunch` adopting the recorded endpoint; the previous launch reads stopped |
 | `bin/fm-control.sh exit` | stopped |
 | `bin/fm-teardown.sh` | retired, then the record leaves with the task's other runtime state |
-| `bin/fm-docs-reader.sh` ensure and stop | intent before the fork; pid plus start identity in both the owner record and the launch record; readiness from the token probe; stop and observed exit |
+| `bin/fm-docs-reader.sh` ensure and stop | intent before the fork; `fm-docs-reader-serve.py` records its own stable Python process identity before starting MkDocs; readiness from the token probe; interrupted startup can be adopted or stopped from its exact launch identity |
 | `bin/fm-herdr-supervisor.sh` establish and retire | a projection of the supervisor's own records, which already satisfy the whole contract and stay the authority (see "Owners that satisfy the contract themselves") |
 | `bin/fm-herdr-supervisor.sh monitor` | intent before the detach; pid plus identity once healthy; observed exit on stand-down |
 | `bin/fm-afk-launch.sh` start and stop | intent before `workspace create`; the terminal's exact ids; readiness from the daemon lock; stop |
@@ -89,7 +90,8 @@ Falsifier: a `workspace create` in `establish` without the pending intent on dis
 ## Local forks are launches too
 
 The watcher cycle and the process-event runners fork local processes whose child must claim its singleton lock or per-source claim before it does anything.
-That claim prevents duplicate polling, but it does not account for an attempt interrupted before the child claimed, so both owners now write the launch record before the fork and settle it at the next attempt.
+That claim prevents duplicate polling, but it does not account for an attempt interrupted before the child claimed, so both owners write the launch record before the fork.
+Process-event start holds the source lock through intent and fork; the child rechecks its registration and launch before claiming, and an unidentified attempt remains open for inspection.
 Their existing authorities are unchanged: the singleton lock and cycle ledger for the watcher, the per-source claim and result files for a runner.
 Two owner-specific rules apply:
 

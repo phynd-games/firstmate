@@ -63,7 +63,7 @@ Usage:
             superseded (terminal) so the successor's intent is not a refused
             duplicate; `exit --launch ID` on it later annotates its real exit.
   exit      (--launch ID | --current) --reason TEXT [--code N]
-  retire    (--launch ID | --current) --reason TEXT
+  retire    (--launch ID | --current) --reason TEXT [--remove]
   reconcile (--launch ID | --current) --verdict VERDICT --evidence TEXT
             VERDICT: absent|husk-replaced|agent-exited|adopted|launcher-gone|manual
   check     Exit 0 with `open=none`, or exit 3 with the open launch summary:
@@ -713,7 +713,29 @@ def cmd_supersede(args, path: str, kind: str, subject: str) -> int:
 
 
 def cmd_retire(args, path: str, kind: str, subject: str) -> int:
-    return _terminal(args, path, "retired", {})
+    reason = check_value("--reason", args.reason)
+    if args.remove and not args.launch:
+        raise UsageError("retire --remove requires an exact --launch")
+    with RecordLock(path):
+        data = read_record(path)
+        launch = require_launch(data, args.launch, args.current)
+        if launch.get("phase") not in OPEN_PHASES + TERMINAL_PHASES:
+            raise ContractRefusal("retirement requires a recognized launch phase")
+        if launch.get("phase") != "retired":
+            previous_outcome = launch.get("outcome")
+            append_history(launch, "retired", reason=reason,
+                           previous_phase=launch.get("phase"), previous_outcome=previous_outcome)
+            launch["outcome"] = {"phase": "retired", "reason": reason, "at": now_iso()}
+            launch["phase"] = "retired"
+            launch["reconcile"] = {"required": False}
+            write_record(path, data)
+        if args.remove:
+            try:
+                os.unlink(path)
+            except OSError as exc:
+                raise RecordError(f"cannot remove {path}: {exc.strerror}") from exc
+    print(f"launch={launch.get('id')} phase=retired removed={args.remove}")
+    return 0
 
 
 def cmd_reconcile(args, path: str, kind: str, subject: str) -> int:
@@ -903,6 +925,8 @@ def build_parser() -> argparse.ArgumentParser:
         sel.add_argument("--launch")
         sel.add_argument("--current", action="store_true")
         p.add_argument("--reason", required=True)
+        if name == "retire":
+            p.add_argument("--remove", action="store_true")
         if name == "exit":
             p.add_argument("--code", type=int)
 

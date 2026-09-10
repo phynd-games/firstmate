@@ -694,10 +694,10 @@ remote_secondmate_teardown() {
   grep -vE "^- $ID( |$)" "$SECONDMATE_REG" > "$tmp" || true
   mv -f -- "$tmp" "$SECONDMATE_REG"
   status_retire_presentation_task "$STATE" "$ID" || return 1
-  teardown_retire_launch_record
+  teardown_retire_launch_record || return 1
   fm_backlog_atomic_transition remove "$STATE/$ID.meta" "task record" "$STATE" || return 1
   rm -f -- "$STATE/$ID.turn-ended" "$STATE/$ID.validation-loop" \
-    "$STATE/.branch-note-sig-$ID" "$STATE/$ID.launch"
+    "$STATE/.branch-note-sig-$ID"
   printf 'teardown %s complete (remote %s:%s)\n' "$ID" "$remote_host" "$remote_home"
   return 0
 }
@@ -708,16 +708,10 @@ remote_secondmate_teardown() {
 # or refused, so the record is evidence, never the cleanup authority; a task
 # launched before the contract simply has none.
 teardown_retire_launch_record() {
-  local out rc
+  local launch
   [ -e "$STATE/$ID.launch" ] || return 0
-  set +e
-  out=$(fm_launch_record retire --task "$ID" --current --reason "teardown" 2>&1)
-  rc=$?
-  set -e
-  case "$rc" in
-    0|3) ;;
-    *) echo "warning: task $ID's launch record could not record its retirement (${out:-no detail}); the record is removed with the task's other runtime state" >&2 ;;
-  esac
+  launch=$(fm_launch_record get --task "$ID" launch.id) || return 1
+  fm_launch_record retire --task "$ID" --launch "$launch" --reason teardown --remove
 }
 
 remote_secondmate_herdr_preflight() {
@@ -3027,8 +3021,8 @@ fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 status_retire_presentation_task "$STATE" "$ID" || exit 1
-teardown_retire_launch_record
-rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.launch" \
+teardown_retire_launch_record || exit 1
+rm -f "$STATE/$ID.turn-ended" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
   "$STATE/$ID.muse-session-current" "$STATE/$ID.cursor-session" \

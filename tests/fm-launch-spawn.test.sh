@@ -571,7 +571,7 @@ SH
   out=$(FM_TEST_WRAP_LOG="$CASE_DIR/wrap.log" FM_TEST_REAL_PYTHON="$(command -v python3)" FM_LAUNCH_RECORD_PYTHON="$wrap/python3" \
     in_case "$ROOT/bin/fm-teardown.sh" sp13 2>&1) || fail "teardown should succeed: $out"
   assert_contains "$out" "teardown sp13 complete" "teardown must report completion"
-  grep -q 'retire --task sp13 --current --reason teardown' "$CASE_DIR/wrap.log" || fail "teardown must record the retired outcome before removing the record"
+  grep -q "retire --task sp13 --launch $second --reason teardown --remove" "$CASE_DIR/wrap.log" || fail "teardown must record the retired outcome before removing the record"
   [ ! -e "$CASE_DIR/home/state/sp13.launch" ] || fail "teardown must remove the launch record with the task's other runtime state"
   python3 - "$OWNER" "$CASE_DIR/home/state" <<'PYTEST' || fail "teardown replaced the launch lock"
 import fcntl, os, subprocess, sys

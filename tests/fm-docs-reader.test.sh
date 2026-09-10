@@ -25,8 +25,10 @@ TMP_ROOT=$(fm_test_tmproot fm-docs-reader)
 # cleanup instead stops every reader whose record lives under TMP_ROOT.
 RECOVERY_PID=
 RECOVERY_IDENTITY=
+BOOTSTRAP_RELEASE=
 cleanup() {
   local record home
+  [ -z "$BOOTSTRAP_RELEASE" ] || : > "$BOOTSTRAP_RELEASE"
   if [ -n "$RECOVERY_PID" ] && [ -n "$RECOVERY_IDENTITY" ] \
     && [ "$(fm_pid_identity "$RECOVERY_PID" 2>/dev/null)" = "$RECOVERY_IDENTITY" ]; then
     kill "$RECOVERY_PID" 2>/dev/null || true
@@ -621,7 +623,7 @@ test_launch_record_and_identity_binding() {
 #!/usr/bin/env bash
 # Observe, at every launch-record call, whether this home's mkdocs already runs.
 running=no
-pgrep -f "mkdocs serve -f ${FM_TEST_OBSERVE_CONFIG:?}" >/dev/null 2>&1 && running=yes
+pgrep -f "fm-docs-reader-serve.py.*${FM_TEST_OBSERVE_CONFIG:?}" >/dev/null 2>&1 && running=yes
 for a in "$@"; do
   case "$a" in intend|created|ready|stop|exit) printf '%s mkdocs_running=%s\n' "$a" "$running" >> "${FM_TEST_OBSERVE_LOG:?}"; break ;; esac
 done
@@ -731,6 +733,62 @@ SH
   pass "reader binds its post-exec listening process and stops it by that identity"
 }
 
+test_interruption_before_reader_ready() {
+  local mode home wrapper reader_job pid parent port first out rc
+  for mode in adopt stop; do
+    home=$(new_home "bootstrap-$mode")
+    wrapper="$home/record-wrapper"
+    cat > "$wrapper" <<'SH'
+#!/usr/bin/env bash
+"$FM_TEST_REAL_PYTHON" "$@" || exit "$?"
+for arg in "$@"; do
+  if [ "$arg" = created ]; then
+    : > "$FM_TEST_CREATED"
+    while [ ! -e "$FM_TEST_RELEASE" ]; do sleep 0.05; done
+    : > "$FM_TEST_FINISHED"
+  fi
+done
+SH
+    chmod +x "$wrapper"
+    BOOTSTRAP_RELEASE="$home/release"
+    FM_TEST_REAL_PYTHON="$(command -v python3)" FM_TEST_CREATED="$home/created" \
+      FM_TEST_RELEASE="$home/release" FM_TEST_FINISHED="$home/finished" FM_LAUNCH_RECORD_PYTHON="$wrapper" \
+      reader "$home" ensure > "$home/ensure.out" 2>&1 &
+    reader_job=$!
+    wait_until 15 test -e "$home/created" || fail "the server did not publish identity before startup"
+    bootstrap_record() { python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" get --helper docs-reader "$1"; }
+    [ "$(bootstrap_record launch.phase)" = created ] || fail "the pre-readiness launch lacks identity"
+    pid=$(bootstrap_record launch.identity.pid)
+    port=$(bootstrap_record launch.identity.port)
+    first=$(bootstrap_record launch.id)
+    RECOVERY_PID=$pid
+    RECOVERY_IDENTITY=$(fm_pid_identity "$pid")
+    parent=$(ps -o ppid= -p "$pid" | tr -d '[:space:]')
+    [ -n "$parent" ] && [ "$parent" != 1 ] || fail "the reader has no waiting launcher"
+    kill -KILL "$parent"
+    wait "$reader_job" 2>/dev/null || true
+    [ ! -e "$home/state/.docs-reader" ] || fail "the interrupted wait published ownership"
+    if [ "$mode" = adopt ]; then
+      reader "$home" ensure > "$home/retry.out" 2>&1 && fail "an unready live reader allowed another start"
+      [ "$(bootstrap_record launch.id)" = "$first" ] || fail "retry replaced the startup launch"
+      : > "$home/release"
+      wait_until 30 body_has "http://127.0.0.1:$port/" 'name="fm-docs-home"' || fail "the reader did not finish startup"
+      [ "$(ensure_url "$home")" = "http://127.0.0.1:$port/" ] || fail "the healthy reader could not be recovered"
+      [ "$(bootstrap_record launch.id)" = "$first" ] || fail "adoption replaced the launch"
+      [ "$(bootstrap_record launch.phase)" = ready ] || fail "recovery did not record readiness"
+    fi
+    out=$(reader "$home" stop)
+    rc=$?
+    : > "$home/release"
+    [ "$rc" -eq 0 ] || fail "the interrupted reader could not be stopped"
+    assert_contains "$out" "stopped pid $pid" "stop did not recover the exact launch identity"
+    fm_pid_alive "$pid" && fail "stop left the interrupted reader alive"
+    wait_until 10 test -e "$home/finished" || fail "the fixture record writer did not finish"
+    BOOTSTRAP_RELEASE=
+  done
+  pass "reader identity precedes readiness and survives launcher interruption for adoption and stop"
+}
+
 test_adopt_interrupted_launch() {
   local home out rc pid port id original identity digest
   home=$(new_home interrupted-launch)
@@ -786,6 +844,8 @@ PYTEST
 
 if [ "${1:-}" = launch-recovery ]; then
   test_delayed_exec_records_serving_identity
+  test_interruption_before_reader_ready
+  test_launch_record_and_identity_binding
   test_adopt_interrupted_launch
   exit 0
 fi
@@ -802,5 +862,6 @@ test_navigation_scales_with_inventory
 test_ensure_converges_theme_on_live_reader
 test_launch_record_and_identity_binding
 test_delayed_exec_records_serving_identity
+test_interruption_before_reader_ready
 test_adopt_interrupted_launch
 test_install_from_pinned_requirements

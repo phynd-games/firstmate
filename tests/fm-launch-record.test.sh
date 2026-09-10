@@ -345,6 +345,26 @@ test_helper_subject_and_list() {
   pass "launch record: helpers and tasks share one contract and one listing"
 }
 
+test_atomic_retirement_removal() {
+  local state first second rc
+  state=$(new_state atomic-retire)
+  lr "$state" intend --task retired --owner tester --origin fresh >/dev/null
+  first=$(launch_id "$state" retired)
+  lr "$state" exit --task retired --launch "$first" --reason finished >/dev/null
+  lr "$state" retire --task retired --launch "$first" --reason cleanup >/dev/null || fail "settled launch could not retire"
+  lr "$state" show --task retired --json | python3 -c 'import json,sys; r=json.load(sys.stdin); e=r["launch"]["history"][-1]; assert e["previous_outcome"]["phase"] == "exited"' || fail "retirement lost its prior outcome"
+  lr "$state" intend --task retired --owner tester --origin fresh >/dev/null
+  second=$(launch_id "$state" retired)
+  lr "$state" retire --task retired --launch "$first" --reason stale --remove >/dev/null 2>&1 && rc=0 || rc=$?
+  expect_code 3 "$rc" "stale retirement must preserve the new launch"
+  [ "$(launch_id "$state" retired)" = "$second" ] || fail "stale retirement removed the successor"
+  lr "$state" retire --task retired --launch "$second" --reason cleanup --remove >/dev/null || fail "atomic retirement failed"
+  [ ! -e "$state/retired.launch" ] || fail "retirement did not remove the record"
+  [ -f "$state/retired.launch.lock" ] || fail "retirement removed the stable lock"
+  pass "launch record: retirement preserves prior outcomes and removes only its exact launch"
+}
+
+test_atomic_retirement_removal
 test_phase_machine
 test_wrong_launch_id_is_refused
 test_duplicate_intent_refused_until_terminal

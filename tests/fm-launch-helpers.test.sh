@@ -45,7 +45,14 @@ OWNER="$ROOT/bin/fm-launch-record.py"
 LOOP_PIDS=()
 
 cleanup() {
-  local pid
+  local pid home
+  for home in "$TMP_ROOT"/*; do
+    [ -d "$home/claims" ] || continue
+    [ ! -f "$home/paused" ] || : > "$home/release"
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+      FM_PROCEVENT_CLAIM_ROOT="$home/claims" FM_LAUNCH_RECORD_PYTHON="$(command -v python3)" \
+      "$ROOT/bin/fm-procevent.sh" sweep-home >/dev/null 2>&1 || true
+  done
   cleanup_watchers 2>/dev/null || true
   for pid in "${LOOP_PIDS[@]+"${LOOP_PIDS[@]}"}"; do
     kill -TERM "$pid" 2>/dev/null || true
@@ -517,7 +524,8 @@ test_procevent_runner_records_intent_before_fork_claim_identity_start_and_exit()
   i=0
   while [ "$i" -lt 100 ] && [ ! -e "$home/claims/src-a.claim" ]; do sleep 0.1; i=$((i + 1)); done
   [ -e "$home/claims/src-a.claim" ] || fail "the runner never claimed its source"
-  sleep 0.5
+  i=0
+  while [ "$i" -lt 100 ] && [ "$(precord "$home" src-a launch.phase)" != ready ]; do sleep 0.1; i=$((i + 1)); done
   head -n 1 "$WRAP_LOG" | grep -q '^intend lock=absent$' || fail "intent must be recorded before the claim exists, got: $(cat "$WRAP_LOG")"
   subject=$(pe_subject src-a)
   [ "$(precord "$home" src-a launch.phase)" = ready ] || fail "a claimed runner whose wait began must read ready, got '$(precord "$home" src-a launch.phase)'"
@@ -575,20 +583,83 @@ test_procevent_fork_that_cannot_claim_leaves_the_attempt_accounted() {
   # state 2) and an unwritable one as "could not be claimed"; both are the
   # accepted refusal: the launch is closed failed/none and nothing ran.
   assert_contains "$(precord "$home" src-b launch.outcome.reason)" "this runner ran nothing" "the reason must record that the refused runner ran nothing"
-  # A child that died before claiming (an intent with a gone launcher and no
-  # identity) is listed for reconciliation and settled by the next start.
   old=$(python3 "$OWNER" --state "$home/state" intend --helper "$(pe_subject src-b)" --owner fm-procevent.sh --origin wait --launcher-pid 1 --launcher-identity stale-identity | sed 's/^launch=//')
   python3 "$OWNER" --state "$home/state" list --reconcile | grep -q "$(pe_subject src-b)" || fail "the unsettled attempt must be listed for reconciliation"
   : > "$trig"
-  pe "$home" start src-b > "$home/second.out" 2>&1 || fail "the next start must succeed: $(cat "$home/second.out")"
-  python3 "$OWNER" --state "$home/state" show --helper "$(pe_subject src-b)" | grep -q "previous launch=$old phase=reconciled" || fail "the interrupted attempt must be retained as reconciled: $(python3 "$OWNER" --state "$home/state" show --helper "$(pe_subject src-b)")"
-  [ "$(precord "$home" src-b launch.phase)" = exited ] || fail "the completed runner must read exited, got '$(precord "$home" src-b launch.phase)'"
-  pe "$home" retire src-b >/dev/null 2>&1 || true
-  pass "procevent: a refused claim and a fork that died before claiming both leave an accounted attempt the next start settles"
+  pe "$home" start src-b > "$home/second.out" 2>&1 && fail "an unidentified launch permitted a duplicate"
+  [ "$(precord "$home" src-b launch.id)" = "$old" ] || fail "the unresolved attempt changed"
+  [ "$(precord "$home" src-b launch.phase)" = intended ] || fail "the unresolved attempt was settled"
+  pe "$home" retire src-b >/dev/null 2>&1 || fail "explicit source retirement failed"
+  pass "procevent: refused claims are accounted and unidentified attempts prevent duplicates"
+}
+
+test_procevent_retirement_serializes_start() {
+  local home retiring starting i=0 rc
+  home=$(new_procevent_home retirement-race)
+  PE_ID=src-race
+  WRAPPER="$home/record-wrapper"
+  WRAP_LOG="$home/wrap.log"
+  cat > "$WRAPPER" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_WRAP_LOG"
+"$FM_TEST_REAL_PYTHON" "$@"
+rc=$?
+for arg in "$@"; do
+  if [ "$arg" = retire ]; then
+    : > "$FM_TEST_RETIRE_PAUSED"
+    while [ ! -e "$FM_TEST_RETIRE_RELEASE" ]; do sleep 0.05; done
+  fi
+done
+exit "$rc"
+SH
+  chmod +x "$WRAPPER"
+  pe "$home" register lavish src-race -- "$home/blocker.sh" "$home/trigger" payload >/dev/null || fail "register failed"
+  python3 "$OWNER" --state "$home/state" intend --helper "$(pe_subject src-race)" --owner tester --origin wait >/dev/null
+  FM_TEST_RETIRE_PAUSED="$home/paused" FM_TEST_RETIRE_RELEASE="$home/release" pe "$home" retire src-race > "$home/retire.out" 2>&1 &
+  retiring=$!
+  LOOP_PIDS+=("$retiring")
+  while [ "$i" -lt 100 ] && [ ! -e "$home/paused" ]; do sleep 0.05; i=$((i + 1)); done
+  [ -e "$home/paused" ] || fail "retirement did not reach its removal boundary"
+  pe "$home" start src-race > "$home/start.out" 2>&1 &
+  starting=$!
+  LOOP_PIDS+=("$starting")
+  sleep 0.3
+  : > "$home/release"
+  wait "$retiring" || fail "retirement failed: $(cat "$home/retire.out")"
+  wait "$starting" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || fail "start succeeded across source retirement"
+  assert_contains "$(cat "$home/start.out")" "source is not registered" "start must recheck registration under the retirement lock"
+  grep -q ' intend ' "$WRAP_LOG" && fail "start published an intent after source retirement"
+  [ ! -e "$home/state/.launch-$(pe_subject src-race)" ] || fail "retired source retained a launch"
+  [ ! -e "$home/claims/src-race.claim" ] || fail "retired source acquired a runner"
+  pass "procevent: a start crossing retirement cannot publish or fork"
+}
+
+test_procevent_start_refuses_invalid_claim_root() {
+  local home
+  home=$(new_procevent_home invalid-claim-root)
+  WRAPPER=$(make_record_wrapper "$home"); WRAP_LOG="$home/wrap.log"; PE_ID=invalid-root
+  pe "$home" register lavish invalid-root -- /bin/true >/dev/null || fail "register failed"
+  rmdir "$home/claims" || fail "the fixture claim root is not empty"
+  printf occupied > "$home/claims"
+  python3 - "$ROOT" "$home" <<'PYTEST'
+import os, subprocess, sys
+root, home = sys.argv[1:]
+env = dict(os.environ, FM_HOME=home, FM_ROOT_OVERRIDE=root, FM_STATE_OVERRIDE=home + '/state',
+           FM_PROCEVENT_CLAIM_ROOT=home + '/claims')
+result = subprocess.run([root + '/bin/fm-procevent.sh', 'start', 'invalid-root'], env=env,
+                        capture_output=True, text=True, timeout=10)
+assert result.returncode != 0 and 'cannot lock source' in result.stderr, result
+PYTEST
+  [ "$?" -eq 0 ] || fail "start did not refuse the invalid claim root promptly"
+  pass "procevent: an invalid claim root refuses start instead of waiting forever"
 }
 
 if [ "${1:-}" = launch-retirement ]; then
   test_procevent_runner_records_intent_before_fork_claim_identity_start_and_exit
+  test_procevent_retirement_serializes_start
+  test_procevent_start_refuses_invalid_claim_root
+  test_procevent_fork_that_cannot_claim_leaves_the_attempt_accounted
   exit 0
 fi
 
@@ -600,5 +671,7 @@ test_watcher_cycle_records_intent_before_fork_identity_readiness_and_exit
 test_watcher_interrupted_attempt_and_successor_chain_are_settled_by_the_next_arm
 test_procevent_runner_records_intent_before_fork_claim_identity_start_and_exit
 test_procevent_fork_that_cannot_claim_leaves_the_attempt_accounted
+test_procevent_retirement_serializes_start
+test_procevent_start_refuses_invalid_claim_root
 test_watcher_arm_refuses_to_fork_when_intent_cannot_be_persisted
 test_procevent_start_refuses_when_intent_cannot_be_persisted_and_leaves_a_live_runner_alone

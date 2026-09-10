@@ -118,11 +118,15 @@ fm_procevent_source_lock_path() {
 
 fm_procevent_source_lock_acquire() {
   local id=$1 root
-  fm_procevent_source_id_valid "$id" || return 1
+  fm_procevent_source_id_valid "$id" || return 2
   root=$(fm_procevent_claim_root)
-  (umask 077; mkdir -p "$root") || return 1
-  [ -d "$root" ] && [ ! -L "$root" ] || return 1
-  fm_lock_acquire_wait "$(fm_procevent_source_lock_path "$id")"
+  (umask 077; mkdir -p "$root") || return 2
+  [ -d "$root" ] && [ ! -L "$root" ] || return 2
+  if [ "${2:-wait}" = try ]; then
+    fm_lock_try_acquire "$(fm_procevent_source_lock_path "$id")"
+  else
+    fm_lock_acquire_wait "$(fm_procevent_source_lock_path "$id")"
+  fi
 }
 
 fm_procevent_source_lock_release() {
