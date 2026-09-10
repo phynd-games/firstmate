@@ -781,6 +781,9 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   status=$(fm_nm_strip_quotes "$(fm_nm_field "$content" status)")
   outcome=$(fm_nm_strip_quotes "$(fm_nm_field "$content" outcome)")
   head=$(fm_nm_strip_quotes "$(fm_nm_field "$content" head)")
+  if [ "$run_id" = "$s_run" ] && [ -n "$s_head" ] && [ "$head" != "$s_head" ]; then
+    head_pinned=1
+  fi
   phase=$(_fm_vloop_phase "$content" "$status" "$outcome")
   if [ "$run_id" = "$s_run" ] && [ "$phase" != terminal ] && {
     [ "$s_phase" = terminal ] || [ "$prior_terminal" = 1 ]
@@ -846,12 +849,13 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
     scope_head=$s_scope_head
     scope_paths=$s_scope_paths
   fi
-  if [ -z "$stop_reason" ] && [ "$run_id" = "$s_run" ] && [ -n "$s_head" ] && [ "$head" != "$s_head" ]; then
+  if [ "$run_id" = "$s_run" ] && [ -n "$s_head" ] && [ "$head" != "$s_head" ]; then
     if _fm_vloop_head_seen "$heads" "$head"; then
       stop_reason="incoherent head transition from ${s_head:-unknown} to $head for run $run_id"
       head_pinned=1
     elif _fm_vloop_head_advance_valid "$worktree" "$s_head" "$head" "$scope_paths"; then
       head_transition=1
+      head_pinned=0
       heads="$heads $head"
     elif ! fm_nm_head_resolvable "$worktree" "$s_head" || ! fm_nm_head_resolvable "$worktree" "$head"; then
       # Unresolvable ancestry (e.g. an unpublished pipeline-owned lane head -

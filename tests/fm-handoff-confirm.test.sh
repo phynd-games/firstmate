@@ -260,6 +260,61 @@ EOF
   pass "validation evidence that starts unreadable but later shows a real observed state confirms once proven"
 }
 
+test_unknown_to_concrete_state_preserves_handoff_modes() {
+  local mode baseline baseline_name target rec root home crew record out status count
+  local -a mode_args
+  for mode in steer explicit finding-response; do
+    mode_args=(--kind steer)
+    case "$mode" in
+      explicit) mode_args=(--expect-state-change) ;;
+      finding-response) mode_args=(--kind finding-response) ;;
+    esac
+    for baseline in "$PARKED" "$WORKING"; do
+      if [ "$baseline" = "$PARKED" ]; then baseline_name=parked; else baseline_name=working; fi
+      for target in same changed; do
+        rec=$(new_world "mode-$mode-$baseline_name-$target")
+        IFS='|' read -r root home crew <<EOF
+$rec
+EOF
+        record=$(seed_task "$home" mode)
+        printf '%s\n' "$baseline" > "$crew"
+        hc "$root" "$home" "$crew" register --task mode --record "$record" \
+          "${mode_args[@]}" >/dev/null || fail "register refused $mode"
+        acknowledge "$home" mode "$record"
+        if [ "$target" = changed ]; then
+          printf 'state: working · source: run-step · validating (test running)\n' > "$crew"
+        fi
+        cat > "$root/bin/fm-crew-state.sh" <<'SH'
+#!/usr/bin/env bash
+count=$(cat "${FM_FAKE_CREW_STATE}.reads" 2>/dev/null || printf 0)
+count=$((count + 1))
+printf '%s\n' "$count" > "${FM_FAKE_CREW_STATE}.reads"
+case "$count" in
+  1|2) printf 'state: unknown · source: none · unreadable validation run evidence (not proof of death)\n' ;;
+  3) cat "$FM_FAKE_CREW_STATE" ;;
+  *) printf 'state: working · source: run-step · unexpected later state\n' ;;
+esac
+SH
+        status=0
+        out=$(hc "$root" "$home" "$crew" confirm --task mode --record "$record" \
+          --timeout 5 --poll 0 --no-rering 2>&1) || status=$?
+        count=$(cat "$crew.reads")
+        [ "$count" = 3 ] || fail "$mode did not decide at the first concrete observation: $out"
+        if [ "$target" = same ] && [ "$mode" != steer ]; then
+          expect_code 3 "$status" "$mode confirmed unchanged aggregate state: $out"
+          assert_contains "$out" 'the work never started' "$mode lost unchanged-state rejection"
+          grep -Fxq 'result=failed' "$home/state/mode.handoff/4.result" || fail "$mode persisted success"
+        else
+          expect_code 0 "$status" "$mode rejected a permitted concrete observation: $out"
+          assert_contains "$out" 'acknowledged and started' "$mode did not confirm"
+          grep -Fxq 'result=confirmed' "$home/state/mode.handoff/4.result" || fail "$mode lost confirmation"
+        fi
+      done
+    done
+  done
+  pass "unknown-to-concrete handoff preserves ordinary steer and required state-change modes"
+}
+
 # --- 6. delayed acknowledgement ------------------------------------------------
 # The worker was simply busy. One re-ring and a second window must let it
 # through: a slow worker is not a stuck worker, and failing it would be the
@@ -445,6 +500,7 @@ test_expectation_mismatch_is_refused_at_registration
 test_departed_worker_fails_immediately
 test_persistent_unknown_evidence_is_unconfirmed_not_dead
 test_unknown_evidence_confirms_once_a_real_start_is_observed
+test_unknown_to_concrete_state_preserves_handoff_modes
 test_delayed_acknowledgement_still_confirms
 test_acknowledged_and_started_confirms
 test_failed_handoff_queues_recovery_work

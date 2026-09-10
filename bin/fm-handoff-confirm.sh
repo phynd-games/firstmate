@@ -290,14 +290,14 @@ await_ack() {  # <task> <record-basename> <digest> <deadline> <poll>
 # genuinely-gone signal per endpoint_is_gone) is neither death nor proof of a
 # start: acknowledgement plus an unreadable read does not mean the work
 # began, so this keeps polling for a LATER positively observed state rather
-# than confirming a start nobody actually proved. A concrete (non-unknown,
-# non-gone) state that still matches the pre-handoff baseline exactly is
-# conclusive proof of NOT starting and returns immediately rather than
-# waiting out the window, preserving the prior "acknowledged without
-# starting" behavior for that case. Sets AWAIT_START_LINE to the final read.
+# than confirming a start nobody actually proved. When expect_change=1, a
+# concrete (non-unknown, non-gone) state matching the pre-handoff baseline
+# returns immediately as acknowledged without starting. Ordinary steers
+# retain their existing confirmation behavior without requiring an aggregate
+# state change. Sets AWAIT_START_LINE to the final read.
 # Returns: 0 started/proven, 1 deadline reached with evidence still
 # persistently unknown (not death), 2 endpoint genuinely gone, 3 concrete
-# state unchanged from baseline (acknowledged without starting).
+# state unchanged from baseline when a change is required.
 AWAIT_START_LINE=''
 await_start() {  # <task> <expect_change> <baseline_sig> <deadline> <poll>
   local task=$1 expect_change=$2 baseline_sig=$3 deadline=$4 poll=$5 line token now

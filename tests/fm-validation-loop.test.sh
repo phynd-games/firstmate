@@ -1040,6 +1040,64 @@ test_unresolvable_head_is_unknown_not_incoherent() {
   pass "unresolvable pipeline-owned head: unproven ancestry stops immediately and stays stopped, never credited as progress, distinct from a demonstrated incoherent transition, with the anchor pinned at the last verified head"
 }
 
+test_scope_bearing_unpublished_head_retains_verified_anchor() {
+  local state ev dir repo base_head old_head next_head unknown_head v epoch
+  dir=$(make_case vloop-scope-unpublished); state="$dir/state"; ev="$dir/ev"; repo="$dir/repo"
+  git init -q "$repo"
+  git -C "$repo" config user.email test@example.com
+  git -C "$repo" config user.name test
+  printf 'base\n' > "$repo/file"
+  git -C "$repo" add file && git -C "$repo" commit -qm base
+  base_head=$(git -C "$repo" rev-parse HEAD)
+  printf 'one\n' > "$repo/file"
+  git -C "$repo" commit -qam one
+  old_head=$(git -C "$repo" rev-parse HEAD)
+  ev_running "$ev" 01RUN running pending
+  sed -i.bak "s/abc1234/$old_head/" "$ev" && rm -f "$ev.bak"
+  printf 'base: "%s"\nchanges[1]{path}:\n  file\n' "$base_head" >> "$ev"
+  fold "$state" scoped "$ev" 1000 "$repo"
+  [ "$(verdict_at "$state" scoped 1001)" = continue ] || fail "authenticated initial scope stopped"
+
+  unknown_head=412c36a4133097b5be5e5025f6eb39117fef231a
+  if git -C "$repo" cat-file -e "${unknown_head}^{commit}" 2>/dev/null; then
+    fail "unpublished fixture unexpectedly resolves"
+  fi
+  sed -i.bak "s/$old_head/$unknown_head/" "$ev" && rm -f "$ev.bak"
+  for epoch in 1010 1050; do
+    fold "$state" scoped "$ev" "$epoch" "$repo"
+    grep -Fxq "head=$old_head" "$state/scoped.validation-loop" \
+      || fail "scope rejection advanced the journal beyond its verified anchor"
+    grep -Fxq "heads=$old_head" "$state/scoped.validation-loop" \
+      || fail "unpublished scope head entered verified history"
+    grep -Fxq 'last_progress=1000' "$state/scoped.validation-loop" \
+      || fail "repeated unpublished scope head counted as progress"
+    grep -Fxq "scope_base=$base_head" "$state/scoped.validation-loop" || fail "scope base was lost"
+    grep -Fxq "scope_head=$old_head" "$state/scoped.validation-loop" || fail "scope anchor was lost"
+    grep -Fxq 'scope_paths=file' "$state/scoped.validation-loop" || fail "scope paths were lost"
+    v=$(verdict_at "$state" scoped "$epoch")
+    case "$v" in
+      stop*"unproven head ancestry"*) ;;
+      *) fail "scope-bearing unpublished head lost its unproven-ancestry stop: '$v'" ;;
+    esac
+  done
+
+  printf 'two\n' > "$repo/file"
+  git -C "$repo" commit -qam two
+  next_head=$(git -C "$repo" rev-parse HEAD)
+  sed -i.bak "s/$unknown_head/$next_head/" "$ev" && rm -f "$ev.bak"
+  fold "$state" scoped "$ev" 1100 "$repo"
+  grep -Fxq "head=$next_head" "$state/scoped.validation-loop" \
+    || fail "a proven descendant was not judged against the retained anchor"
+  grep -Fxq "heads=$old_head $next_head" "$state/scoped.validation-loop" \
+    || fail "verified history included the unpublished intermediate"
+  v=$(verdict_at "$state" scoped 1101)
+  case "$v" in
+    stop*"unproven head ancestry"*) ;;
+    *) fail "proven descendant silently cleared the prior conservative stop: '$v'" ;;
+  esac
+  pass "scope-bearing unpublished head retains anchor, history, scope and progress until ancestry is proven"
+}
+
 # Disconfirming counterpart: a head that DOES resolve locally but is
 # genuinely not a descendant of the last verified head (a real regression,
 # not an unpublished lane head) must still stop as a demonstrated incoherent
@@ -1062,7 +1120,11 @@ test_resolvable_non_ancestor_head_still_incoherent() {
 
   ev_running "$ev" 01RUN running pending
   sed -i.bak "s/^  head: \"abc1234\"/  head: \"$head_a\"/" "$ev" && rm -f "$ev.bak"
+  printf 'base: "%s"\nchanges[1]{path}:\n  file\n' "$base_sha" >> "$ev"
+  git -C "$repo" checkout -q "$head_a"
   fold "$state" nonancestor "$ev" 1000 "$repo"
+  [ "$(verdict_at "$state" nonancestor 1001)" = continue ] || fail "initial nonancestor fixture was already stopped"
+  git -C "$repo" checkout -q "$head_b"
   sed -i.bak "s/^  head: \"$head_a\"/  head: \"$head_b\"/" "$ev" && rm -f "$ev.bak"
   fold "$state" nonancestor "$ev" 1010 "$repo"
 
@@ -1073,6 +1135,8 @@ test_resolvable_non_ancestor_head_still_incoherent() {
   esac
   grep -q "^head=$head_a\$" "$state/nonancestor.validation-loop" \
     || fail "a demonstrated incoherent transition's anchor advanced past the last verified head"
+  grep -Fxq 'last_progress=1000' "$state/nonancestor.validation-loop" \
+    || fail "a demonstrated incoherent transition counted as progress"
   pass "resolvable non-ancestor head transition: still a demonstrated incoherent transition, anchor pinned - the unresolvable-ancestry fix does not weaken this"
 }
 
@@ -1271,6 +1335,7 @@ test_head_change_set_allows_authenticated_addition
 test_head_transition_is_coherent
 test_findings_scalar_accepts_mixed_awaiting_autofix
 test_unresolvable_head_is_unknown_not_incoherent
+test_scope_bearing_unpublished_head_retains_verified_anchor
 test_resolvable_non_ancestor_head_still_incoherent
 test_threshold_overrides_cannot_disable_bounds
 test_watcher_surfaces_validation_loop_limit
