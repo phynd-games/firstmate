@@ -46,6 +46,10 @@
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log.
+#      Unreadable validation evidence also reports unknown · none, but carries
+#      "(not proof of death)", as does an unreachable remote endpoint.
+#      Consumers must honor that qualifier: source: none alone cannot prove
+#      that a worker is dead or departed.
 #
 # Read-only and side-effect free, with one env-gated exception: when
 # FM_CREW_STATE_EVIDENCE_FILE names a path and a run is attributed, the raw run
