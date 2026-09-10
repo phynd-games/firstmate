@@ -59,6 +59,110 @@ fixture_out=$(FM_HOME="$owner_home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="
 assert_contains "$fixture_out" "status=not-applicable" "launch-owner fixture must retain its intake classification"
 pass "launch-owner fixture prepares and verifies through the intake owner"
 
+# Capture the delegate environment and executable before prefixing PATH.
+# Both the portable preflight and the native launch use this same boundary.
+LAB="$ROOT/bin/fm-herdr-lab.sh"
+owner_lab_command() {
+  local delegate_path=$PATH delegate
+  delegate=$(command -v herdr) || return 96
+  PATH="$owner_bin:$delegate_path" FM_TEST_LAB_PATH="$delegate_path" \
+    FM_TEST_LAB_DELEGATE="$delegate" FM_TEST_LAB_HELPER="$LAB" "$@"
+}
+cat > "$owner_bin/herdr" <<'SH'
+#!/usr/bin/env bash
+set -eu
+# Refuse re-entry before calling another helper, even through an indirect shim.
+[ "${FM_TEST_LAB_DELEGATING:-0}" = 0 ] || { echo "lab wrapper: recursive delegation refused" >&2; exit 96; }
+delegate=$(PATH="$FM_TEST_LAB_PATH" command -v herdr) || exit 96
+[ -x "$delegate" ] && [ "$delegate" -ef "$FM_TEST_LAB_DELEGATE" ] &&
+  [ ! "$delegate" -ef "$0" ] || { echo "lab wrapper: unsafe delegate refused" >&2; exit 96; }
+args=("$@")
+n=${#args[@]}
+if [ "$n" -ge 2 ] && [ "${args[$((n-2))]}" = --session ]; then
+  [ "${args[$((n-1))]}" = "$FM_TEST_LAB_SESSION" ] || exit 97
+  args=("${args[@]:0:$((n-2))}")
+fi
+case "${args[0]} ${args[1]:-}" in
+  'status --json'|'session list'|'pane get'|'pane list'|'pane process-info'|'agent get'|'agent list'|'workspace list'|'tab list') ;;
+  *) printf '%s\n' "${args[*]}" >> "$FM_TEST_LAB_MUTATIONS"; exit 98 ;;
+esac
+exec env FM_TEST_LAB_DELEGATING=1 PATH="$FM_TEST_LAB_PATH" "$FM_TEST_LAB_HELPER" run "$FM_TEST_LAB_SESSION" "${args[@]}"
+SH
+chmod +x "$owner_bin/herdr"
+
+# Exercise the real wrapper and lab run helper without native Herdr access.
+# The fixture caps helper calls independently; a timeout is always a failure.
+preflight_bin="$TMP_ROOT/preflight-bin"
+mkdir -p "$preflight_bin"
+cat > "$preflight_bin/herdr" <<'SH'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "$FM_TEST_LAB_CALLS"
+if [ "${FM_TEST_LAB_REENTER:-0}" = 1 ]; then
+  exec "$FM_TEST_LAB_WRAPPER" "$@"
+fi
+printf 'fixture native response\n'
+exit "${FM_TEST_LAB_EXIT:-0}"
+SH
+cat > "$TMP_ROOT/preflight-helper" <<'SH'
+#!/usr/bin/env bash
+set -eu
+printf 'call\n' >> "$FM_TEST_LAB_HELPER_CALLS"
+[ "$(wc -l < "$FM_TEST_LAB_HELPER_CALLS")" -le 2 ] || exit 99
+exec "$FM_TEST_LAB_REAL_HELPER" "$@"
+SH
+chmod +x "$preflight_bin/herdr" "$TMP_ROOT/preflight-helper"
+FM_TEST_LAB_REAL_HELPER="$LAB" LAB="$TMP_ROOT/preflight-helper" \
+  PATH="$preflight_bin:$PATH" FM_TEST_LAB_SESSION=fm-lab-wrapper \
+  FM_TEST_LAB_HELPER_CALLS="$TMP_ROOT/preflight-helper-calls" \
+  FM_TEST_LAB_MUTATIONS="$TMP_ROOT/preflight-mutations" \
+  FM_TEST_LAB_CALLS="$TMP_ROOT/preflight-calls" FM_TEST_LAB_WRAPPER="$owner_bin/herdr" \
+  owner_lab_command python3 - "$owner_bin/herdr" "$TMP_ROOT" <<'PYTHON' || fail "lab wrapper preflight failed"
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+wrapper, root = sys.argv[1:]
+calls = Path(os.environ["FM_TEST_LAB_CALLS"])
+mutations = Path(os.environ["FM_TEST_LAB_MUTATIONS"])
+helper_calls = Path(os.environ["FM_TEST_LAB_HELPER_CALLS"])
+
+def run(args, expected, changes=None, expected_calls=0):
+    calls.write_text("")
+    mutations.write_text("")
+    helper_calls.write_text("")
+    env = dict(os.environ, **(changes or {}))
+    result = subprocess.run([wrapper, *args], env=env, capture_output=True,
+                            text=True, timeout=5)
+    assert result.returncode == expected, (result.returncode, result.stderr)
+    assert len(calls.read_text().splitlines()) == expected_calls, calls.read_text()
+    assert len(helper_calls.read_text().splitlines()) == expected_calls, helper_calls.read_text()
+    return result
+
+args = ["pane", "get", "pane-fixture", "--session", "fm-lab-wrapper"]
+result = run(args, 0, expected_calls=1)
+assert result.stdout == "fixture native response\n", result.stdout
+assert calls.read_text() == "pane get pane-fixture --session fm-lab-wrapper\n"
+assert not mutations.read_text()
+run(args, 23, {"FM_TEST_LAB_EXIT": "23"}, expected_calls=1)
+run(["pane", "get", "pane-fixture", "--session", "default"], 97)
+run(["workspace", "create"], 98)
+assert mutations.read_text() == "workspace create\n"
+# Detect the original contaminated PATH before a second helper can start.
+run(args, 96, {"FM_TEST_LAB_PATH": os.environ["PATH"]})
+run(args, 96, {"FM_TEST_LAB_PATH": os.environ["PATH"],
+               "FM_TEST_LAB_DELEGATE": wrapper})
+alias = Path(root) / "alias-bin"
+alias.mkdir()
+(alias / "herdr").symlink_to(wrapper)
+run(args, 96, {"FM_TEST_LAB_PATH": str(alias) + ":" + os.environ["PATH"],
+               "FM_TEST_LAB_DELEGATE": str(alias / "herdr")})
+run(args, 96, {"FM_TEST_LAB_DELEGATING": "1"})
+run(args, 96, {"FM_TEST_LAB_REENTER": "1"}, expected_calls=1)
+PYTHON
+pass "lab wrapper delegates once, preserves refusals, and rejects self-resolution and recursion"
+
 if [ "${FM_LAUNCH_RECORD_LIVE:-0}" != 1 ]; then
   echo "skip: set FM_LAUNCH_RECORD_LIVE=1 to run the live Herdr launch-record boundary check"
   exit 0
@@ -71,7 +175,6 @@ fm_git_worktree "$TMP_ROOT/owner-project" "$TMP_ROOT/owner-worktree" fm/launch-l
 herdr_forget_inherited_pane
 unset HERDR_BIN_PATH
 
-LAB="$ROOT/bin/fm-herdr-lab.sh"
 SESSION=$("$LAB" name launch-record)
 trap 'herdr_finish_test "$?" "$SESSION"' EXIT
 "$LAB" provision "$SESSION" || fail "could not provision lab session $SESSION"
@@ -147,26 +250,29 @@ done
 pass "process-info separates an idle shell from a running foreground command on an agent-free pane"
 
 # --- 6. what the strict quiescence proof can and cannot see -------------------------
-# The launch owners replace an agent-free pane only when
-# fm_backend_herdr_pane_idle_shell_pid proves it: idle foreground, no child
-# process of the shell in the OS table, sleeping shell. Each counterexample
+# fm_backend_herdr_pane_idle_shell_pid is diagnostic only: idle foreground,
+# no child process of the shell in the OS table, sleeping shell. Each counterexample
 # below is exercised on the real pane and its verdict recorded; the last one
 # is the disclosed boundary, observed rather than asserted.
+# Use the adapter's supported bounded settle window, including prompt helpers.
+unset FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS
 strict() {  # -> 0 proven, 1 not proven, 2 unprovable
-  HERDR_SESSION="$SESSION" FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=5 bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_idle_shell_pid "$1" "$2" "$3" "$4" >/dev/null' "$ROOT" "$SESSION" "$pane" "$ws" "$tab"
+  HERDR_SESSION="$SESSION" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_idle_shell_pid "$1" "$2" "$3" "$4" >/dev/null' "$ROOT" "$SESSION" "$pane" "$ws" "$tab"
 }
 strict && rc=0 || rc=$?
 [ "$rc" = 0 ] || fail "a plain idle pane must satisfy the strict proof, got rc $rc"
+# Sample the refusal controls while their known command is still active;
+# waiting for that command to finish would test eventual idle instead.
 # delayed start: `sleep 2; true` holds the foreground group -> not proven
 lab pane run "$pane" "sleep 2; true" >/dev/null || fail "pane run failed"
 sleep 0.3
-strict && rc=0 || rc=$?
+FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 strict && rc=0 || rc=$?
 [ "$rc" = 1 ] || fail "a delayed start (sleep in the foreground) must not be proven quiescent, got rc $rc"
 sleep 2.5
 # attached background child: `sleep 3 &` stays a child of the shell -> not proven
 lab pane run "$pane" "sleep 3 &" >/dev/null || fail "pane run failed"
 sleep 0.5
-strict && rc=0 || rc=$?
+FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 strict && rc=0 || rc=$?
 [ "$rc" = 1 ] || fail "an attached background child must not be proven quiescent, got rc $rc"
 printf 'observed: attached background child -> strict proof rc %s (refused)\n' "$rc"
 sleep 3.5
@@ -181,7 +287,7 @@ lab pane send-keys "$pane" ctrl-u >/dev/null 2>&1 || true
 # is reparented away) is invisible to every supported native check
 lab pane run "$pane" "(sleep 3 &)" >/dev/null || fail "pane run failed"
 sleep 0.7
-strict && rc=0 || rc=$?
+FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 strict && rc=0 || rc=$?
 printf 'observed: detached (reparented) background process -> strict proof rc %s (the documented boundary: not detectable natively)\n' "$rc"
 owner_record() {
   python3 "$ROOT/bin/fm-launch-record.py" --state "$owner_home/state" "$@" --task launch-live
@@ -192,29 +298,12 @@ owner_record created --launch "$owner_id" --identity backend=herdr --identity se
   --identity workspace_id="$ws" --identity tab_id="$tab" --identity pane_id="$pane" \
   --identity terminal_id="$term" >/dev/null || fail "could not bind the existing pane"
 owner_before=$(cksum < "$owner_home/state/launch-live.launch")
-cat > "$owner_bin/herdr" <<'SH'
-#!/usr/bin/env bash
-set -eu
-args=("$@")
-n=${#args[@]}
-if [ "$n" -ge 2 ] && [ "${args[$((n-2))]}" = --session ]; then
-  [ "${args[$((n-1))]}" = "$FM_TEST_LAB_SESSION" ] || exit 97
-  args=("${args[@]:0:$((n-2))}")
-fi
-case "${args[0]} ${args[1]:-}" in
-  'status --json'|'session list'|'pane get'|'pane list'|'pane process-info'|'agent get'|'agent list'|'workspace list'|'tab list') ;;
-  *) printf '%s\n' "${args[*]}" >> "$FM_TEST_LAB_MUTATIONS"; exit 98 ;;
-esac
-exec env PATH="$FM_TEST_LAB_PATH" "$FM_TEST_LAB_HELPER" run "$FM_TEST_LAB_SESSION" "${args[@]}"
-SH
-chmod +x "$owner_bin/herdr"
 : > "$TMP_ROOT/owner-mutations"
-owner_out=$(PATH="$owner_bin:$PATH" FM_TEST_LAB_PATH="$PATH" FM_TEST_LAB_HELPER="$LAB" \
-  FM_TEST_LAB_SESSION="$SESSION" FM_TEST_LAB_MUTATIONS="$TMP_ROOT/owner-mutations" \
+owner_out=$(FM_TEST_LAB_SESSION="$SESSION" FM_TEST_LAB_MUTATIONS="$TMP_ROOT/owner-mutations" \
   HERDR_SESSION="$SESSION" FM_HOME="$owner_home" FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$owner_home/state" FM_DATA_OVERRIDE="$owner_home/data" \
   FM_CONFIG_OVERRIDE="$owner_home/config" FM_PROJECTS_OVERRIDE="$TMP_ROOT" FM_SPAWN_NO_GUARD=1 \
-  "$ROOT/bin/fm-spawn.sh" launch-live "$TMP_ROOT/owner-project" --scout "sh -c true" 2>&1)
+  owner_lab_command "$ROOT/bin/fm-spawn.sh" launch-live "$TMP_ROOT/owner-project" --scout "sh -c true" 2>&1)
 owner_rc=$?
 expect_code 1 "$owner_rc" "a present agent-free pane must refuse a replacement: $owner_out"
 assert_contains "$owner_out" "recorded endpoint $SESSION:$pane is present with an open launch record" \
