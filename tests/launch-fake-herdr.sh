@@ -83,7 +83,7 @@ fi
 set -- "${args[@]:-}"
 rec=absent
 [ -z "${FM_FAKE_WATCH_RECORD:-}" ] || { [ -e "$FM_FAKE_WATCH_RECORD" ] && rec=present; }
-{ for a in "$@"; do printf '%s\x1f' "$a"; done; printf '\trecord=%s\n' "$rec"; } >> "$LOG"
+{ for a in "$@"; do printf '%s\x1f' "$a"; done; printf '\trecord=%s\tlaunch=%s\n' "$rec" "${FM_BACKEND_HERDR_CREATE_LAUNCH_ID:-none}"; } >> "$LOG"
 cmd=${1:-}; sub=${2:-}
 key="$cmd-$sub"
 if [ -n "${FM_FAKE_BLOCK_DIR:-}" ] && [ -e "$FM_FAKE_BLOCK_DIR/$key" ]; then
@@ -134,6 +134,10 @@ case "$cmd $sub" in
        | (.tabs |= map(.focused = false))
        | .tabs += [{tab_id:$tabid, label:"1", workspace_id:$wsid, pane_id:$paneid, focused:true, cwd:$cwd}]
        | .next = (.next + 2)' | save
+    if [ -n "${FM_FAKE_FAIL_DIR:-}" ] && [ -e "$FM_FAKE_FAIL_DIR/$key.lost" ]; then
+      if [ -f "$FM_FAKE_FAIL_DIR/$key" ]; then cat "$FM_FAKE_FAIL_DIR/$key"; else printf 'connection reset while reading response\n'; fi
+      exit 1
+    fi
     printf '{"result":{"workspace":{"workspace_id":"%s","label":"%s"},"tab":{"tab_id":"%s","workspace_id":"%s"},"root_pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s","terminal_id":"term_%s"}}}\n' \
       "$wsid" "$label" "$wsid:t$dn" "$wsid" "$wsid:p$dn" "$wsid:t$dn" "$wsid" "$wsid:p$dn" ;;
   "workspace close")
@@ -167,6 +171,12 @@ case "$cmd $sub" in
       exit 1
     fi
     printf '{"result":{"tab":{"tab_id":"%s","workspace_id":"%s"},"root_pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s","terminal_id":"term_%s"}}}\n' "$tabid" "$ws" "$paneid" "$tabid" "$ws" "$paneid" ;;
+  "tab focus")
+    jq_state --arg t "${3:-}" '([.tabs[] | select(.tab_id == $t)][0].workspace_id) as $w
+      | .workspaces |= map(.focused = (.workspace_id == $w))
+      | .tabs |= map(if .workspace_id == $w then .focused = (.tab_id == $t) else . end)
+      | .workspaces |= map(if .workspace_id == $w then .active_tab_id = $t else . end)' | save
+    printf '{"result":{}}\n' ;;
   "tab close")
     pane=$(jq_state -r --arg t "${3:-}" '[.tabs[]|select(.tab_id==$t)][0].pane_id // empty')
     [ -z "$pane" ] || remove_pane "$pane"
@@ -228,7 +238,7 @@ case "$cmd $sub" in
     fi
     printf '{"result":{"sent":true}}\n' ;;
   "pane read")
-    printf '\n\n❯ \n' ;;
+    if [ -f "$FAKE_DIR/pane-text" ]; then cat "$FAKE_DIR/pane-text"; else printf '\n\n❯ \n'; fi ;;
   "pane close")
     remove_pane "${3:-}"
     printf '{"result":{}}\n' ;;

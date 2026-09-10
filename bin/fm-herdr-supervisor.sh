@@ -325,7 +325,7 @@ pending_get() {  # <key>
 }
 
 pending_put() {  # <generation> <session> <socket> <workspace> <tab> <pane> [socket-identity]
-  local generation=$1 session=$2 socket=$3 workspace=$4 tab=$5 pane=$6 socket_identity=${7:-${HS_SOCKET_IDENTITY:-}} tmp
+  local generation=$1 session=$2 socket=$3 workspace=$4 tab=$5 pane=$6 socket_identity=${7:-${HS_SOCKET_IDENTITY:-}} terminal_id=${8:-} tmp
   tmp="$PENDING.tmp.${BASHPID:-$$}"
   if ! {
     printf 'generation=%s\n' "$generation"
@@ -337,6 +337,7 @@ pending_put() {  # <generation> <session> <socket> <workspace> <tab> <pane> [soc
     printf 'workspace=%s\n' "$workspace"
     printf 'tab=%s\n' "$tab"
     printf 'pane=%s\n' "$pane"
+    printf 'terminal_id=%s\n' "$terminal_id"
     printf 'cleanup_state=open\n'
   } > "$tmp" 2>/dev/null || ! chmod 600 "$tmp" 2>/dev/null \
     || ! mv -f "$tmp" "$PENDING" 2>/dev/null; then
@@ -346,14 +347,15 @@ pending_put() {  # <generation> <session> <socket> <workspace> <tab> <pane> [soc
 }
 
 pending_record_create_ids() {  # <workspace> <tab> <pane>
-  local workspace=$1 tab=$2 pane=$3 tmp
+  local workspace=$1 tab=$2 pane=$3 terminal_id=${4:-} tmp
   [ -f "$PENDING" ] || return 1
   tmp="$PENDING.create-response.${BASHPID:-$$}"
-  if ! awk '!/^(workspace|tab|pane|create_state)=/' "$PENDING" > "$tmp" 2>/dev/null \
+  if ! awk '!/^(workspace|tab|pane|terminal_id|create_state)=/' "$PENDING" > "$tmp" 2>/dev/null \
     || ! {
       printf 'workspace=%s\n' "$workspace"
       printf 'tab=%s\n' "$tab"
       printf 'pane=%s\n' "$pane"
+      printf 'terminal_id=%s\n' "$terminal_id"
       printf 'create_state=creating\n'
     } >> "$tmp" 2>/dev/null \
     || ! chmod 600 "$tmp" 2>/dev/null \
@@ -430,7 +432,7 @@ pending_quarantine() {
 }
 
 pending_restore_record() {
-  local state=${1:-quarantine} generation session socket socket_identity workspace tab pane
+  local state=${1:-quarantine} generation session socket socket_identity workspace tab pane terminal_id
   generation=$(pending_get generation || printf unknown)
   session=$(pending_get herdr_session || printf '')
   socket=$(pending_get herdr_socket || printf '')
@@ -438,6 +440,7 @@ pending_restore_record() {
   workspace=$(pending_get workspace || printf '')
   tab=$(pending_get tab || printf '')
   pane=$(pending_get pane || printf '')
+  terminal_id=$(pending_get terminal_id || printf '')
   {
     printf 'version=%s\n' "$RECORD_VERSION"
     printf 'generation=%s\n' "$generation"
@@ -449,6 +452,7 @@ pending_restore_record() {
     printf 'workspace=%s\n' "$workspace"
     printf 'tab=%s\n' "$tab"
     printf 'pane=%s\n' "$pane"
+    printf 'terminal_id=%s\n' "$terminal_id"
     printf 'mode=%s\n' "$state"
     printf 'cleanup_state=%s\n' "$(pending_get cleanup_state || printf open)"
     printf 'established_at=%s\n' "$(date +%s)"
@@ -1096,11 +1100,14 @@ hs_launch() {  # <command> [args...]
 }
 
 hs_launch_settle_open() {  # <reason> - close any open launch as an observed exit
-  local out rc
+  local out rc generation=${2:-}
   out=$(fm_launch_record check --helper herdr-supervisor 2>/dev/null)
   rc=$?
-  [ "$rc" -eq 3 ] || return 0
-  hs_launch exit --current --reason "$1" || hs_launch reconcile --current --verdict manual --evidence "$1" || true
+  [ "$rc" -eq 0 ] && return 0
+  [ "$rc" -eq 3 ] || return 1
+  [ -n "$generation" ] || return 1
+  [ "$(printf '%s\n' "$out" | sed -n 's/^field.generation=//p')" = "$generation" ] || return 1
+  hs_launch "${3:-exit}" --current --reason "$1" || return 1
 }
 
 hs_launch_intend() {  # <generation>
@@ -1108,7 +1115,6 @@ hs_launch_intend() {  # <generation>
   local launcher_pid=${BASHPID:-$$}
   local -a launcher_args=()
   fm_launch_record_available >/dev/null 2>&1 || { ledger_append launch-record "unavailable: python3 or owner missing"; return 0; }
-  hs_launch_settle_open "superseded by a new establish (generation $1)"
   while IFS= read -r line; do
     launcher_args+=("$line")
   done < <(fm_launch_record_launcher_args "$launcher_pid")
@@ -1121,12 +1127,17 @@ hs_launch_intend() {  # <generation>
   HS_LAUNCH_ID=${HS_LAUNCH_ID%%[[:space:]]*}
 }
 
-hs_launch_created() {  # <workspace> <tab> <pane>
+hs_launch_created() {
+  local -a identities=()
   [ -n "${HS_LAUNCH_ID:-}" ] || return 0
+  [ -z "$1" ] || identities+=(--identity "workspace_id=$1")
+  [ -z "$2" ] || identities+=(--identity "tab_id=$2")
+  [ -z "$3" ] || identities+=(--identity "pane_id=$3")
+  [ -z "$4" ] || identities+=(--identity "terminal_id=$4")
+  [ "${#identities[@]}" -gt 0 ] || return 0
   hs_launch created --launch "$HS_LAUNCH_ID" --identity-source native-response \
     --identity backend=herdr --identity "session=$HS_SESSION" --identity "socket_identity=$HS_SOCKET_IDENTITY" \
-    --identity "workspace_id=$1" --identity "tab_id=$2" --identity "pane_id=$3" \
-    || ledger_append launch-record "created not recorded for launch $HS_LAUNCH_ID"
+    "${identities[@]}" || ledger_append launch-record "created not recorded for launch $HS_LAUNCH_ID"
 }
 
 hs_launch_ready() {  # <loop-pid>
@@ -1149,7 +1160,7 @@ hs_launch_failed() {  # <reason>
 HS_LAUNCH_ID=
 
 establish() {  # <reason>
-  local reason=$1 generation out workspace tab pane cmd deadline pid detail label
+  local reason=$1 generation out workspace tab pane terminal_id cmd deadline pid detail label
 
   herdr_identity || {
     detail="Herdr identity could not be established: $(herdr_identity 2>&1 >/dev/null | head -1)"
@@ -1191,22 +1202,26 @@ establish() {  # <reason>
   hs_launch_intend "$generation"
 
   out=$(hs_herdr "$HS_SESSION" workspace create \
-    --cwd "$FM_ROOT" --label "$label" --no-focus 2>/dev/null) || out=
+    --cwd "$FM_ROOT" --label "$label" --no-focus 2>/dev/null) || true
   workspace=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
   tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
-  if [ -z "$workspace" ] || [ -z "$tab" ] || [ -z "$pane" ]; then
+  terminal_id=$(printf '%s' "$out" | jq -r '.result.terminal.terminal_id // .result.root_pane.terminal_id // empty' 2>/dev/null)
+  if [ -z "$workspace" ] || [ -z "$tab" ] || [ -z "$pane" ] || [ -z "$terminal_id" ]; then
     detail="Herdr returned an incomplete workspace-create response (workspace='${workspace:-none}' tab='${tab:-none}' pane='${pane:-none}'), so no supervisor pane could be created"
-    detail="$detail; the pending create intent remains for exact-label reconciliation"
-    pending_record_create_ids "${workspace:-}" "${tab:-}" "${pane:-}" || \
+    detail="$detail; the pending create intent remains for native inspection"
+    pending_record_create_ids "${workspace:-}" "${tab:-}" "${pane:-}" "${terminal_id:-}" || \
       detail="$detail; returned resource ids could not be persisted"
+    hs_launch_created "$workspace" "$tab" "$pane" "$terminal_id"
     record_clear || true
     escalate "$detail"
     echo "herdr-supervisor: FAILED - Herdr returned an incomplete workspace-create response" >&2
     return 1
   fi
 
-  pending_put "$generation" "$HS_SESSION" "$HS_SOCKET" "$workspace" "$tab" "$pane" || {
+  pending_record_create_ids "$workspace" "$tab" "$pane" "$terminal_id" || return 1
+  hs_launch_created "$workspace" "$tab" "$pane" "$terminal_id"
+  pending_put "$generation" "$HS_SESSION" "$HS_SOCKET" "$workspace" "$tab" "$pane" "$HS_SOCKET_IDENTITY" "$terminal_id" || {
     detail="the exact Herdr workspace binding could not be persisted for cleanup"
     if rollback_workspace "$HS_SESSION" "$workspace" "$HS_SOCKET" "$HS_SOCKET_IDENTITY"; then
       record_set_cleanup_state closed || true
@@ -1223,6 +1238,7 @@ establish() {  # <reason>
         printf 'workspace=%s\n' "$workspace"
         printf 'tab=%s\n' "$tab"
         printf 'pane=%s\n' "$pane"
+        printf 'terminal_id=%s\n' "$terminal_id"
         printf 'mode=quarantine\n'
         printf 'cleanup_state=open\n'
         printf 'established_at=%s\n' "$(date +%s)"
@@ -1245,6 +1261,7 @@ establish() {  # <reason>
     printf 'workspace=%s\n' "$workspace"
     printf 'tab=%s\n' "$tab"
     printf 'pane=%s\n' "$pane"
+    printf 'terminal_id=%s\n' "$terminal_id"
     printf 'mode=active\n'
     printf 'cleanup_state=open\n'
     printf 'established_at=%s\n' "$(date +%s)"
@@ -1259,7 +1276,6 @@ establish() {  # <reason>
     echo "herdr-supervisor: FAILED - the supervisor record could not be updated" >&2
     return 1
   }
-  hs_launch_created "$workspace" "$tab" "$pane"
   pending_clear || true
 
   # `exec` so the pane's tracked foreground process IS the loop: Herdr's own
@@ -1363,7 +1379,7 @@ establish() {  # <reason>
 
 retire_binding_locked() {  # <reason> [signal-owner]
   local reason=$1 signal_owner=${2:-1}
-  local session workspace tab pane loop_pid loop_identity current cleanup_state workspace_absent=0 i=0
+  local session workspace tab pane terminal_id loop_pid loop_identity current cleanup_state workspace_absent=0 i=0
   session=$(record_get herdr_session || printf '')
   workspace=$(record_get workspace || printf '')
   tab=$(record_get tab || printf '')
@@ -1371,9 +1387,9 @@ retire_binding_locked() {  # <reason> [signal-owner]
   loop_pid=$(live_get loop_pid || printf '')
   loop_identity=$(live_get loop_identity || printf '')
 
+  terminal_id=$(record_get terminal_id || printf '')
   if [ -n "$workspace" ] && ! recorded_herdr_identity_matches; then
-    quarantine_recorded_binding_locked "recorded Herdr session or socket is not the current server for $reason" \
-      || ledger_append quarantine "could not retain the old binding after Herdr identity changed for $reason"
+    record_set_mode quarantine || true
     return 1
   fi
   if [ -n "$workspace" ] && ! recorded_workspace_matches; then
@@ -1436,7 +1452,8 @@ retire_binding_locked() {  # <reason> [signal-owner]
   cleanup_state=$(record_get cleanup_state || printf open)
   if [ -n "$workspace" ] && [ "$cleanup_state" != closed ]; then
     pending_put "$(record_get generation || printf unknown)" "$session" \
-      "$(record_get herdr_socket || printf '')" "$workspace" "$tab" "$pane" || {
+      "$(record_get herdr_socket || printf '')" "$workspace" "$tab" "$pane" \
+      "$(record_get herdr_socket_identity || printf '')" "$terminal_id" || {
       record_set_mode quarantine || true
       ledger_append quarantine "could not persist exact workspace cleanup for $reason"
       return 1
@@ -1493,13 +1510,20 @@ reconcile_previous_locked() {
   [ -f "$RECORD" ] || return 0
   old_generation=$(record_get generation || printf unknown)
   ledger_append replace-required "retiring unhealthy generation=$old_generation before replacement"
-  if ! recorded_herdr_identity_matches || ! recorded_workspace_matches; then
-    quarantine_recorded_binding_locked "the prior Herdr binding could not be proven safe to close while replacing generation=$old_generation" \
-      || {
-        escalate "generation $old_generation could not be quarantined before replacement"
-        return 1
-      }
-    return 0
+  if ! recorded_herdr_identity_matches; then
+    record_set_mode quarantine || true
+    escalate "the prior Herdr server identity remains unresolved; replacement is blocked"
+    return 1
+  fi
+  if ! recorded_workspace_matches; then
+    if recorded_workspace_absent; then
+      record_clear || return 1
+      launcher_clear
+      return 0
+    fi
+    record_set_mode quarantine || true
+    escalate "the prior Herdr endpoint remains unresolved; replacement is blocked"
+    return 1
   fi
   retire_binding_locked "replacing unhealthy generation=$old_generation" 1
   rc=$?
@@ -1529,9 +1553,14 @@ reconcile_pending_locked() {
   record_workspace=$(record_get workspace || printf '')
   record_cleanup_state=$(record_get cleanup_state || printf open)
   if [ "$create_state" = creating ]; then
-    pending_quarantine "incomplete Herdr create response has no exact cleanup authorization" || return 1
-    escalate "incomplete or ambiguous Herdr create was quarantined without cleanup because its response did not return an exact workspace identity" || true
-    return 0
+    if fm_launch_record show --helper herdr-supervisor --json 2>/dev/null | jq -e --arg generation "$generation" \
+      '.launch.fields.generation == $generation and .launch.phase == "reconciled" and .launch.outcome.verdict == "manual"' >/dev/null 2>&1; then
+      pending_clear || return 1
+      if [ "$record_generation" = "$generation" ]; then record_clear || return 1; fi
+      return 0
+    fi
+    escalate "incomplete Herdr create remains unresolved; native inspection and explicit settlement are required" || true
+    return 1
   fi
   if [ "$record_mode" = active ] \
     && [ "$(record_get generation || printf '')" = "$generation" ] \
@@ -1539,7 +1568,7 @@ reconcile_pending_locked() {
     pending_clear
     return $?
   fi
-  if [ "$state" = closed ] || [ "$record_cleanup_state" = closed ]; then
+  if [ "$state" = closed ] || { [ "$record_generation" = "$generation" ] && [ "$record_workspace" = "$workspace" ] && [ "$record_cleanup_state" = closed ]; }; then
     if [ -f "$RECORD" ] \
       && { [ "$record_generation" != "$generation" ] \
         || { [ -n "$record_workspace" ] && [ "$record_workspace" != "$workspace" ]; }; }; then
@@ -1575,7 +1604,7 @@ reconcile_pending_locked() {
 }
 
 cmd_ensure() {  # <reason>
-  local reason=$1 rc preference blocked_reason
+  local reason=$1 rc preference blocked_reason prior_generation
   preference=$(hs_config_preference)
   if ! supervisor_eligible; then
     if [ "$preference" = off ] && [ -f "$PENDING" ]; then
@@ -1583,8 +1612,12 @@ cmd_ensure() {  # <reason>
         escalate "config/herdr-supervisor is off, but the pending Herdr cleanup record lock could not be acquired"
         return 1
       fi
+      prior_generation=$(pending_get generation || printf '')
       reconcile_pending_locked
       rc=$?
+      if [ "$rc" -eq 0 ] && [ ! -f "$RECORD" ]; then
+        hs_launch_settle_open "pending authority confirmed cleanup with supervision off" "$prior_generation" stop || rc=1
+      fi
       fm_lock_release "$RECORD_LOCK"
       if [ "$rc" -ne 0 ]; then
         escalate "config/herdr-supervisor is off, but the pending Herdr cleanup record could not be reconciled"
@@ -1650,6 +1683,7 @@ cmd_ensure() {  # <reason>
     escalate "the supervisor record lock could not be acquired within its bounded retry window"
     return 1
   fi
+  prior_generation=$(pending_get generation || record_get generation || printf '')
   if ! reconcile_pending_locked; then
     fm_lock_release "$RECORD_LOCK"
     fm_lock_release "$SUPERVISION_CLAIM"
@@ -1663,12 +1697,16 @@ cmd_ensure() {  # <reason>
     return 0
   fi
   ledger_append establish-required "${HS_UNHEALTHY_REASON:-unknown}"
-  hs_launch_settle_open "supervisor unhealthy at ensure: $(ledger_clean_field "${HS_UNHEALTHY_REASON:-unknown}")"
   if ! reconcile_previous_locked; then
     fm_lock_release "$RECORD_LOCK"
     fm_lock_release "$SUPERVISION_CLAIM"
     return 1
   fi
+  hs_launch_settle_open "prior supervisor authority confirmed settlement" "$prior_generation" || {
+    fm_lock_release "$RECORD_LOCK"
+    fm_lock_release "$SUPERVISION_CLAIM"
+    return 1
+  }
   establish "$reason (${HS_UNHEALTHY_REASON:-no prior record})"
   rc=$?
   [ "$rc" -eq 0 ] || hs_launch_failed "establish failed (rc $rc)"
@@ -1678,17 +1716,22 @@ cmd_ensure() {  # <reason>
 }
 
 cmd_retire() {  # <reason>
-  local reason=$1 rc
+  local reason=$1 rc prior_generation
   if ! supervisor_lock_acquire "$RECORD_LOCK"; then
     escalate "the supervisor record lock could not be acquired within its bounded retry window"
     return 1
   fi
+  prior_generation=$(pending_get generation || record_get generation || printf '')
   if [ -f "$PENDING" ] && ! reconcile_pending_locked; then
     fm_lock_release "$RECORD_LOCK"
     escalate "pending Herdr supervisor cleanup could not be reconciled for retire"
     return 1
   fi
   if [ ! -f "$RECORD" ]; then
+    hs_launch_settle_open "pending authority confirmed cleanup for retire" "$prior_generation" stop || {
+      fm_lock_release "$RECORD_LOCK"
+      return 1
+    }
     fm_lock_release "$RECORD_LOCK"
     echo "herdr-supervisor: nothing to retire"
     return 0
@@ -2335,9 +2378,8 @@ session_owner_identity() {
 
 # The monitor's launch record (bin/fm-launch-record.py): intent before the
 # detach, pid plus start identity once its own record proves it healthy, and
-# an observed exit when it stands down. Best-effort like the supervisor's own
-# mirror above; the monitor record and lock stay the operational authority.
-HS_MONITOR_LAUNCH_ID=
+# an observed exit when it stands down.
+HS_MONITOR_LAUNCH_ID=${FM_HERDR_MONITOR_LAUNCH_ID:-}
 
 hs_monitor_launch() {  # <command> [args...]
   local command=$1
@@ -2346,27 +2388,32 @@ hs_monitor_launch() {  # <command> [args...]
 }
 
 hs_monitor_launch_intend() {
-  local out line pid digest current
+  local out line pid digest current rc
   local launcher_pid=${BASHPID:-$$}
   local -a launcher_args=()
   HS_MONITOR_LAUNCH_ID=
-  fm_launch_record_available >/dev/null 2>&1 || return 0
+  fm_launch_record_available >/dev/null 2>&1 || return 1
   out=$(fm_launch_record check --helper herdr-supervisor-monitor 2>/dev/null)
-  if [ $? -eq 3 ]; then
+  rc=$?
+  [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || return 1
+  if [ "$rc" -eq 3 ]; then
     pid=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid=//p' | head -n 1)
     digest=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid_identity_sha256=//p' | head -n 1)
+    [ -n "$pid" ] && [ -n "$digest" ] || return 1
     current=
-    if [ -n "$pid" ] && fm_pid_alive "$pid"; then
-      current=$(fm_pid_identity "$pid" 2>/dev/null | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().rstrip("\n").encode("utf-8","surrogateescape")).hexdigest())' 2>/dev/null)
+    if fm_pid_alive "$pid"; then
+      current=$(fm_pid_identity "$pid" 2>/dev/null) || return 1
+      [ -n "$current" ] || return 1
+      current=$(printf '%s' "$current" | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())' 2>/dev/null) || return 1
     fi
     if [ -n "$digest" ] && [ "$current" = "$digest" ]; then
       # The recorded monitor process is alive with its recorded identity but
       # monitor_healthy said otherwise; leave the record for the operator.
       ledger_append launch-record "monitor launch left open: recorded pid $pid still carries its identity"
-      return 0
+      return 1
     fi
     hs_monitor_launch exit --current --reason "monitor process gone before a new start (observed)" \
-      || hs_monitor_launch reconcile --current --verdict manual --evidence "open monitor launch without a provable process" || true
+      || return 1
   fi
   while IFS= read -r line; do
     launcher_args+=("$line")
@@ -2374,23 +2421,23 @@ hs_monitor_launch_intend() {
   out=$(fm_launch_record intend --helper herdr-supervisor-monitor --owner fm-herdr-supervisor.sh --origin ensure \
     "${launcher_args[@]}" 2>&1) || {
     ledger_append launch-record "monitor intent not recorded: $(ledger_clean_field "$out")"
-    return 0
+    return 1
   }
   HS_MONITOR_LAUNCH_ID=${out##*launch=}
   HS_MONITOR_LAUNCH_ID=${HS_MONITOR_LAUNCH_ID%%[[:space:]]*}
 }
 
-hs_monitor_launch_confirmed() {  # <pid> <pid-identity>
+hs_monitor_launch_created() {
   local digest
-  [ -n "$HS_MONITOR_LAUNCH_ID" ] || return 0
-  digest=$(printf '%s' "$2" | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())' 2>/dev/null)
-  if hs_monitor_launch created --launch "$HS_MONITOR_LAUNCH_ID" --identity-source process \
-      --identity "pid=$1" --identity "pid_identity_sha256=${digest:-unknown}"; then
-    hs_monitor_launch ready --launch "$HS_MONITOR_LAUNCH_ID" --source monitor-record-heartbeat \
-      || ledger_append launch-record "monitor launch $HS_MONITOR_LAUNCH_ID readiness could not be recorded"
-  else
-    ledger_append launch-record "monitor launch $HS_MONITOR_LAUNCH_ID identity could not be recorded"
-  fi
+  [ -n "$HS_MONITOR_LAUNCH_ID" ] || return 1
+  digest=$(printf '%s' "$2" | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())' 2>/dev/null) || return 1
+  hs_monitor_launch created --launch "$HS_MONITOR_LAUNCH_ID" --identity-source process \
+    --identity "pid=$1" --identity "pid_identity_sha256=$digest"
+}
+
+hs_monitor_launch_confirmed() {
+  [ -n "$HS_MONITOR_LAUNCH_ID" ] || return 1
+  hs_monitor_launch ready --launch "$HS_MONITOR_LAUNCH_ID" --source monitor-record-heartbeat
 }
 
 hs_monitor_launch_unconfirmed() {  # <reason>
@@ -2400,8 +2447,17 @@ hs_monitor_launch_unconfirmed() {  # <reason>
   HS_MONITOR_LAUNCH_ID=
 }
 
-cmd_monitor() {  # <reason>
-  local reason=$1 owner deadline
+cmd_monitor() {
+  local rc
+  supervisor_lock_acquire "$RECORD_LOCK" || return 1
+  cmd_monitor_locked "$1"
+  rc=$?
+  fm_lock_release "$RECORD_LOCK"
+  return "$rc"
+}
+
+cmd_monitor_locked() {
+  local reason=$1 owner deadline pid identity current
   if ! supervisor_eligible; then
     echo "herdr-supervisor: monitor not eligible - $HS_INELIGIBLE_REASON"
     return 0
@@ -2410,13 +2466,28 @@ cmd_monitor() {  # <reason>
     echo "herdr-supervisor: monitor unchanged pid=$(monitor_field pid)"
     return 0
   fi
+  if [ -f "$MONITOR" ]; then
+    [ "$(monitor_field fm_home || printf '')" = "$FM_HOME" ] || return 1
+    pid=$(monitor_field pid || printf '')
+    if fm_pid_alive "$pid"; then
+      identity=$(monitor_field pid_identity || printf '')
+      current=$(fm_pid_identity "$pid" 2>/dev/null) || return 1
+      if [ -z "$identity" ] || [ -z "$current" ] || [ "$identity" = "$current" ]; then
+        escalate "the prior monitor process remains live; replacement is blocked"
+        return 1
+      fi
+    fi
+  fi
   owner=$(session_owner_identity) || {
     echo "herdr-supervisor: monitor not started - no live session owns this home" >&2
     return 1
   }
   # Intent before the detach: a monitor that never confirms leaves an
   # inspectable uncertain launch instead of a silent detached process.
-  hs_monitor_launch_intend
+  hs_monitor_launch_intend || {
+    escalate "monitor intent could not be persisted or prior launch remains unresolved"
+    return 1
+  }
 
   # `ensure` is called from inside a command substitution on the session-start
   # path, so a started monitor that retained ANY inherited descriptor would wedge
@@ -2424,12 +2495,12 @@ cmd_monitor() {  # <reason>
   # session where available, so nothing of the caller survives into it.
   if command -v setsid >/dev/null 2>&1; then
     ( setsid env FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" \
-        FM_STATE_OVERRIDE="$STATE" FM_CONFIG_OVERRIDE="$CONFIG" \
+        FM_STATE_OVERRIDE="$STATE" FM_CONFIG_OVERRIDE="$CONFIG" FM_HERDR_MONITOR_LAUNCH_ID="$HS_MONITOR_LAUNCH_ID" \
         bash "$SCRIPT_DIR/fm-herdr-supervisor.sh" monitor-run --owner "$owner" \
         </dev/null >/dev/null 2>&1 & ) || true
   else
     ( env FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" \
-        FM_STATE_OVERRIDE="$STATE" FM_CONFIG_OVERRIDE="$CONFIG" \
+        FM_STATE_OVERRIDE="$STATE" FM_CONFIG_OVERRIDE="$CONFIG" FM_HERDR_MONITOR_LAUNCH_ID="$HS_MONITOR_LAUNCH_ID" \
         bash "$SCRIPT_DIR/fm-herdr-supervisor.sh" monitor-run --owner "$owner" \
         </dev/null >/dev/null 2>&1 & ) || true
   fi
@@ -2438,7 +2509,7 @@ cmd_monitor() {  # <reason>
   while :; do
     if monitor_healthy; then
       ledger_append monitor-started "pid=$(monitor_field pid) $reason"
-      hs_monitor_launch_confirmed "$(monitor_field pid)" "$(monitor_field pid_identity)"
+      hs_monitor_launch_confirmed || return 1
       echo "herdr-supervisor: monitor started pid=$(monitor_field pid)"
       return 0
     fi
@@ -2453,7 +2524,7 @@ cmd_monitor() {  # <reason>
 
 monitor_stand_down() {  # <why>
   ledger_append monitor-exit "$1"
-  hs_monitor_launch exit --current --reason "monitor stood down: $(ledger_clean_field "$1")" || true
+  hs_monitor_launch exit --launch "$HS_MONITOR_LAUNCH_ID" --reason "monitor stood down: $(ledger_clean_field "$1")" || true
   rm -f "$MONITOR" "$MONITOR_HEARTBEAT" 2>/dev/null || true
   fm_lock_release "$MONITOR_LOCK" || true
 }
@@ -2499,6 +2570,10 @@ cmd_monitor_run() {  # <owner-pid TAB owner-identity>
   fi
   identity=$(fm_pid_identity "$self" 2>/dev/null || printf '')
   [ -n "$identity" ] || { fm_lock_release "$MONITOR_LOCK"; return 1; }
+  hs_monitor_launch_created "$self" "$identity" || {
+    fm_lock_release "$MONITOR_LOCK"
+    return 1
+  }
   {
     printf 'version=1\n'
     printf 'fm_home=%s\n' "$FM_HOME"

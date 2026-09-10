@@ -476,7 +476,7 @@ fm_afk_launch_herdr_recover_created() {  # <session> <label>
 # Reconcile a recorded-but-dead terminal: if a record exists and no live daemon
 # owns it, close the leaked terminal by exact id and drop the record.
 fm_afk_launch_reconcile() {
-  local read_result
+  local read_result launch
   if daemon_lock_held_by_live_daemon; then
     return 0
   fi
@@ -484,10 +484,16 @@ fm_afk_launch_reconcile() {
   read_result=$?
   if [ "$read_result" -eq 0 ]; then
     fm_afk_launch_log "reconciling leaked daemon terminal ${FM_AFK_REC_BACKEND}:${FM_AFK_REC_TARGET}"
-    fm_afk_launch_close_recorded
+    launch=$(fm_afk_launch_record_terminal_attempt) || return 1
+    fm_afk_launch_close_recorded || return 1
+    [ -z "$launch" ] || fm_afk_launch_record exit --launch "$launch" --reason "recorded daemon terminal cleanup confirmed" >/dev/null || return 1
   elif [ "$read_result" -eq 2 ]; then
     return 1
   fi
+  fm_afk_launch_record check >/dev/null 2>&1 || {
+    fm_afk_launch_log "daemon launch remains unresolved; inspect its native effects before settlement"
+    return 1
+  }
 }
 
 fm_afk_launch_validate_herdr_identity() {  # <workspace-create-json>
@@ -572,9 +578,8 @@ fm_afk_launch_record_intend() {  # <label>
         fm_afk_launch_log "an open daemon launch record exists and the daemon lock is live (pid $pid); refusing a second daemon"
         return 1
       fi
-      fm_afk_launch_record exit --current --reason "daemon gone before a new launch (observed: lock not held by a live daemon)" >/dev/null 2>&1 \
-        || fm_afk_launch_record reconcile --current --verdict manual --evidence "open daemon launch without a live identity-bound lock" >/dev/null 2>&1 \
-        || { fm_afk_launch_log "the open daemon launch record could not be settled"; return 1; }
+      fm_afk_launch_log "an open daemon launch requires exact cleanup or inspected manual settlement; refusing a second daemon"
+      return 1
       ;;
     *)
       fm_afk_launch_log "daemon launch record unreadable (${out:-no detail}); refusing to create a terminal without one"
@@ -591,6 +596,49 @@ fm_afk_launch_record_intend() {  # <label>
   FM_AFK_LAUNCH_ID=${out##*launch=}
   FM_AFK_LAUNCH_ID=${FM_AFK_LAUNCH_ID%%[[:space:]]*}
   [ -n "$FM_AFK_LAUNCH_ID" ]
+}
+
+fm_afk_launch_record_terminal_attempt() {
+  local out rc launch key expected actual
+  out=$(fm_afk_launch_record check 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || return 0
+  [ "$rc" -eq 3 ] || return 1
+  launch=$(printf '%s\n' "$out" | sed -n 's/^launch=//p')
+  for key in backend session workspace_id tab_id pane_id terminal_id; do
+    case "$key" in
+      backend) expected=herdr ;;
+      session) expected=${FM_AFK_REC_TARGET%%:*} ;;
+      workspace_id) expected=${FM_AFK_REC_WORKSPACE:-} ;;
+      tab_id) expected=${FM_AFK_REC_TAB:-} ;;
+      pane_id) expected=${FM_AFK_REC_TARGET#*:} ;;
+      terminal_id) expected=${FM_AFK_REC_TERMINAL:-} ;;
+    esac
+    actual=$(printf '%s\n' "$out" | sed -n "s/^identity\\.$key=//p")
+    if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+      fm_afk_launch_log "open daemon attempt is not bound to the recorded terminal; preserving uncertainty"
+      return 1
+    fi
+  done
+  printf '%s\n' "$launch"
+}
+
+fm_afk_launch_record_partial() {
+  local session=$1 response=$2 value key path
+  local -a identity=(--identity backend=herdr --identity "session=$session")
+  [ -n "$FM_AFK_LAUNCH_ID" ] || return 1
+  for key in workspace_id tab_id pane_id terminal_id; do
+    case "$key" in
+      workspace_id) path='.result.workspace.workspace_id' ;;
+      tab_id) path='.result.tab.tab_id' ;;
+      pane_id) path='.result.root_pane.pane_id' ;;
+      terminal_id) path='.result.root_pane.terminal_id // .result.terminal.terminal_id' ;;
+    esac
+    value=$(jq -r "($path) | select(type == \"string\")" <<< "$response" 2>/dev/null) || continue
+    [ -z "$value" ] || identity+=(--identity "$key=$value")
+  done
+  [ "${#identity[@]}" -gt 4 ] || return 0
+  fm_afk_launch_record created --launch "$FM_AFK_LAUNCH_ID" --identity-source native-response "${identity[@]}" >/dev/null
 }
 
 fm_afk_launch_record_created() {  # <session> <workspace> <tab> <pane> <terminal> <source>
@@ -632,6 +680,7 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
   out=$(fm_backend_herdr_cli "$session" workspace create --cwd "$FM_HOME" --label "$label" --no-focus 2>/dev/null)
   create_result=$?
   fm_afk_launch_validate_herdr_identity "$out" || {
+    fm_afk_launch_record_partial "$session" "$out" || fm_afk_launch_log "partial daemon identity could not be persisted"
     fm_afk_launch_record_failed "herdr workspace create returned an unusable identity (label $label)" unknown
     return 2
   }
@@ -881,7 +930,7 @@ fm_afk_launch_start_native() {
 }
 
 fm_afk_launch_stop() {
-  local pid pid_identity current_identity result=0 read_result
+  local pid pid_identity current_identity result=0 read_result launch
   fm_afk_launch_record_read
   read_result=$?
   if [ "$read_result" -eq 2 ]; then
@@ -899,6 +948,7 @@ fm_afk_launch_stop() {
       fm_backend_herdr_capability_preflight "AFK stop" "$session" || return 1
     fi
   fi
+  launch=$(fm_afk_launch_record_terminal_attempt) || return 1
   # (1) SIGTERM the daemon so its cleanup trap flushes buffered escalations
   # WHILE state/.afk is still present (the exit-ordering fix: clearing .afk
   # first would make that flush a no-op via inject_msg's presence gate).
@@ -939,10 +989,10 @@ fm_afk_launch_stop() {
   fi
   if [ "$result" -eq 0 ]; then
     fm_afk_launch_log "away mode stopped; daemon terminal torn down and .afk cleared"
-    fm_afk_launch_record stop --current --reason "fm-afk-launch.sh stop" >/dev/null 2>&1 || true
+    [ -z "$launch" ] || fm_afk_launch_record stop --launch "$launch" --reason "fm-afk-launch.sh stop confirmed exact terminal cleanup" >/dev/null 2>&1 || result=1
   else
     fm_afk_launch_log "away mode stopped; terminal teardown remains recorded for retry"
-    fm_afk_launch_record stop --current --reason "fm-afk-launch.sh stop (terminal teardown recorded for retry)" >/dev/null 2>&1 || true
+
   fi
   return "$result"
 }

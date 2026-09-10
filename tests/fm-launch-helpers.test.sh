@@ -150,6 +150,8 @@ test_supervisor_establish_records_intent_identity_readiness_and_stop() {
   [ "$(record "$state" herdr-supervisor launch.identity.pane_id)" = "$binding" ] || fail "the launch record must bind the same pane as the supervisor's binding record"
   [ "$(record "$state" herdr-supervisor launch.identity.workspace_id)" = "$(grep -m1 '^workspace=' "$state/.herdr-supervisor" | cut -d= -f2)" ] || fail "the launch record must bind the same workspace"
   [ "$(record "$state" herdr-supervisor launch.identity.tab_id)" = "$(grep -m1 '^tab=' "$state/.herdr-supervisor" | cut -d= -f2)" ] || fail "the launch record must bind the same tab"
+  [ -n "$(record "$state" herdr-supervisor launch.identity.terminal_id)" ] || fail "supervisor terminal identity must be retained"
+  [ "$(record "$state" herdr-supervisor launch.identity.terminal_id)" = "$(grep -m1 '^terminal_id=' "$state/.herdr-supervisor" | cut -d= -f2)" ] || fail "the launch record must bind the same terminal"
   [ "$(record "$state" herdr-supervisor launch.identity_source)" = native-response ] || fail "the identity must come from the native create response"
   out=$(run_supervisor "$home" retire --reason "test retire" 2>&1) || fail "retire should succeed: $out"
   assert_contains "$out" "herdr-supervisor: retired" "retire must report as before"
@@ -251,26 +253,42 @@ test_afk_launcher_records_intent_identity_readiness_and_stop() {
 }
 
 test_afk_launcher_create_refusal_is_uncertain_with_no_terminal_record() {
-  local home out state
-  home=$(new_afk_home afk-refused)
-  printf '{"error":{"code":"internal","message":"boom"}}\n' > "$home/fail/workspace-create"
-  out=$(run_afk "$home" start 2>&1) && fail "start should fail when Herdr refuses the workspace create: $out"
-  state="$home/state"
-  [ "$(record "$state" afk-daemon launch.phase)" = uncertain ] || fail "an issued create with no usable identity must read uncertain, got '$(record "$state" afk-daemon launch.phase)'"
-  [ "$(record "$state" afk-daemon launch.reconcile.required)" = True ] || fail "the refused create must carry an obligation"
-  [ ! -f "$state/.afk-daemon-terminal" ] || fail "no terminal record may be retained for a create that returned nothing usable"
-  [ ! -f "$state/.afk" ] || fail "away mode must not stay on after a failed launch"
-  # The next start settles the open launch (no live daemon lock) and succeeds.
-  rm -f "$home/fail/workspace-create"
-  : > "$home/fake/log"
-  out=$(run_afk "$home" start 2>&1) || fail "the next start should settle the open launch and succeed: $out"
-  [ "$(record "$state" afk-daemon launch.phase)" = ready ] || fail "the replacement launch must read ready"
-  # The launcher settles an open launch whose daemon lock is not live as an
-  # observed exit, then records the new launch; the old one is retained.
-  python3 "$OWNER" --state "$state" show --helper afk-daemon | grep -q 'previous launch=.* phase=exited' \
-    || fail "the uncertain launch must be retained as an observed exit"
-  run_afk "$home" stop >/dev/null 2>&1 || true
-  pass "away-mode launcher: a refused create stays uncertain with no terminal record, and the next start settles it"
+  local home out state old mode before
+  for mode in unknown lost partial; do
+    home=$(new_afk_home "afk-refused-$mode")
+    if [ "$mode" = partial ]; then
+      printf '{"result":{"workspace":{"workspace_id":"w-partial"}},"error":{"code":"internal"}}\n' > "$home/fail/workspace-create"
+    else
+      printf '{"error":{"code":"internal","message":"boom"}}\n' > "$home/fail/workspace-create"
+    fi
+    [ "$mode" != lost ] || : > "$home/fail/workspace-create.lost"
+    out=$(run_afk "$home" start 2>&1) && fail "start should fail without complete returned identity: $out"
+    state="$home/state"
+    old=$(record "$state" afk-daemon launch.id)
+    [ "$(record "$state" afk-daemon launch.phase)" = uncertain ] || fail "issued create must retain uncertainty"
+    [ "$(record "$state" afk-daemon launch.reconcile.required)" = True ] || fail "issued create must carry an obligation"
+    [ ! -f "$state/.afk-daemon-terminal" ] || fail "incomplete creation must not publish an operational terminal record"
+    [ ! -f "$state/.afk" ] || fail "failed launch must roll back away mode"
+    if [ "$mode" = partial ]; then
+      [ "$(record "$state" afk-daemon launch.identity.workspace_id)" = w-partial ] || fail "returned partial workspace must be retained"
+    fi
+    before=$(jq '.workspaces | length' "$home/fake/state.json")
+    [ "$mode" != lost ] || [ "$before" -eq 2 ] || fail "lost response must follow a real fake allocation"
+    rm -f "$home/fail/workspace-create" "$home/fail/workspace-create.lost"
+    : > "$home/fake/log"
+    out=$(run_afk "$home" start 2>&1) && fail "unresolved create must refuse a retry: $out"
+    out=$(run_afk "$home" stop 2>&1) && fail "identity-less or partial create must refuse automatic settlement on stop: $out"
+    [ "$(record "$state" afk-daemon launch.id)" = "$old" ] || fail "retry and stop must retain the exact attempt"
+    [ "$(record "$state" afk-daemon launch.phase)" = uncertain ] || fail "stop must not erase creation uncertainty"
+    [ "$(jq '.workspaces | length' "$home/fake/state.json")" -eq "$before" ] || fail "retry must not allocate a replacement"
+    fake_log "$home" | grep -q '^workspace create' && fail "retry must not issue creation"
+    python3 "$OWNER" --state "$state" reconcile --helper afk-daemon --launch "$old" --verdict manual \
+      --evidence "fixture native inventory inspected; prior allocation explicitly retained" >/dev/null || fail "explicit inspected settlement failed"
+    out=$(run_afk "$home" start 2>&1) || fail "inspected manual settlement should permit a new attempt: $out"
+    [ "$(record "$state" afk-daemon launch.phase)" = ready ] || fail "new attempt should become ready"
+    run_afk "$home" stop >/dev/null 2>&1 || fail "new exact attempt should stop"
+  done
+  pass "away-mode launcher: unknown and partial creations survive retry and stop until inspected settlement"
 }
 
 # --- watcher cycle world -------------------------------------------------------------
@@ -295,6 +313,12 @@ done
 if [ -n "$verb" ]; then
   if [ -e "${FM_TEST_LOCK_PATH:?}" ]; then l=present; else l=absent; fi
   printf '%s lock=%s\n' "$verb" "$l" >> "${FM_TEST_WRAP_LOG:?}"
+fi
+if [ "$verb" = intend ] && [ -n "${FM_TEST_INTEND_PAUSE:-}" ]; then
+  "${FM_TEST_REAL_PYTHON:?}" "$@" || exit $?
+  : > "$FM_TEST_INTEND_PAUSE"
+  while [ ! -f "$FM_TEST_INTEND_PAUSE.release" ]; do sleep 0.05; done
+  exit 0
 fi
 exec "${FM_TEST_REAL_PYTHON:?}" "$@"
 SH
@@ -330,7 +354,10 @@ wait_pid_gone() {  # <pid>
   return 1
 }
 cleanup_watchers() {
-  local pid
+  local pid pause
+  for pause in "$TMP_ROOT"/*/intent-paused; do
+    [ ! -f "$pause" ] || : > "$pause.release"
+  done
   for pid in "${ARM_PIDS[@]+"${ARM_PIDS[@]}"}"; do
     pkill -TERM -P "$pid" 2>/dev/null || true
     kill -TERM "$pid" 2>/dev/null || true
@@ -371,25 +398,39 @@ test_watcher_cycle_records_intent_before_fork_identity_readiness_and_exit() {
 }
 
 test_watcher_interrupted_attempt_and_successor_chain_are_settled_by_the_next_arm() {
-  local dir state fakebin out pid old sleeper digest
+  local dir state fakebin out pid old sleeper digest first_arm i
   dir=$(make_case watcher-settle)
   state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/arm.out"
   WRAPPER=$(make_record_wrapper "$dir"); WRAP_LOG="$dir/wrap.log"; : > "$WRAP_LOG"
-  # An arm interrupted between its intent and its fork leaves an intended
-  # record with a gone launcher and no child: the next arm settles it as
-  # launcher-gone before recording its own attempt.
   old=$(python3 "$OWNER" --state "$state" intend --helper watcher --owner fm-watch-arm.sh --origin cycle --launcher-pid 1 --launcher-identity stale-identity | sed 's/^launch=//')
   run_arm "$state" "$fakebin" "$out"
-  pid=$(wait_started "$out") || fail "the arm did not start a watcher after an interrupted attempt: $(cat "$out")"
-  wshow "$state" | grep -q "previous launch=$old phase=reconciled" || fail "the interrupted attempt must be retained as reconciled: $(wshow "$state")"
-  python3 "$OWNER" --state "$state" show --helper watcher --json | grep -q '"verdict": "launcher-gone"' || fail "the interrupted attempt must reconcile as launcher-gone"
-  kill -TERM "$pid" 2>/dev/null || true
-  wait_pid_gone "$ARM_PID" || fail "the arm did not finish"
-  wait "$ARM_PID" 2>/dev/null || true
-  # The successor chain: a launch whose watcher (modelled by a live sleeper
-  # with its recorded start identity) still runs is superseded, never refused,
-  # and its later exit is still annotated on the superseded launch. A fresh
-  # state keeps the previous cycle's downtime recovery out of this case.
+  wait "$ARM_PID" && fail "ambiguous interrupted attempt must refuse a new watcher"
+  [ "$(wrecord "$state" launch.id)" = "$old" ] || fail "ambiguous attempt must remain current"
+  [ "$(wrecord "$state" launch.phase)" = intended ] || fail "missing identity must not prove no effect"
+  [ ! -e "$state/.watch.lock" ] || fail "ambiguous attempt must not fork a watcher"
+
+  dir=$(make_case watcher-pending)
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/arm.out"
+  WRAPPER=$(make_record_wrapper "$dir"); WRAP_LOG="$dir/wrap.log"; : > "$WRAP_LOG"
+  FM_TEST_INTEND_PAUSE="$dir/intent-paused" run_arm "$state" "$fakebin" "$out"
+  first_arm=$ARM_PID
+  i=0
+  while [ ! -f "$dir/intent-paused" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i+1)); done
+  [ -f "$dir/intent-paused" ] || fail "first arm did not persist its pending intent"
+  old=$(wrecord "$state" launch.id)
+  FM_WATCH_ARM_LAUNCH_TRIES=2 run_arm "$state" "$fakebin" "$dir/second.out"
+  wait "$ARM_PID" && fail "competing arm must refuse while first fork is pending"
+  [ "$(wrecord "$state" launch.id)" = "$old" ] || fail "competitor must preserve pending attempt"
+  [ "$(grep -c '^intend ' "$WRAP_LOG")" -eq 1 ] || fail "competitor must not publish another intent"
+  [ ! -e "$state/.watch.lock" ] || fail "blocked first arm must not yet have a child"
+  rm -f "$state/.wake-queue" "$state/.watcher-down"
+  : > "$dir/intent-paused.release"
+  pid=$(wait_started "$out") || fail "first arm did not finish its authorized fork"
+  [ "$(wrecord "$state" launch.id)" = "$old" ] || fail "first child must remain on its original intent"
+  kill -TERM "$pid" || fail "could not stop the first fixture watcher"
+  wait_pid_gone "$first_arm" || fail "first arm did not finish"
+  wait "$first_arm" 2>/dev/null || true
+
   dir=$(make_case watcher-successor)
   state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/arm.out"
   WRAPPER=$(make_record_wrapper "$dir"); WRAP_LOG="$dir/wrap.log"; : > "$WRAP_LOG"
@@ -397,22 +438,29 @@ test_watcher_interrupted_attempt_and_successor_chain_are_settled_by_the_next_arm
   sleeper=$!
   LOOP_PIDS+=("$sleeper")
   digest=$(sha_of "$(python3 "$OWNER" pid-identity "$sleeper")")
-  [ -n "$digest" ] || fail "the sleeper's identity digest could not be computed"
-  old=$(python3 "$OWNER" --state "$state" intend --helper watcher --owner fm-watch-arm.sh --origin cycle | sed 's/^launch=//')
+  old=$(python3 "$OWNER" --state "$state" intend --helper watcher --owner fm-watch-arm.sh --origin cycle --launcher-pid "$$" | sed 's/^launch=//')
   python3 "$OWNER" --state "$state" created --helper watcher --launch "$old" --identity-source process --identity "pid=$sleeper" --identity "pid_identity_sha256=$digest" >/dev/null || fail "predecessor record could not be written"
   python3 "$OWNER" --state "$state" ready --helper watcher --launch "$old" --source watcher-beacon >/dev/null || fail "predecessor readiness could not be written"
-  : > "$out"
-  run_arm "$state" "$fakebin" "$out"
-  pid=$(wait_started "$out") || fail "the successor arm did not start a watcher: $(cat "$out")"
-  wshow "$state" | grep -q "previous launch=$old phase=superseded" || fail "the running predecessor must read superseded, not refused: $(wshow "$state")"
-  [ "$(wrecord "$state" launch.identity.pid)" = "$pid" ] || fail "the successor's own launch must be current"
+  run_arm "$state" "$fakebin" "$dir/unrelated.out"
+  wait "$ARM_PID" && fail "unrelated arm must not supersede a live predecessor"
+  [ "$(wrecord "$state" launch.id)" = "$old" ] || fail "unrelated arm must preserve predecessor"
+  kill -0 "$sleeper" || fail "unrelated arm signalled predecessor"
+  dir=$(make_case watcher-matching-successor)
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/arm.out"
+  WRAPPER=$(make_record_wrapper "$dir"); WRAP_LOG="$dir/wrap.log"; : > "$WRAP_LOG"
+  old=$(python3 "$OWNER" --state "$state" intend --helper watcher --owner fm-watch-arm.sh --origin cycle --launcher-pid "$$" | sed 's/^launch=//')
+  python3 "$OWNER" --state "$state" created --helper watcher --launch "$old" --identity-source process --identity "pid=$sleeper" --identity "pid_identity_sha256=$digest" >/dev/null || fail "matching predecessor record could not be written"
+  python3 "$OWNER" --state "$state" ready --helper watcher --launch "$old" --source watcher-beacon >/dev/null || fail "matching predecessor readiness could not be written"
+  FM_WATCH_PREDECESSOR_ARM_PID="$$" run_arm "$state" "$fakebin" "$out"
+  pid=$(wait_started "$out") || fail "the matching successor did not start: $(cat "$out")"
+  wshow "$state" | grep -q "previous launch=$old phase=superseded" || fail "matching predecessor must be superseded"
+  [ "$(wrecord "$state" launch.identity.pid)" = "$pid" ] || fail "successor identity must be current"
   kill -TERM "$sleeper" 2>/dev/null || true
-  python3 "$OWNER" --state "$state" exit --helper watcher --launch "$old" --reason "predecessor exited after handoff" --code 0 | grep -q 'phase=superseded exit=recorded' || fail "the predecessor's later exit must be annotated on its superseded launch"
-  python3 "$OWNER" --state "$state" show --helper watcher --json | grep -q '"event": "exited-after-supersede"' || fail "the annotation must be in the predecessor's history"
+  python3 "$OWNER" --state "$state" exit --helper watcher --launch "$old" --reason "predecessor exited after handoff" --code 0 | grep -q 'phase=superseded exit=recorded' || fail "predecessor exit must annotate its superseded launch"
   kill -TERM "$pid" 2>/dev/null || true
-  wait_pid_gone "$ARM_PID" || fail "the successor arm did not finish"
+  wait_pid_gone "$ARM_PID" || fail "successor arm did not finish"
   wait "$ARM_PID" 2>/dev/null || true
-  pass "watcher: an interrupted attempt is settled launcher-gone and a running predecessor is superseded, never refused"
+  pass "watcher: ambiguous and pending forks block replacement while matching successors preserve the chain"
 }
 
 # --- process-event runner world ------------------------------------------------------
@@ -654,6 +702,15 @@ PYTEST
   [ "$?" -eq 0 ] || fail "start did not refuse the invalid claim root promptly"
   pass "procevent: an invalid claim root refuses start instead of waiting forever"
 }
+
+if [ "${1:-}" = helper-safety ]; then
+  test_afk_launcher_records_intent_identity_readiness_and_stop
+  test_afk_launcher_create_refusal_is_uncertain_with_no_terminal_record
+  test_watcher_cycle_records_intent_before_fork_identity_readiness_and_exit
+  test_watcher_interrupted_attempt_and_successor_chain_are_settled_by_the_next_arm
+  test_watcher_arm_refuses_to_fork_when_intent_cannot_be_persisted
+  exit 0
+fi
 
 if [ "${1:-}" = launch-retirement ]; then
   test_procevent_runner_records_intent_before_fork_claim_identity_start_and_exit

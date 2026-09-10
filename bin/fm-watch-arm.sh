@@ -105,6 +105,8 @@ ARM_PID=${BASHPID:-$$}
 # predecessor running its own cycle.
 WA_LAUNCH_ID=
 WA_LAUNCH_REFUSAL=
+WA_LAUNCH_LOCK="$STATE/.watch-arm-launch.lock"
+WA_LAUNCH_LOCK_HELD=0
 wa_launch() {  # <command> [args...]
   local command=$1
   shift
@@ -120,7 +122,7 @@ wa_identity_digest() {  # <pid> -> sha256 of fm_pid_identity, or empty
   printf '%s' "$identity" | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())' 2>/dev/null || true
 }
 wa_launch_intend() {  # non-zero = refuse to fork; WA_LAUNCH_REFUSAL says why
-  local out rc line pid digest origin=cycle
+  local out rc line pid digest current_digest predecessor predecessor_digest launch origin=cycle
   local launcher_pid=${BASHPID:-$$}
   local -a launcher_args=()
   fm_launch_record_available >/dev/null 2>&1 || { WA_LAUNCH_REFUSAL="launch record owner unavailable (python3 or bin/fm-launch-record.py missing)"; return 1; }
@@ -131,15 +133,30 @@ wa_launch_intend() {  # non-zero = refuse to fork; WA_LAUNCH_REFUSAL says why
     3)
       pid=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid=//p' | head -n 1)
       digest=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid_identity_sha256=//p' | head -n 1)
-      if [ -n "$pid" ] && fm_pid_alive "$pid" && [ -n "$digest" ] && [ "$(wa_identity_digest "$pid")" = "$digest" ]; then
-        wa_launch supersede --current --reason "successor cycle armed by arm $ARM_PID while watcher pid $pid still runs" >/dev/null \
-          || { WA_LAUNCH_REFUSAL="the running predecessor's launch (pid $pid) could not be superseded in the launch record"; return 1; }
-      elif [ -n "$pid" ]; then
-        wa_launch exit --current --reason "watcher pid $pid gone at the next arm (observed)" >/dev/null \
-          || { WA_LAUNCH_REFUSAL="the previous cycle's exit could not be recorded"; return 1; }
+      launch=$(printf '%s\n' "$out" | sed -n 's/^launch=//p')
+      if [ -n "$pid" ] && [ -n "$digest" ]; then
+        current_digest=$(wa_identity_digest "$pid")
+        if fm_pid_alive "$pid" && [ -z "$current_digest" ]; then
+          WA_LAUNCH_REFUSAL="recorded watcher process identity is unavailable"
+          return 1
+        fi
+        if fm_pid_alive "$pid" && [ "$current_digest" = "$digest" ]; then
+          predecessor=$(wa_launch get launch.launcher.pid) || return 1
+          predecessor_digest=$(wa_launch get launch.launcher.pid_identity_sha256) || return 1
+          if [ -z "${FM_WATCH_PREDECESSOR_ARM_PID:-}" ] || [ "$FM_WATCH_PREDECESSOR_ARM_PID" != "$predecessor" ] \
+            || [ -z "$predecessor_digest" ] || [ "$(wa_identity_digest "$predecessor")" != "$predecessor_digest" ]; then
+            WA_LAUNCH_REFUSAL="a live recorded watcher has no matching predecessor handoff"
+            return 1
+          fi
+          wa_launch supersede --launch "$launch" --reason "successor cycle armed by arm $ARM_PID while watcher pid $pid still runs" >/dev/null \
+            || { WA_LAUNCH_REFUSAL="the running predecessor's launch could not be superseded"; return 1; }
+        else
+          wa_launch exit --launch "$launch" --reason "recorded watcher process identity gone at next arm" >/dev/null \
+            || { WA_LAUNCH_REFUSAL="the previous cycle's exit could not be recorded"; return 1; }
+        fi
       else
-        wa_launch reconcile --current --verdict launcher-gone --evidence "arm interrupted before its child was recorded; the singleton lock holds no such child" >/dev/null \
-          || { WA_LAUNCH_REFUSAL="the interrupted attempt could not be reconciled"; return 1; }
+        WA_LAUNCH_REFUSAL="previous watcher attempt has no confirmed child identity; native inspection is required"
+        return 1
       fi
       ;;
     *) WA_LAUNCH_REFUSAL="launch record unreadable (rc $rc)"; return 1 ;;
@@ -160,7 +177,7 @@ wa_launch_created() {  # <child-pid> <child-identity>
   [ -n "$WA_LAUNCH_ID" ] || return 0
   [ -z "$2" ] || digest=$(printf '%s' "$2" | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())' 2>/dev/null || true)
   wa_launch created --launch "$WA_LAUNCH_ID" --identity-source process --identity "pid=$1" ${digest:+--identity "pid_identity_sha256=$digest"} >/dev/null \
-    || wa_launch_note "created not recorded for launch $WA_LAUNCH_ID"
+    || { wa_launch_note "created not recorded for launch $WA_LAUNCH_ID"; return 1; }
 }
 wa_launch_ready() {
   [ -n "$WA_LAUNCH_ID" ] || return 0
@@ -212,6 +229,10 @@ fi
 # shellcheck disable=SC2329
 # Invoked indirectly by the EXIT trap after the arm cycle completes.
 arm_release_claim() {
+  if [ "$WA_LAUNCH_LOCK_HELD" -eq 1 ]; then
+    fm_lock_release "$WA_LAUNCH_LOCK" || true
+    WA_LAUNCH_LOCK_HELD=0
+  fi
   if [ "$ARM_CLAIM_HELD" -eq 1 ]; then
     fm_lock_release "$STATE/.supervision-claim.lock" || true
     ARM_CLAIM_HELD=0
@@ -801,7 +822,12 @@ child_out=$(mktemp "$STATE/.watch-arm-output.XXXXXX") || {
   echo "watcher: FAILED - no live watcher with a fresh beacon"
   exit 1
 }
-if ! wa_launch_intend; then
+if fm_lock_acquire_bounded "$WA_LAUNCH_LOCK" "${FM_WATCH_ARM_LAUNCH_TRIES:-100}"; then
+  WA_LAUNCH_LOCK_HELD=1
+else
+  WA_LAUNCH_REFUSAL="another arm owns launch preparation"
+fi
+if [ "$WA_LAUNCH_LOCK_HELD" -ne 1 ] || ! wa_launch_intend; then
   rm -f "$child_out" 2>/dev/null || true
   arm_publish_failure "watcher arm refused to fork a new watcher: $WA_LAUNCH_REFUSAL" \
     || printf 'watcher: emergency diagnostic persistence failed\n' >&2
@@ -815,7 +841,6 @@ else
 fi
 child=$!
 child_identity=$(fm_pid_identity "$child" 2>/dev/null || true)
-wa_launch_created "$child" "$child_identity"
 cycle_begin "$child" started "$child_identity"
 child_done=0
 
@@ -879,7 +904,15 @@ owned_child_finished() {
 # collapsing when startup begins just before the next second boundary.
 deadline=$(( $(date +%s) + CONFIRM_TIMEOUT + 1 ))
 while :; do
-  if healthy_watcher; then
+  if [ "$WA_LAUNCH_LOCK_HELD" -eq 1 ] && [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null)" = "$child" ] \
+    && fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$child" "$FM_HOME"; then
+    child_identity=$FM_WATCHER_MATCHED_IDENTITY
+    if wa_launch_created "$child" "$child_identity"; then
+      fm_lock_release "$WA_LAUNCH_LOCK"
+      WA_LAUNCH_LOCK_HELD=0
+    fi
+  fi
+  if [ "$WA_LAUNCH_LOCK_HELD" -eq 0 ] && healthy_watcher; then
     if [ "$HEALTHY_PID" = "$child" ]; then
       cycle_refresh_lock_before
       if ! handling_generation=$(handling_successor_generation); then

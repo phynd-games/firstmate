@@ -842,6 +842,7 @@ spawn_launch_field() {  # <check-output> <key>
 # that does carry it is reported as a hint, never adopted as ours.
 spawn_launch_reconcile_open() {  # <check-output>
   local out=$1 phase launcher pane workspace tab session window verdict='' state='' evidence='' target='' presence='' foreground='' journal hint='' observation='' settle container='' quiescent=''
+  local -a settlement_args=(--launch "$(spawn_launch_field "$out" launch)")
   phase=$(spawn_launch_field "$out" phase)
   launcher=$(spawn_launch_field "$out" launcher)
   pane=$(spawn_launch_field "$out" 'identity\.pane_id')
@@ -876,11 +877,13 @@ spawn_launch_reconcile_open() {  # <check-output>
     if [ "$phase" = intended ] && [ -f "$journal" ] && [ ! -L "$journal" ] && ! grep -q '^issued ' "$journal" 2>/dev/null; then
       # Firstmate's own before-the-fact journal: the killed launcher never
       # issued any create request, so nothing of this launch's can exist.
+      settlement_args+=(--pre-create-journal)
       verdict=absent
       evidence="launcher gone before any create request; its pre-create journal records none"
     elif [ "$phase" = intended ] && spawn_launch_journal_no_effect "$journal"; then
       # Only the shared per-home container was created, each with exact ids
       # the placement owner adopts; nothing of this launch's can exist.
+      settlement_args+=(--pre-create-journal)
       verdict=absent
       evidence="launcher gone; its journal shows only the per-home container created with exact ids and no other request issued"
     else
@@ -982,7 +985,7 @@ spawn_launch_reconcile_open() {  # <check-output>
     echo "error: task $ID has an open launch record (phase $phase) this launcher cannot settle; settle it with: $settle" >&2
     return 1
   fi
-  if ! spawn_launch_record reconcile --current --verdict "$verdict" --evidence "$evidence" >/dev/null; then
+  if ! spawn_launch_record reconcile "${settlement_args[@]}" --verdict "$verdict" --evidence "$evidence" >/dev/null; then
     echo "error: task $ID's open launch record could not be reconciled ($verdict); refusing to launch" >&2
     return 1
   fi
@@ -1053,12 +1056,8 @@ spawn_launch_created() {  # <identity-source> <identity K=V>...
 spawn_launch_partial_create() {
   local line workspace='' tab='' pane='' terminal='' word container=''
   [ -n "${FM_BACKEND_HERDR_CREATE_ISSUED_FILE:-}" ] && [ -f "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" ] || return 0
-  # The most specific known container wins: the task tab, then a tab Herdr
-  # created despite answering an error, then a task workspace with no task tab.
   if line=$(grep '^created ' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tail -n 1) && [ -n "$line" ]; then
     container='task-tab'
-  elif line=$(grep '^effect task-tab ' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tail -n 1) && [ -n "$line" ]; then
-    container='effect-tab'
   elif line=$(grep '^created-workspace kind=task ' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tail -n 1) && [ -n "$line" ]; then
     container='task-workspace'
   else
@@ -1124,9 +1123,6 @@ spawn_launch_readiness() {
   budget=${FM_SPAWN_READY_SECS:-45}
   if [ "${FM_BACKEND_TEST_HARNESS:-0}" = 1 ] && [ -z "${FM_SPAWN_READY_SECS:-}" ]; then
     reason="readiness poll skipped under the test harness"
-  elif [ "${HARNESS:-}" = kimi ]; then
-    verdict=ready
-    source=kimi-ready-banner
   elif [ "$BACKEND" = herdr ]; then
     source=herdr-agent-get
     deadline=$(( $(date +%s) + budget ))
@@ -1220,7 +1216,7 @@ spawn_launch_close_on_abort() {  # <exit-status>
       hint="only the per-home container was created ($(grep '^created-workspace kind=home ' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tr '\n' ';' | cut -c1-160)); no request of this launch had another effect"
     else
       effect=unknown
-      hint="a Herdr create request for $W was issued and did not answer with ids ($(grep '^issued \|^refused \|^lost \|^effect \|^created-workspace ' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tr '\n' ';' | cut -c1-200)); a refusal or an empty inventory is not proof of no effect - inspect Herdr natively and settle the record with fm-launch-record.py reconcile --verdict manual"
+      hint="a Herdr create request for $W was issued and did not answer with ids ($(grep '^issued \|^refused \|^lost \|^hint \|^created-workspace ' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tr '\n' ';' | cut -c1-200)); a refusal or an empty inventory is not proof of no effect - inspect Herdr natively and settle the record with fm-launch-record.py reconcile --verdict manual"
     fi
   else
     effect=none
@@ -1289,6 +1285,9 @@ spawn_abort_cleanup() {
         echo "warning: could not retire replacement busy generation after aborted relaunch of $ID" >&2
       fi
     fi
+  fi
+  if [ "$BACKEND" = herdr ] && [ "$SPAWN_LAUNCH_CREATED" != 1 ]; then
+    spawn_launch_partial_create
   fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
      && [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" != 1 ]; then
@@ -1366,7 +1365,9 @@ spawn_abort_cleanup() {
     fi
   fi
   spawn_launch_close_on_abort "$status"
-  [ -z "${FM_BACKEND_HERDR_CREATE_ISSUED_FILE:-}" ] || rm -f "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null || true
+  if [ "$SPAWN_LAUNCH_SUCCESS" = 1 ] || [ "$SPAWN_LAUNCH_CLEANUP_RESULT" = cleaned ]; then
+    [ -z "${FM_BACKEND_HERDR_CREATE_ISSUED_FILE:-}" ] || rm -f "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null || true
+  fi
   if [ "$SPAWN_TASK_LOCK_HELD" = 1 ]; then
     SPAWN_TASK_LOCK_HELD=0
     fm_lock_release "$SPAWN_TASK_LOCK" || true
@@ -2745,13 +2746,11 @@ case "$BACKEND" in
     # The adapter's create helpers run inside command substitutions, so they
     # report "a create request was issued" and the exact ids it returned
     # through this private note file rather than a variable; the abort trap
-    # reads it to classify what remains, and it never outlives this spawn.
     FM_BACKEND_HERDR_CREATE_ISSUED_FILE="$STATE/.$ID.create-issued"
-    # Created empty now, so that a launcher killed before its first create
-    # request leaves a journal that positively records "nothing issued".
-    rm -f "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE"
-    : > "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" || exit 1
-    export FM_BACKEND_HERDR_CREATE_ISSUED_FILE
+    FM_BACKEND_HERDR_CREATE_LAUNCH_ID=$SPAWN_LAUNCH_ID
+    FM_BACKEND_HERDR_CREATE_TASK_ID=$ID
+    spawn_launch_record journal --launch "$SPAWN_LAUNCH_ID" --init || exit 1
+    export FM_BACKEND_HERDR_CREATE_ISSUED_FILE FM_BACKEND_HERDR_CREATE_LAUNCH_ID FM_BACKEND_HERDR_CREATE_TASK_ID
     if [ "$KIND" != secondmate ] && fm_backend_herdr_presentation_enabled "$CONFIG" "$STATE"; then
       HERDR_SES=$(fm_backend_herdr_session)
       HERDR_PARENT_LABEL=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_workspace_label)
@@ -2801,6 +2800,7 @@ case "$BACKEND" in
               ;;
             2)
               spawn_herdr_presentation_order_lock_release
+              spawn_launch_create_issued && exit 1
               [ "${FM_BACKEND_HERDR_PROJECTION_RECLAIM_NATIVE_FAILURE:-0}" = 1 ] && exit 2
               ;;
             *) exit 1 ;;

@@ -95,7 +95,7 @@ case "${1:-}" in
         for i in $(seq 1 $#); do
           if [ "${!i}" = --label ]; then j=$((i + 1)); printf '%s\n' "${!j}" > "$S/workspace-label"; fi
         done
-        printf '{"result":{"workspace":{"workspace_id":"wZ"},"tab":{"tab_id":"wZ:t1"},"root_pane":{"pane_id":"wZ:p1"}}}\n'
+        printf '{"result":{"workspace":{"workspace_id":"wZ"},"tab":{"tab_id":"wZ:t1"},"root_pane":{"pane_id":"wZ:p1"},"terminal":{"terminal_id":"termZ"}}}\n'
         exit 0
         ;;
       close)
@@ -226,6 +226,7 @@ run_supervisor() {  # <home> <fakebin> <args...>
   if [ ! -e "$supervisor_root/.installed" ]; then
     mkdir -p "$supervisor_root/bin"
     cp "$ROOT"/bin/*.sh "$supervisor_root/bin/"
+    cp "$ROOT/bin/fm-launch-record.py" "$supervisor_root/bin/"
     cp -R "$ROOT/bin/backends" "$supervisor_root/bin/"
     cp "$home/arm.sh" "$supervisor_root/bin/fm-watch-arm.sh"
     chmod +x "$supervisor_root/bin"/*.sh
@@ -725,20 +726,12 @@ assert_contains "$out" "supervisor: unhealthy" "a replaced Herdr server is unhea
 assert_contains "$out" "socket changed" "the unhealthy reason names the lost server"
 pass "a Herdr server restart is detected as a lost supervisor, not as healthy"
 old_socket_workspace_count=$(grep -c . "$HOME10/fakestate/closed-workspaces" 2>/dev/null || true)
-out=$(run_supervisor "$HOME10" "$FAKEBIN" ensure 2>&1)
-assert_contains "$out" "started" "a changed Herdr server permits a fresh supervisor generation"
-quarantine_record=
-for candidate in "$HOME10"/state/.herdr-supervisor-quarantine.*; do
-  if [ -e "$candidate" ]; then
-    quarantine_record=$candidate
-    break
-  fi
-done
-[ -n "$quarantine_record" ] || fail "the replaced server left no quarantine evidence"
+out=$(run_supervisor "$HOME10" "$FAKEBIN" ensure 2>&1) && fail "a replaced server permitted duplicate supervision"
+assert_present "$HOME10/state/.herdr-supervisor" "the unresolved prior binding remains authoritative"
 new_socket_workspace_count=$(grep -c . "$HOME10/fakestate/closed-workspaces" 2>/dev/null || true)
 [ "$new_socket_workspace_count" = "$old_socket_workspace_count" ] \
   || fail "server replacement closed a workspace through the new server"
-pass "server replacement quarantines old ownership before fresh establishment"
+pass "server replacement retains unresolved ownership and blocks establishment"
 stop_loop "$HOME10"
 
 # =============================================================================
@@ -884,15 +877,14 @@ assert_absent "$HOME13/state/.herdr-supervisor" "a failed establish leaves no li
 assert_present "$HOME13/state/.herdr-supervisor-alarm" "a failed establish leaves a durable alarm"
 pass "an incomplete Herdr response fails loudly and closes nothing it cannot identify"
 rm -f "$HOME13/fakestate/create-incomplete"
+out=$(run_supervisor "$HOME13" "$FAKEBIN" ensure 2>&1) && fail "an incomplete create permitted blind replacement"
+assert_present "$HOME13/state/.herdr-supervisor-pending-cleanup" "incomplete creation keeps the pending obligation"
+python3 "$ROOT/bin/fm-launch-record.py" --state "$HOME13/state" reconcile --helper herdr-supervisor --current \
+  --verdict manual --evidence "fixture inspection confirmed no retained effect" >/dev/null || fail "manual settlement failed"
 out=$(run_supervisor "$HOME13" "$FAKEBIN" ensure 2>&1)
-assert_contains "$out" "herdr-supervisor: started" "a verified absent incomplete create can be retried"
-find "$HOME13/state" -maxdepth 1 -name '.herdr-supervisor-quarantine.pending.*' -print -quit | grep -q . \
-  || fail "invisible incomplete create was not retained as quarantine evidence"
-assert_grep 'incomplete or ambiguous Herdr create was quarantined' "$HOME13/state/.herdr-supervisor-alarm" \
-  "the quarantined incomplete create leaves an actionable alarm"
-assert_absent "$HOME13/state/.herdr-supervisor-pending-cleanup" "quarantining the incomplete create releases the active pending slot"
+assert_contains "$out" "herdr-supervisor: started" "inspected manual settlement permits recovery"
 stop_loop "$HOME13"
-pass "verified absence of an incomplete create does not permanently block recovery"
+pass "incomplete creation blocks replacement until explicit inspected settlement"
 
 # =============================================================================
 # 13b. A PARTIAL Herdr create response is refused, closes nothing, and names the
@@ -918,15 +910,12 @@ assert_grep "tab=wPART:t1" "$HOME13B/state/.herdr-supervisor-pending-cleanup" \
 [ "$(cat "$HOME13B/arm.count" 2>/dev/null || echo 0)" = 0 ] \
   || fail "a partial establish armed the watcher anyway"
 rm -f "$HOME13B/fakestate/create-partial"
-out=$(run_supervisor "$HOME13B" "$FAKEBIN" ensure 2>&1)
-assert_contains "$out" "herdr-supervisor: started" "a quarantined partial create permits a fresh establish"
-PARTIAL_QUARANTINE=$(find "$HOME13B/state" -maxdepth 1 -name '.herdr-supervisor-quarantine.pending.*' -print -quit)
-[ -n "$PARTIAL_QUARANTINE" ] || fail "partial create quarantine evidence was not retained"
-assert_grep "workspace=wPART" "$PARTIAL_QUARANTINE" \
-  "the quarantine preserves the partial workspace id without adopting it"
+out=$(run_supervisor "$HOME13B" "$FAKEBIN" ensure 2>&1) && fail "a partial create permitted replacement"
+assert_grep "workspace=wPART" "$HOME13B/state/.herdr-supervisor-pending-cleanup" \
+  "the pending owner preserves the partial workspace"
 assert_absent "$HOME13B/fakestate/closed-workspaces" \
   "reconciling a partial response never closes its ambiguous workspace"
-pass "a partial Herdr create response is quarantined without label adoption or cleanup"
+pass "a partial Herdr create remains an active obligation without label adoption"
 stop_loop "$HOME13B"
 
 # =============================================================================

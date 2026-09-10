@@ -26,8 +26,15 @@ TMP_ROOT=$(fm_test_tmproot fm-docs-reader)
 RECOVERY_PID=
 RECOVERY_IDENTITY=
 BOOTSTRAP_RELEASE=
+BYSTANDER_PID=
+BYSTANDER_IDENTITY=
 cleanup() {
   local record home
+  if [ -n "$BYSTANDER_PID" ] && [ -n "$BYSTANDER_IDENTITY" ] \
+    && [ "$(fm_pid_identity "$BYSTANDER_PID" 2>/dev/null)" = "$BYSTANDER_IDENTITY" ]; then
+    kill "$BYSTANDER_PID" 2>/dev/null || true
+    wait "$BYSTANDER_PID" 2>/dev/null || true
+  fi
   [ -z "$BOOTSTRAP_RELEASE" ] || : > "$BOOTSTRAP_RELEASE"
   if [ -n "$RECOVERY_PID" ] && [ -n "$RECOVERY_IDENTITY" ] \
     && [ "$(fm_pid_identity "$RECOVERY_PID" 2>/dev/null)" = "$RECOVERY_IDENTITY" ]; then
@@ -685,7 +692,7 @@ SH
 }
 
 test_delayed_exec_records_serving_identity() {
-  local home wrapper reader_job pid before current recorded digest base out real_nohup real_curl
+  local home wrapper reader_job pid before current recorded digest base out real_nohup real_lsof
   home=$(new_home delayed-exec)
   wrapper="$home/wrapper"
   mkdir -p "$wrapper"
@@ -695,15 +702,15 @@ printf '%s\n' "$$" > "$FM_TEST_READER_STARTED"
 while [ ! -e "$FM_TEST_READER_RELEASE" ]; do sleep 0.05; done
 exec "$FM_TEST_REAL_NOHUP" "$@"
 SH
-  cat > "$wrapper/curl" <<'SH'
+  cat > "$wrapper/lsof" <<'SH'
 #!/usr/bin/env bash
 [ ! -e "$FM_TEST_READER_STARTED" ] || : > "$FM_TEST_READER_PROBED"
-exec "$FM_TEST_REAL_CURL" "$@"
+exec "$FM_TEST_REAL_LSOF" "$@"
 SH
-  chmod +x "$wrapper/nohup" "$wrapper/curl"
+  chmod +x "$wrapper/nohup" "$wrapper/lsof"
   real_nohup=$(command -v nohup)
-  real_curl=$(command -v curl)
-  PATH="$wrapper:$PATH" FM_TEST_REAL_NOHUP="$real_nohup" FM_TEST_REAL_CURL="$real_curl" \
+  real_lsof=$(command -v lsof)
+  PATH="$wrapper:$PATH" FM_TEST_REAL_NOHUP="$real_nohup" FM_TEST_REAL_LSOF="$real_lsof" \
     FM_TEST_READER_STARTED="$home/started" FM_TEST_READER_RELEASE="$home/release" FM_TEST_READER_PROBED="$home/probed" \
     reader "$home" ensure > "$home/ensure.out" 2>&1 &
   reader_job=$!
@@ -842,11 +849,43 @@ PYTEST
   pass "reader adopts its interrupted matching launch and restores identity-bound stop"
 }
 
+test_legacy_adoption_requires_the_listening_pid() {
+  local home base pid first out fakebin
+  home=$(new_home legacy-listener)
+  base=$(ensure_url "$home")
+  pid=$(awk -F= '$1 == "pid" {print $2}' "$home/state/.docs-reader")
+  first=$(python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" get --helper docs-reader launch.id)
+  sleep 300 &
+  BYSTANDER_PID=$!
+  BYSTANDER_IDENTITY=$(fm_pid_identity "$BYSTANDER_PID")
+  awk -F= -v pid="$BYSTANDER_PID" '$1 == "pid_identity" {next} $1 == "pid" {print "pid=" pid; next} {print}' \
+    "$home/state/.docs-reader" > "$home/state/legacy-owner"
+  mv "$home/state/legacy-owner" "$home/state/.docs-reader"
+  fakebin="$home/no-listener-proof"
+  mkdir "$fakebin"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$fakebin/lsof"
+  chmod +x "$fakebin/lsof"
+  PATH="$fakebin:$PATH" reader "$home" ensure > "$home/unproved.out" 2>&1 && fail "adoption succeeded without socket ownership proof"
+  [ "$(python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" get --helper docs-reader launch.id)" = "$first" ] || fail "unproved adoption replaced the open launch"
+  [ "$(python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" get --helper docs-reader launch.phase)" = ready ] || fail "a stale legacy PID settled the live reader"
+  [ "$(ensure_url "$home")" = "$base" ] || fail "the verified listener was not recovered"
+  [ "$(awk -F= '$1 == "pid" {print $2}' "$home/state/.docs-reader")" = "$pid" ] || fail "legacy adoption bound the bystander PID"
+  out=$(reader "$home" stop) || fail "the recovered listener did not stop"
+  assert_contains "$out" "stopped pid $pid" "stop must target the verified reader"
+  [ "$(fm_pid_identity "$BYSTANDER_PID")" = "$BYSTANDER_IDENTITY" ] || fail "reader ownership signaled the bystander"
+  kill "$BYSTANDER_PID"
+  wait "$BYSTANDER_PID" 2>/dev/null || true
+  BYSTANDER_PID=
+  BYSTANDER_IDENTITY=
+  pass "legacy adoption requires exact socket ownership and preserves unrelated processes"
+}
+
 if [ "${1:-}" = launch-recovery ]; then
   test_delayed_exec_records_serving_identity
   test_interruption_before_reader_ready
   test_launch_record_and_identity_binding
   test_adopt_interrupted_launch
+  test_legacy_adoption_requires_the_listening_pid
   exit 0
 fi
 
@@ -864,4 +903,5 @@ test_launch_record_and_identity_binding
 test_delayed_exec_records_serving_identity
 test_interruption_before_reader_ready
 test_adopt_interrupted_launch
+test_legacy_adoption_requires_the_listening_pid
 test_install_from_pinned_requirements

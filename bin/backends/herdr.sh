@@ -410,11 +410,6 @@ fm_backend_herdr_cli() {  # <session> <herdr-subcommand-and-args...>
 #                            absence of a label is not proof of no effect, so a
 #                            launch owner still records the attempt as
 #                            uncertain (see fm_backend_herdr_create_answer_note).
-#   effect <kind> code=<c> ...ids
-#                            Herdr answered a structured error but the
-#                            inventory found the labeled container anyway (an
-#                            error following an effect); the ids are the known
-#                            partial identity.
 #   lost <kind>              anything else: timeout, transport failure,
 #                            unparseable or incomplete answer, or an inventory
 #                            that could not run - a container may exist.
@@ -424,7 +419,11 @@ fm_backend_herdr_cli() {  # <session> <herdr-subcommand-and-args...>
 # answer class says, until exact-identity cleanup or explicit settlement.
 fm_backend_herdr_create_note() {  # <line>
   [ -n "${FM_BACKEND_HERDR_CREATE_ISSUED_FILE:-}" ] || return 0
-  { printf '%s\n' "$1" >> "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE"; } 2>/dev/null || true
+  if [ -n "${FM_BACKEND_HERDR_CREATE_LAUNCH_ID:-}" ]; then
+    fm_launch_record journal --task "$FM_BACKEND_HERDR_CREATE_TASK_ID" --launch "$FM_BACKEND_HERDR_CREATE_LAUNCH_ID" --line "$1"
+  else
+    { printf '%s\n' "$1" >> "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE"; } 2>/dev/null
+  fi
 }
 
 # fm_backend_herdr_create_issue_note: the `issued <kind>` line, refused (1)
@@ -432,7 +431,7 @@ fm_backend_herdr_create_note() {  # <line>
 fm_backend_herdr_create_issue_note() {  # <kind>
   [ -n "${FM_BACKEND_HERDR_CREATE_ISSUED_FILE:-}" ] || return 0
   [ -f "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" ] && [ ! -L "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" ] || return 1
-  { printf 'issued %s\n' "$1" >> "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE"; } 2>/dev/null || return 1
+  fm_backend_herdr_create_note "issued $1" || return 1
   # An append that returned but did not land (a full or vanished filesystem)
   # would still let the request leave unjournaled.
   grep -q "^issued $1\$" "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null
@@ -447,12 +446,14 @@ fm_backend_herdr_create_issue_refused() {  # <kind>
 # inventoried at once (the target workspace's tabs for a task tab, the
 # session's workspaces for a workspace) so a later reader knows what was
 # visible right after the answer: nothing carrying the label ->
-# `refused ... inventory=empty:<scope>`; the label found -> `effect ... <ids>`
-# (an error following an effect, with the ids as known partial identity);
 # no structured error, or an inventory that cannot run -> `lost <kind>`.
 # None of these settles the attempt: the launch owner keeps it uncertain.
 fm_backend_herdr_create_answer_note() {  # <kind> <raw-answer> <session> <label> [<workspace-scope>]
   local kind=$1 raw=$2 session=${3:-} label=${4:-} scope=${5:-} code list found
+  if [ "$kind" = task-tab ] && fm_backend_herdr_validate_tab_create_response "$raw" "$scope"; then
+    fm_backend_herdr_create_note "created workspace=$scope tab=$(printf '%s' "$raw" | jq -r '.result.tab.tab_id') pane=$(printf '%s' "$raw" | jq -r '.result.root_pane.pane_id') terminal=$(printf '%s' "$raw" | jq -r '.result.root_pane.terminal_id')"
+    return $?
+  fi
   code=$(printf '%s' "$raw" | jq -er '.error.code | select(type == "string" and length > 0)' 2>/dev/null) || code=
   code=${code//[^A-Za-z0-9_.-]/_}
   if [ -z "$code" ] || [ -z "$session" ] || [ -z "$label" ]; then
@@ -468,7 +469,7 @@ fm_backend_herdr_create_answer_note() {  # <kind> <raw-answer> <session> <label>
           [.result.tabs[] | select(.label == $want)] | map("tab=" + .tab_id + " pane=" + (.pane_id // .root_pane.pane_id // "")) | join(" ")
         else error("missing result.tabs") end' 2>/dev/null) || { fm_backend_herdr_create_note "lost $kind"; return 0; }
       if [ -n "$found" ]; then
-        fm_backend_herdr_create_note "effect $kind code=$code workspace=$scope $found"
+        fm_backend_herdr_create_note "hint $kind code=$code workspace=$scope $found"
       else
         fm_backend_herdr_create_note "refused $kind code=$code inventory=empty:workspace:$scope"
       fi
@@ -480,7 +481,7 @@ fm_backend_herdr_create_answer_note() {  # <kind> <raw-answer> <session> <label>
           [.result.workspaces[] | select(.label == $want)] | map("workspace=" + .workspace_id) | join(" ")
         else error("missing result.workspaces") end' 2>/dev/null) || { fm_backend_herdr_create_note "lost $kind"; return 0; }
       if [ -n "$found" ]; then
-        fm_backend_herdr_create_note "effect $kind code=$code $found"
+        fm_backend_herdr_create_note "hint $kind code=$code $found"
       else
         fm_backend_herdr_create_note "refused $kind code=$code inventory=empty:session:$session"
       fi
@@ -2408,7 +2409,7 @@ fm_backend_herdr_workspace_ensure() {  # <session> <cwd> [<launcher-relationship
     return 2
   fi
   wsid=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
-  fm_backend_herdr_create_note "created-workspace kind=home workspace=$wsid tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null) pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null) terminal=$(printf '%s' "$out" | jq -r '.result.root_pane.terminal_id // empty' 2>/dev/null)"
+  fm_backend_herdr_create_note "created-workspace kind=home workspace=$wsid tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null) pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null) terminal=$(printf '%s' "$out" | jq -r '.result.root_pane.terminal_id // empty' 2>/dev/null)" || return 1
   [ -n "$wsid" ] || return 2
   FM_BACKEND_HERDR_WS_ID=$wsid
   # Herdr seeds a new workspace with one auto-created default tab firstmate
@@ -2783,7 +2784,7 @@ EOF
   FM_BACKEND_HERDR_CREATED_TAB_ID=$tab_id
   # shellcheck disable=SC2034 # read by the launch owner after a partial failure.
   FM_BACKEND_HERDR_CREATED_PANE_ID=$pane_id
-  fm_backend_herdr_create_note "created workspace=$wsid tab=$tab_id pane=$pane_id terminal=$terminal_id"
+  fm_backend_herdr_create_note "created workspace=$wsid tab=$tab_id pane=$pane_id terminal=$terminal_id" || return 1
   if [ -n "$seeded_tab_id" ]; then
     if fm_backend_herdr_workspace_prune_seeded_default_tab "$session" "$wsid" "$seeded_tab_id"; then
       :
@@ -2884,17 +2885,13 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
       "The native Herdr workspace creation response did not prove the exact workspace, tab, and pane identities. Repair Herdr, then verify the named session with 'herdr status --json'." || true
     return 2
   fi
-  fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "workspace create" || {
-    echo "error: herdr presentation workspace create did not preserve exact active focus; leaving its journal quarantined" >&2
-    return 1
-  }
   # shellcheck disable=SC2034  # caller consumes the response-derived global
   FM_BACKEND_HERDR_PROJECTION_SESSION=$session
   FM_BACKEND_HERDR_PROJECTION_WORKSPACE_ID=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
   FM_BACKEND_HERDR_PROJECTION_SEEDED_TAB_ID=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   FM_BACKEND_HERDR_PROJECTION_SEEDED_PANE_ID=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
   FM_BACKEND_HERDR_PROJECTION_SEEDED_TERMINAL_ID=$(printf '%s' "$out" | jq -r '.result.root_pane.terminal_id // empty' 2>/dev/null)
-  fm_backend_herdr_create_note "created-workspace kind=task workspace=$FM_BACKEND_HERDR_PROJECTION_WORKSPACE_ID tab=$FM_BACKEND_HERDR_PROJECTION_SEEDED_TAB_ID pane=$FM_BACKEND_HERDR_PROJECTION_SEEDED_PANE_ID terminal=$FM_BACKEND_HERDR_PROJECTION_SEEDED_TERMINAL_ID"
+  fm_backend_herdr_create_note "created-workspace kind=task workspace=$FM_BACKEND_HERDR_PROJECTION_WORKSPACE_ID tab=$FM_BACKEND_HERDR_PROJECTION_SEEDED_TAB_ID pane=$FM_BACKEND_HERDR_PROJECTION_SEEDED_PANE_ID terminal=$FM_BACKEND_HERDR_PROJECTION_SEEDED_TERMINAL_ID" || return 1
   if [ -z "$FM_BACKEND_HERDR_PROJECTION_WORKSPACE_ID" ] \
      || [ -z "$FM_BACKEND_HERDR_PROJECTION_SEEDED_TAB_ID" ] \
      || [ -z "$FM_BACKEND_HERDR_PROJECTION_SEEDED_PANE_ID" ] \
@@ -2903,6 +2900,10 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
     return 1
   fi
 
+  fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "workspace create" || {
+    echo "error: herdr presentation workspace create did not preserve exact active focus; leaving its journal quarantined" >&2
+    return 1
+  }
   focus_before=$(fm_backend_herdr_projection_focus_snapshot "$session") || {
     echo "error: herdr presentation task-tab create could not capture exact active workspace and tab; refusing a focus-unsafe projection" >&2
     return 1
@@ -2925,18 +2926,19 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
       "The native Herdr tab creation response did not prove the exact workspace, tab, and pane identities. Repair Herdr, then verify the named session with 'herdr status --json'." || true
     return 2
   fi
-  fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "task-tab create" || {
-    echo "error: herdr presentation task-tab create did not preserve exact active focus; leaving its journal quarantined" >&2
-    return 1
-  }
   FM_BACKEND_HERDR_PROJECTION_TAB_ID=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   FM_BACKEND_HERDR_PROJECTION_PANE_ID=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
   FM_BACKEND_HERDR_PROJECTION_TERMINAL_ID=$(printf '%s' "$out" | jq -r '.result.root_pane.terminal_id // empty' 2>/dev/null)
+  fm_backend_herdr_create_note "created workspace=$FM_BACKEND_HERDR_PROJECTION_WORKSPACE_ID tab=$FM_BACKEND_HERDR_PROJECTION_TAB_ID pane=$FM_BACKEND_HERDR_PROJECTION_PANE_ID terminal=$FM_BACKEND_HERDR_PROJECTION_TERMINAL_ID" || return 1
   if [ -z "$FM_BACKEND_HERDR_PROJECTION_TAB_ID" ] || [ -z "$FM_BACKEND_HERDR_PROJECTION_PANE_ID" ] \
      || [ -z "$FM_BACKEND_HERDR_PROJECTION_TERMINAL_ID" ]; then
     echo "error: herdr presentation task-tab create returned incomplete IDs; leaving its journal quarantined" >&2
     return 1
   fi
+  fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "task-tab create" || {
+    echo "error: herdr presentation task-tab create did not preserve exact active focus; leaving its journal quarantined" >&2
+    return 1
+  }
   # shellcheck disable=SC2034  # caller consumes the same-process cleanup gate
   FM_BACKEND_HERDR_PROJECTION_CLEANUP_SAFE=1
   focus_before=$(fm_backend_herdr_projection_focus_snapshot "$session") || {
@@ -2995,7 +2997,9 @@ fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-p
   local task_tab=${5:-${FM_BACKEND_HERDR_PROJECTION_TAB_ID:-}}
   local seeded_tab=${6:-${FM_BACKEND_HERDR_PROJECTION_SEEDED_TAB_ID:-}} close_rc=0
   if [ -n "$task_pane" ]; then
-    if fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$task_pane" '' "$expected_workspace" "$task_tab"; then
+    if [ "$(fm_backend_herdr_pane_presence_state "$session" "$task_pane" "$expected_workspace" "$task_tab" '' 2>/dev/null)" = dead ]; then
+      :
+    elif fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$task_pane" '' "$expected_workspace" "$task_tab"; then
       :
     else
       close_rc=$?
@@ -3004,10 +3008,13 @@ fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-p
           "The native Herdr pane identity read failed before abort cleanup. Repair Herdr, then verify the named session with 'herdr status --json'." || true
         return 2
       fi
+      return "$close_rc"
     fi
   fi
   if [ -n "$seeded_pane" ] && [ "$seeded_pane" != "$task_pane" ]; then
-    if fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$seeded_pane" '' "$expected_workspace" "$seeded_tab"; then
+    if [ "$(fm_backend_herdr_pane_presence_state "$session" "$seeded_pane" "$expected_workspace" "$seeded_tab" '' 2>/dev/null)" = dead ]; then
+      :
+    elif fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$seeded_pane" '' "$expected_workspace" "$seeded_tab"; then
       :
     else
       close_rc=$?
@@ -3016,7 +3023,14 @@ fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-p
           "The native Herdr pane identity read failed before abort cleanup. Repair Herdr, then verify the named session with 'herdr status --json'." || true
         return 2
       fi
+      return "$close_rc"
     fi
+  fi
+  if [ -n "$task_pane" ]; then
+    [ "$(fm_backend_herdr_pane_presence_state "$session" "$task_pane" "$expected_workspace" "$task_tab" '' 2>/dev/null)" = dead ] || return 1
+  fi
+  if [ -n "$seeded_pane" ] && [ "$seeded_pane" != "$task_pane" ]; then
+    [ "$(fm_backend_herdr_pane_presence_state "$session" "$seeded_pane" "$expected_workspace" "$seeded_tab" '' 2>/dev/null)" = dead ] || return 1
   fi
   return 0
 }
@@ -3243,28 +3257,29 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
     echo "warning: herdr presentation reclaim for $id would replace the active tab; spawning flat" >&2
     return 2
   fi
-  fm_backend_herdr_create_issue_note task-tab || { fm_backend_herdr_create_issue_refused task-tab; return 2; }
+  fm_backend_herdr_create_issue_note task-tab || { fm_backend_herdr_create_issue_refused task-tab; return 1; }
   if ! out=$(fm_backend_herdr_cli "$session" tab create \
     --workspace "$meta_workspace" --cwd "$cwd" --label "$task_label" --no-focus 2>/dev/null); then
     fm_backend_herdr_create_answer_note task-tab "$out" "$session" "$task_label" "$meta_workspace"
     fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "husk replacement create" || return 1
-    echo "warning: herdr presentation reclaim for $id could not create an exact replacement; spawning flat" >&2
-    return 2
+    echo "warning: herdr presentation reclaim for $id could not create an exact replacement; retaining the creation obligation" >&2
+    return 1
   fi
   if ! fm_backend_herdr_validate_tab_create_response "$out" "$meta_workspace"; then
     fm_backend_herdr_create_note "lost task-tab"
     fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "husk replacement create" || true
     fm_backend_policy_refuse "Herdr presentation replacement creation" herdr \
       "The native Herdr replacement response did not prove the exact workspace, tab, and pane identities. Repair Herdr, then verify the named session with 'herdr status --json'." || true
-    return 2
+    return 1
   fi
   new_tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   new_pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
   if [ -z "$new_tab" ] || [ -z "$new_pane" ]; then
     fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "husk replacement create" || return 1
-    echo "warning: herdr presentation reclaim for $id returned ambiguous replacement ids; spawning flat" >&2
-    return 2
+    echo "warning: herdr presentation reclaim for $id returned ambiguous replacement ids; retaining the creation obligation" >&2
+    return 1
   fi
+  fm_backend_herdr_create_note "created workspace=$meta_workspace tab=$new_tab pane=$new_pane terminal=$(printf '%s' "$out" | jq -r '.result.root_pane.terminal_id // empty')" || return 1
   fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "husk replacement create" || return 1
   verify_rc=0
   if info=$(fm_backend_herdr_cli "$session" tab get "$new_tab" 2>&1); then
@@ -3375,6 +3390,7 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
   fi
   FM_BACKEND_HERDR_PROJECTION_TAB_ID=$new_tab
   FM_BACKEND_HERDR_PROJECTION_PANE_ID=$new_pane
+  FM_BACKEND_HERDR_PROJECTION_TERMINAL_ID=$(printf '%s' "$out" | jq -r '.result.root_pane.terminal_id')
   return 0
 }
 

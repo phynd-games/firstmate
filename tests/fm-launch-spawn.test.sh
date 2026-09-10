@@ -266,22 +266,20 @@ test_issued_create_without_result_is_uncertain_and_settles_from_the_label() {
   expect_code 1 "$SPAWN_RC" "the hidden effect must not be papered over by a blind retry: $SPAWN_OUT"
   fake_log | grep -q 'create' && fail "no create may be issued over an unsettled attempt with a hidden effect"
   [ "$(record launch.phase)" = uncertain ] || fail "the obligation must remain"
-  # A structured error following an effect: the tab exists anyway. The
-  # inventory finds it, the launch reads uncertain with the tab as its known
-  # partial identity, and the next spawn refuses to replace it automatically.
   new_case refuse-with-effect sp20
   printf '{"error":{"code":"internal","message":"boom after create"}}\n' > "$CASE_DIR/fail/tab-create"
   : > "$CASE_DIR/fail/tab-create.effect"
   spawn "sh -c true"
   expect_code 1 "$SPAWN_RC" "an error after an effect must refuse the spawn"
   [ "$(record launch.phase)" = uncertain ] || fail "an error following an effect must read uncertain, got '$(record launch.phase)'"
-  [ "$(record launch.fields.container)" = effect-tab ] || fail "the known partial identity must be recorded as the effect tab, got '$(record launch.fields.container)'"
-  [ -n "$(record launch.identity.tab_id)" ] || fail "the created tab's id must be retained"
+  [ -z "$(record launch.identity.tab_id)" ] || fail "label inventory must not confer a tab identity"
+  [ -z "$(record launch.fields.container)" ] || fail "label inventory must remain a hint"
+  assert_contains "$(record launch.reconcile.hint)" "hint task-tab" "the label match must be reported only as a hint"
   rm -f "$CASE_DIR/fail/tab-create" "$CASE_DIR/fail/tab-create.effect"
   : > "$CASE_DIR/fake/log"
   spawn "sh -c true"
   expect_code 1 "$SPAWN_RC" "a partial container must not be replaced automatically: $SPAWN_OUT"
-  assert_contains "$SPAWN_OUT" "bound to a partial container (effect-tab" "the refusal must name the partial container"
+  assert_contains "$SPAWN_OUT" "no recorded native identity" "the refusal must preserve uncertainty without adopting the label"
   fake_log | grep -q 'create' && fail "no create may be issued over an unsettled partial container"
   # The pre-call journal write fails: the request must not leave. The journal
   # is made read-only while the fake blocks at the first inventory call, which
@@ -621,11 +619,166 @@ test_missing_python_refuses_before_any_create() {
   pass "spawn: a missing python3 refuses before any Herdr create request"
 }
 
+test_parent_only_interruption_revokes_old_issuance() {
+  local old parent job second i
+  new_case parent-only sp25
+  : > "$CASE_DIR/block/workspace-list"
+  in_case "$ROOT/bin/fm-spawn.sh" sp25 "$CASE_DIR/proj" --scout "sh -c true" >"$CASE_DIR/parent.out" 2>&1 &
+  job=$!
+  for i in $(seq 1 300); do
+    grep -q '^workspace.list' "$CASE_DIR/fake/log" && break
+    sleep 0.1
+  done
+  old=$(record launch.id)
+  parent=$(record launch.launcher.pid)
+  [ -n "$parent" ] && kill -0 "$parent" || fail "launch parent missing at inventory boundary"
+  kill -9 "$parent" || fail "could not interrupt fixture launcher"
+  wait "$job" 2>/dev/null || true
+  in_case "$ROOT/bin/fm-spawn.sh" sp25 "$CASE_DIR/proj" --scout "sh -c true" >"$CASE_DIR/successor.out" 2>&1 &
+  second=$!
+  for i in $(seq 1 300); do
+    [ "$(record launch.id)" != "$old" ] && break
+    sleep 0.1
+  done
+  [ "$(record launch.id)" != "$old" ] || { rm -f "$CASE_DIR/block/workspace-list"; wait "$second" || true; fail "successor could not settle unissued intent"; }
+  rm -f "$CASE_DIR/block/workspace-list"
+  wait "$second" || fail "successor failed: $(cat "$CASE_DIR/successor.out")"
+  [ "$(fake_tabs)" -eq 1 ] || fail "only the successor may allocate a task tab"
+  fake_log | grep -E '^(workspace|tab) create' | grep -q "launch=$old" && fail "old adapter issued creation after settlement"
+  [ "$(record launch.id)" != "$old" ] || fail "old adapter replaced successor bookkeeping"
+  pass "spawn: parent-only interruption revokes surviving descendants before successor creation"
+}
+
+test_projected_partial_identity_and_protected_cleanup() {
+  local out rc
+  new_case projected-partial sp26
+  printf 'on\n' > "$CASE_DIR/home/config/herdr-presentation-spaces"
+  printf '{"next":1,"workspaces":[{"workspace_id":"w0","label":"firstmate","focused":true,"active_tab_id":"w0:t0"}],"tabs":[{"workspace_id":"w0","tab_id":"w0:t0","pane_id":"w0:p0","focused":true,"label":"captain"}],"agent_status":{}}\n' > "$CASE_DIR/fake/state.json"
+  printf '{"error":{"code":"internal","message":"tab allocation unknown"}}\n' > "$CASE_DIR/fail/tab-create"
+  spawn "sh -c true"
+  expect_code 1 "$SPAWN_RC" "projected tab failure must refuse: $SPAWN_OUT"
+  [ "$(record launch.phase)" = uncertain ] || fail "partial projection must stay uncertain"
+  [ "$(record launch.fields.container)" = task-workspace ] || fail "partial projection must retain the native workspace"
+  [ "$(record launch.identity.workspace_id)" = w1 ] || fail "partial projection lost returned workspace"
+  [ "$(record launch.identity.terminal_id)" = term_w1:p2 ] || fail "partial projection lost returned terminal"
+  [ -f "$CASE_DIR/home/state/.sp26.create-issued" ] || fail "partial projection journal must survive abort"
+  rm -f "$CASE_DIR/fail/tab-create"
+  : > "$CASE_DIR/fake/log"
+  spawn "sh -c true"
+  expect_code 1 "$SPAWN_RC" "partial projection retry must refuse"
+  fake_log | grep -q 'create' && fail "partial projection must block duplicate creation"
+  set +e
+  out=$(in_case bash -c '. "$FM_ROOT_OVERRIDE/bin/backends/herdr.sh"; fm_backend_herdr_projection_cleanup_exact default w0:p0 "" w0 w0:t0 ""' 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "protected active-tab cleanup must propagate refusal: $out"
+  assert_contains "$out" "captain's active tab" "cleanup must preserve active-tab protection"
+  fake_log | grep -E '(pane|tab) close' && fail "protected cleanup must issue no close"
+  set +e
+  out=$(in_case bash -c '. "$FM_ROOT_OVERRIDE/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving() { return 0; }; fm_backend_herdr_projection_cleanup_exact default w0:p0 "" w0 w0:t0 ""' 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "acknowledged close without exact absence must remain unconfirmed: $out"
+  in_case bash -c '. "$FM_ROOT_OVERRIDE/bin/backends/herdr.sh"; fm_backend_herdr_projection_cleanup_exact default w999:p1 "" w999 w999:t1 ""' || fail "natively absent exact pane should confirm cleanup"
+  new_case projected-prune sp28
+  set +e
+  out=$(in_case bash -s <<'SH'
+. "$FM_ROOT_OVERRIDE/bin/backends/herdr.sh"
+. "$FM_ROOT_OVERRIDE/bin/fm-launch-record-lib.sh"
+launch=$(fm_launch_record intend --task sp28 --owner tester --origin fresh)
+launch=${launch#*launch=}; launch=${launch%% *}
+fm_launch_record journal --task sp28 --launch "$launch" --init || exit 1
+FM_BACKEND_HERDR_CREATE_LAUNCH_ID=$launch
+FM_BACKEND_HERDR_CREATE_TASK_ID=sp28
+FM_BACKEND_HERDR_CREATE_ISSUED_FILE="$FM_STATE_OVERRIDE/.sp28.create-issued"
+fm_backend_herdr_projection_focus_snapshot() { printf 'w0\tw0:t0'; }
+fm_backend_herdr_projection_focus_restore() { return 0; }
+fm_backend_herdr_workspace_prune_seeded_default_tab() { return 1; }
+fm_backend_herdr_projection_create_task "$FM_FAKE_WORKTREE" projection fm-sp28
+SH
+  ); rc=$?
+  set -e
+  expect_code 1 "$rc" "post-create prune refusal must abort projection: $out"
+  grep -q '^created workspace=w1 tab=w1:t3 pane=w1:p3 terminal=term_w1:p3$' "$CASE_DIR/home/state/.sp28.create-issued" || fail "successful projected tab identity must precede prune"
+  [ "$(fake_tabs)" -eq 2 ] || fail "prune refusal must preserve known created containers"
+  pass "spawn: partial projected identity persists and protected cleanup remains unconfirmed"
+}
+
+test_reclaim_lost_response_blocks_fallback() {
+  local out rc
+  new_case reclaim-lost sp27
+  printf '{"next":2,"workspaces":[{"workspace_id":"w1","label":"child","focused":false,"active_tab_id":"w1:t1"}],"tabs":[{"workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p1","focused":false,"label":"fm-sp27"}],"agent_status":{}}\n' > "$CASE_DIR/fake/state.json"
+  : > "$CASE_DIR/fail/tab-create.lost"
+  set +e
+  out=$(in_case bash -s <<'SH'
+. "$FM_ROOT_OVERRIDE/bin/backends/herdr.sh"
+. "$FM_ROOT_OVERRIDE/bin/fm-launch-record-lib.sh"
+launch=$(fm_launch_record intend --task sp27 --owner tester --origin fresh)
+launch=${launch#*launch=}; launch=${launch%% *}
+fm_launch_record journal --task sp27 --launch "$launch" --init || exit 1
+FM_BACKEND_HERDR_CREATE_LAUNCH_ID=$launch
+FM_BACKEND_HERDR_CREATE_TASK_ID=sp27
+FM_BACKEND_HERDR_CREATE_ISSUED_FILE="$FM_STATE_OVERRIDE/.sp27.create-issued"
+fm_backend_herdr_projection_journal_snapshot() {
+  FM_BACKEND_HERDR_JOURNAL_VERSION=2
+  FM_BACKEND_HERDR_JOURNAL_HOME=$FM_HOME
+  FM_BACKEND_HERDR_JOURNAL_SESSION=default
+  FM_BACKEND_HERDR_JOURNAL_WORKSPACE_ID=w1
+  FM_BACKEND_HERDR_JOURNAL_TAB_ID=w1:t1
+  FM_BACKEND_HERDR_JOURNAL_PANE_ID=w1:p1
+  FM_BACKEND_HERDR_JOURNAL_PARENT_LABEL=firstmate
+  FM_BACKEND_HERDR_JOURNAL_TASK_LABEL=fm-sp27
+  FM_BACKEND_HERDR_JOURNAL_PROJECTION_ID=fixture
+  FM_BACKEND_HERDR_JOURNAL_PARENT_WORKSPACE_ID=w0
+  FM_BACKEND_HERDR_JOURNAL_WORKSPACE_LABEL=child
+}
+fm_backend_herdr_projection_live_binding_matches() { return 0; }
+fm_backend_herdr_pane_agent_state() { printf no-agent; }
+fm_backend_herdr_projection_focus_snapshot() { printf 'w0\tw0:t0'; }
+fm_backend_herdr_projection_focus_restore() { return 0; }
+fm_backend_herdr_projection_reclaim_task default unused sp27 "$FM_HOME" w1 w1:t1 w1:p1 firstmate fm-sp27 "$FM_FAKE_WORKTREE"
+SH
+  ); rc=$?
+  set -e
+  expect_code 1 "$rc" "issued reclaim uncertainty must refuse flat fallback: $out"
+  [ "$(fake_tabs)" -eq 2 ] || fail "lost reclaim must leave exactly the old and unknown replacement tab"
+  [ "$(fake_log | grep -c '^tab create')" -eq 1 ] || fail "reclaim must issue exactly one request"
+  grep -q '^issued task-tab$' "$CASE_DIR/home/state/.sp27.create-issued" || fail "reclaim must retain issuance"
+  pass "adapter: lost reclaim response blocks fallback and retains issuance"
+}
+
+test_kimi_banner_requires_native_registration() {
+  local status expected
+  for status in none working; do
+    new_case "kimi-$status" "kimi-$status"
+    printf '#!/bin/sh\nexit 0\n' > "$CASE_DIR/fakebin/kimi"
+    chmod +x "$CASE_DIR/fakebin/kimi"
+    mkdir -p "$CASE_DIR/home/.kimi-code/fm-turn-end.d"
+    printf 'Welcome to Kimi Code!\ncontext: 1%%\n┌──────┐\n│ >    │\n└──────┘\n' > "$CASE_DIR/fake/pane-text"
+    expected=unconfirmed
+    if [ "$status" = working ]; then
+      printf working > "$CASE_DIR/fake/agent-on-enter"
+      expected=ready
+    fi
+    HOME="$CASE_DIR/home" FM_SPAWN_READY_SECS=0 FM_KIMI_READY_POLLS=1 FM_KIMI_DELIVERY_POLLS=1 spawn "kimi --auto"
+    expect_code 0 "$SPAWN_RC" "Kimi spawn fixture must complete: $SPAWN_OUT"
+    [ "$(record launch.readiness.verdict)" = "$expected" ] || fail "Kimi banner with $status registration must be $expected"
+    [ "$(record launch.readiness.source)" = herdr-agent-get ] || fail "Kimi readiness must name native registration"
+  done
+  pass "spawn: Kimi banner requires exact native agent registration"
+}
+
+if [ "${1:-}" = fixture-library ]; then return 0; fi
+
 if [ "${1:-}" = launch-retirement ]; then
   test_control_exit_relaunch_and_teardown_record_outcomes
   exit 0
 fi
 
+test_parent_only_interruption_revokes_old_issuance
+test_projected_partial_identity_and_protected_cleanup
+test_reclaim_lost_response_blocks_fallback
+test_kimi_banner_requires_native_registration
 test_fresh_spawn_records_intent_before_creation_and_native_identity
 test_readiness_positive_and_negative_controls
 test_inventory_refusal_before_create_is_a_plain_failure

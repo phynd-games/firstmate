@@ -211,9 +211,7 @@ record_upgrade_identity() {
   port=$(record_get port)
   [ -n "$pid" ] && [ -n "$port" ] || return 0
   [ "$(record_get home)" = "$HOME_REAL" ] || return 0
-  fm_pid_alive "$pid" || return 0
-  port_answers_as_ours "$port" || return 0
-  identity=$(fm_pid_identity "$pid" 2>/dev/null) || return 0
+  identity=$(reader_listener_identity "$pid" "$port") || return 0
   [ -n "$identity" ] || return 0
   record_write "$pid" "$port" "$(record_get python)" "$identity"
 }
@@ -234,24 +232,28 @@ dr_launch() {  # <command> [args...]
 # process evidence, never from the record's words. A recorded pid that is alive
 # with its recorded identity is a reader still running, so a second start is
 # refused; a gone or recycled pid is an observed exit.
-dr_launch_settle_open() {  # <check-output>
-  local out=$1 pid digest current
-  pid=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid=//p' | head -n 1)
-  digest=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid_identity_sha256=//p' | head -n 1)
-  if [ -n "$pid" ] && [ -n "$digest" ] && fm_pid_alive "$pid"; then
-    current=$(fm_pid_identity "$pid" 2>/dev/null | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().rstrip("\n").encode("utf-8","surrogateescape")).hexdigest())' 2>/dev/null)
-    if [ "$current" = "$digest" ]; then
-      printf 'a reader recorded as launch %s is still running as pid %s but is not answering; stop it with fm-docs-reader.sh stop before starting another\n' \
-        "$(printf '%s\n' "$out" | sed -n 's/^launch=//p' | head -n 1)" "$pid" >&2
-      return 1
-    fi
+dr_launch_observe_exit() {
+  local out rc launch pid digest identity current
+  out=$(dr_launch check 2>/dev/null)
+  rc=$?
+  case "$rc" in 0) return 0 ;; 3) ;; *) return 1 ;; esac
+  launch=$(printf '%s\n' "$out" | sed -n 's/^launch=//p')
+  pid=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid=//p')
+  digest=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid_identity_sha256=//p')
+  [ -n "$launch" ] && [ -n "$pid" ] && [ -n "$digest" ] || return 1
+  if fm_pid_alive "$pid"; then
+    identity=$(fm_pid_identity "$pid" 2>/dev/null) || return 1
+    [ -n "$identity" ] || return 1
+    current=$(printf '%s' "$identity" | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())') || return 1
+    [ "$current" != "$digest" ] || return 1
   fi
-  if [ -n "$pid" ]; then
-    dr_launch exit --current --reason "reader process gone at the next ensure (observed)" >/dev/null 2>&1 || return 1
-  else
-    printf 'reader launch has no process identity; native inspection is required before another start\n' >&2
-    return 1
-  fi
+  dr_launch exit --launch "$launch" --reason "recorded reader process identity is natively gone" >/dev/null
+}
+
+dr_launch_settle_open() {
+  dr_launch_observe_exit && return 0
+  printf 'reader launch remains unresolved; use identity-bound stop or native inspection before another start\n' >&2
+  return 1
 }
 
 dr_launch_intend() {  # <origin> [--field K=V...]; sets DR_LAUNCH_ID, non-zero refuses the start
@@ -332,6 +334,16 @@ port_answers_as_ours() {
     *"name=\"fm-docs-home\" content=\"$(home_token)\""*) return 0 ;;
   esac
   return 1
+}
+
+reader_listener_identity() {
+  local pid=$1 port=$2 identity
+  identity=$(fm_pid_identity "$pid" 2>/dev/null) || return 1
+  [ -n "$identity" ] || return 1
+  lsof -nP -a -p "$pid" -iTCP@127.0.0.1:"$port" -sTCP:LISTEN -t 2>/dev/null | grep -qx "$pid" || return 1
+  port_answers_as_ours "$port" || return 1
+  [ "$(fm_pid_identity "$pid" 2>/dev/null)" = "$identity" ] || return 1
+  printf '%s' "$identity"
 }
 
 port_in_use() {  # <port>
@@ -500,7 +512,7 @@ verified_url() {
   [ -n "$pid" ] && [ -n "$port" ] || return 1
   [ "$(record_get home)" = "$HOME_REAL" ] || return 1
   process_is_ours "$pid" || return 1
-  port_answers_as_ours "$port" || return 1
+  reader_listener_identity "$pid" "$port" >/dev/null || return 1
   printf 'http://127.0.0.1:%s/\n' "$port"
 }
 
@@ -516,7 +528,7 @@ reconcile_record() {
   # The recorded reader is gone or is not provably ours any more: that is an
   # observed exit for its launch record, recorded before the owner record is
   # forgotten so the outcome outlives the pid it named.
-  dr_launch exit --current --reason "recorded reader pid $pid is gone or no longer carries its recorded identity (observed at ensure)" >/dev/null 2>&1 || true
+  dr_launch_observe_exit >/dev/null 2>&1 || true
   record_drop
 }
 
@@ -532,8 +544,7 @@ wait_ready() {  # <pid> <port> - until the token answers, the pid dies, or the b
   local pid=$1 port=$2 deadline
   deadline=$(( $(date +%s) + FM_DOCS_READER_READY_SECS ))
   while [ "$(date +%s)" -le "$deadline" ]; do
-    if port_answers_as_ours "$port" \
-      && lsof -nP -a -p "$pid" -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | grep -qx "$pid"; then
+    if reader_listener_identity "$pid" "$port" >/dev/null; then
       return 0
     fi
     fm_pid_alive "$pid" || return 1
@@ -559,9 +570,9 @@ start_server() {  # <python> - prints the URL on success
         # The token answering on this port is the evidence; the listener's
         # current start identity is captured so every later decision - and
         # especially stop - binds to this exact process, not to a pid number.
-        listener=$(lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -n1)
+        listener=$(lsof -nP -t -iTCP@127.0.0.1:"$port" -sTCP:LISTEN 2>/dev/null | sort -u)
         if [ -n "$listener" ] && fm_pid_alive "$listener" \
-           && identity=$(fm_pid_identity "$listener" 2>/dev/null) && [ -n "$identity" ]; then
+           && identity=$(reader_listener_identity "$listener" "$port") && [ -n "$identity" ]; then
           dr_launch_adopt "$listener" "$port" "$identity" || return 1
           record_write "$listener" "$port" "$python" "$identity" || return 1
           printf 'http://127.0.0.1:%s/\n' "$port"
@@ -579,7 +590,7 @@ start_server() {  # <python> - prints the URL on success
       >> "$SERVE_LOG" 2>&1 </dev/null &
     pid=$!
     if wait_ready "$pid" "$port"; then
-      identity=$(fm_pid_identity "$pid" 2>/dev/null || true)
+      identity=$(reader_listener_identity "$pid" "$port" 2>/dev/null || true)
       if [ -z "$identity" ]; then
         # A process whose start identity cannot be read cannot be proven ours
         # later, so it cannot become this home's reader; end it now.
@@ -719,7 +730,7 @@ stop_locked() {
     return 0
   fi
   if ! process_is_ours "$pid"; then
-    dr_launch exit --current --reason "recorded reader pid $pid is gone or carries no recorded identity (observed at stop); process untouched" >/dev/null 2>&1 || true
+    dr_launch_observe_exit >/dev/null 2>&1 || true
     record_drop
     printf 'DOCS_READER: recorded pid %s is not provably this home'"'"'s reader; record dropped, process untouched\n' "$pid"
     return 0

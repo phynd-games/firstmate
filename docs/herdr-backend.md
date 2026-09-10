@@ -326,7 +326,7 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - Ghost and placeholder recognition uses ANSI de-emphasis when available; an unstyled glyph row carrying trailing non-idle text fails safely to `unknown`.
 - Mid-session secondmate agent-process liveness is not implemented.
 - Only a Herdr pane can host the away-mode supervisor terminal.
-- A create request carries no client id, so a lost `tab create` or `workspace create` response can leave a created container; the launch record keeps that as an uncertain outcome and the next launch settles it from the exact recorded or exact-label pane ([`launch-records.md`](launch-records.md)).
+- A create request carries no client id, so a lost `tab create` or `workspace create` response can leave a created container; the launch record keeps that as an uncertain outcome and the next launch refuses replacement until exact native settlement or explicit inspected disposition; labels supply hints only ([`launch-records.md`](launch-records.md)).
 
 ## Regression entry points
 

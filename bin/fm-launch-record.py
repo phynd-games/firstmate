@@ -738,6 +738,58 @@ def cmd_retire(args, path: str, kind: str, subject: str) -> int:
     return 0
 
 
+def create_journal_path(path: str, kind: str, subject: str) -> str:
+    if kind != "task":
+        raise UsageError("create journal requires a task")
+    return os.path.join(os.path.dirname(path), f".{subject}.create-issued")
+
+
+def read_create_journal(path: str, launch: dict) -> list[str]:
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            raise RecordError("create journal is not a regular file")
+        with open(path, encoding="utf-8") as stream:
+            lines = stream.read().splitlines()
+    except OSError as exc:
+        raise RecordError(f"cannot read create journal: {exc.strerror}") from exc
+    if not lines or lines[0] != f"launch {launch['id']}":
+        raise ContractRefusal("create journal does not belong to this launch")
+    return lines[1:]
+
+
+def cmd_journal(args, path: str, kind: str, subject: str) -> int:
+    journal = create_journal_path(path, kind, subject)
+    with RecordLock(path):
+        launch = require_launch(read_record(path), args.launch, False)
+        if launch.get("phase") != "intended":
+            raise ContractRefusal("create journal requires an intended launch")
+        if args.init:
+            if os.path.lexists(journal) and not stat.S_ISREG(os.lstat(journal).st_mode):
+                raise RecordError("create journal is not a regular file")
+            if os.path.exists(journal):
+                try:
+                    with open(journal, encoding="utf-8") as stream:
+                        if stream.readline().rstrip("\n") == f"launch {launch['id']}":
+                            raise ContractRefusal("create journal already initialized for this launch")
+                except OSError as exc:
+                    raise RecordError(f"cannot read create journal: {exc.strerror}") from exc
+            mode, line = "w", f"launch {launch['id']}"
+        else:
+            read_create_journal(journal, launch)
+            line = check_value("--line", args.line)
+            if not re.fullmatch(r"(?:issued|created|created-workspace|refused|lost|hint) [A-Za-z0-9_=.: /-]+", line):
+                raise UsageError("invalid create journal line")
+            mode = "a"
+        try:
+            with open(journal, mode, encoding="utf-8") as stream:
+                stream.write(line + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError as exc:
+            raise RecordError(f"cannot persist create journal: {exc.strerror}") from exc
+    return 0
+
+
 def cmd_reconcile(args, path: str, kind: str, subject: str) -> int:
     if args.verdict not in RECONCILE_VERDICTS:
         raise UsageError(f"--verdict must be one of {', '.join(RECONCILE_VERDICTS)}")
@@ -747,6 +799,14 @@ def cmd_reconcile(args, path: str, kind: str, subject: str) -> int:
         launch = require_launch(data, args.launch, args.current)
         if launch.get("phase") not in OPEN_PHASES:
             raise ContractRefusal(f"reconcile is only valid from an open phase, not {launch.get('phase')}")
+        if args.pre_create_journal:
+            if not args.launch or args.verdict != "absent" or launch.get("phase") != "intended":
+                raise ContractRefusal("no-effect settlement requires the exact intended launch")
+            lines = read_create_journal(create_journal_path(path, kind, subject), launch)
+            issued = [line for line in lines if line.startswith("issued ")]
+            home = [line for line in lines if line.startswith("created-workspace kind=home ")]
+            if any(line != "issued home-workspace" for line in issued) or len(issued) != len(home):
+                raise ContractRefusal("create journal retains an issued request with unresolved effects")
         launch["outcome"] = {"phase": "reconciled", "verdict": args.verdict, "evidence": evidence, "at": now_iso()}
         launch["phase"] = "reconciled"
         launch["reconcile"] = {"required": False}
@@ -930,11 +990,19 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "exit":
             p.add_argument("--code", type=int)
 
+    p = sub.add_parser("journal")
+    subject(p)
+    p.add_argument("--launch", required=True)
+    action = p.add_mutually_exclusive_group(required=True)
+    action.add_argument("--init", action="store_true")
+    action.add_argument("--line")
+
     p = sub.add_parser("reconcile")
     subject(p)
     sel = p.add_mutually_exclusive_group(required=True)
     sel.add_argument("--launch")
     sel.add_argument("--current", action="store_true")
+    p.add_argument("--pre-create-journal", action="store_true")
     p.add_argument("--verdict", required=True)
     p.add_argument("--evidence", required=True)
 
@@ -960,6 +1028,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 COMMANDS = {
     "intend": cmd_intend,
+    "journal": cmd_journal,
     "created": cmd_created,
     "ready": cmd_ready,
     "unready": cmd_unready,

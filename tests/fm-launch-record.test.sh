@@ -364,6 +364,36 @@ test_atomic_retirement_removal() {
   pass "launch record: retirement preserves prior outcomes and removes only its exact launch"
 }
 
+test_attempt_bound_create_journal() {
+  local state first second out rc
+  state=$(new_state create-journal)
+  lr "$state" intend --task j1 --owner tester --origin fresh >/dev/null || fail "intent"
+  first=$(launch_id "$state" j1)
+  lr "$state" journal --task j1 --launch "$first" --init || fail "initialize journal"
+  lr "$state" reconcile --task j1 --launch "$first" --verdict absent --pre-create-journal --evidence "no issued request" || fail "unissued intent should settle"
+  lr "$state" intend --task j1 --owner tester --origin fresh >/dev/null || fail "successor intent"
+  second=$(launch_id "$state" j1)
+  lr "$state" journal --task j1 --launch "$second" --init || fail "successor journal"
+  set +e
+  out=$(lr "$state" journal --task j1 --launch "$first" --line 'issued task-tab' 2>&1); rc=$?
+  set -e
+  expect_code 3 "$rc" "old descendant must not issue against successor: $out"
+  [ "$(cat "$state/.j1.create-issued")" = "launch $second" ] || fail "rejected predecessor modified journal"
+  lr "$state" journal --task j1 --launch "$second" --line 'issued task-tab' || fail "current issuance"
+  set +e
+  out=$(lr "$state" reconcile --task j1 --launch "$second" --verdict absent --pre-create-journal --evidence "no effect" 2>&1); rc=$?
+  set -e
+  expect_code 3 "$rc" "issued request must block no-effect settlement: $out"
+  set +e
+  out=$(lr "$state" journal --task j1 --launch "$second" --init 2>&1); rc=$?
+  set -e
+  expect_code 3 "$rc" "reinitialization must not erase issued requests: $out"
+  [ "$(lr "$state" get --task j1 launch.phase)" = intended ] || fail "unresolved issuance must remain open"
+  pass "attempt-bound journal serializes issuance with no-effect settlement"
+}
+
+test_attempt_bound_create_journal
+
 test_atomic_retirement_removal
 test_phase_machine
 test_wrong_launch_id_is_refused
