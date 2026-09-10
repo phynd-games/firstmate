@@ -20,6 +20,10 @@
 #      (no agent) on the exact recorded workspace/tab/pane. Its answer for a
 #      closed pane is recorded as observed, not asserted, because its
 #      target-ready gate needs a present pane.
+#   6. The strict idle-shell proof refuses a delayed start and an attached
+#      child but PASSES a detached, reparented process: recorded as the
+#      counterevidence that makes the proof diagnostic only in every launch
+#      owner (an open attempt is never settled on it).
 #   5. `pane process-info` distinguishes an idle shell from a running foreground
 #      command on the same agent-free pane (`fm_backend_herdr_pane_foreground_state`
 #      reads idle, then busy while `sleep` runs, then idle again) - the proof
@@ -160,8 +164,14 @@ lab pane run "$pane" "(sleep 3 &)" >/dev/null || fail "pane run failed"
 sleep 0.7
 strict && rc=0 || rc=$?
 printf 'observed: detached (reparented) background process -> strict proof rc %s (the documented boundary: not detectable natively)\n' "$rc"
+# That success is counterevidence, not permission: the launch owners treat the
+# proof as a diagnostic and never settle an open attempt on it. The spawn
+# owner's reconcile must contain no automatic settlement of an agent-free
+# present pane, whatever the proof says.
+grep -q "husk-replaced\|agent-exited" "$ROOT/bin/fm-spawn.sh" && fail "the spawn owner must not settle an open attempt from an idle-shell proof that a detached process passes"
+grep -q "cannot exclude a process that already detached" "$ROOT/bin/fm-spawn.sh" || fail "the spawn owner must state why the proof is diagnostic only"
 sleep 3
-pass "the strict quiescence proof refuses a delayed start and an attached child; its boundary is recorded as observed"
+pass "the strict quiescence proof refuses a delayed start and an attached child, passes a detached process, and is therefore diagnostic only - never permission to replace"
 
 # --- 3. closed pane reads pane_not_found ---------------------------------------------
 lab pane close "$pane" >/dev/null || fail "pane close failed"

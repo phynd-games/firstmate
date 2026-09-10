@@ -178,8 +178,10 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # identity, after the claim), that its long wait actually started (`ready`
 # is recorded right before the adapter command runs - a result would only be
 # completion evidence), and how it ended. A fork that finds the claim held
-# closes its launch as failed with no effect. Recording never blocks a start;
-# an unrecordable attempt is noted on stderr and the claim remains its account.
+# closes its launch as failed with no effect. The intent is required: when it
+# cannot be persisted no runner is forked and the start fails, and a runner
+# whose recorded pid and start identity are still alive is left alone (the
+# start reports it as already owned without forking anything).
 pe_launch_subject() {  # <source-id> -> helper name (lowercase, hyphenated, bounded)
   local id=$1 clean
   clean=$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | cut -c1-40)
@@ -194,38 +196,49 @@ pe_launch() {  # <source-id> <command> [args...]
 pe_launch_note() {
   printf 'procevent: launch record: %s\n' "$1" >&2
 }
-pe_launch_intend() {  # <source-id> <mode> -> exports FM_PROCEVENT_LAUNCH_ID to the child
-  local id=$1 mode=$2 out rc line pid
+pe_identity_digest() {  # <pid> -> sha256 of fm_pid_identity, or empty
+  local identity
+  identity=$(fm_pid_identity "$1" 2>/dev/null || true)
+  [ -n "$identity" ] || return 0
+  printf '%s' "$identity" | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())' 2>/dev/null || true
+}
+# pe_launch_intend <source-id> <mode>: 0 = intent persisted (FM_PROCEVENT_LAUNCH_ID
+# exported to the child); 2 = a recorded runner with its start identity still
+# runs, nothing is forked; 1 = the intent cannot be persisted, nothing is forked.
+pe_launch_intend() {
+  local id=$1 mode=$2 out rc line pid digest
   local -a launcher_args=()
   FM_PROCEVENT_LAUNCH_ID=
-  fm_launch_record_available >/dev/null 2>&1 || { pe_launch_note "unavailable (python3 or owner missing); the claim is this attempt's only account"; return 0; }
+  fm_launch_record_available >/dev/null 2>&1 || { pe_launch_note "owner unavailable (python3 or bin/fm-launch-record.py missing)"; return 1; }
   out=$(fm_launch_record check --helper "$(pe_launch_subject "$id")" 2>/dev/null)
   rc=$?
   case "$rc" in
     0) ;;
     3)
       pid=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid=//p' | head -n 1)
-      if [ -n "$pid" ] && fm_pid_alive "$pid"; then
-        # The claim will refuse this fork; the running launch keeps its record.
-        pe_launch_note "runner pid $pid still runs for $id; this attempt is not a new launch"
-        return 0
+      digest=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid_identity_sha256=//p' | head -n 1)
+      if [ -n "$pid" ] && fm_pid_alive "$pid" && [ -n "$digest" ] && [ "$(pe_identity_digest "$pid")" = "$digest" ]; then
+        return 2
       fi
       if [ -n "$pid" ]; then
-        pe_launch "$id" exit --current --reason "runner pid $pid gone at the next start (observed)" >/dev/null || true
+        pe_launch "$id" exit --current --reason "runner pid $pid gone at the next start (observed)" >/dev/null \
+          || { pe_launch_note "the previous runner's exit could not be recorded for $id"; return 1; }
       else
-        pe_launch "$id" reconcile --current --verdict launcher-gone --evidence "fork interrupted before the runner claimed the source" >/dev/null || true
+        pe_launch "$id" reconcile --current --verdict launcher-gone --evidence "fork interrupted before the runner claimed the source" >/dev/null \
+          || { pe_launch_note "the interrupted attempt could not be reconciled for $id"; return 1; }
       fi
       ;;
-    *) pe_launch_note "unreadable (rc $rc); the claim is this attempt's only account"; return 0 ;;
+    *) pe_launch_note "record unreadable for $id (rc $rc)"; return 1 ;;
   esac
   while IFS= read -r line; do
     launcher_args+=("$line")
   done < <(fm_launch_record_launcher_args)
   out=$(fm_launch_record intend --helper "$(pe_launch_subject "$id")" --owner fm-procevent.sh --origin "$mode" \
     "${launcher_args[@]}" --field "label=$id" 2>&1) \
-    || { pe_launch_note "intent not recorded for $id (${out:-no detail}); the claim is this attempt's only account"; return 0; }
+    || { pe_launch_note "intent not recorded for $id (${out:-no detail})"; return 1; }
   FM_PROCEVENT_LAUNCH_ID=${out##*launch=}
   FM_PROCEVENT_LAUNCH_ID=${FM_PROCEVENT_LAUNCH_ID%%[[:space:]]*}
+  [ -n "$FM_PROCEVENT_LAUNCH_ID" ] || { pe_launch_note "intent returned no launch id for $id"; return 1; }
   export FM_PROCEVENT_LAUNCH_ID
 }
 pe_launch_claimed() {  # <source-id> - the child, after its claim: pid plus identity
@@ -713,6 +726,11 @@ isolate_runner() {  # <wait|detach> <source-id>
     exit(128 + ($status & 127)) if $status & 127;
     exit($status >> 8);'
   pe_launch_intend "$id" "$mode"
+  case $? in
+    0) ;;
+    2) printf 'already owned: %s\n' "$id"; return 0 ;;
+    *) die "launch intent could not be persisted for $id; refusing to start a runner the record cannot account for" ;;
+  esac
   if [ "$mode" = wait ]; then
     exec perl -e "$program" "$mode" "$SCRIPT_DIR/fm-procevent.sh" _start "$id"
   fi

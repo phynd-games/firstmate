@@ -25,6 +25,10 @@
 #   $FM_FAKE_FAIL_DIR/<cmd>-<sub>.effect  the call creates, then prints the
 #                                    <cmd>-<sub> file (a structured error) and
 #                                    exits 1 (an error following an effect)
+#   $FM_FAKE_FAIL_DIR/<cmd>-<sub>.effect-hidden  as .effect, but the created
+#                                    tab carries the label "hidden-<label>"
+#                                    so an immediate label inventory finds
+#                                    nothing (an effect the lookup cannot see)
 #   <fake-dir>/ps-table              rows `pid ppid [stat]` the fake `ps`
 #                                    (fakebin/fakeps, for FM_HERDR_PS_BIN)
 #                                    answers with; default: the idle shell
@@ -85,7 +89,7 @@ key="$cmd-$sub"
 if [ -n "${FM_FAKE_BLOCK_DIR:-}" ] && [ -e "$FM_FAKE_BLOCK_DIR/$key" ]; then
   while [ -e "$FM_FAKE_BLOCK_DIR/$key" ]; do sleep 0.05; done
 fi
-if [ -n "${FM_FAKE_FAIL_DIR:-}" ] && [ -e "$FM_FAKE_FAIL_DIR/$key" ] && [ ! -e "$FM_FAKE_FAIL_DIR/$key.lost" ] && [ ! -e "$FM_FAKE_FAIL_DIR/$key.effect" ]; then
+if [ -n "${FM_FAKE_FAIL_DIR:-}" ] && [ -e "$FM_FAKE_FAIL_DIR/$key" ] && [ ! -e "$FM_FAKE_FAIL_DIR/$key.lost" ] && [ ! -e "$FM_FAKE_FAIL_DIR/$key.effect" ] && [ ! -e "$FM_FAKE_FAIL_DIR/$key.effect-hidden" ]; then
   cat "$FM_FAKE_FAIL_DIR/$key"
   exit 1
 fi
@@ -153,6 +157,12 @@ case "$cmd $sub" in
     fi
     if [ -n "${FM_FAKE_FAIL_DIR:-}" ] && [ -e "$FM_FAKE_FAIL_DIR/$key.effect" ]; then
       # The tab exists, and Herdr still answers a structured error.
+      cat "$FM_FAKE_FAIL_DIR/$key"
+      exit 1
+    fi
+    if [ -n "${FM_FAKE_FAIL_DIR:-}" ] && [ -e "$FM_FAKE_FAIL_DIR/$key.effect-hidden" ]; then
+      # The tab exists under a label the inventory will not match.
+      jq_state --arg t "$tabid" '.tabs |= map(if .tab_id == $t then .label = ("hidden-" + .label) else . end)' | save
       cat "$FM_FAKE_FAIL_DIR/$key"
       exit 1
     fi

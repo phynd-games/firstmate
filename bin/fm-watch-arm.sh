@@ -95,11 +95,16 @@ ARM_PID=${BASHPID:-$$}
 # leaves evidence of the attempt. The successor chain is kept as it is: a
 # successor supersedes the running predecessor's launch instead of being
 # refused as a duplicate, and the predecessor's real exit is annotated later.
-# Recording never blocks arming - an unrecordable attempt is noted on stderr
-# and in this cycle's ledger reason - because losing supervision to a record
-# failure would be the larger loss; the ledger row remains its account.
+# The intent is required before a NEW child is forked: when it cannot be
+# persisted (owner unavailable, record unreadable, a running predecessor that
+# cannot be superseded, or the write itself failing) the arm refuses to fork,
+# publishes the refusal through its ordinary failure path, and exits non-zero.
+# A healthy predecessor is never touched by that refusal: the arm attaches to
+# a live watcher before this point and only reaches the fork when none exists
+# or a handoff asked for a successor, and a refused successor leaves the
+# predecessor running its own cycle.
 WA_LAUNCH_ID=
-WA_LAUNCH_UNRECORDED=0
+WA_LAUNCH_REFUSAL=
 wa_launch() {  # <command> [args...]
   local command=$1
   shift
@@ -114,10 +119,10 @@ wa_identity_digest() {  # <pid> -> sha256 of fm_pid_identity, or empty
   [ -n "$identity" ] || return 0
   printf '%s' "$identity" | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())' 2>/dev/null || true
 }
-wa_launch_intend() {
+wa_launch_intend() {  # non-zero = refuse to fork; WA_LAUNCH_REFUSAL says why
   local out rc line pid digest origin=cycle
   local -a launcher_args=()
-  fm_launch_record_available >/dev/null 2>&1 || { WA_LAUNCH_UNRECORDED=1; wa_launch_note "unavailable (python3 or owner missing); the cycle ledger is this attempt's only account"; return 0; }
+  fm_launch_record_available >/dev/null 2>&1 || { WA_LAUNCH_REFUSAL="launch record owner unavailable (python3 or bin/fm-launch-record.py missing)"; return 1; }
   out=$(fm_launch_record check --helper watcher 2>/dev/null)
   rc=$?
   case "$rc" in
@@ -127,16 +132,16 @@ wa_launch_intend() {
       digest=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid_identity_sha256=//p' | head -n 1)
       if [ -n "$pid" ] && fm_pid_alive "$pid" && [ -n "$digest" ] && [ "$(wa_identity_digest "$pid")" = "$digest" ]; then
         wa_launch supersede --current --reason "successor cycle armed by arm $ARM_PID while watcher pid $pid still runs" >/dev/null \
-          || { WA_LAUNCH_UNRECORDED=1; wa_launch_note "the running predecessor's launch could not be superseded"; return 0; }
+          || { WA_LAUNCH_REFUSAL="the running predecessor's launch (pid $pid) could not be superseded in the launch record"; return 1; }
       elif [ -n "$pid" ]; then
         wa_launch exit --current --reason "watcher pid $pid gone at the next arm (observed)" >/dev/null \
-          || { WA_LAUNCH_UNRECORDED=1; wa_launch_note "the previous cycle's exit could not be recorded"; return 0; }
+          || { WA_LAUNCH_REFUSAL="the previous cycle's exit could not be recorded"; return 1; }
       else
         wa_launch reconcile --current --verdict launcher-gone --evidence "arm interrupted before its child was recorded; the singleton lock holds no such child" >/dev/null \
-          || { WA_LAUNCH_UNRECORDED=1; wa_launch_note "the interrupted attempt could not be reconciled"; return 0; }
+          || { WA_LAUNCH_REFUSAL="the interrupted attempt could not be reconciled"; return 1; }
       fi
       ;;
-    *) WA_LAUNCH_UNRECORDED=1; wa_launch_note "unreadable (rc $rc); the cycle ledger is this attempt's only account"; return 0 ;;
+    *) WA_LAUNCH_REFUSAL="launch record unreadable (rc $rc)"; return 1 ;;
   esac
   [ -z "${FM_WATCH_PREDECESSOR_ARM_PID:-}" ] || origin=successor
   while IFS= read -r line; do
@@ -144,9 +149,10 @@ wa_launch_intend() {
   done < <(fm_launch_record_launcher_args)
   out=$(fm_launch_record intend --helper watcher --owner fm-watch-arm.sh --origin "$origin" "${launcher_args[@]}" \
     ${FM_WATCH_PREDECESSOR_ARM_PID:+--field "predecessor=$FM_WATCH_PREDECESSOR_ARM_PID"} 2>&1) \
-    || { WA_LAUNCH_UNRECORDED=1; wa_launch_note "intent not recorded (${out:-no detail}); the cycle ledger is this attempt's only account"; return 0; }
+    || { WA_LAUNCH_REFUSAL="launch intent could not be persisted (${out:-no detail})"; return 1; }
   WA_LAUNCH_ID=${out##*launch=}
   WA_LAUNCH_ID=${WA_LAUNCH_ID%%[[:space:]]*}
+  [ -n "$WA_LAUNCH_ID" ] || { WA_LAUNCH_REFUSAL="launch intent returned no launch id"; return 1; }
 }
 wa_launch_created() {  # <child-pid> <child-identity>
   local digest=''
@@ -248,7 +254,6 @@ cycle_signal_name() {
 cycle_log_append() {
   local exit_code=$1 signal=$2 reason=$3 successor=$4 ended_at beacon_age lock_after size tmp raw i
   [ "$cycle_active" -eq 1 ] || return 0
-  [ "$WA_LAUNCH_UNRECORDED" -eq 0 ] || reason="$reason+launch-unrecorded"
   ended_at=$(date +%s)
   beacon_age=$(fm_path_age "$BEAT")
   lock_after=$(lock_snapshot)
@@ -795,7 +800,13 @@ child_out=$(mktemp "$STATE/.watch-arm-output.XXXXXX") || {
   echo "watcher: FAILED - no live watcher with a fresh beacon"
   exit 1
 }
-wa_launch_intend
+if ! wa_launch_intend; then
+  rm -f "$child_out" 2>/dev/null || true
+  arm_publish_failure "watcher arm refused to fork a new watcher: $WA_LAUNCH_REFUSAL" \
+    || printf 'watcher: emergency diagnostic persistence failed\n' >&2
+  echo "watcher: FAILED - no new watcher forked: $WA_LAUNCH_REFUSAL (the launch record must hold the attempt before a child exists; a running predecessor, if any, is untouched)"
+  exit 1
+fi
 if [ -n "${FM_WATCH_PREDECESSOR_ARM_PID:-}" ]; then
   FM_WATCH_HANDLING_SUCCESSOR=1 "$WATCH" >"$child_out" &
 else

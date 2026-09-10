@@ -1,6 +1,7 @@
 # Launch records
 
 Every launch Firstmate owns - a worker (crewmate, scout, or secondmate) and each Firstmate-owned long-lived helper - leaves a durable launch record: what Firstmate intended to start, what the runtime actually created, whether it became ready, and how it ended.
+What is retained, exactly: the subject's current launch with up to 64 history events, and its last 8 previous launches with their terminal outcomes; a task's record is removed by teardown after the `retired` outcome (teardown's own backlog close and completion note are what outlive it), a process-event runner's record is removed when its source is retired, and the other helper records persist with their subject.
 `bin/fm-launch-record.py` is the single owner of the record contract (its header owns the exact commands, phases, fields, and exit codes); `bin/fm-launch-record-lib.sh` is the shell seam the launch owners call.
 This page is the operator view: what the records mean, where they live, what they guarantee, and what they deliberately do not.
 
@@ -45,11 +46,14 @@ A new launch of the same subject is refused while a record is open.
 The launch owners settle an open record only from native evidence, never from the record's own words and never from a label:
 
 - A launcher that is still alive with its recorded start identity is a concurrent launch and refuses.
-- A recorded Herdr pane is classified natively, presence first: a gone pane is recorded absent; a live agent refuses the duplicate and points at `bin/fm-control.sh`; an agent-free pane is replaced by the ordinary exact-label husk replacement only when Herdr's own pane process-info shows an idle foreground shell, because `agent_not_found` alone also describes a harness that has not registered yet - a busy foreground refuses as a launch that may still be in progress, and an unreadable one refuses.
-- No recorded identity is settled automatically in one case only: the launcher died before any task create request left, which its own pre-create journal (`state/.<id>.create-issued`, kept by the spawn from the moment before its first request) proves.
+- A recorded Herdr pane is classified natively, presence first: a gone pane is recorded absent (the one native fact that settles an open record by itself); a live agent refuses the duplicate and points at `bin/fm-control.sh`.
+  A present pane with no registered agent is never settled automatically: `agent_not_found` also describes a harness that has not registered yet, and the adapter's strict idle-shell proof (idle foreground, no attached child, sleeping shell) cannot exclude a process that already detached from the pane - the 0.8.2 lab shows the proof passing with such a process alive.
+  The launch reports that classification as a diagnostic and retains the obligation until the owning control path records the stop or exit it proved (`bin/fm-control.sh exit` or `relaunch`, teardown), the endpoint is natively gone, or an operator settles the record after inspection.
+- No recorded identity is settled automatically in one case only: the launcher's own pre-create journal (`state/.<id>.create-issued`, kept by the spawn from the moment before its first request) shows that no request of the launch can have had an effect - nothing was issued, or only the shared per-home container was created and answered with exact ids for its placement owner.
   Every other identity-less open record refuses the next launch until an operator settles it explicitly with `bin/fm-launch-record.py --home <home> reconcile --task <id> --current --verdict manual --evidence "<what was verified natively>"` after inspecting Herdr and stopping or closing a leftover endpoint through its ordinary owner.
   The refusal reports what the exact-label inventory shows as a hint: a tab carrying the task's label, with its native agent state, is never adopted as the task's endpoint, and the absence of such a tab never proves the create had no effect.
-- A create request Herdr itself refused with a structured error is a closed failure with no obligation; only a lost answer (timeout, transport failure, unparseable or incomplete response) is an obligation, because that is the one case where a container may exist that nobody holds an identity for.
+- A create request that left and did not answer with exact ids is an obligation whatever the answer was: a structured Herdr error is not source-proven to exclude an allocation, and the adapter's immediate inventory of the creation scope is journaled as a hint (`refused ... inventory=empty:<scope>`, or `effect ... <ids>` when it found the container), never as proof.
+  Only exact-identity cleanup of a launch's known effects, confirmed by the launcher itself, closes such an attempt as failed and cleaned.
 - A helper whose recorded process is alive with its recorded identity refuses a second start; a gone or recycled pid is recorded as an observed exit.
 
 Session start prints one `LAUNCH_RECONCILE:` line per open obligation; the `bootstrap-diagnostics` playbook owns the response.
@@ -90,9 +94,10 @@ Two owner-specific rules apply:
 
 - The watcher is a successor chain: a successor cycle is forked while its predecessor still runs and hands the lock over.
   The next arm therefore supersedes a launch whose recorded pid and start identity are still alive instead of refusing it, records an observed exit for a dead one, and reconciles an intent that never reached a fork as `launcher-gone`; the predecessor's real exit is annotated on its superseded launch later.
-  Recording never blocks arming, because losing supervision to a record failure would be the larger loss; an unrecordable attempt is marked `+launch-unrecorded` in the cycle ledger's reason so the cycle still has an account.
+  The intent is required before a new child: when it cannot be persisted, or a running predecessor cannot be superseded, the arm forks nothing, publishes the refusal through its ordinary failure path (a `check: watcher-arm` wake or the emergency record), and exits non-zero; a healthy predecessor is attached to before that point and is never touched by the refusal.
 - A runner's result is completion evidence, not evidence that its long wait started.
   Readiness is recorded when the claimed runner is about to execute the adapter command; a fork the claim refuses closes its launch as failed with no effect, and a child that died before claiming leaves the intended attempt for the next start to settle.
+  A start whose intent cannot be persisted forks nothing and fails; a start that finds the recorded runner alive under its recorded start identity forks nothing and reports it as already owned.
 
 ## Limits stated plainly
 
@@ -106,12 +111,12 @@ Two owner-specific rules apply:
   A refused create that the supervisor keeps as pending intent reads uncertain in the mirror, exactly as the owner reads it.
 - Killing a launcher with SIGKILL does not stop its already-running adapter subprocess; a create it had issued may still complete.
   That is the case the explicit settlement exists for: the next launch reports what carries the task's label and refuses until settled.
-- A structured Herdr error is not by itself proof that nothing was allocated.
-  The adapter inventories the exact creation scope immediately after such an error and journals `refused ... verified=` only when nothing carries the label; an error following an effect keeps the created container as the launch's known partial identity, and a partial container (a task workspace without its tab, a tab created while Herdr answered an error) is never replaced automatically.
+- A structured Herdr error is not proof that nothing was allocated, and an inventory that finds nothing under the label is not proof either (the fleet's own test harness creates the effect under another label to show it).
+  Such an attempt stays uncertain with its inventory as a hint; an error following a visible effect keeps the created container as the launch's known partial identity; a partial container (a task workspace without its tab, a tab created while Herdr answered an error) is never replaced automatically.
   The journal line for a request is written before the request leaves and refuses the request when it cannot be written.
-- Automatic replacement of an agent-free pane requires the adapter's strict idle-shell proof: the shell is the only foreground process, has no child process in the OS table, and is sleeping.
-  A delayed start held by a foreground command or an attached background child fails that proof (verified on the 0.8.2 lab); a session whose process table cannot be read retains the obligation.
-  What no supported native check can see is a process that already detached from the pane's shell; typed but unsubmitted input is discarded when the pane is closed, so it can never run there.
+- No idle-shell observation settles an open attempt on a present pane.
+  The strict proof refuses a delayed start held by a foreground command and an attached background child, but passes a process that already detached from the pane's shell (all three observed on the 0.8.2 lab), so it can only ever be a diagnostic; the obligation is settled by attempt-bound evidence - the owning control path's recorded stop or exit, the endpoint natively gone - or by explicit disposition through the existing owners.
+  Typed but unsubmitted input is discarded when a pane is closed through its owner, so it can never run there.
 - `python3` is required for every launch: a home without it refuses to launch before any creation call rather than launching unrecorded, and session start reports the missing interpreter.
 
 ## Privacy

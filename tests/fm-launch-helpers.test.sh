@@ -436,6 +436,74 @@ precord() {  # <home> <source-id> <field>
   record "$1/state" "$(pe_subject "$2")" "$3"
 }
 
+test_watcher_arm_refuses_to_fork_when_intent_cannot_be_persisted() {
+  local dir state fakebin out rc
+  dir=$(make_case watcher-nointent)
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/arm.out"
+  WRAPPER=$(make_record_wrapper "$dir"); WRAP_LOG="$dir/wrap.log"; : > "$WRAP_LOG"
+  # The record path is occupied by a directory: the intent cannot be written.
+  mkdir -p "$state/.launch-watcher"
+  run_arm "$state" "$fakebin" "$out"
+  # Bounded: an arm that forked anyway would run a whole cycle; end that cycle
+  # with an ordinary wake and fail, instead of waiting on it.
+  if ! wait_pid_gone "$ARM_PID"; then
+    printf 'done: fixture finished\n' > "$state/demo.status"
+    wait_pid_gone "$ARM_PID" || true
+    fail "the arm forked a watcher although its intent could not be persisted: $(cat "$out")"
+  fi
+  wait "$ARM_PID" 2>/dev/null; rc=$?
+  [ "$rc" -ne 0 ] || fail "the arm must exit non-zero when the intent cannot be persisted: $(cat "$out")"
+  grep -q '^watcher: FAILED - no new watcher forked' "$out" || fail "the arm must report the refusal: $(cat "$out")"
+  [ ! -e "$state/.watch.lock" ] || fail "no watcher may be forked without a persisted intent"
+  grep -q '^created ' "$WRAP_LOG" && fail "no child may be recorded, because none may exist"
+  grep -q 'watcher arm refused to fork' "$state/.wake-queue" 2>/dev/null || grep -q 'watcher arm refused to fork' "$state/.watch-arm-emergency" 2>/dev/null || fail "the refusal must reach the durable failure path"
+  rmdir "$state/.launch-watcher"
+  pass "watcher: the arm refuses to fork a new watcher when its pre-fork intent cannot be persisted, and publishes the refusal"
+}
+
+test_procevent_start_refuses_when_intent_cannot_be_persisted_and_leaves_a_live_runner_alone() {
+  local home trig runner claim_pid i=0
+  home=$(new_procevent_home procevent-nointent)
+  WRAPPER=$(make_record_wrapper "$home"); WRAP_LOG="$home/wrap.log"; : > "$WRAP_LOG"
+  PE_ID='src-c'
+  trig="$home/trigger"
+  pe "$home" register lavish src-c -- "$home/blocker.sh" "$trig" "payload c" > "$home/register.out" 2>&1 || fail "register failed: $(cat "$home/register.out")"
+  mkdir -p "$home/state/.launch-$(pe_subject src-c)"
+  # Bounded: a start that forked a runner anyway would block on the blocker;
+  # release it through its trigger and fail, instead of waiting on it.
+  pe "$home" start src-c > "$home/start.out" 2>&1 &
+  runner=$!
+  if ! wait_pid_gone "$runner"; then
+    : > "$trig"
+    wait_pid_gone "$runner" || true
+    wait "$runner" 2>/dev/null || true
+    rm -f "$trig"
+    fail "a runner was forked although its intent could not be persisted: $(cat "$home/start.out")"
+  fi
+  wait "$runner" 2>/dev/null && fail "a start whose intent cannot be persisted must fail: $(cat "$home/start.out")"
+  grep -q 'launch intent could not be persisted' "$home/start.out" || fail "the start must say why it refused: $(cat "$home/start.out")"
+  [ ! -e "$home/claims/src-c.claim" ] || fail "no runner may be forked without a persisted intent"
+  rmdir "$home/state/.launch-$(pe_subject src-c)"
+  # With a runner alive under its recorded identity, a second start forks
+  # nothing and reports the owner.
+  pe "$home" start src-c > "$home/start2.out" 2>&1 &
+  runner=$!
+  LOOP_PIDS+=("$runner")
+  while [ "$i" -lt 100 ] && [ ! -e "$home/claims/src-c.claim" ]; do sleep 0.1; i=$((i + 1)); done
+  [ -e "$home/claims/src-c.claim" ] || fail "the runner never claimed its source"
+  sleep 0.3
+  claim_pid=$(sed -n '2p' "$home/claims/src-c.claim")
+  : > "$WRAP_LOG"
+  pe "$home" start src-c > "$home/start3.out" 2>&1 || true
+  grep -q '^already owned: src-c' "$home/start3.out" || fail "a live recorded runner must be reported as already owned: $(cat "$home/start3.out")"
+  grep -q '^intend ' "$WRAP_LOG" && fail "no new intent may be recorded while the recorded runner lives"
+  [ "$(precord "$home" src-c launch.identity.pid)" = "$claim_pid" ] || fail "the live runner's launch must be untouched"
+  : > "$trig"
+  wait "$runner" 2>/dev/null || true
+  pe "$home" retire src-c >/dev/null 2>&1 || true
+  pass "procevent: a start refuses to fork when its intent cannot be persisted, and a live recorded runner is left alone"
+}
+
 test_procevent_runner_records_intent_before_fork_claim_identity_start_and_exit() {
   local home trig out runner claim_pid i subject
   home=$(new_procevent_home procevent-run)
@@ -511,3 +579,5 @@ test_watcher_cycle_records_intent_before_fork_identity_readiness_and_exit
 test_watcher_interrupted_attempt_and_successor_chain_are_settled_by_the_next_arm
 test_procevent_runner_records_intent_before_fork_claim_identity_start_and_exit
 test_procevent_fork_that_cannot_claim_leaves_the_attempt_accounted
+test_watcher_arm_refuses_to_fork_when_intent_cannot_be_persisted
+test_procevent_start_refuses_when_intent_cannot_be_persisted_and_leaves_a_live_runner_alone

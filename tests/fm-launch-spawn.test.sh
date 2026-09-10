@@ -14,23 +14,25 @@
 #   2. readiness: a registered agent reads ready (positive control); an
 #      unregistered pane reads unconfirmed with the reason (negative control)
 #   3. inventory refusal before any create -> failed with effect none
-#   4. a structured Herdr refusal after the request was issued, with the exact
-#      creation scope inventoried empty at once -> failed with effect none; a
-#      structured error following an effect -> uncertain with the tab as the
-#      known partial identity, never replaced automatically; a pre-call
-#      journal write failure refuses the request before it leaves; a lost
-#      answer -> uncertain with an obligation that no label
+#   4. a structured Herdr refusal after the request was issued -> uncertain
+#      with the empty inventory recorded as a hint only (no error code proves
+#      non-allocation); a structured error following an effect, visible or
+#      hidden from the label inventory -> uncertain with any known partial
+#      identity, never replaced automatically; a pre-call journal write
+#      failure refuses the request before it leaves; a lost answer ->
+#      uncertain with an obligation that no label
 #      settles: the next spawn refuses (reporting the label inventory as a hint
 #      only, live or not) until the record is settled explicitly with
 #      `reconcile --verdict manual`, after which the spawn proceeds
 #   5. launcher killed before creation -> intended, launcher gone, settled
 #      absent from the launcher's own pre-create journal
-#   6. launcher killed after creation -> created with identity; next spawn
-#      replaces a husk only when Herdr's process-info shows an idle foreground
-#      shell AND the adapter's strict proof shows no child process and a
-#      sleeping shell; refuses a busy foreground (a launch may be in progress),
-#      a helper that never leaves the shell's group, an attached child, a
-#      partial container, and a live agent on that exact pane
+#   6. launcher killed after creation -> created with identity; the next spawn
+#      never replaces a present agent-free pane by itself - an idle,
+#      child-free, sleeping shell, a busy foreground, a helper that never
+#      leaves the shell's group, an attached child, and a partial container
+#      are all reported as diagnostics with the obligation retained; only a
+#      stop recorded by the control path or a natively gone pane settles it,
+#      and a live agent refuses
 #   7. record-write failure before creation refuses with nothing created;
 #      after creation the spawn aborts, the endpoint is closed, and the record
 #      reads failed/cleaned
@@ -238,10 +240,32 @@ test_issued_create_without_result_is_uncertain_and_settles_from_the_label() {
   printf '{"error":{"code":"internal","message":"boom"}}\n' > "$CASE_DIR/fail/tab-create"
   spawn "sh -c true"
   expect_code 1 "$SPAWN_RC" "a refused tab create must refuse the spawn"
-  [ "$(record launch.phase)" = failed ] || fail "a structured Herdr refusal is a closed failure, got '$(record launch.phase)'"
-  [ "$(record launch.outcome.effect)" = none ] || fail "a refused create has effect none"
-  [ "$(record launch.reconcile.required)" = False ] || fail "a refused create carries no obligation"
-  assert_contains "$(record launch.fields.hint)" "refused task-tab code=internal verified=workspace:" "the hint must record Herdr's refusal and the scope inventoried empty"
+  [ "$(record launch.phase)" = uncertain ] || fail "a structured Herdr error is not proof of no effect and must read uncertain, got '$(record launch.phase)'"
+  [ "$(record launch.reconcile.required)" = True ] || fail "a structured error keeps the obligation"
+  assert_contains "$(record launch.reconcile.hint)" "refused task-tab code=internal inventory=empty:workspace:" "the empty inventory is recorded as a hint"
+  assert_contains "$(record launch.reconcile.hint)" "not proof of no effect" "the hint must say the refusal settles nothing"
+  : > "$CASE_DIR/fake/log"
+  spawn "sh -c true"
+  expect_code 1 "$SPAWN_RC" "a refused create must not be retried blindly: $SPAWN_OUT"
+  assert_contains "$SPAWN_OUT" "reconcile --task sp5 --current --verdict manual" "the refusal must route to explicit settlement"
+  fake_log | grep -q 'create' && fail "no create may be issued while a refused request is unsettled"
+  # A structured error whose effect the immediate label inventory cannot see:
+  # the tab exists under another label. The attempt stays uncertain and the
+  # next spawn still refuses - the empty inventory proved nothing.
+  new_case refuse-hidden-effect sp24
+  printf '{"error":{"code":"internal","message":"boom with a hidden effect"}}\n' > "$CASE_DIR/fail/tab-create"
+  : > "$CASE_DIR/fail/tab-create.effect-hidden"
+  spawn "sh -c true"
+  expect_code 1 "$SPAWN_RC" "an error with a hidden effect must refuse the spawn"
+  [ "$(record launch.phase)" = uncertain ] || fail "an error with a hidden effect must read uncertain, got '$(record launch.phase)'"
+  assert_contains "$(record launch.reconcile.hint)" "inventory=empty:" "the inventory saw nothing, which is exactly why it is only a hint"
+  [ "$(jq '[.tabs[] | select(.label == "hidden-fm-sp24")] | length' "$CASE_DIR/fake/state.json")" -eq 1 ] || fail "the hidden effect must exist in the fake"
+  rm -f "$CASE_DIR/fail/tab-create" "$CASE_DIR/fail/tab-create.effect-hidden"
+  : > "$CASE_DIR/fake/log"
+  spawn "sh -c true"
+  expect_code 1 "$SPAWN_RC" "the hidden effect must not be papered over by a blind retry: $SPAWN_OUT"
+  fake_log | grep -q 'create' && fail "no create may be issued over an unsettled attempt with a hidden effect"
+  [ "$(record launch.phase)" = uncertain ] || fail "the obligation must remain"
   # A structured error following an effect: the tab exists anyway. The
   # inventory finds it, the launch reads uncertain with the tab as its known
   # partial identity, and the next spawn refuses to replace it automatically.
@@ -321,7 +345,7 @@ test_issued_create_without_result_is_uncertain_and_settles_from_the_label() {
   fake_log | grep -q 'create' && fail "no create may be issued while a live agent holds the task's label"
   [ "$(record launch.phase)" = uncertain ] || fail "the obligation must remain while the live agent is unresolved"
   assert_other_home_untouched "lost response"
-  pass "spawn: a refused create is a closed failure; a lost answer stays an obligation no label settles, until settled explicitly"
+  pass "spawn: a refused, hidden-effect, or lost create stays an obligation no error class or label settles, until settled explicitly"
 }
 
 # --- 5. and 6. launcher interruption -------------------------------------------------------
@@ -362,11 +386,45 @@ test_launcher_killed_after_creation() {
   [ ! -e "$CASE_DIR/home/state/sp9.meta" ] || fail "no task record may exist for a launch that never published one"
   : > "$CASE_DIR/fake/log"
   spawn "sh -c true"
-  expect_code 0 "$SPAWN_RC" "the next spawn must replace the agent-free pane and succeed: $SPAWN_OUT"
-  assert_contains "$SPAWN_OUT" "husk-replaced: native agent state dead and a proven quiescent idle shell" "the exact recorded pane must be classified natively before replacement"
-  # An idle foreground with a child process attached to the shell (a launch
-  # started in the background, or one that has not surfaced yet) is not
-  # quiescent: the strict proof must refuse, and pass again once it is gone.
+  expect_code 1 "$SPAWN_RC" "a present agent-free pane is never replaced automatically: $SPAWN_OUT"
+  assert_contains "$SPAWN_OUT" "is present with an open launch record" "the refusal must name the retained obligation"
+  assert_contains "$SPAWN_OUT" "cannot exclude a process that already detached" "an idle, child-free, sleeping shell is a diagnostic, not permission"
+  assert_contains "$SPAWN_OUT" "reconcile --task sp9 --current --verdict manual" "the refusal must route to explicit settlement"
+  fake_log | grep -q 'create' && fail "no create may be issued over an open record on a present pane"
+  [ "$(record launch.phase)" = created ] || fail "the created record must be retained"
+  # Attempt-bound evidence settles it: the owning control path records the
+  # stop it proved (here through the record owner, as fm-control does), and
+  # only then does the next spawn proceed.
+  python3 "$OWNER" --state "$CASE_DIR/home/state" stop --task sp9 --current --reason "exit proved by the control path" >/dev/null || fail "stop could not be recorded"
+  : > "$CASE_DIR/fake/log"
+  spawn "sh -c true"
+  expect_code 0 "$SPAWN_RC" "after the control path recorded the stop, the spawn proceeds: $SPAWN_OUT"
+  # A busy foreground (a harness that has not registered yet) is reported as
+  # the diagnostic, and the same refusal stands.
+  new_case kill-after-busy sp17
+  spawn_killed_at pane-run
+  pane=$(record launch.identity.pane_id)
+  : > "$CASE_DIR/fake/busy-$pane"
+  : > "$CASE_DIR/fake/log"
+  spawn "sh -c true"
+  expect_code 1 "$SPAWN_RC" "an agent-free pane with a busy foreground must refuse: $SPAWN_OUT"
+  assert_contains "$SPAWN_OUT" "a foreground process is running" "the refusal must name the in-progress possibility"
+  fake_log | grep -q 'create' && fail "no create may be issued while the recorded pane is busy"
+  [ "$(record launch.phase)" = created ] || fail "the created record must be retained while the pane is busy"
+  rm -f "$CASE_DIR/fake/busy-$pane"
+  # A helper that never leaves the shell's foreground group reads busy too.
+  new_case kill-after-helper sp19
+  spawn_killed_at pane-run
+  pane=$(record launch.identity.pane_id)
+  : > "$CASE_DIR/fake/helper-$pane"
+  : > "$CASE_DIR/fake/log"
+  FM_BACKEND_HERDR_FOREGROUND_SETTLE_POLLS=3 spawn "sh -c true"
+  expect_code 1 "$SPAWN_RC" "a foreground helper that never settles must refuse: $SPAWN_OUT"
+  assert_contains "$SPAWN_OUT" "a foreground process is running" "the unsettled foreground must read busy"
+  fake_log | grep -q 'create' && fail "no create may be issued while the foreground never settles"
+  rm -f "$CASE_DIR/fake/helper-$pane"
+  # An idle foreground with a child attached to the shell is reported as not
+  # provably quiescent; the refusal is the same.
   new_case kill-after-child sp23
   spawn_killed_at pane-run
   pane=$(record launch.identity.pane_id)
@@ -374,12 +432,9 @@ test_launcher_killed_after_creation() {
   : > "$CASE_DIR/fake/log"
   spawn "sh -c true"
   expect_code 1 "$SPAWN_RC" "an idle shell with an attached child must refuse: $SPAWN_OUT"
-  assert_contains "$SPAWN_OUT" "not provably quiescent" "the refusal must name the missing quiescence proof"
+  assert_contains "$SPAWN_OUT" "not provably quiescent" "the diagnostic must name the attached child"
   fake_log | grep -q 'create' && fail "no create may be issued while the shell has a child"
   rm -f "$CASE_DIR/fake/ps-table"
-  : > "$CASE_DIR/fake/log"
-  spawn "sh -c true"
-  expect_code 0 "$SPAWN_RC" "a proven quiescent shell is replaced: $SPAWN_OUT"
   # A partial task workspace (its tab never created) is retained, never
   # replaced: modelled through the record owner because the fake does not
   # model the projected layout.
@@ -391,35 +446,6 @@ test_launcher_killed_after_creation() {
   expect_code 1 "$SPAWN_RC" "a partial task workspace must refuse: $SPAWN_OUT"
   assert_contains "$SPAWN_OUT" "bound to a partial container (task-workspace: workspace=w9" "the refusal must name the partial workspace"
   fake_log | grep -q 'create' && fail "no create may be issued over a partial task workspace"
-  # A busy foreground (a harness that has not registered yet) is not a husk.
-  new_case kill-after-busy sp17
-  spawn_killed_at pane-run
-  pane=$(record launch.identity.pane_id)
-  : > "$CASE_DIR/fake/busy-$pane"
-  : > "$CASE_DIR/fake/log"
-  spawn "sh -c true"
-  expect_code 1 "$SPAWN_RC" "an agent-free pane with a busy foreground must refuse: $SPAWN_OUT"
-  assert_contains "$SPAWN_OUT" "no registered agent but a foreground process is running" "the refusal must name the in-progress possibility"
-  fake_log | grep -q 'create' && fail "no create may be issued while the recorded pane is busy"
-  [ "$(record launch.phase)" = created ] || fail "the created record must be retained while the pane is busy"
-  rm -f "$CASE_DIR/fake/busy-$pane"
-  : > "$CASE_DIR/fake/log"
-  spawn "sh -c true"
-  expect_code 0 "$SPAWN_RC" "once the foreground is idle the husk is replaced: $SPAWN_OUT"
-  assert_contains "$SPAWN_OUT" "husk-replaced" "an idle agent-free pane reconciles as a husk"
-  # A helper that never leaves the shell's foreground group is not an idle
-  # shell either: the settle window must run out into busy, never idle.
-  new_case kill-after-helper sp19
-  spawn_killed_at pane-run
-  pane=$(record launch.identity.pane_id)
-  : > "$CASE_DIR/fake/helper-$pane"
-  : > "$CASE_DIR/fake/log"
-  FM_BACKEND_HERDR_FOREGROUND_SETTLE_POLLS=3 spawn "sh -c true"
-  expect_code 1 "$SPAWN_RC" "a foreground helper that never settles must refuse: $SPAWN_OUT"
-  assert_contains "$SPAWN_OUT" "no registered agent but a foreground process is running" "the unsettled foreground must read busy"
-  fake_log | grep -q 'create' && fail "no create may be issued while the foreground never settles"
-  [ "$(record launch.phase)" = created ] || fail "the created record must be retained while the foreground never settles"
-  rm -f "$CASE_DIR/fake/helper-$pane"
   # The recorded pane is gone by the next launch (closed by hand, or Herdr
   # lost it): presence, not agent state, must settle it as absent.
   new_case kill-after-gone sp15
@@ -441,7 +467,7 @@ test_launcher_killed_after_creation() {
   fake_log | grep -q 'create' && fail "no create may be issued while the recorded pane hosts a live agent"
   [ "$(record launch.phase)" = created ] || fail "the created record must be retained while its agent lives"
   assert_other_home_untouched "killed after creation"
-  pass "spawn: a launcher killed after creation leaves an exact created record; an idle husk is replaced, a busy pane and a live agent refuse"
+  pass "spawn: a launcher killed after creation leaves an exact created record that no idle, busy, or child-bearing pane settles; only recorded stop evidence or a gone pane does, and a live agent refuses"
 }
 
 # --- 7. record-write failures ----------------------------------------------------------------

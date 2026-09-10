@@ -401,13 +401,15 @@ fm_backend_herdr_cli() {  # <session> <herdr-subcommand-and-args...>
 #                            Firstmate created, even before any task tab).
 #   created workspace=.. tab=.. pane=.. terminal=..
 #                            once the task tab's exact ids came back.
-#   refused <kind> code=<c> verified=<scope>
-#                            Herdr answered a structured error AND an immediate
+#   refused <kind> code=<c> inventory=empty:<scope>
+#                            Herdr answered a structured error and an immediate
 #                            native inventory of the exact creation scope found
-#                            nothing carrying the label (see
-#                            fm_backend_herdr_create_answer_note). Only this
-#                            line lets a launch owner close the attempt as
-#                            failed with no effect.
+#                            nothing carrying the label. This is a diagnostic
+#                            hint only: no Herdr error code is source-proven to
+#                            guarantee that nothing was allocated, and the
+#                            absence of a label is not proof of no effect, so a
+#                            launch owner still records the attempt as
+#                            uncertain (see fm_backend_herdr_create_answer_note).
 #   effect <kind> code=<c> ...ids
 #                            Herdr answered a structured error but the
 #                            inventory found the labeled container anyway (an
@@ -416,10 +418,10 @@ fm_backend_herdr_cli() {  # <session> <herdr-subcommand-and-args...>
 #   lost <kind>              anything else: timeout, transport failure,
 #                            unparseable or incomplete answer, or an inventory
 #                            that could not run - a container may exist.
-# A launch owner reads the journal at abort and at the next launch: an
-# inventory refusal (nothing issued) and a verified refusal are closed
-# failures; every other issued request without a created line is an open
-# obligation.
+# A launch owner reads the journal at abort and at the next launch: only a
+# journal with no issued request is a closed failure with no effect; every
+# issued request without a created line is an open obligation, whatever the
+# answer class says, until exact-identity cleanup or explicit settlement.
 fm_backend_herdr_create_note() {  # <line>
   [ -n "${FM_BACKEND_HERDR_CREATE_ISSUED_FILE:-}" ] || return 0
   { printf '%s\n' "$1" >> "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE"; } 2>/dev/null || true
@@ -441,12 +443,14 @@ fm_backend_herdr_create_issue_refused() {  # <kind>
 }
 
 # fm_backend_herdr_create_answer_note: classify a create request's failed
-# answer for the journal. A structured Herdr error is not by itself proof that
-# nothing was allocated, so the exact creation scope is inventoried at once:
-# the target workspace's tabs for a task tab, the session's workspaces for a
-# workspace. Nothing carrying the label -> `refused ... verified=<scope>`;
-# the label found -> `effect ... <ids>` (an error following an effect);
+# answer for the journal, as a diagnostic. The exact creation scope is
+# inventoried at once (the target workspace's tabs for a task tab, the
+# session's workspaces for a workspace) so a later reader knows what was
+# visible right after the answer: nothing carrying the label ->
+# `refused ... inventory=empty:<scope>`; the label found -> `effect ... <ids>`
+# (an error following an effect, with the ids as known partial identity);
 # no structured error, or an inventory that cannot run -> `lost <kind>`.
+# None of these settles the attempt: the launch owner keeps it uncertain.
 fm_backend_herdr_create_answer_note() {  # <kind> <raw-answer> <session> <label> [<workspace-scope>]
   local kind=$1 raw=$2 session=${3:-} label=${4:-} scope=${5:-} code list found
   code=$(printf '%s' "$raw" | jq -er '.error.code | select(type == "string" and length > 0)' 2>/dev/null) || code=
@@ -466,7 +470,7 @@ fm_backend_herdr_create_answer_note() {  # <kind> <raw-answer> <session> <label>
       if [ -n "$found" ]; then
         fm_backend_herdr_create_note "effect $kind code=$code workspace=$scope $found"
       else
-        fm_backend_herdr_create_note "refused $kind code=$code verified=workspace:$scope"
+        fm_backend_herdr_create_note "refused $kind code=$code inventory=empty:workspace:$scope"
       fi
       ;;
     home-workspace|task-workspace)
@@ -478,7 +482,7 @@ fm_backend_herdr_create_answer_note() {  # <kind> <raw-answer> <session> <label>
       if [ -n "$found" ]; then
         fm_backend_herdr_create_note "effect $kind code=$code $found"
       else
-        fm_backend_herdr_create_note "refused $kind code=$code verified=session:$session"
+        fm_backend_herdr_create_note "refused $kind code=$code inventory=empty:session:$session"
       fi
       ;;
     *) fm_backend_herdr_create_note "lost $kind" ;;

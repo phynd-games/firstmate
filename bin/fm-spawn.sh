@@ -821,26 +821,25 @@ spawn_launch_field() {  # <check-output> <key>
 # earlier launcher intended or created something and never settled it. A
 # launcher that is still alive (pid AND start identity) is a concurrent spawn
 # and refuses. A recorded native endpoint is classified natively: presence
-# first (a gone pane reconciles as absent), then agent state (a live agent
-# refuses the duplicate), then - because agent_not_found alone is not proof
-# that nothing is starting - Herdr's own pane process-info and the adapter's
-# strict idle-shell proof: only a shell that is the sole foreground process,
-# has no child process, and sleeps reconciles as a husk; a busy foreground,
-# an attached child, or a session whose process table cannot be read refuses
-# and retains the obligation. What no supported native check can see is a
-# process that already detached from the pane; that limit is documented, not
-# papered over. A partial container (a task workspace without its tab, a tab
-# created while Herdr answered an error) is never replaced automatically.
-# No recorded identity is settled automatically in exactly two cases, both
-# from this spawn's own pre-create journal (state/.<id>.create-issued, left
-# behind only by a killed launcher): no create request was ever issued, or
-# every issued request was refused with its scope inventoried empty at once
-# (the per-home container's own creation aside, which its placement owner
-# adopts by exact label). Every other identity-less open record refuses until
-# the operator settles it explicitly with `fm-launch-record.py reconcile
-# --verdict manual` after native inspection: the absence of a tab carrying the
-# task's label does not prove a create had no effect, and a tab that does
-# carry it is reported as a hint, never adopted as ours.
+# first (a gone pane reconciles as absent - the one native fact that settles
+# an open record by itself), then agent state (a live agent refuses the
+# duplicate). A present pane with no registered agent is never settled here:
+# agent_not_found is not proof that nothing is starting, and the adapter's
+# strict idle-shell proof cannot exclude a process that already detached from
+# the pane (observed on the 0.8.2 lab), so its result is reported as a
+# diagnostic and the obligation is retained until the owning control path
+# records a stop or exit, the endpoint is gone, or an operator settles the
+# record after inspection. A partial container (a task workspace without its
+# tab, a tab created while Herdr answered an error) is likewise retained.
+# No recorded identity is settled automatically in exactly one case, from this
+# spawn's own pre-create journal (state/.<id>.create-issued, left behind only
+# by a killed launcher): no request of the launch can have had an effect
+# (nothing issued, or only the per-home container created with exact ids).
+# Every other identity-less open record refuses until the operator settles it
+# explicitly with `fm-launch-record.py reconcile --verdict manual` after
+# native inspection: a refused or lost answer, and the absence of a tab
+# carrying the task's label, do not prove a create had no effect, and a tab
+# that does carry it is reported as a hint, never adopted as ours.
 spawn_launch_reconcile_open() {  # <check-output>
   local out=$1 phase launcher pane workspace tab session window verdict='' state='' evidence='' target='' presence='' foreground='' journal hint='' observation='' settle container='' quiescent=''
   phase=$(spawn_launch_field "$out" phase)
@@ -879,10 +878,11 @@ spawn_launch_reconcile_open() {  # <check-output>
       # issued any create request, so nothing of this launch's can exist.
       verdict=absent
       evidence="launcher gone before any create request; its pre-create journal records none"
-    elif [ "$phase" = intended ] && spawn_launch_journal_settled "$journal"; then
-      # Every request it did issue is accounted for with no task effect.
+    elif [ "$phase" = intended ] && spawn_launch_journal_no_effect "$journal"; then
+      # Only the shared per-home container was created, each with exact ids
+      # the placement owner adopts; nothing of this launch's can exist.
       verdict=absent
-      evidence="launcher gone; its journal shows every create request refused with the scope verified empty, or only the per-home container created"
+      evidence="launcher gone; its journal shows only the per-home container created with exact ids and no other request issued"
     else
       # A create may have happened and nobody holds its identity. The label
       # inventory is reported as a hint only - it neither proves absence nor
@@ -950,29 +950,23 @@ spawn_launch_reconcile_open() {  # <check-output>
         return 1
         ;;
       dead)
+        # No registered agent on a present pane is never completion evidence:
+        # a launch may still be starting, or may have left a process the
+        # supported native checks cannot see (verified on the 0.8.2 lab: a
+        # detached, reparented process passes the strict idle-shell proof).
+        # The foreground and quiescence classification is reported as a
+        # diagnostic, and the obligation is retained until the owning control
+        # path records a stop or exit, the endpoint is natively gone, or an
+        # operator settles it after inspection.
         case "$foreground:$quiescent" in
-          idle:proven)
-            verdict='husk-replaced'
-            [ "$SPAWN_LAUNCH_ORIGIN" != relaunch ] || verdict='agent-exited'
-            evidence="native agent state dead and a proven quiescent idle shell (no foreground command, no child process, sleeping) on $target"
-            ;;
-          idle:no)
-            echo "error: task $ID's recorded endpoint $target has no registered agent and an idle foreground, but its shell is not provably quiescent (a child or background process, or a non-sleeping shell): a launch may still be starting; refusing a duplicate - inspect it, stop it with bin/fm-control.sh $ID exit, or settle the record with: $settle" >&2
-            return 1
-            ;;
-          idle:*)
-            echo "error: task $ID's recorded endpoint $target has no registered agent and an idle foreground, but quiescence cannot be proven for this session (no local process table); refusing a duplicate and retaining the obligation - settle the record with: $settle" >&2
-            return 1
-            ;;
-          busy:*)
-            echo "error: task $ID's recorded endpoint $target has no registered agent but a foreground process is running (launch record phase $phase): a launch may still be in progress; refusing a duplicate - wait for it to register, or stop it with bin/fm-control.sh $ID exit or relaunch it with bin/fm-control.sh $ID relaunch" >&2
-            return 1
-            ;;
-          *)
-            echo "error: task $ID's recorded endpoint $target has no registered agent and its foreground state is unreadable (launch record phase $phase); refusing to launch until that endpoint is proven agent-free" >&2
-            return 1
-            ;;
+          busy:*) observation="no registered agent, and a foreground process is running (a launch may still be in progress)" ;;
+          idle:proven) observation="no registered agent; the shell is idle, child-free and sleeping, which cannot exclude a process that already detached from it" ;;
+          idle:no) observation="no registered agent; the shell is idle but not provably quiescent (a child or background process, or a non-sleeping shell)" ;;
+          idle:*) observation="no registered agent; the shell is idle and quiescence cannot be assessed for this session (no local process table)" ;;
+          *) observation="no registered agent; the foreground state is unreadable" ;;
         esac
+        echo "error: task $ID's recorded endpoint $target is present with an open launch record (phase $phase): $observation. Refusing a duplicate launch: stop it with bin/fm-control.sh $ID exit or relaunch it with bin/fm-control.sh $ID relaunch, tear it down, or after native inspection settle the record with: $settle" >&2
+        return 1
         ;;
       missing)
         verdict=absent
@@ -1095,30 +1089,22 @@ spawn_launch_create_issued() {
   grep -q '^issued ' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null
 }
 
-# spawn_launch_journal_settled <journal>: every issued request in the journal
-# is accounted for with no task effect: a `refused ... verified=` line (Herdr
-# said no and the exact scope was inventoried empty at once) or, for the
-# per-home container only, a `created-workspace kind=home` line (the shared
-# container the existing placement owner adopts by exact label). Any lost,
-# effect, created, or unanswered request means an effect may exist.
-spawn_launch_journal_settled() {  # <journal>
-  local journal=$1 issued answered
+# spawn_launch_journal_no_effect <journal>: true only when the journal proves
+# no request of this launch can have had an effect: no request was issued at
+# all, or the only requests were the per-home container's and each answered
+# with exact ids (that shared container is owned and adopted by the placement
+# owner, not this launch). A refused or lost answer never qualifies - no Herdr
+# error code is source-proven to guarantee non-allocation, and an empty label
+# inventory is a hint, not proof - so any other issued request keeps the
+# attempt uncertain until exact-identity cleanup or explicit settlement.
+spawn_launch_journal_no_effect() {  # <journal>
+  local journal=$1 issued home_created
   [ -f "$journal" ] && [ ! -L "$journal" ] || return 1
   issued=$(grep -c '^issued ' "$journal" 2>/dev/null || true)
-  answered=$(grep -c '^refused [a-z-]* code=[^ ]* verified=' "$journal" 2>/dev/null || true)
-  answered=$(( ${answered:-0} + $(grep -c '^created-workspace kind=home ' "$journal" 2>/dev/null || true) ))
-  [ "${issued:-0}" -eq "$answered" ] || return 1
-  ! grep -q '^lost \|^effect \|^created \|^created-workspace kind=task ' "$journal" 2>/dev/null
-}
-
-# spawn_launch_create_answer: `refused` only when the journal is settled as
-# above; `lost` otherwise.
-spawn_launch_create_answer() {
-  if spawn_launch_journal_settled "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE"; then
-    printf 'refused\n'
-  else
-    printf 'lost\n'
-  fi
+  [ "${issued:-0}" -gt 0 ] || return 0
+  home_created=$(grep -c '^created-workspace kind=home ' "$journal" 2>/dev/null || true)
+  [ "$(grep -c '^issued home-workspace$' "$journal" 2>/dev/null || true)" = "$issued" ] || return 1
+  [ "${home_created:-0}" = "$issued" ]
 }
 
 # spawn_launch_readiness: record whether the launched harness actually became
@@ -1223,16 +1209,17 @@ spawn_launch_close_on_abort() {  # <exit-status>
     hint="a $BACKEND create call for $W returned no usable identity"
   elif [ "$SPAWN_LAUNCH_CREATE_ATTEMPTED" = 1 ] && spawn_launch_create_issued; then
     # The adapter journals the exact moment a create request left for Herdr
-    # and how it was answered: a refusal from its inventory checks (nothing
-    # issued) and a structured refusal from Herdr itself (issued, refused) are
-    # closed failures, while an issued create with a lost answer is an
-    # obligation nobody may settle by label.
-    if [ "$(spawn_launch_create_answer)" = refused ]; then
+    # and how it was answered. A refusal from its inventory checks (nothing
+    # issued) is a closed failure; an issued request that did not answer with
+    # ids is an obligation whatever Herdr's error said, because no error code
+    # is proven to exclude an allocation and an empty label inventory proves
+    # nothing.
+    if spawn_launch_journal_no_effect "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE"; then
       effect=none
-      hint="Herdr refused the create request and the creation scope was inventoried empty at once ($(grep '^refused ' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tr '\n' ';' | cut -c1-200))"
+      hint="only the per-home container was created ($(grep '^created-workspace kind=home ' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tr '\n' ';' | cut -c1-160)); no request of this launch had another effect"
     else
       effect=unknown
-      hint="a Herdr create request for $W left without a verified answer ($(grep '^issued \|^lost \|^effect \|^created-workspace ' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tr '\n' ';' | cut -c1-200)); a container may exist - inspect Herdr natively and settle the record with fm-launch-record.py reconcile --verdict manual"
+      hint="a Herdr create request for $W was issued and did not answer with ids ($(grep '^issued \|^refused \|^lost \|^effect \|^created-workspace ' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tr '\n' ';' | cut -c1-200)); a refusal or an empty inventory is not proof of no effect - inspect Herdr natively and settle the record with fm-launch-record.py reconcile --verdict manual"
     fi
   else
     effect=none
