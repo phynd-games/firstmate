@@ -1,0 +1,60 @@
+Fixture boundary: daemon responses and endpoint identity are simulated; actual reader, evidence parser, attribution, handoff CLI and persisted obligations execute. No live runtime or pipeline is operated.
+
+Scenario: persistent-unknown
+state: unknown · source: none · unreadable validation run evidence (not proof of death)
+handoff registered: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M264N026T9P1WBZEHM6AQ71A/.test-phase/tmp/fm-evidence-integration.jqqo3m/home/state/probe.handoff/4.expect
+FM_HANDOFF_CONFIRM_REQUIRED probe bin/fm-handoff-confirm.sh confirm --task probe --record /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M264N026T9P1WBZEHM6AQ71A/.test-phase/tmp/fm-evidence-integration.jqqo3m/home/state/probe.inbox/004.msg
+fm-handoff-confirm: FAILED - record 004.msg was acknowledged but the worker's validation evidence stayed unreadable through the window; the work's start could not be proven, and unreadable evidence alone never establishes that the worker departed (state: unknown · source: none · unreadable validation run evidence (not proof of death))
+fm-handoff-confirm: do not report this instruction dispatched; recover the worker (stuck-crewmate-recovery) before relaying it again
+Exit: 3
+schema=fm-handoff.v1
+result=failed
+at=1789061766
+reason=record 004.msg was acknowledged but the worker's validation evidence stayed unreadable through the window; the work's start could not be proven, and unreadable evidence alone never establishes that the worker departed (state: unknown · source: none · unreadable validation run evidence (not proof of death))
+
+Scenario: unknown-then-working
+state: unknown · source: none · unreadable validation run evidence (not proof of death)
+handoff registered: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M264N026T9P1WBZEHM6AQ71A/.test-phase/tmp/fm-evidence-integration.jqqo3m/home/state/probe.handoff/4.expect
+FM_HANDOFF_CONFIRM_REQUIRED probe bin/fm-handoff-confirm.sh confirm --task probe --record /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M264N026T9P1WBZEHM6AQ71A/.test-phase/tmp/fm-evidence-integration.jqqo3m/home/state/probe.inbox/004.msg
+handoff confirmed: probe record 004.msg acknowledged and started (state: working · source: run-step · validating (running))
+Exit: 0
+schema=fm-handoff.v1
+result=confirmed
+at=1789061774
+state=state: working · source: run-step · validating (running)
+
+Scenario: unchanged-concrete
+state: working · source: run-step · validating (running)
+handoff registered: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M264N026T9P1WBZEHM6AQ71A/.test-phase/tmp/fm-evidence-integration.jqqo3m/home/state/probe.handoff/4.expect
+FM_HANDOFF_CONFIRM_REQUIRED probe bin/fm-handoff-confirm.sh confirm --task probe --record /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M264N026T9P1WBZEHM6AQ71A/.test-phase/tmp/fm-evidence-integration.jqqo3m/home/state/probe.inbox/004.msg
+fm-handoff-confirm: FAILED - record 004.msg was acknowledged but the work never started: the run is still state: working · source: run-step · validating (running)
+fm-handoff-confirm: do not report this instruction dispatched; recover the worker (stuck-crewmate-recovery) before relaying it again
+Exit: 3
+schema=fm-handoff.v1
+result=failed
+at=1789061776
+reason=record 004.msg was acknowledged but the work never started: the run is still state: working · source: run-step · validating (running)
+
+Scenario: missing-task
+state: working · source: run-step · validating (running)
+handoff registered: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M264N026T9P1WBZEHM6AQ71A/.test-phase/tmp/fm-evidence-integration.jqqo3m/home/state/probe.handoff/4.expect
+FM_HANDOFF_CONFIRM_REQUIRED probe bin/fm-handoff-confirm.sh confirm --task probe --record /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M264N026T9P1WBZEHM6AQ71A/.test-phase/tmp/fm-evidence-integration.jqqo3m/home/state/probe.inbox/004.msg
+fm-handoff-confirm: FAILED - the worker is gone before it acknowledged the instruction (state: unknown · source: none · no metadata for probe)
+fm-handoff-confirm: do not report this instruction dispatched; recover the worker (stuck-crewmate-recovery) before relaying it again
+Exit: 3
+schema=fm-handoff.v1
+result=failed
+at=1789061777
+reason=the worker is gone before it acknowledged the instruction (state: unknown · source: none · no metadata for probe)
+
+Scenario: torn-down
+state: working · source: run-step · validating (running)
+handoff registered: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M264N026T9P1WBZEHM6AQ71A/.test-phase/tmp/fm-evidence-integration.jqqo3m/home/state/probe.handoff/4.expect
+FM_HANDOFF_CONFIRM_REQUIRED probe bin/fm-handoff-confirm.sh confirm --task probe --record /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M264N026T9P1WBZEHM6AQ71A/.test-phase/tmp/fm-evidence-integration.jqqo3m/home/state/probe.inbox/004.msg
+fm-handoff-confirm: FAILED - the worker is gone before it acknowledged the instruction (state: unknown · source: none · worktree gone (torn down?))
+fm-handoff-confirm: do not report this instruction dispatched; recover the worker (stuck-crewmate-recovery) before relaying it again
+Exit: 3
+schema=fm-handoff.v1
+result=failed
+at=1789061779
+reason=the worker is gone before it acknowledged the instruction (state: unknown · source: none · worktree gone (torn down?))

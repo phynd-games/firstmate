@@ -1,0 +1,253 @@
+
+Observation: task=mixed epoch=1000
+run:
+  id: "01RUN"
+  branch: fm/loop
+  status: running
+  head: "abc1234"
+  pr: ""
+  findings: 15 awaiting, 3 auto-fix
+  steps[3]{step,status,findings,duration_ms}:
+    intent,completed,0,10
+    review,running,0,20
+    test,pending,0,30
+Persisted journal fields:
+head=abc1234
+heads=abc1234
+last_progress=1000
+stop_reason=
+scope_base=
+scope_head=
+scope_paths=
+Continuation verdict: continue
+Observation: task=mixed-quoted epoch=1000
+run:
+  id: "02RUN"
+  branch: fm/loop
+  status: running
+  head: "abc1234"
+  pr: ""
+  findings: "15 awaiting, 3 auto-fix"
+  steps[3]{step,status,findings,duration_ms}:
+    intent,completed,0,10
+    review,running,0,20
+    test,pending,0,30
+Persisted journal fields:
+head=abc1234
+heads=abc1234
+last_progress=1000
+stop_reason=
+scope_base=
+scope_head=
+scope_paths=
+Continuation verdict: continueok - findings scalar: quoted and unquoted mixed awaiting/auto-fix accepted (proven against the unpatched base commit), malformed and foreign-run evidence still rejected
+
+Observation: task=unresolvable epoch=1000
+run:
+  id: "01RUN"
+  branch: fm/loop
+  status: running
+  head: "fbda2ff92a7906b0c6bed479bd6d9c76530f0d55"
+  pr: ""
+  findings: none
+  steps[3]{step,status,findings,duration_ms}:
+    intent,completed,0,10
+    review,running,0,20
+    test,pending,0,30
+Persisted journal fields:
+head=fbda2ff92a7906b0c6bed479bd6d9c76530f0d55
+heads=fbda2ff92a7906b0c6bed479bd6d9c76530f0d55
+last_progress=1000
+stop_reason=
+scope_base=
+scope_head=
+scope_paths=
+Continuation verdict: continue
+Observation: task=unresolvable epoch=1010
+run:
+  id: "01RUN"
+  branch: fm/loop
+  status: running
+  head: "412c36a4133097b5be5e5025f6eb39117fef231a"
+  pr: ""
+  findings: none
+  steps[3]{step,status,findings,duration_ms}:
+    intent,completed,0,10
+    review,running,0,20
+    test,pending,0,30
+Persisted journal fields:
+head=fbda2ff92a7906b0c6bed479bd6d9c76530f0d55
+heads=fbda2ff92a7906b0c6bed479bd6d9c76530f0d55
+last_progress=1000
+stop_reason=unproven head ancestry: 412c36a4133097b5be5e5025f6eb39117fef231a could not be resolved from the last verified head fbda2ff92a7906b0c6bed479bd6d9c76530f0d55 for run 01RUN (not a demonstrated incoherent transition)
+scope_base=
+scope_head=
+scope_paths=
+Continuation verdict: stop unproven head ancestry: 412c36a4133097b5be5e5025f6eb39117fef231a could not be resolved from the last verified head fbda2ff92a7906b0c6bed479bd6d9c76530f0d55 for run 01RUN (not a demonstrated incoherent transition)
+Observation: task=unresolvable epoch=1050
+run:
+  id: "01RUN"
+  branch: fm/loop
+  status: running
+  head: "412c36a4133097b5be5e5025f6eb39117fef231a"
+  pr: ""
+  findings: none
+  steps[3]{step,status,findings,duration_ms}:
+    intent,completed,0,10
+    review,running,0,20
+    test,pending,0,30
+Persisted journal fields:
+head=fbda2ff92a7906b0c6bed479bd6d9c76530f0d55
+heads=fbda2ff92a7906b0c6bed479bd6d9c76530f0d55
+last_progress=1000
+stop_reason=unproven head ancestry: 412c36a4133097b5be5e5025f6eb39117fef231a could not be resolved from the last verified head fbda2ff92a7906b0c6bed479bd6d9c76530f0d55 for run 01RUN (not a demonstrated incoherent transition)
+scope_base=
+scope_head=
+scope_paths=
+Continuation verdict: stop unproven head ancestry: 412c36a4133097b5be5e5025f6eb39117fef231a could not be resolved from the last verified head fbda2ff92a7906b0c6bed479bd6d9c76530f0d55 for run 01RUN (not a demonstrated incoherent transition)ok - unresolvable pipeline-owned head: unproven ancestry stops immediately and stays stopped, never credited as progress, distinct from a demonstrated incoherent transition, with the anchor pinned at the last verified head
+
+Observation: task=scoped epoch=1000
+run:
+  id: "01RUN"
+  branch: fm/loop
+  status: running
+  head: "89fdabedb4769c13bfb2fad5b26eda0cdda34971"
+  pr: ""
+  findings: none
+  steps[3]{step,status,findings,duration_ms}:
+    intent,completed,0,10
+    review,running,0,20
+    test,pending,0,30
+base: "d79c4d6f0058390fb622045b2e84057a03fef296"
+changes[1]{path}:
+  file
+Persisted journal fields:
+head=89fdabedb4769c13bfb2fad5b26eda0cdda34971
+heads=89fdabedb4769c13bfb2fad5b26eda0cdda34971
+last_progress=1000
+stop_reason=
+scope_base=d79c4d6f0058390fb622045b2e84057a03fef296
+scope_head=89fdabedb4769c13bfb2fad5b26eda0cdda34971
+scope_paths=file
+Continuation verdict: continue
+Observation: task=scoped epoch=1010
+run:
+  id: "01RUN"
+  branch: fm/loop
+  status: running
+  head: "412c36a4133097b5be5e5025f6eb39117fef231a"
+  pr: ""
+  findings: none
+  steps[3]{step,status,findings,duration_ms}:
+    intent,completed,0,10
+    review,running,0,20
+    test,pending,0,30
+base: "d79c4d6f0058390fb622045b2e84057a03fef296"
+changes[1]{path}:
+  file
+Persisted journal fields:
+head=89fdabedb4769c13bfb2fad5b26eda0cdda34971
+heads=89fdabedb4769c13bfb2fad5b26eda0cdda34971
+last_progress=1000
+stop_reason=unproven head ancestry: 412c36a4133097b5be5e5025f6eb39117fef231a could not be resolved from the last verified head 89fdabedb4769c13bfb2fad5b26eda0cdda34971 for run 01RUN (not a demonstrated incoherent transition)
+scope_base=d79c4d6f0058390fb622045b2e84057a03fef296
+scope_head=89fdabedb4769c13bfb2fad5b26eda0cdda34971
+scope_paths=file
+Continuation verdict: stop unproven head ancestry: 412c36a4133097b5be5e5025f6eb39117fef231a could not be resolved from the last verified head 89fdabedb4769c13bfb2fad5b26eda0cdda34971 for run 01RUN (not a demonstrated incoherent transition)
+Observation: task=scoped epoch=1050
+run:
+  id: "01RUN"
+  branch: fm/loop
+  status: running
+  head: "412c36a4133097b5be5e5025f6eb39117fef231a"
+  pr: ""
+  findings: none
+  steps[3]{step,status,findings,duration_ms}:
+    intent,completed,0,10
+    review,running,0,20
+    test,pending,0,30
+base: "d79c4d6f0058390fb622045b2e84057a03fef296"
+changes[1]{path}:
+  file
+Persisted journal fields:
+head=89fdabedb4769c13bfb2fad5b26eda0cdda34971
+heads=89fdabedb4769c13bfb2fad5b26eda0cdda34971
+last_progress=1000
+stop_reason=unproven head ancestry: 412c36a4133097b5be5e5025f6eb39117fef231a could not be resolved from the last verified head 89fdabedb4769c13bfb2fad5b26eda0cdda34971 for run 01RUN (not a demonstrated incoherent transition)
+scope_base=d79c4d6f0058390fb622045b2e84057a03fef296
+scope_head=89fdabedb4769c13bfb2fad5b26eda0cdda34971
+scope_paths=file
+Continuation verdict: stop unproven head ancestry: 412c36a4133097b5be5e5025f6eb39117fef231a could not be resolved from the last verified head 89fdabedb4769c13bfb2fad5b26eda0cdda34971 for run 01RUN (not a demonstrated incoherent transition)
+Observation: task=scoped epoch=1100
+run:
+  id: "01RUN"
+  branch: fm/loop
+  status: running
+  head: "161ab7ab63503fc6e423b838b693e9b6d95f438e"
+  pr: ""
+  findings: none
+  steps[3]{step,status,findings,duration_ms}:
+    intent,completed,0,10
+    review,running,0,20
+    test,pending,0,30
+base: "d79c4d6f0058390fb622045b2e84057a03fef296"
+changes[1]{path}:
+  file
+Persisted journal fields:
+head=161ab7ab63503fc6e423b838b693e9b6d95f438e
+heads=89fdabedb4769c13bfb2fad5b26eda0cdda34971 161ab7ab63503fc6e423b838b693e9b6d95f438e
+last_progress=1100
+stop_reason=unproven head ancestry: 412c36a4133097b5be5e5025f6eb39117fef231a could not be resolved from the last verified head 89fdabedb4769c13bfb2fad5b26eda0cdda34971 for run 01RUN (not a demonstrated incoherent transition)
+scope_base=d79c4d6f0058390fb622045b2e84057a03fef296
+scope_head=89fdabedb4769c13bfb2fad5b26eda0cdda34971
+scope_paths=file
+Continuation verdict: stop unproven head ancestry: 412c36a4133097b5be5e5025f6eb39117fef231a could not be resolved from the last verified head 89fdabedb4769c13bfb2fad5b26eda0cdda34971 for run 01RUN (not a demonstrated incoherent transition)ok - scope-bearing unpublished head retains anchor, history, scope and progress until ancestry is proven
+
+Observation: task=nonancestor epoch=1000
+run:
+  id: "01RUN"
+  branch: fm/loop
+  status: running
+  head: "47dced68e7e7e2b299a3421b9eab8af7c4857c80"
+  pr: ""
+  findings: none
+  steps[3]{step,status,findings,duration_ms}:
+    intent,completed,0,10
+    review,running,0,20
+    test,pending,0,30
+base: "c28c862db40fa6a4a93f012e6dbc846fa25777cd"
+changes[1]{path}:
+  file
+Persisted journal fields:
+head=47dced68e7e7e2b299a3421b9eab8af7c4857c80
+heads=47dced68e7e7e2b299a3421b9eab8af7c4857c80
+last_progress=1000
+stop_reason=
+scope_base=c28c862db40fa6a4a93f012e6dbc846fa25777cd
+scope_head=47dced68e7e7e2b299a3421b9eab8af7c4857c80
+scope_paths=file
+Continuation verdict: continue
+Observation: task=nonancestor epoch=1010
+run:
+  id: "01RUN"
+  branch: fm/loop
+  status: running
+  head: "c9fd38e3d807a073847bef99c194e38ea4cf8a5f"
+  pr: ""
+  findings: none
+  steps[3]{step,status,findings,duration_ms}:
+    intent,completed,0,10
+    review,running,0,20
+    test,pending,0,30
+base: "c28c862db40fa6a4a93f012e6dbc846fa25777cd"
+changes[1]{path}:
+  file
+Persisted journal fields:
+head=47dced68e7e7e2b299a3421b9eab8af7c4857c80
+heads=47dced68e7e7e2b299a3421b9eab8af7c4857c80
+last_progress=1000
+stop_reason=incoherent head transition from 47dced68e7e7e2b299a3421b9eab8af7c4857c80 to c9fd38e3d807a073847bef99c194e38ea4cf8a5f for run 01RUN
+scope_base=c28c862db40fa6a4a93f012e6dbc846fa25777cd
+scope_head=47dced68e7e7e2b299a3421b9eab8af7c4857c80
+scope_paths=file
+Continuation verdict: stop incoherent head transition from 47dced68e7e7e2b299a3421b9eab8af7c4857c80 to c9fd38e3d807a073847bef99c194e38ea4cf8a5f for run 01RUNok - resolvable non-ancestor head transition: still a demonstrated incoherent transition, anchor pinned - the unresolvable-ancestry fix does not weaken this

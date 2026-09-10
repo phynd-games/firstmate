@@ -1,0 +1,50 @@
+{
+  "head": "c79cca1060963389d99809735b88da9c72c37534",
+  "approved_base": "fe601e80363dca6469775ca98ad0643071fb48f3",
+  "selected_tests": {
+    "fm-validation-loop-selectors": [
+      "test_near_complete_continuation",
+      "test_repeated_finding_stop",
+      "test_unknown_state_stop",
+      "test_malformed_evidence_stop",
+      "test_malformed_journal_stop",
+      "test_terminal_transition_stops_before_reactivation",
+      "test_journal_state_matrix",
+      "test_journal_write_failure_stops_closed",
+      "test_stale_pipeline_evidence",
+      "test_recovery_handoff",
+      "test_fix_round_bound_semantics",
+      "test_stall_stop_and_progress_resume",
+      "test_coarse_evidence_does_not_enforce_stall",
+      "test_head_change_set_is_bounded",
+      "test_initial_scope_manifest_is_authenticated",
+      "test_head_change_set_allows_authenticated_addition",
+      "test_head_transition_is_coherent",
+      "test_findings_scalar_accepts_mixed_awaiting_autofix",
+      "test_unresolvable_head_is_unknown_not_incoherent",
+      "test_scope_bearing_unpublished_head_retains_verified_anchor",
+      "test_resolvable_non_ancestor_head_still_incoherent",
+      "test_threshold_overrides_cannot_disable_bounds"
+    ],
+    "fm-crew-state-selectors": [
+      "test_unreadable_validation_evidence_is_not_worded_as_death"
+    ],
+    "fm-handoff-confirm-selectors": [
+      "test_branch_prompt_carries_the_handoff_rule",
+      "test_queued_but_unread_is_not_delivery",
+      "test_acknowledged_without_starting_is_refused",
+      "test_wrong_message_bytes_are_refused",
+      "test_expectation_mismatch_is_refused_at_registration",
+      "test_departed_worker_fails_immediately",
+      "test_persistent_unknown_evidence_is_unconfirmed_not_dead",
+      "test_unknown_evidence_confirms_once_a_real_start_is_observed",
+      "test_unknown_to_concrete_state_preserves_handoff_modes",
+      "test_acknowledged_and_started_confirms",
+      "test_failed_handoff_queues_recovery_work",
+      "test_repeated_outcomes_coalesce"
+    ]
+  },
+  "fixture_limitation": "The selected new crew-state test exits before validation parsing because its metadata omits backend=; this matches the disclosed baseline limitation. Independent integration executes the real crew-state reader, parser, attribution, and handoff CLI using simulated daemon output and endpoint identity. No runtime lifecycle or live pipeline actions occur.",
+  "results": "Selected validation-loop and handoff tests pass. Integration confirms persistent unknown stays unconfirmed, unknown-to-working confirms, unchanged concrete state refuses, and missing or removed work retains protection. Mutation checks reproduce each disabled guard failure.",
+  "excluded_from_local_selection": "Background watcher tests and the two disclosed legacy-backend handoff cases. No hosted CI jobs or configuration were changed in this test phase."
+}

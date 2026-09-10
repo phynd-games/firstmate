@@ -1,0 +1,60 @@
+Mutation checks execute real classifier functions or handoff CLI over crafted evidence. Each mutation is applied only to an isolated source copy, then restored.
+
+Mutation: mixed scalar rejected
+Selector: test_findings_scalar_accepts_mixed_awaiting_autofix
+Exit: 1
+not ok - fm_vloop_observe failed for /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M264N026T9P1WBZEHM6AQ71A/.test-phase/tmp/fm-validation-loop-tests.8KfNKu/vloop-findings-mixed/ev
+
+Mutation: malformed scalar accepted
+Selector: test_findings_scalar_accepts_mixed_awaiting_autofix
+Exit: 1
+not ok - a malformed near-miss findings scalar '15 awaiting, 3 auto' was accepted (rc=0)
+
+Mutation: unknown ancestry called incoherent
+Selector: test_unresolvable_head_is_unknown_not_incoherent
+Exit: 1
+not ok - an unresolvable unpublished head was reported as a demonstrated incoherent transition: 'stop incoherent head transition from 1bae48cf0acd024cef7900dcdca133a8f0fe4ccd to 412c36a4133097b5be5e5025f6eb39117fef231a for run 01RUN'
+
+Mutation: unknown head replaces verified anchor
+Selector: test_unresolvable_head_is_unknown_not_incoherent
+Exit: 1
+not ok - the journal's head anchor advanced past the last verified head on unresolvable ancestry
+
+Mutation: unknown head credited as progress
+Selector: test_unresolvable_head_is_unknown_not_incoherent
+Exit: 1
+not ok - an unresolvable head was wrongly credited as proven progress
+
+Mutation: scope error masks ancestry check
+Selector: test_scope_bearing_unpublished_head_retains_verified_anchor
+Exit: 1
+not ok - scope-bearing unpublished head lost its unproven-ancestry stop: 'stop validation change-set manifest is invalid or untrusted for run 01RUN'
+
+Mutation: nonancestor incorrectly accepted
+Selector: test_resolvable_non_ancestor_head_still_incoherent
+Exit: 1
+not ok - a resolvable, genuinely diverged (non-ancestor) head did not stop as a demonstrated incoherent transition: 'continue'
+
+Mutation: unreadable means departed
+Selector: test_persistent_unknown_evidence_is_unconfirmed_not_dead
+Exit: 1
+not ok - persistently unreadable evidence was worded as the worker being gone (unexpected: 'is gone')
+--- output ---
+fm-handoff-confirm: FAILED - the worker is gone before it acknowledged the instruction (state: unknown · source: none · unreadable validation run evidence (not proof of death))
+fm-handoff-confirm: do not report this instruction dispatched; recover the worker (stuck-crewmate-recovery) before relaying it again
+
+Mutation: unreadable counts as started
+Selector: test_persistent_unknown_evidence_is_unconfirmed_not_dead
+Exit: 1
+not ok - validation evidence that never resolved past unknown was confirmed as a started handoff: handoff confirmed: india record 004.msg acknowledged and started (state: unknown · source: none · unreadable validation run evidence (not proof of death)): expected exit 3, got 0
+
+Mutation: unknown is not waited out
+Selector: test_unknown_evidence_confirms_once_a_real_start_is_observed
+Exit: 1
+not ok - a real observed start reached after a transient unreadable read was not confirmed: fm-handoff-confirm: FAILED - record 004.msg was acknowledged but the worker's validation evidence stayed unreadable through the window; the work's start could not be proven, and unreadable evidence alone never establishes that the worker departed (state: unknown · source: none · unreadable validation run evidence (not proof of death))
+fm-handoff-confirm: do not report this instruction dispatched; recover the worker (stuck-crewmate-recovery) before relaying it again: expected exit 0, got 3
+
+Mutation: unchanged concrete state waited out
+Selector: test_unknown_to_concrete_state_preserves_handoff_modes
+Exit: 1
+not ok - explicit did not decide at the first concrete observation: handoff confirmed: mode record 004.msg acknowledged and started (state: working · source: run-step · unexpected later state)

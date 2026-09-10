@@ -1,0 +1,6 @@
+Mutation checks execute real classifier functions or handoff CLI over crafted evidence. Each mutation is applied only to an isolated source copy, then restored.
+
+Mutation: mixed scalar rejected
+Selector: test_findings_scalar_accepts_mixed_awaiting_autofix
+Exit: 1
+not ok - fm_vloop_observe failed for /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M264N026T9P1WBZEHM6AQ71A/.test-phase/tmp/fm-validation-loop-tests.q316k9/vloop-findings-mixed/ev

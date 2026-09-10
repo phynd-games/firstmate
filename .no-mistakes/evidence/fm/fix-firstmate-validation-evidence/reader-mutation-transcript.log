@@ -1,0 +1,7 @@
+Fixture boundary: daemon responses and endpoint identity are simulated; actual reader, evidence parser, attribution, handoff CLI and persisted obligations execute. No live runtime or pipeline is operated.
+
+Scenario: persistent-unknown
+state: unknown · source: none · unreadable validation run evidence
+not ok - live unreadable evidence lacks its inconclusive qualifier (missing: 'not proof of death')
+--- output ---
+state: unknown · source: none · unreadable validation run evidence
