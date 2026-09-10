@@ -7,7 +7,7 @@ Firstmate serves the Markdown under a home's `data/` directory as a formatted, n
 
 The reader is MkDocs running its own development server with its own search, live reload, and bundled theme.
 Firstmate contributes a generated private configuration, one hook module, `bin/fm-docs-reader-hooks.py`, that narrows the site and sanitizes each page, and a theme override in `defaults/docs-reader-theme/` that replaces the bundled theme's navigation and page layout.
-There is no dashboard, no task control, and no editing surface: the reader reads `data/` and writes only under `state/docs-reader/`.
+There is no dashboard, no task control, and no editing surface: the reader reads `data/`, keeps its owner and launch records under `state/`, and generates its runtime under `state/docs-reader/`.
 
 ## Navigation and layout
 
@@ -31,19 +31,21 @@ MkDocs with nh3 and Pygments is 18 pinned packages and roughly 60 MB resident, a
 - Live updates: creating, editing, renaming, or deleting a Markdown file anywhere under `data/`, including in a new folder, updates the pages and navigation without a restart, and the browser reloads on its own.
 - Stable per-file URLs: `data/<dir>/<name>.md` is `/<dir>/<name>/`, and `index.md` or `README.md` is its directory's URL, so relative `.md` links and `#anchors` between reports work.
 - No writes into `data/`: the configuration, theme override, runtime, and log live under `state/docs-reader/`, and the built site lives in a private temporary directory.
-- Nothing unidentified is ever stopped: the reader signals only a process whose pid and start identity match what it recorded when it started or adopted that server, never a pid or command-name match alone; a record written before identity was captured is upgraded only when the recorded port answers with this home's token.
-- Every start is accountable: the reader's launch record (`state/.launch-docs-reader`, [`launch-records.md`](launch-records.md)) holds the intent before the process is forked, the pid plus identity digest once it exists, readiness from the token probe, and the stop or observed exit that ended it.
+- Nothing unidentified is ever stopped: a later stop requires the recorded pid and start identity; startup cleanup is limited to the child that invocation just forked.
+  Adoption additionally requires that exact process to own the loopback listener, that listener to answer with this home's token, and the process identity to remain unchanged across the probe.
+- Launch accounting follows [`launch-records.md`](launch-records.md).
 - Updates converge in place: `ensure` re-copies the tracked theme override and regenerates the configuration only when their content changed, and the configuration carries a digest of the override, so a running reader rebuilds with a new override on its own instead of needing a restart.
 
 ## Runtime and installation
 
 The runtime is Python 3.10 or newer with `mkdocs`, `nh3`, and `pygments`.
+The owner also uses `lsof` to bind the token-verified listener to its process; the common [Python launch requirement](../README.md#requirements) applies independently of the MkDocs runtime.
 Two supported ways provide it:
 
 - The Nix developer environment (`./phynd-dev install`) ships a Python with those packages pinned by `flake.lock` (`nix/home.nix`).
 - `bin/fm-setup-phynd.sh`, or `bin/fm-docs-reader.sh install` by hand, builds a private venv under `state/docs-reader/venv` from `defaults/docs-reader-requirements.txt`, where every release is pinned with the sha256 digests PyPI publishes, so the install is reproducible and never an unpinned download at startup.
 
-When neither is present the reader reports itself unavailable and Firstmate gives file paths instead of links; nothing else degrades.
+When the reader packages are unavailable, the reader reports itself unavailable and Firstmate gives file paths instead of links; those packages are not required for fleet supervision.
 
 ## Operating it
 

@@ -121,8 +121,8 @@ state/               runtime records and signals; gitignored
   <id>.lavish-intake  hash-bound Lavish intake receipt; removed by teardown after landing
   <id>.lavish-intake-session <id>.lavish-intake-classification  active intake binding or explicit exemption marker; removed by teardown
   <id>.herdr-presentation  quarantinable attempt and restart-binding journal for Herdr's optional visual projection; never task or endpoint authority; see docs/herdr-backend.md "Presentation spaces"
-  <id>.launch        the task's launch record: intent before the first Herdr creation call, the exact native identity once created, a readiness verdict, and the retained failed, uncertain, stopped, or retired outcome; bin/fm-launch-record.py owns the contract and docs/launch-records.md the operator view; removed by teardown
-  .launch-<helper>   the same record for a Firstmate-owned long-lived helper (docs-reader, herdr-supervisor, herdr-supervisor-monitor, afk-daemon, watcher, procevent-<source>); never the helper's cleanup authority
+  <id>.launch        task launch accounting; bin/fm-launch-record.py owns the contract and docs/launch-records.md the operator view; removed by teardown
+  .launch-<helper>   helper launch accounting; docs/launch-records.md owns coverage and docs/herdr-supervisor.md the supervisor projection exception
   .herdr-supervisor-cleaned.<generation>  supervisor-owned confirmed cleanup receipt retained until its terminal launch projection recovers; see docs/herdr-supervisor.md
   <id>.check.sh      authenticated slow poll; the watcher dispatches validated PR data and the byte-identified Relay shim through trusted repository scripts, runs registered custom checks from hash-validated private snapshots, and rejects every other state check without execution
   <id>.check-trust   private content binding created by fm-check-register.sh for an intentional custom check

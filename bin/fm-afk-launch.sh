@@ -38,6 +38,8 @@
 #
 # Supported active backend: herdr. Retained adapters are available only in the
 # repository's regression lane.
+# docs/launch-records.md owns controlled-launch coverage, including the
+# harness-hosted start-native preparation exclusion.
 #
 # Test seam: FM_AFK_LAUNCH_ENTRY overrides the command run in the created
 # terminal (default bin/fm-afk-start.sh), so a topology test can run a harmless

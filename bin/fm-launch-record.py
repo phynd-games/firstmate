@@ -24,10 +24,11 @@ Phases of one launch:
   exited     the launched process or agent was observed gone
   retired    the owning cleanup path removed the endpoint
   reconciled an open launch was settled from native evidence by a later launcher
-`failed`, `stopped`, `exited`, `retired`, and `reconciled` are terminal.
+  superseded a successor-chain owner handed off to a new launch
+`failed`, `stopped`, `exited`, `retired`, `reconciled`, and `superseded` are terminal.
 `intended`, `created`, `ready`, and `uncertain` are open: a new `intend` for the
 same subject is refused (exit 3) until the open launch is settled through
-`stop`, `exit`, `retire`, `fail`, or `reconcile`.
+`stop`, `exit`, `retire`, `fail`, `reconcile`, or a successor owner's `supersede`.
 
 Identity is never a pid alone, a display label, or a process-name match:
 Herdr subjects record the exact response ids (workspace, tab, pane, terminal);
@@ -56,6 +57,7 @@ Usage:
   unready   --launch ID --reason TEXT [--source SRC]
             Readiness verdict `unconfirmed`; the phase stays created.
   fail      --launch ID --reason TEXT --effect none|cleaned|retained|unknown
+            [--field K=V]...
             none|cleaned -> failed (terminal); retained|unknown -> uncertain.
   stop      (--launch ID | --current) --reason TEXT
   supersede (--launch ID | --current) --reason TEXT
@@ -63,9 +65,26 @@ Usage:
             superseded (terminal) so the successor's intent is not a refused
             duplicate; `exit --launch ID` on it later annotates its real exit.
   exit      (--launch ID | --current) --reason TEXT [--code N]
-  retire    (--launch ID | --current) --reason TEXT [--remove]
+  retire    (--launch ID | --current) --reason TEXT [--remove] [--effects-digest SHA]
+  effects   --task ID --launch ID
+            Print the attempt snapshot digest and tab-separated native effect
+            identities (session, workspace, tab, pane, terminal); incomplete
+            or unanswered create evidence refuses automatic settlement.
+  journal   --task ID --launch ID (--init | --line TEXT | --settle)
+            [--effects-digest SHA] [--identity K=V]...
+            Initialize or append to state/.<task-id>.create-issued while intended.
+            Issuance and settlement share the launch lock, so no request may
+            leave after the attempt is settled. --settle requires a terminal
+            predecessor, the inspected effects digest, and its exact retained
+            endpoint; it archives effect evidence before removing the journal.
   reconcile (--launch ID | --current) --verdict VERDICT --evidence TEXT
+            [--pre-create-journal] [--effects-digest SHA]
             VERDICT: absent|husk-replaced|agent-exited|adopted|launcher-gone|manual
+            --pre-create-journal requires an exact intended launch and absent
+            verdict; it verifies that no effective task create was issued.
+            --effects-digest refuses settlement if effects changed since inspection.
+            An exact stopped/exited task launch with a retained create journal
+            also accepts manual settlement after native inspection.
   check     Exit 0 with `open=none`, or exit 3 with the open launch summary:
             launch=, phase=, origin=, owner=, launcher=alive|gone|unknown,
             reconcile=yes|no, and identity.<k>= lines.

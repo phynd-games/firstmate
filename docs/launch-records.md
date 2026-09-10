@@ -1,6 +1,6 @@
 # Launch records
 
-Every launch Firstmate owns - a worker (crewmate, scout, or secondmate) and each Firstmate-owned long-lived helper - leaves a durable launch record: what Firstmate intended to start, what the runtime actually created, whether it became ready, and how it ended.
+The integrated worker and helper launch paths below leave a durable launch record: what Firstmate intended to start, what the runtime actually created, whether it became ready, and how it ended.
 What is retained, exactly: the subject's current launch with up to 64 history events, and its last 8 previous launches with their terminal outcomes; a task's record is removed by teardown after the `retired` outcome (teardown's own backlog close and completion note are what outlive it), a process-event runner's record is removed when its source is retired, and the other helper records persist with their subject.
 `bin/fm-launch-record.py` is the single owner of the record contract (its header owns the exact commands, phases, fields, and exit codes); `bin/fm-launch-record-lib.sh` is the shell seam the launch owners call.
 This page is the operator view: what the records mean, where they live, what they guarantee, and what they deliberately do not.
@@ -37,8 +37,8 @@ Each holds the current launch plus a bounded history of its transitions and a bo
 3. **ready** or **unconfirmed** - a verdict from a named source.
    A worker is ready when Herdr's native agent registration reports a recognized agent (`working`, `idle`, `blocked`, or `done`) on the exact recorded pane; the document reader when its loopback token probe answers; the supervisor when Herdr's pane process proof tracks its loop; the away-mode daemon when its identity-bound lock is live.
    A delivered launch command is never readiness, and an unconfirmed verdict keeps the launch `created`.
-4. A terminal outcome - `failed` (nothing external remains, either because nothing was created or the cleanup was confirmed), `stopped` (a deliberate stop through the owning control path), `exited` (observed gone), `retired` (the owning cleanup removed it), or `reconciled` (settled from native evidence by a later launcher).
-5. **uncertain** - the one non-terminal outcome.
+4. A terminal outcome - `failed` (nothing external remains, either because nothing was created or the cleanup was confirmed), `stopped` (a deliberate stop through the owning control path), `exited` (observed gone), `retired` (the owning cleanup removed it), `reconciled` (settled from native evidence by a later launcher), or `superseded` (a watcher predecessor handed off to its successor).
+5. **uncertain** - an unresolved outcome that keeps the launch open, as do `intended`, `created`, and `ready`.
    A create request was issued and its result is unknown, or a created endpoint was deliberately retained with no confirmed agent.
    It carries a reconciliation obligation and a hint naming what may exist.
 
@@ -49,8 +49,11 @@ The launch owners settle an open record only from native evidence, never from th
 
 - A launcher that is still alive with its recorded start identity is a concurrent launch and refuses.
 - A recorded Herdr pane is classified natively, presence first: a gone pane is recorded absent (the one native fact that settles an open record by itself); a live agent refuses the duplicate and points at `bin/fm-control.sh`.
-  A present pane with no registered agent is never settled automatically: `agent_not_found` also describes a harness that has not registered yet, and the adapter's strict idle-shell proof (idle foreground, no attached child, sleeping shell) cannot exclude a process that already detached from the pane - the 0.8.2 lab shows the proof passing with such a process alive.
+  A present pane with no registered agent is never settled automatically: `agent_not_found` also describes a harness that has not registered yet, and a detached-from-shell process is invisible to every supported native check, including the adapter's strict idle-shell proof (idle foreground, no attached child, sleeping shell).
   The launch reports that classification as a diagnostic and retains the obligation until the owning control path records the stop or exit it proved (`bin/fm-control.sh exit` or `relaunch`, teardown), the endpoint is natively gone, or an operator settles the record after inspection.
+  `exit` and `relaunch` refuse when the initial observation is already agent-free but the launch remains open: they cannot prove that they stopped that attempt.
+  If control proves a stop but cannot persist its stopped outcome, it reports the write failure and refuses replacement.
+  Use the ordinary teardown owner when its preservation checks permit cleanup, or explicit settlement after native inspection; do not retry control expecting absence alone to count as a stop.
 - No recorded identity is settled automatically in one case only: the launcher's own pre-create journal (`state/.<id>.create-issued`, kept by the spawn from the moment before its first request) shows that no request of the launch can have had an effect - nothing was issued, or only the shared per-home container was created and answered with exact ids for its placement owner.
   The journal is bound to its exact launch; the record owner serializes request issuance with this no-effect settlement.
   Every other identity-less open record refuses the next launch until an operator settles it explicitly with `bin/fm-launch-record.py --home <home> reconcile --task <id> --current --verdict manual --evidence "<what was verified natively>"` after inspecting Herdr and stopping or closing a leftover endpoint through its ordinary owner.
@@ -81,22 +84,19 @@ Every selected entry point below either uses the contract or is listed as unsupp
 | `bin/fm-control.sh exit` | stopped only after a delivered stop is proved for the captured launch |
 | `bin/fm-teardown.sh` | retired, then the record leaves with the task's other runtime state |
 | `bin/fm-docs-reader.sh` ensure and stop | intent before the fork; `fm-docs-reader-serve.py` records its own stable Python process identity before starting MkDocs; readiness from the token probe; interrupted startup can be adopted or stopped from its exact launch identity |
-| `bin/fm-herdr-supervisor.sh` establish and retire | a projection of the supervisor's own records, which already satisfy the whole contract and stay the authority (see "Owners that satisfy the contract themselves") |
+| `bin/fm-herdr-supervisor.sh` establish and retire | a projection of the supervisor's own records, which stay the authority (see [the projection boundary](#the-supervisors-record-is-a-projection)) |
 | `bin/fm-herdr-supervisor.sh monitor` | intent before the detach; stable child pid plus identity before readiness; observed exit on stand-down |
 | `bin/fm-afk-launch.sh` start and stop | intent before `workspace create`; the terminal's exact ids; readiness from the daemon lock; stop |
 | `bin/fm-watch-arm.sh` cycle | intent before the fork; the child's pid plus start identity; readiness when the beacon confirms it; the cycle's exit code or an uncertain outcome for an unverifiable child; a matching predecessor invoking its successor is superseded, and its later exit is annotated |
 | `bin/fm-procevent.sh` runner (start, detach) | intent before the fork; pid plus start identity once the runner holds the claim; readiness when the long wait actually begins, never a result; exit code; a fork the claim refuses reads failed with no effect |
 
 Unsupported, each with its reason: the deferred network stage (`bin/fm-startup-network.sh`, a bounded one-shot with its own pre-fork status record and recorded outcome; its pid-plus-age identity is a disclosed weakness, not fixed here), the remote secondmate spawn and the remote job worker (another host holds the identity), promotion (no process is created), and the Herdr server itself (Herdr-owned).
-Retained non-Herdr adapters record nothing on their fresh path; the relaunch path records for every backend.
+The harness-hosted `bin/fm-afk-launch.sh start-native` preparation path is also outside this record integration: the harness owns creation of that background job, and the preparation path writes only the existing lifecycle and terminal bookkeeping.
+Retained non-Herdr adapters are unreachable in the supported runtime; their regression-only paths do not extend this coverage.
 
 ## The supervisor's record is a projection
 
-The Herdr supervisor loop is accountable through its own records: it writes its create intent (`state/.herdr-supervisor-pending-cleanup`) before `workspace create`, binds the exact workspace, tab, pane, terminal and socket identity after, proves readiness through Herdr's own process-info tracked pid, keeps an unprovable create as pending intent, escalates every failed establish, and closes the exact recorded workspace on retire under a continuity claim and a generation.
-Its `.launch-herdr-supervisor` record is a projection of those records into the `list --reconcile` view, not what makes it accountable; a projection write failure is ledgered and is never a second refusal.
-Incomplete pending receipts and unresolved prior bindings block establish and retire; explicit manual settlement must match the pending generation.
-The detached monitor has no independent create receipt, so its central intent is required before detaching and a live or unidentified predecessor refuses replacement.
-Falsifier: a `workspace create` in `establish` without the pending intent on disk (`tests/fm-launch-helpers.test.sh` reads the fake's call log for exactly that).
+[`herdr-supervisor.md`](herdr-supervisor.md#durable-records) owns the supervisor's pending-cleanup, binding, and cleanup-receipt authority and the distinction between its loop projection and required monitor launch record.
 
 ## Local forks are launches too
 
@@ -122,18 +122,16 @@ Two owner-specific rules apply:
   A harness Herdr does not recognize, or a raw command, reads unconfirmed even when it is running; that is a recorded verdict, not a failure, and recovery reconciles it.
   The same limit cuts the other way: a pane with no registered agent may be a launch still starting, which is why a present agent-free pane remains unresolved even when its foreground is an idle shell.
 - Worker exits are observed at the owning control points (exit, relaunch, teardown, the next launch), not streamed from Herdr's event feed, which the record does not claim to capture losslessly.
-- The supervisor mirror is best-effort by design: when its own pending intent cannot be persisted the supervisor already refuses to create, so a mirror write failure is ledgered rather than treated as a second refusal.
-  A refused create that the supervisor keeps as pending intent reads uncertain in the mirror, exactly as the owner reads it.
 - Killing a launcher with SIGKILL does not stop its already-running adapter subprocess; a create it had issued may still complete.
   Journal issuance and automatic no-effect settlement share the record owner's lock and exact launch identity, so a surviving descendant cannot issue a request after its attempt is settled.
   A request already issued remains an obligation; label inventory only supplies inspection hints.
 - A structured Herdr error is not proof that nothing was allocated, and an inventory that finds nothing under the label is not proof either (the fleet's own test harness creates the effect under another label to show it).
   Such an attempt stays uncertain with its inventory as a hint; an error carrying exact native response IDs keeps that container as the launch's known partial identity; a partial container (a task workspace without its tab, a tab created while Herdr answered an error) is never replaced automatically.
   The journal line for a request is written before the request leaves and refuses the request when it cannot be written.
-- No idle-shell observation settles an open attempt on a present pane.
-  The strict proof refuses a delayed start held by a foreground command and an attached background child, but passes a process that already detached from the pane's shell (all three observed on the 0.8.2 lab), so it can only ever be a diagnostic; the obligation is settled by attempt-bound evidence - the owning control path's recorded stop or exit, the endpoint natively gone - or by explicit disposition through the existing owners.
+- The present-pane settlement boundary is defined under [what the obligation does](#what-the-obligation-does); the [native guard](verification/runtime-backends.md#launch-record-native-boundary) exercises delayed starts, attached children, and detached processes.
   Typed but unsubmitted input is discarded when a pane is closed through its owner, so it can never run there.
-- `python3` is required for every launch: a home without it refuses to launch before any creation call rather than launching unrecorded, and session start reports the missing interpreter.
+- The common [Python requirement](../README.md#requirements) is reported by session start when missing; integrated launches requiring the central record refuse before creation when its interpreter is unavailable, subject to the supervisor loop's projection exception above.
+- This integration assumes no upstream Herdr change; the separate P1 upstream permission remains unresolved and is neither implemented nor tested here.
 
 ## Privacy
 

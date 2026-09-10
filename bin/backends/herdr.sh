@@ -477,7 +477,8 @@ fm_backend_herdr_create_response_note() {
 # answer for the journal, as a diagnostic. The exact creation scope is
 # inventoried at once (the target workspace's tabs for a task tab, the
 # session's workspaces for a workspace) so a later reader knows what was
-# visible right after the answer: nothing carrying the label ->
+# visible right after the answer: nothing carrying the label -> `refused`,
+# a matching label -> `hint`,
 # no structured error, or an inventory that cannot run -> `lost <kind>`.
 # None of these settles the attempt: the launch owner keeps it uncertain.
 fm_backend_herdr_create_answer_note() {  # <kind> <raw-answer> <session> <label> [<workspace-scope>]
@@ -520,8 +521,8 @@ fm_backend_herdr_create_answer_note() {  # <kind> <raw-answer> <session> <label>
 }
 
 # fm_backend_herdr_pane_foreground_state: what Herdr's own pane process-info
-# says the exact pane is doing, for a launch owner that must decide whether an
-# agent-free pane is a husk or a launch still in progress. Prints `idle` when
+# says the exact pane is doing, as a diagnostic for the launch owner, never
+# permission to replace an open attempt on an agent-free pane. Prints `idle` when
 # the foreground process group is the pane's shell and that shell is the only
 # foreground process, `busy` when another process group holds the foreground
 # (a running command; a harness that has not registered as an agent yet looks

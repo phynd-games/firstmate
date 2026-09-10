@@ -925,13 +925,9 @@ spawn_launch_reconcile_open() {  # <check-output>
       if [ "$BACKEND" = herdr ] && [ -n "$workspace" ] && [ -n "$tab" ] && [ -n "$pane" ]; then
         foreground=$(fm_backend_herdr_pane_foreground_state "$session" "$pane" "$workspace" "$tab" 2>/dev/null) || foreground=unknown
         if [ "$foreground" = idle ]; then
-          # An idle foreground snapshot is not quiescence: the adapter's strict
-          # idle-shell proof (the single owner every pane-death close relies
-          # on) additionally requires the shell to be the only foreground
-          # process, to have no child process in the OS table, and to be
-          # sleeping. Only that proof licenses an automatic replacement; when
-          # it cannot run (no local process table for this session) the
-          # obligation is retained rather than the proof weakened.
+          # This diagnostic also checks attached children and shell state,
+          # but cannot see a process that detached from the shell. Even a
+          # successful proof leaves this open launch unresolved.
           if fm_backend_herdr_pane_idle_shell_pid "$session" "$pane" "$workspace" "$tab" >/dev/null 2>&1; then
             quiescent=proven
           else

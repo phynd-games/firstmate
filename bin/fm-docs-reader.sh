@@ -188,8 +188,8 @@ record_drop() {
 # pid-plus-start-time string, never a command-name match: a recycled pid or a
 # sibling home's mkdocs with a similar command line cannot pass, and a record
 # with no identity (written before identity was recorded) proves nothing, so it
-# is never signaled - ensure upgrades such a record only from the stronger
-# evidence of the token probe answering on its recorded port.
+# is never signaled - ensure upgrades it only after reader_listener_identity
+# binds the token-verified listener to that exact process across the probe.
 process_is_ours() {
   local pid=$1 recorded current
   fm_pid_alive "$pid" || return 1
@@ -201,7 +201,7 @@ process_is_ours() {
 
 # record_upgrade_identity: a record written before identity was captured names
 # a pid that may still be this home's reader. Adopt its identity only when the
-# recorded port answers with this home's token AND the recorded pid is alive;
+# exact process owns the token-verified listener with an unchanged identity;
 # anything less leaves the record untouched for reconcile_record to judge.
 record_upgrade_identity() {
   local pid port identity

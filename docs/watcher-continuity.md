@@ -100,7 +100,7 @@ The file is size-capped through `FM_WATCH_CYCLE_LOG_MAX_BYTES` and `FM_WATCH_CYC
 The default 300-second grace is unchanged.
 Only the watcher process touches `state/.last-watcher-beat`; no helper process can make a wedged watcher appear healthy.
 
-Every forked cycle also leaves a launch record (`state/.launch-watcher`, [`launch-records.md`](launch-records.md)): intent before the fork, the child's pid and start identity, beacon readiness, and the cycle's exit or uncertain outcome; a successor cycle supersedes the running predecessor's launch instead of being refused, and the singleton lock and this ledger remain the duplicate and outcome authority.
+The arm's launch accounting and successor handoff requirements are owned by [`launch-records.md`](launch-records.md#local-forks-are-launches-too).
 
 ## Regression coverage
 
