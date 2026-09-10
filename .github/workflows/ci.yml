@@ -10,27 +10,16 @@ permissions:
   contents: read
 
 jobs:
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v6
-      - name: Install pinned ShellCheck
-        run: |
-          set -eu
-          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Install pinned actionlint
-        run: |
-          set -eu
-          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      # Single owner of the lint definition (shell file set, config, version,
-      # and GitHub workflow lint). Do not re-spell the checks here; keep CI
-      # and the pre-push gate on this script so a self-broken ci.yml still
-      # fails locally before merge.
-      - run: bin/fm-lint.sh
+  # Excluded per current captain instruction (recorded in this Firstmate
+  # home's private data/captain.md, Firstmate-repository-only): the hosted
+  # Lint job's most recent run was cancelled mid-scan by a runner shutdown
+  # signal (exit 143) before ShellCheck produced any decisive output, not by
+  # a reported lint finding; this is not claimed to be a code-content lint
+  # failure, but the job is excluded rather than spending cycles chasing a
+  # hosted-runner instability. `bin/fm-lint.sh` (ShellCheck + actionlint) is
+  # still the single owner of the lint definition and still runs locally and
+  # in the no-mistakes pre-push gate; only its hosted CI invocation here is
+  # excluded. Test coverage guard and Repo invariants below are unaffected.
 
   # Deterministic proof that portable parallel shards + portable serial + the
   # explicit legacy-adapter lane equal the complete tests/*.test.sh inventory
