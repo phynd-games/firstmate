@@ -162,9 +162,18 @@ result_path() {  # <expect-file>
 
 # An endpoint that is provably gone is a failure NOW: waiting the full window
 # for an acknowledgement no process can ever write is exactly the delay this
-# script exists to remove.
+# script exists to remove. "source: none" alone is not that proof: it also
+# covers a crew-state read that found a live attributed run but could not
+# parse its validation evidence (bin/fm-crew-state.sh's own "(not proof of
+# death)" qualifier, the same wording already used for an unreachable remote
+# endpoint) - a worker mid-fix-round is not gone merely because one poll's
+# evidence shape was unreadable. Only a line WITHOUT that qualifier counts as
+# gone, so a genuinely missing task, torn-down worktree, or absent backend
+# target - none of which ever carry the qualifier - keeps failing immediately
+# exactly as before.
 endpoint_is_gone() {  # <crew-state-line>
   case "$1" in
+    *"not proof of death"*) return 1 ;;
     *"source: none"*) return 0 ;;
   esac
   return 1
