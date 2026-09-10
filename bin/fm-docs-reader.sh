@@ -254,6 +254,7 @@ dr_launch_settle_open() {  # <check-output>
 
 dr_launch_intend() {  # <origin> [--field K=V...]; sets DR_LAUNCH_ID, non-zero refuses the start
   local origin=$1 out rc line
+  local launcher_pid=${BASHPID:-$$}
   local -a launcher_args=()
   shift
   fm_launch_record_available || return 1
@@ -266,7 +267,7 @@ dr_launch_intend() {  # <origin> [--field K=V...]; sets DR_LAUNCH_ID, non-zero r
   esac
   while IFS= read -r line; do
     launcher_args+=("$line")
-  done < <(fm_launch_record_launcher_args)
+  done < <(fm_launch_record_launcher_args "$launcher_pid")
   out=$(dr_launch intend --owner fm-docs-reader.sh --origin "$origin" "${launcher_args[@]}" "$@" 2>&1) || {
     printf 'launch intent could not be recorded (%s); refusing to start a reader without one\n' "${out:-no detail}" >&2
     return 1
@@ -274,6 +275,36 @@ dr_launch_intend() {  # <origin> [--field K=V...]; sets DR_LAUNCH_ID, non-zero r
   DR_LAUNCH_ID=${out##*launch=}
   DR_LAUNCH_ID=${DR_LAUNCH_ID%%[[:space:]]*}
   [ -n "$DR_LAUNCH_ID" ]
+}
+
+dr_launch_adopt() {
+  local pid=$1 port=$2 identity=$3 out rc recorded_pid recorded_port digest current phase
+  fm_launch_record_available || return 1
+  out=$(dr_launch check 2>&1)
+  rc=$?
+  case "$rc" in
+    0)
+      dr_launch_intend adopt --field port="$port" || return 1
+      dr_launch_created "$pid" "$port" "$identity" process || return 1
+      ;;
+    3)
+      recorded_pid=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid=//p')
+      recorded_port=$(printf '%s\n' "$out" | sed -n 's/^identity\.port=//p')
+      digest=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid_identity_sha256=//p')
+      current=$(printf '%s' "$identity" | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())') || return 1
+      phase=$(printf '%s\n' "$out" | sed -n 's/^phase=//p')
+      if [ "$recorded_pid" != "$pid" ] || [ "$recorded_port" != "$port" ] || [ "$digest" != "$current" ]; then
+        printf 'fm-docs-reader: verified listener does not match the open launch; refusing adoption (pid=%s/%s port=%s/%s identity=%s/%s)\n' \
+          "$recorded_pid" "$pid" "$recorded_port" "$port" "$digest" "$current" >&2
+        return 1
+      fi
+      case "$phase" in created|ready) ;; *) return 1 ;; esac
+      DR_LAUNCH_ID=$(printf '%s\n' "$out" | sed -n 's/^launch=//p')
+      [ "$phase" != ready ] || return 0
+      ;;
+    *) printf 'fm-docs-reader: launch record unreadable; refusing adoption\n' >&2; return 1 ;;
+  esac
+  dr_launch ready --launch "$DR_LAUNCH_ID" --source loopback-token-probe >/dev/null
 }
 
 dr_launch_created() {  # <pid> <port> <identity> <source>
@@ -528,12 +559,8 @@ start_server() {  # <python> - prints the URL on success
         listener=$(lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -n1)
         if [ -n "$listener" ] && fm_pid_alive "$listener" \
            && identity=$(fm_pid_identity "$listener" 2>/dev/null) && [ -n "$identity" ]; then
-          dr_launch_intend adopt --field port="$port" || return 1
-          record_write "$listener" "$port" "$python" "$identity"
-          dr_launch_created "$listener" "$port" "$identity" process || {
-            printf 'fm-docs-reader: warning: adopted reader identity could not be recorded in the launch record\n' >&2
-          }
-          dr_launch_ready
+          dr_launch_adopt "$listener" "$port" "$identity" || return 1
+          record_write "$listener" "$port" "$python" "$identity" || return 1
           printf 'http://127.0.0.1:%s/\n' "$port"
           return 0
         fi

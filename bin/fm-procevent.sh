@@ -207,6 +207,7 @@ pe_identity_digest() {  # <pid> -> sha256 of fm_pid_identity, or empty
 # runs, nothing is forked; 1 = the intent cannot be persisted, nothing is forked.
 pe_launch_intend() {
   local id=$1 mode=$2 out rc line pid digest
+  local launcher_pid=${BASHPID:-$$}
   local -a launcher_args=()
   FM_PROCEVENT_LAUNCH_ID=
   fm_launch_record_available >/dev/null 2>&1 || { pe_launch_note "owner unavailable (python3 or bin/fm-launch-record.py missing)"; return 1; }
@@ -232,7 +233,7 @@ pe_launch_intend() {
   esac
   while IFS= read -r line; do
     launcher_args+=("$line")
-  done < <(fm_launch_record_launcher_args)
+  done < <(fm_launch_record_launcher_args "$launcher_pid")
   out=$(fm_launch_record intend --helper "$(pe_launch_subject "$id")" --owner fm-procevent.sh --origin "$mode" \
     "${launcher_args[@]}" --field "label=$id" 2>&1) \
     || { pe_launch_note "intent not recorded for $id (${out:-no detail})"; return 1; }

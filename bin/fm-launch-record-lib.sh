@@ -13,7 +13,7 @@
 #       0 when python3 and the owner script are usable, else 1 with the reason
 #       on stderr. Launch owners call this BEFORE any external creation so a
 #       missing interpreter refuses the launch instead of skipping the record.
-#   fm_launch_record_launcher_args
+#   fm_launch_record_launcher_args <launcher-pid>
 #       Prints the `--launcher-pid <pid> --launcher-identity <identity>` pair
 #       for the calling process, so a later launcher can tell an interrupted
 #       spawn (launcher gone) from a concurrent one (launcher alive) by pid
@@ -81,7 +81,7 @@ fm_launch_record() {
 }
 
 fm_launch_record_launcher_args() {
-  local pid=${BASHPID:-$$} identity
+  local pid=${1:?launcher pid required} identity
   identity=$(fm_pid_identity "$pid" 2>/dev/null || true)
   if [ -n "$identity" ]; then
     printf -- '--launcher-pid\n%s\n--launcher-identity\n%s\n' "$pid" "$identity"

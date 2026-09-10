@@ -991,6 +991,7 @@ spawn_launch_reconcile_open() {  # <check-output>
 
 spawn_launch_intend() {  # <origin>
   local out rc line
+  local launcher_pid=${BASHPID:-$$}
   local -a launcher_args=()
   SPAWN_LAUNCH_ORIGIN=$1
   fm_launch_record_available || return 1
@@ -1008,7 +1009,7 @@ spawn_launch_intend() {  # <origin>
   esac
   while IFS= read -r line; do
     launcher_args+=("$line")
-  done < <(fm_launch_record_launcher_args)
+  done < <(fm_launch_record_launcher_args "$launcher_pid")
   set +e
   out=$(spawn_launch_record intend --owner fm-spawn.sh --origin "$SPAWN_LAUNCH_ORIGIN" \
     "${launcher_args[@]}" --field "kind=$KIND" --field "harness=${HARNESS:-unknown}" 2>&1)

@@ -164,12 +164,61 @@ lab pane run "$pane" "(sleep 3 &)" >/dev/null || fail "pane run failed"
 sleep 0.7
 strict && rc=0 || rc=$?
 printf 'observed: detached (reparented) background process -> strict proof rc %s (the documented boundary: not detectable natively)\n' "$rc"
-# That success is counterevidence, not permission: the launch owners treat the
-# proof as a diagnostic and never settle an open attempt on it. The spawn
-# owner's reconcile must contain no automatic settlement of an agent-free
-# present pane, whatever the proof says.
-grep -q "husk-replaced\|agent-exited" "$ROOT/bin/fm-spawn.sh" && fail "the spawn owner must not settle an open attempt from an idle-shell proof that a detached process passes"
-grep -q "cannot exclude a process that already detached" "$ROOT/bin/fm-spawn.sh" || fail "the spawn owner must state why the proof is diagnostic only"
+owner_home="$TMP_ROOT/owner-home"
+owner_bin="$TMP_ROOT/owner-bin"
+mkdir -p "$owner_home/state" "$owner_home/data" "$owner_home/config" "$owner_bin"
+printf 'herdr\n' > "$owner_home/config/backend"
+printf 'off\n' > "$owner_home/config/herdr-presentation-spaces"
+printf 'manual\n' > "$owner_home/config/backlog-backend"
+fm_git_worktree "$TMP_ROOT/owner-project" "$TMP_ROOT/owner-worktree" fm/launch-live
+FM_HOME="$owner_home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$owner_home/state" \
+  FM_DATA_OVERRIDE="$owner_home/data" FM_CONFIG_OVERRIDE="$owner_home/config" \
+  "$ROOT/bin/fm-brief.sh" launch-live project --scout \
+  --not-applicable "configuration: task=launch-live; target=named lab; action=exercise retained launch obligation" >/dev/null \
+  || fail "could not prepare the launch-owner fixture"
+owner_record() {
+  python3 "$ROOT/bin/fm-launch-record.py" --state "$owner_home/state" "$@" --task launch-live
+}
+owner_record intend --owner fm-spawn.sh --origin fresh >/dev/null || fail "could not seed launch intent"
+owner_id=$(owner_record get launch.id)
+owner_record created --launch "$owner_id" --identity backend=herdr --identity session="$SESSION" \
+  --identity workspace_id="$ws" --identity tab_id="$tab" --identity pane_id="$pane" \
+  --identity terminal_id="$term" >/dev/null || fail "could not bind the existing pane"
+owner_before=$(cksum < "$owner_home/state/launch-live.launch")
+cat > "$owner_bin/herdr" <<'SH'
+#!/usr/bin/env bash
+set -eu
+args=("$@")
+n=${#args[@]}
+if [ "$n" -ge 2 ] && [ "${args[$((n-2))]}" = --session ]; then
+  [ "${args[$((n-1))]}" = "$FM_TEST_LAB_SESSION" ] || exit 97
+  args=("${args[@]:0:$((n-2))}")
+fi
+case "${args[0]} ${args[1]:-}" in
+  'status --json'|'session list'|'pane get'|'pane list'|'pane process-info'|'agent get'|'agent list'|'workspace list'|'tab list') ;;
+  *) printf '%s\n' "${args[*]}" >> "$FM_TEST_LAB_MUTATIONS"; exit 98 ;;
+esac
+exec env PATH="$FM_TEST_LAB_PATH" "$FM_TEST_LAB_HELPER" run "$FM_TEST_LAB_SESSION" "${args[@]}"
+SH
+chmod +x "$owner_bin/herdr"
+: > "$TMP_ROOT/owner-mutations"
+owner_out=$(PATH="$owner_bin:$PATH" FM_TEST_LAB_PATH="$PATH" FM_TEST_LAB_HELPER="$LAB" \
+  FM_TEST_LAB_SESSION="$SESSION" FM_TEST_LAB_MUTATIONS="$TMP_ROOT/owner-mutations" \
+  HERDR_SESSION="$SESSION" FM_HOME="$owner_home" FM_ROOT_OVERRIDE="$ROOT" \
+  FM_STATE_OVERRIDE="$owner_home/state" FM_DATA_OVERRIDE="$owner_home/data" \
+  FM_CONFIG_OVERRIDE="$owner_home/config" FM_PROJECTS_OVERRIDE="$TMP_ROOT" FM_SPAWN_NO_GUARD=1 \
+  "$ROOT/bin/fm-spawn.sh" launch-live "$TMP_ROOT/owner-project" --scout "sh -c true" 2>&1)
+owner_rc=$?
+expect_code 1 "$owner_rc" "a present agent-free pane must refuse a replacement: $owner_out"
+assert_contains "$owner_out" "recorded endpoint $SESSION:$pane is present with an open launch record" \
+  "the refusal must come from the launch owner after inspecting the exact pane"
+[ ! -s "$TMP_ROOT/owner-mutations" ] || fail "spawn attempted a native mutation: $(cat "$TMP_ROOT/owner-mutations")"
+[ "$(cksum < "$owner_home/state/launch-live.launch")" = "$owner_before" ] || fail "spawn changed the retained launch"
+owner_record check >/dev/null && owner_rc=0 || owner_rc=$?
+expect_code 3 "$owner_rc" "the existing pane must retain its open obligation"
+lab pane get "$pane" >/dev/null || fail "spawn removed the recorded pane"
+pass "the spawn owner refuses a present agent-free pane, retains its obligation, and issues no replacement create"
+
 sleep 3
 pass "the strict quiescence proof refuses a delayed start and an attached child, passes a detached process, and is therefore diagnostic only - never permission to replace"
 

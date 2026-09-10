@@ -1105,12 +1105,13 @@ hs_launch_settle_open() {  # <reason> - close any open launch as an observed exi
 
 hs_launch_intend() {  # <generation>
   local out line
+  local launcher_pid=${BASHPID:-$$}
   local -a launcher_args=()
   fm_launch_record_available >/dev/null 2>&1 || { ledger_append launch-record "unavailable: python3 or owner missing"; return 0; }
   hs_launch_settle_open "superseded by a new establish (generation $1)"
   while IFS= read -r line; do
     launcher_args+=("$line")
-  done < <(fm_launch_record_launcher_args)
+  done < <(fm_launch_record_launcher_args "$launcher_pid")
   out=$(fm_launch_record intend --helper herdr-supervisor --owner fm-herdr-supervisor.sh --origin ensure \
     "${launcher_args[@]}" --field "generation=$1" 2>&1) || {
     ledger_append launch-record "intent not recorded: $(ledger_clean_field "$out")"
@@ -2346,6 +2347,7 @@ hs_monitor_launch() {  # <command> [args...]
 
 hs_monitor_launch_intend() {
   local out line pid digest current
+  local launcher_pid=${BASHPID:-$$}
   local -a launcher_args=()
   HS_MONITOR_LAUNCH_ID=
   fm_launch_record_available >/dev/null 2>&1 || return 0
@@ -2368,7 +2370,7 @@ hs_monitor_launch_intend() {
   fi
   while IFS= read -r line; do
     launcher_args+=("$line")
-  done < <(fm_launch_record_launcher_args)
+  done < <(fm_launch_record_launcher_args "$launcher_pid")
   out=$(fm_launch_record intend --helper herdr-supervisor-monitor --owner fm-herdr-supervisor.sh --origin ensure \
     "${launcher_args[@]}" 2>&1) || {
     ledger_append launch-record "monitor intent not recorded: $(ledger_clean_field "$out")"

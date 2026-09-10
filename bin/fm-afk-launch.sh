@@ -558,6 +558,7 @@ fm_afk_launch_record() {  # <command> [args...]
 
 fm_afk_launch_record_intend() {  # <label>
   local out rc line pid
+  local launcher_pid=${BASHPID:-$$}
   local -a launcher_args=()
   FM_AFK_LAUNCH_ID=
   fm_launch_record_available || return 1
@@ -582,7 +583,7 @@ fm_afk_launch_record_intend() {  # <label>
   esac
   while IFS= read -r line; do
     launcher_args+=("$line")
-  done < <(fm_launch_record_launcher_args)
+  done < <(fm_launch_record_launcher_args "$launcher_pid")
   out=$(fm_afk_launch_record intend --owner fm-afk-launch.sh --origin afk-start "${launcher_args[@]}" --field "label=$1" 2>&1) || {
     fm_afk_launch_log "daemon launch intent could not be recorded (${out:-no detail}); refusing to create a terminal without one"
     return 1

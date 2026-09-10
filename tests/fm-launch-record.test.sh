@@ -130,8 +130,67 @@ test_concurrent_intents_have_one_winner() {
   wait
   wins=$(grep -c win "$state/wins" 2>/dev/null || echo 0)
   [ "$wins" -eq 1 ] || fail "exactly one concurrent intent may win, got $wins"
-  [ ! -d "$state/t4.launch.lock" ] || fail "the record lock must not be left behind"
+  [ -f "$state/t4.launch.lock" ] || fail "the stable lock file must remain for later writers"
   pass "launch record: concurrent intents for one subject serialize to one winner"
+}
+
+test_lock_owner_death_and_empty_publication() {
+  local state
+  state=$(new_state lock-death)
+  python3 - "$OWNER" "$state" <<'PYTEST' || fail "kernel lock recovery or exclusion failed"
+import pathlib
+import subprocess
+import sys
+
+owner, state = sys.argv[1:]
+lock = pathlib.Path(state) / "locked.launch.lock"
+holder = subprocess.Popen([sys.executable, "-c", """
+import fcntl, sys, time
+with open(sys.argv[1], 'w') as stream:
+    fcntl.flock(stream, fcntl.LOCK_EX)
+    print('held', flush=True)
+    time.sleep(60)
+""", str(lock)], stdout=subprocess.PIPE, text=True)
+command = [sys.executable, owner, '--state', state, 'intend', '--task', 'locked',
+           '--owner', 'tester', '--origin', 'fresh']
+try:
+    assert holder.stdout.readline().strip() == 'held'
+    inode = lock.stat().st_ino
+    assert lock.read_bytes() == b''
+    blocked = subprocess.run(command, capture_output=True, text=True)
+    assert blocked.returncode == 1, blocked
+    assert 'locked by another writer' in blocked.stderr, blocked.stderr
+    assert not (pathlib.Path(state) / 'locked.launch').exists()
+finally:
+    holder.kill()
+    holder.wait()
+contenders = [subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+              for _ in range(8)]
+results = [process.communicate() for process in contenders]
+codes = [process.returncode for process in contenders]
+assert codes.count(0) == 1 and codes.count(3) == 7, (codes, results)
+assert lock.stat().st_ino == inode
+PYTEST
+  pass "launch record: an empty held lock excludes writers and owner death releases it without replacement"
+}
+
+test_launcher_args_capture_caller() {
+  local state out
+  state=$(new_state launcher-args)
+  out=$(bash -c '
+    set -eu
+    FM_ROOT=$1 FM_STATE_OVERRIDE=$2
+    FM_WAKE_LIB_NO_STATE_MKDIR=1 . "$1/bin/fm-wake-lib.sh"
+    . "$1/bin/fm-launch-record-lib.sh"
+    launcher_pid=${BASHPID:-$$}
+    args=()
+    while IFS= read -r line; do args+=("$line"); done < <(fm_launch_record_launcher_args "$launcher_pid")
+    fm_launch_record intend --task caller --owner tester --origin fresh "${args[@]}" >/dev/null
+    [ "$(fm_launch_record get --task caller launch.launcher.pid)" = "$launcher_pid" ]
+    fm_launch_record check --task caller || [ "$?" = 3 ]
+  ' _ "$ROOT" "$state") || fail "launcher arguments did not bind the caller"
+  assert_contains "$out" "launcher=alive" "process substitution must not become the recorded launcher"
+  pass "launch record: the shell seam captures the live caller before process substitution"
 }
 
 # --- 4. uncertain outcomes and reconciliation --------------------------------
@@ -290,6 +349,8 @@ test_phase_machine
 test_wrong_launch_id_is_refused
 test_duplicate_intent_refused_until_terminal
 test_concurrent_intents_have_one_winner
+test_lock_owner_death_and_empty_publication
+test_launcher_args_capture_caller
 test_uncertain_outcome_keeps_obligation
 test_retained_effect_is_uncertain
 test_launcher_alive_versus_gone

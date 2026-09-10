@@ -23,8 +23,14 @@ TMP_ROOT=$(fm_test_tmproot fm-docs-reader)
 
 # new_home runs inside $(...), so it cannot append to an array in this shell;
 # cleanup instead stops every reader whose record lives under TMP_ROOT.
+RECOVERY_PID=
+RECOVERY_IDENTITY=
 cleanup() {
   local record home
+  if [ -n "$RECOVERY_PID" ] && [ -n "$RECOVERY_IDENTITY" ] \
+    && [ "$(fm_pid_identity "$RECOVERY_PID" 2>/dev/null)" = "$RECOVERY_IDENTITY" ]; then
+    kill "$RECOVERY_PID" 2>/dev/null || true
+  fi
   for record in "$TMP_ROOT"/*/state/.docs-reader; do
     [ -f "$record" ] || continue
     home=${record%/state/.docs-reader}
@@ -676,6 +682,64 @@ SH
   pass "the reader records intent before its process, binds pid plus start identity, and records stop and observed exit"
 }
 
+test_adopt_interrupted_launch() {
+  local home out rc pid port id original identity digest
+  home=$(new_home interrupted-launch)
+  original=$(ensure_url "$home")
+  recovery_record() { python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" get --helper docs-reader "$1"; }
+  pid=$(recovery_record launch.identity.pid)
+  port=$(recovery_record launch.identity.port)
+  identity=$(fm_pid_identity "$pid")
+  RECOVERY_PID=$pid
+  RECOVERY_IDENTITY=$identity
+  digest=$(printf '%s' "$identity" | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())')
+  python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" reconcile --helper docs-reader --current \
+    --verdict manual --evidence "fixture listener pid $pid verified on port $port" >/dev/null || fail "could not prepare the recovery fixture"
+  python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" intend --helper docs-reader \
+    --owner fm-docs-reader.sh --origin adopt --field port="$port" >/dev/null || fail "could not seed the interrupted intent"
+  id=$(recovery_record launch.id)
+  python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" created --helper docs-reader --launch "$id" \
+    --identity-source process --identity pid="$pid" --identity port="$port" \
+    --identity pid_identity_sha256="$digest" >/dev/null || fail "could not bind the verified listener"
+  rm "$home/state/.docs-reader"
+  [ "$(recovery_record launch.phase)" = created ] || fail "the fixture must retain a created launch"
+  cp "$home/state/.launch-docs-reader" "$home/launch-before"
+  python3 - "$home/state/.launch-docs-reader" <<'PYTEST'
+import json, sys
+path = sys.argv[1]
+with open(path) as stream:
+    record = json.load(stream)
+record['launch']['identity']['pid_identity_sha256'] = '0' * 64
+with open(path, 'w') as stream:
+    json.dump(record, stream)
+PYTEST
+  out=$(reader "$home" ensure 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "a different process identity was adopted"
+  assert_contains "$out" "verified listener does not match the open launch" "adoption must refuse an identity mismatch"
+  [ ! -e "$home/state/.docs-reader" ] || fail "a mismatched listener gained an owner record"
+  fm_pid_alive "$pid" || fail "the mismatched listener was stopped"
+  mv "$home/launch-before" "$home/state/.launch-docs-reader"
+  [ "$(ensure_url "$home")" = "$original" ] || fail "ensure did not adopt the interrupted reader"
+  [ "$(recovery_record launch.id)" = "$id" ] || fail "adoption minted another launch"
+  [ "$(recovery_record launch.phase)" = ready ] || fail "adoption did not record readiness"
+  [ "$(recovery_record launch.readiness.source)" = loopback-token-probe ] || fail "adoption readiness lacks its native source"
+  [ "$(awk -F= '$1 == "pid" {print $2}' "$home/state/.docs-reader")" = "$pid" ] || fail "adoption changed the reader pid"
+  [ "$(awk -F= '$1 == "pid_identity" {sub(/^[^=]*=/, ""); print}' "$home/state/.docs-reader")" = "$identity" ] || fail "adoption did not restore the operational identity"
+  rm "$home/state/.docs-reader"
+  [ "$(ensure_url "$home")" = "$original" ] || fail "a ready launch could not recover its lost owner record"
+  [ "$(recovery_record launch.id)" = "$id" ] || fail "ready adoption minted another launch"
+  reader "$home" stop >/dev/null || fail "the recovered reader could not be stopped"
+  [ "$(recovery_record launch.phase)" = stopped ] || fail "stop did not settle the recovered launch"
+  fm_pid_alive "$pid" && fail "the recovered reader is still alive after stop"
+  pass "reader adopts its interrupted matching launch and restores identity-bound stop"
+}
+
+if [ "${1:-}" = launch-recovery ]; then
+  test_adopt_interrupted_launch
+  exit 0
+fi
+
 test_url_helper_path_safety
 test_active_content_is_inert
 test_serves_only_markdown_and_images
@@ -687,4 +751,5 @@ test_disabled_paths_print_no_url
 test_navigation_scales_with_inventory
 test_ensure_converges_theme_on_live_reader
 test_launch_record_and_identity_binding
+test_adopt_interrupted_launch
 test_install_from_pinned_requirements

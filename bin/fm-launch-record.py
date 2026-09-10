@@ -84,6 +84,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -392,63 +393,40 @@ def write_record(path: str, data: dict) -> None:
 
 
 class RecordLock:
-    """A short mkdir lock beside the record, with dead-holder recovery."""
-
     def __init__(self, path: str):
-        self.dir = f"{path}.lock"
-        self.held = False
+        self.path = f"{path}.lock"
+        self.fd = None
 
     def __enter__(self):
         deadline = time.monotonic() + LOCK_WAIT_SECONDS
-        while True:
-            try:
-                os.mkdir(self.dir, 0o700)
-                self.held = True
-                break
-            except FileExistsError:
-                if self._holder_dead():
-                    self._remove()
-                    continue
-                if time.monotonic() >= deadline:
-                    raise RecordError(f"launch record is locked by another writer ({self.dir})")
-                time.sleep(0.02)
-            except OSError as exc:
-                if exc.errno == errno.ENOENT:
-                    raise RecordError(f"state directory for {self.dir} does not exist") from exc
-                raise RecordError(f"cannot lock {self.dir}: {exc.strerror}") from exc
         try:
-            with open(os.path.join(self.dir, "pid"), "w", encoding="utf-8") as handle:
-                handle.write(f"{os.getpid()}\n")
-        except OSError:
-            pass
-        return self
-
-    def _holder_dead(self) -> bool:
-        try:
-            with open(os.path.join(self.dir, "pid"), "r", encoding="utf-8") as handle:
-                pid = int(handle.read().strip() or "0")
-        except (OSError, ValueError):
-            try:
-                age = time.time() - os.stat(self.dir).st_mtime
-            except OSError:
-                return True
-            return age > LOCK_WAIT_SECONDS * 2
-        return not pid_alive(pid)
-
-    def _remove(self) -> None:
-        try:
-            os.unlink(os.path.join(self.dir, "pid"))
-        except OSError:
-            pass
-        try:
-            os.rmdir(self.dir)
-        except OSError:
-            pass
+            self.fd = os.open(
+                self.path,
+                os.O_RDWR | os.O_CREAT | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            if not stat.S_ISREG(os.fstat(self.fd).st_mode):
+                raise RecordError(f"lock path is not a regular file ({self.path})")
+            while True:
+                try:
+                    fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return self
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise RecordError(f"launch record is locked by another writer ({self.path})")
+                    time.sleep(0.02)
+        except (OSError, RecordError) as exc:
+            self.__exit__()
+            if isinstance(exc, RecordError):
+                raise
+            raise RecordError(f"cannot lock {self.path}: {exc.strerror}") from exc
 
     def __exit__(self, *exc):
-        if self.held:
-            self._remove()
-            self.held = False
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
         return False
 
 

@@ -121,6 +121,7 @@ wa_identity_digest() {  # <pid> -> sha256 of fm_pid_identity, or empty
 }
 wa_launch_intend() {  # non-zero = refuse to fork; WA_LAUNCH_REFUSAL says why
   local out rc line pid digest origin=cycle
+  local launcher_pid=${BASHPID:-$$}
   local -a launcher_args=()
   fm_launch_record_available >/dev/null 2>&1 || { WA_LAUNCH_REFUSAL="launch record owner unavailable (python3 or bin/fm-launch-record.py missing)"; return 1; }
   out=$(fm_launch_record check --helper watcher 2>/dev/null)
@@ -146,7 +147,7 @@ wa_launch_intend() {  # non-zero = refuse to fork; WA_LAUNCH_REFUSAL says why
   [ -z "${FM_WATCH_PREDECESSOR_ARM_PID:-}" ] || origin=successor
   while IFS= read -r line; do
     launcher_args+=("$line")
-  done < <(fm_launch_record_launcher_args)
+  done < <(fm_launch_record_launcher_args "$launcher_pid")
   out=$(fm_launch_record intend --helper watcher --owner fm-watch-arm.sh --origin "$origin" "${launcher_args[@]}" \
     ${FM_WATCH_PREDECESSOR_ARM_PID:+--field "predecessor=$FM_WATCH_PREDECESSOR_ARM_PID"} 2>&1) \
     || { WA_LAUNCH_REFUSAL="launch intent could not be persisted (${out:-no detail})"; return 1; }
