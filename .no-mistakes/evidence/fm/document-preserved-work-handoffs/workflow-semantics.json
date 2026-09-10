@@ -1,0 +1,95 @@
+{
+  "base": "fe601e80363dca6469775ca98ad0643071fb48f3",
+  "head": "47fe028abef61f3aed108f8f86849ec92cdee47a",
+  "workflow_triggers": {
+    "push": {
+      "branches": [
+        "main"
+      ]
+    },
+    "pull_request": {
+      "branches": [
+        "main"
+      ]
+    }
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "active_jobs": {
+    "lint": {
+      "name": "Lint",
+      "runs-on": "ubuntu-latest",
+      "timeout-minutes": "20",
+      "steps": [
+        {
+          "uses": "actions/checkout@v6"
+        },
+        {
+          "name": "Install pinned ShellCheck",
+          "run": "set -eu\nbin/fm-install-shellcheck.sh \"$RUNNER_TEMP/bin\"\necho \"$RUNNER_TEMP/bin\" >> \"$GITHUB_PATH\"\n"
+        },
+        {
+          "name": "Install pinned actionlint",
+          "run": "set -eu\nbin/fm-install-actionlint.sh \"$RUNNER_TEMP/bin\"\necho \"$RUNNER_TEMP/bin\" >> \"$GITHUB_PATH\"\n"
+        },
+        {
+          "run": "bin/fm-lint.sh"
+        }
+      ]
+    },
+    "test-coverage": {
+      "name": "Test coverage guard",
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "uses": "actions/checkout@v6"
+        },
+        {
+          "name": "Prove complete regression partition",
+          "run": "bin/fm-test-run.sh --check-coverage"
+        }
+      ]
+    },
+    "invariants": {
+      "name": "Repo invariants",
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "uses": "actions/checkout@v6"
+        },
+        {
+          "name": "Canonical instruction sources",
+          "run": "bin/fm-instruction-sources-check.sh"
+        },
+        {
+          "name": "Personal fleet paths must not be tracked",
+          "run": "set -eu\ntracked=$(git ls-files -- data state projects .no-mistakes)\nif [ -n \"$tracked\" ]; then\n  echo \"::error::Personal fleet data paths are tracked in git:\"\n  printf '%s\\n' \"$tracked\"\n  exit 1\nfi\nunexpected_config=$(git ls-files -- config | grep -Ev '^(config/backend|config/crew-dispatch\\.json|config/fresh/config\\.json|config/herdr-presentation-spaces|config/starship\\.toml)$' || true)\nif [ -n \"$unexpected_config\" ]; then\n  echo \"::error::Unapproved local config paths are tracked in git:\"\n  printf '%s\\n' \"$unexpected_config\"\n  exit 1\nfi\n"
+        }
+      ]
+    }
+  },
+  "excluded_job_definitions": [
+    "tests-portable-parallel-1",
+    "tests-portable-parallel-2",
+    "tests-portable-serial",
+    "tests-timing-aggregate"
+  ],
+  "excluded_serial_matrix": {
+    "shard": [
+      "1",
+      "2",
+      "3",
+      "4"
+    ]
+  },
+  "retained_jobs_identical_to_base": true,
+  "non_job_workflow_settings_identical_to_base": true,
+  "changed_files": [
+    ".agents/skills/communication-discipline/SKILL.md",
+    ".agents/skills/stuck-crewmate-recovery/SKILL.md",
+    ".github/workflows/ci.yml",
+    "AGENTS.md"
+  ],
+  "limitation": "Local normalized workflow comparison; hosted GitHub Actions were not executed."
+}
