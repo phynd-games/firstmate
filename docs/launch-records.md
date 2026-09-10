@@ -59,6 +59,10 @@ The launch owners settle an open record only from native evidence, never from th
   Only exact-identity cleanup of a launch's known effects, confirmed by the launcher itself, closes such an attempt as failed and cleaned.
   Retry and teardown inspect every response-derived effect retained in the attempt-bound journal, including a projected seed or reclaim replacement that task metadata does not name.
   Their settlement checks the same effect snapshot under the record lock; a new journal entry invalidates earlier inspection.
+  Relaunch checks the stopped predecessor's journal before recording a successor: only the exact adopted endpoint may remain, and every other response-derived effect must be natively gone.
+  The record owner retains those identities and their settlement in the predecessor's bounded history before removing its journal; an incomplete response or surviving partial effect keeps that journal and blocks relaunch.
+  The successor starts with its own empty create journal because relaunch adopts an endpoint without issuing a create request.
+  An exact `reconcile --launch <predecessor> --verdict manual` may settle a stopped or exited task's retained journal after native inspection; stopping its agent alone does not settle that journal.
   Incomplete native responses retain each unambiguous returned identity axis and require inspected settlement; missing axes are never inferred from labels.
 - A helper whose recorded process is alive with its recorded identity refuses a second start; a gone or recycled pid is recorded as an observed exit.
   An unavailable process identity remains unresolved, and a runner publishes created only with its verified claim identity and digest.

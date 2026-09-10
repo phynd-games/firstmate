@@ -969,6 +969,7 @@ cleanup_establish_failure() {  # <session> <workspace> <detail>
     return 1
   fi
   record_set_cleanup_state closed || true
+  cleanup_receipt_put "$PENDING" exit || return 1
   if ! record_clear; then
     record_set_mode quarantine || pending_restore_record quarantine || true
     escalate "$detail; exact workspace $workspace closed but supervisor binding cleanup failed"
@@ -1099,21 +1100,79 @@ hs_launch() {  # <command> [args...]
   fm_launch_record "$command" --helper herdr-supervisor "$@" >/dev/null 2>&1
 }
 
-hs_launch_settle_open() {  # <reason> - close any open launch as an observed exit
-  local out rc generation=${2:-}
+cleanup_receipt_put() {
+  local source=$1 outcome=$2 generation target tmp key
+  generation=$(sed -n 's/^generation=//p' "$source" 2>/dev/null | head -n 1)
+  case "$generation" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  [ "$(sed -n 's/^cleanup_state=//p' "$source" | head -n 1)" = closed ] || return 1
+  for key in herdr_session herdr_socket_identity workspace; do
+    [ -n "$(sed -n "s/^$key=//p" "$source" | head -n 1)" ] || return 1
+  done
+  target="$STATE/.herdr-supervisor-cleaned.$generation"
+  if [ -f "$target" ] && [ ! -L "$target" ]; then
+    [ "$(sed -n 's/^cleanup_state=//p' "$target" | head -n 1)" = closed ] || return 1
+    return 0
+  fi
+  tmp="$target.tmp.${BASHPID:-$$}"
+  if ! {
+    awk '/^(generation|herdr_session|herdr_socket|herdr_socket_identity|workspace|tab|pane|terminal_id|cleanup_state)=/' "$source"
+    printf 'outcome=%s\n' "$outcome"
+  } > "$tmp" || ! chmod 600 "$tmp" || ! mv -f "$tmp" "$target"; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+}
+
+hs_launch_settle_open() {
+  local out rc generation receipt outcome candidate
   out=$(fm_launch_record check --helper herdr-supervisor 2>/dev/null)
   rc=$?
-  [ "$rc" -eq 0 ] && return 0
-  [ "$rc" -eq 3 ] || return 1
-  [ -n "$generation" ] || return 1
-  [ "$(printf '%s\n' "$out" | sed -n 's/^field.generation=//p')" = "$generation" ] || return 1
-  hs_launch "${3:-exit}" --current --reason "$1" || return 1
+  if [ "$rc" -eq 0 ]; then
+    for receipt in "$STATE"/.herdr-supervisor-cleaned.*; do
+      [ -f "$receipt" ] || continue
+      rm -f "$receipt" || ledger_append launch-record "settled cleanup receipt could not be removed"
+    done
+    return 0
+  fi
+  if [ "$rc" -ne 3 ]; then
+    ledger_append launch-record "projection unavailable; native cleanup receipts retained"
+    return 0
+  fi
+  generation=$(printf '%s\n' "$out" | sed -n 's/^field.generation=//p')
+  case "$generation" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  receipt="$STATE/.herdr-supervisor-cleaned.$generation"
+  for candidate in "$STATE"/.herdr-supervisor-cleaned.*; do
+    [ -f "$candidate" ] && [ "$candidate" != "$receipt" ] || continue
+    rm -f "$candidate" || ledger_append launch-record "older settled cleanup receipt could not be removed"
+  done
+  [ -f "$receipt" ] && [ ! -L "$receipt" ] || return 1
+  [ "$(sed -n 's/^generation=//p' "$receipt" | head -n 1)" = "$generation" ] || return 1
+  [ "$(sed -n 's/^cleanup_state=//p' "$receipt" | head -n 1)" = closed ] || return 1
+  outcome=$(sed -n 's/^outcome=//p' "$receipt" | head -n 1)
+  case "$outcome" in stop|exit) ;; *) return 1 ;; esac
+  if hs_launch "$outcome" --current --reason "$1"; then
+    rm -f "$receipt" || ledger_append launch-record "settled cleanup receipt could not be removed"
+  else
+    ledger_append launch-record "terminal projection deferred for cleaned generation $generation"
+  fi
+  return 0
+}
+
+hs_launch_retry_cleaned() {
+  local receipt
+  for receipt in "$STATE"/.herdr-supervisor-cleaned.*; do
+    [ -f "$receipt" ] || continue
+    hs_launch_settle_open "retained native cleanup authority confirmed settlement" \
+      || ledger_append launch-record "retained cleanup projection does not match the current launch"
+    break
+  done
 }
 
 hs_launch_intend() {  # <generation>
   local out line
   local launcher_pid=${BASHPID:-$$}
   local -a launcher_args=()
+  HS_LAUNCH_ID=
   fm_launch_record_available >/dev/null 2>&1 || { ledger_append launch-record "unavailable: python3 or owner missing"; return 0; }
   while IFS= read -r line; do
     launcher_args+=("$line")
@@ -1224,6 +1283,11 @@ establish() {  # <reason>
   pending_put "$generation" "$HS_SESSION" "$HS_SOCKET" "$workspace" "$tab" "$pane" "$HS_SOCKET_IDENTITY" "$terminal_id" || {
     detail="the exact Herdr workspace binding could not be persisted for cleanup"
     if rollback_workspace "$HS_SESSION" "$workspace" "$HS_SOCKET" "$HS_SOCKET_IDENTITY"; then
+      if ! pending_set_cleanup_state closed || ! cleanup_receipt_put "$PENDING" exit; then
+        record_set_mode quarantine || true
+        escalate "$detail; exact workspace cleanup completed but its durable receipt could not be retained"
+        return 1
+      fi
       record_set_cleanup_state closed || true
       record_clear || record_set_mode quarantine || true
     else
@@ -1492,6 +1556,7 @@ retire_binding_locked() {  # <reason> [signal-owner]
     ledger_append quarantine "could not record closure of exact workspace ${workspace:-none} for $reason"
     return 1
   }
+  cleanup_receipt_put "$PENDING" stop || return 1
   if ! record_clear; then
     record_set_mode quarantine || true
     ledger_append quarantine "could not clear binding after closing exact workspace ${workspace:-none} for $reason"
@@ -1499,7 +1564,7 @@ retire_binding_locked() {  # <reason> [signal-owner]
   fi
   pending_clear || true
   ledger_append retired "$reason"
-  hs_launch stop --current --reason "retired: $(ledger_clean_field "$reason")" || true
+  hs_launch_settle_open "retired: $(ledger_clean_field "$reason")" || ledger_append launch-record "retired generation projection remains unresolved"
   rm -f "$HEARTBEAT" 2>/dev/null || true
   launcher_clear
   return 0
@@ -1517,6 +1582,8 @@ reconcile_previous_locked() {
   fi
   if ! recorded_workspace_matches; then
     if recorded_workspace_absent; then
+      record_set_cleanup_state closed || return 1
+      cleanup_receipt_put "$RECORD" exit || return 1
       record_clear || return 1
       launcher_clear
       return 0
@@ -1539,7 +1606,7 @@ reconcile_previous_locked() {
 }
 
 reconcile_pending_locked() {
-  local state generation workspace session socket socket_identity record_mode record_generation record_workspace record_cleanup_state create_state
+  local outcome=${1:-exit} state generation workspace session socket socket_identity record_mode record_generation record_workspace record_cleanup_state create_state
   [ -f "$PENDING" ] || return 0
   state=$(pending_get cleanup_state || printf open)
   generation=$(pending_get generation || printf '')
@@ -1552,6 +1619,19 @@ reconcile_pending_locked() {
   record_generation=$(record_get generation || printf '')
   record_workspace=$(record_get workspace || printf '')
   record_cleanup_state=$(record_get cleanup_state || printf open)
+  if [ "$state" = closed ] || { [ "$record_generation" = "$generation" ] && [ "$record_workspace" = "$workspace" ] && [ "$record_cleanup_state" = closed ]; }; then
+    pending_set_cleanup_state closed || return 1
+    cleanup_receipt_put "$PENDING" "$outcome" || return 1
+    if [ -f "$RECORD" ] \
+      && { [ "$record_generation" != "$generation" ] \
+        || { [ -n "$record_workspace" ] && [ "$record_workspace" != "$workspace" ]; }; }; then
+      pending_clear
+      return $?
+    fi
+    record_clear || return 1
+    pending_clear
+    return $?
+  fi
   if [ "$create_state" = creating ]; then
     if fm_launch_record show --helper herdr-supervisor --json 2>/dev/null | jq -e --arg generation "$generation" \
       '.launch.fields.generation == $generation and .launch.phase == "reconciled" and .launch.outcome.verdict == "manual"' >/dev/null 2>&1; then
@@ -1568,17 +1648,6 @@ reconcile_pending_locked() {
     pending_clear
     return $?
   fi
-  if [ "$state" = closed ] || { [ "$record_generation" = "$generation" ] && [ "$record_workspace" = "$workspace" ] && [ "$record_cleanup_state" = closed ]; }; then
-    if [ -f "$RECORD" ] \
-      && { [ "$record_generation" != "$generation" ] \
-        || { [ -n "$record_workspace" ] && [ "$record_workspace" != "$workspace" ]; }; }; then
-      pending_clear
-      return $?
-    fi
-    record_clear || return 1
-    pending_clear
-    return $?
-  fi
   [ -n "$session" ] && [ -n "$socket" ] && [ -n "$socket_identity" ] \
     && [ -n "$workspace" ] || return 1
   herdr_identity || return 1
@@ -1589,6 +1658,7 @@ reconcile_pending_locked() {
     return 1
   fi
   pending_set_cleanup_state closed || return 1
+  cleanup_receipt_put "$PENDING" "$outcome" || return 1
   if [ -f "$RECORD" ] && [ "$record_generation" = "$generation" ]; then
     if [ -n "$record_workspace" ] && [ "$record_workspace" != "$workspace" ]; then
       pending_clear
@@ -1604,7 +1674,7 @@ reconcile_pending_locked() {
 }
 
 cmd_ensure() {  # <reason>
-  local reason=$1 rc preference blocked_reason prior_generation
+  local reason=$1 rc preference blocked_reason
   preference=$(hs_config_preference)
   if ! supervisor_eligible; then
     if [ "$preference" = off ] && [ -f "$PENDING" ]; then
@@ -1612,11 +1682,10 @@ cmd_ensure() {  # <reason>
         escalate "config/herdr-supervisor is off, but the pending Herdr cleanup record lock could not be acquired"
         return 1
       fi
-      prior_generation=$(pending_get generation || printf '')
-      reconcile_pending_locked
+      reconcile_pending_locked stop
       rc=$?
       if [ "$rc" -eq 0 ] && [ ! -f "$RECORD" ]; then
-        hs_launch_settle_open "pending authority confirmed cleanup with supervision off" "$prior_generation" stop || rc=1
+        hs_launch_settle_open "pending authority confirmed cleanup with supervision off" || rc=1
       fi
       fm_lock_release "$RECORD_LOCK"
       if [ "$rc" -ne 0 ]; then
@@ -1683,13 +1752,13 @@ cmd_ensure() {  # <reason>
     escalate "the supervisor record lock could not be acquired within its bounded retry window"
     return 1
   fi
-  prior_generation=$(pending_get generation || record_get generation || printf '')
   if ! reconcile_pending_locked; then
     fm_lock_release "$RECORD_LOCK"
     fm_lock_release "$SUPERVISION_CLAIM"
     escalate "pending Herdr supervisor cleanup could not be reconciled; replacement is blocked"
     return 1
   fi
+  hs_launch_retry_cleaned
   if supervisor_healthy; then
     fm_lock_release "$RECORD_LOCK"
     fm_lock_release "$SUPERVISION_CLAIM"
@@ -1702,7 +1771,7 @@ cmd_ensure() {  # <reason>
     fm_lock_release "$SUPERVISION_CLAIM"
     return 1
   fi
-  hs_launch_settle_open "prior supervisor authority confirmed settlement" "$prior_generation" || {
+  hs_launch_settle_open "prior supervisor authority confirmed settlement" || {
     fm_lock_release "$RECORD_LOCK"
     fm_lock_release "$SUPERVISION_CLAIM"
     return 1
@@ -1716,19 +1785,18 @@ cmd_ensure() {  # <reason>
 }
 
 cmd_retire() {  # <reason>
-  local reason=$1 rc prior_generation
+  local reason=$1 rc
   if ! supervisor_lock_acquire "$RECORD_LOCK"; then
     escalate "the supervisor record lock could not be acquired within its bounded retry window"
     return 1
   fi
-  prior_generation=$(pending_get generation || record_get generation || printf '')
-  if [ -f "$PENDING" ] && ! reconcile_pending_locked; then
+  if [ -f "$PENDING" ] && ! reconcile_pending_locked stop; then
     fm_lock_release "$RECORD_LOCK"
     escalate "pending Herdr supervisor cleanup could not be reconciled for retire"
     return 1
   fi
   if [ ! -f "$RECORD" ]; then
-    hs_launch_settle_open "pending authority confirmed cleanup for retire" "$prior_generation" stop || {
+    hs_launch_settle_open "pending authority confirmed cleanup for retire" || {
       fm_lock_release "$RECORD_LOCK"
       return 1
     }

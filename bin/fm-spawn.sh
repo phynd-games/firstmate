@@ -997,7 +997,7 @@ spawn_launch_reconcile_open() {  # <check-output>
 }
 
 spawn_launch_intend() {  # <origin>
-  local out rc line
+  local out rc line predecessor
   local launcher_pid=${BASHPID:-$$}
   local -a launcher_args=()
   SPAWN_LAUNCH_ORIGIN=$1
@@ -1014,6 +1014,17 @@ spawn_launch_intend() {  # <origin>
       return 1
       ;;
   esac
+  if [ "$SPAWN_LAUNCH_ORIGIN" = relaunch ] && [ "$BACKEND" = herdr ] && [ -f "$STATE/$ID.launch" ]; then
+    predecessor=$(spawn_launch_record get launch.id) || return 1
+    if [ -n "$predecessor" ]; then
+      fm_launch_record_effects_gone "$ID" "$predecessor" "$RELAUNCH_META" || return 1
+      spawn_launch_record journal --launch "$predecessor" --settle \
+        --effects-digest "$FM_LAUNCH_EFFECTS_DIGEST" \
+        --identity "session=$HERDR_SES" --identity "workspace_id=$HERDR_WORKSPACE_ID" \
+        --identity "tab_id=$HERDR_TAB_ID" --identity "pane_id=$HERDR_PANE_ID" \
+        --identity "terminal_id=$HERDR_TERMINAL_ID" || return 1
+    fi
+  fi
   while IFS= read -r line; do
     launcher_args+=("$line")
   done < <(fm_launch_record_launcher_args "$launcher_pid")
@@ -1032,6 +1043,10 @@ spawn_launch_intend() {  # <origin>
     echo "error: task $ID's launch intent returned no launch id; refusing to launch" >&2
     return 1
   }
+  if [ "$SPAWN_LAUNCH_ORIGIN" = relaunch ] && [ "$BACKEND" = herdr ]; then
+    FM_BACKEND_HERDR_CREATE_ISSUED_FILE="$STATE/.$ID.create-issued"
+    spawn_launch_record journal --launch "$SPAWN_LAUNCH_ID" --init || return 1
+  fi
 }
 
 spawn_launch_created() {  # <identity-source> <identity K=V>...

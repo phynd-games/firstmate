@@ -185,6 +185,8 @@ All under `state/`, all private to the home.
 - `.herdr-supervisor-monitor`, `.herdr-supervisor-monitor.lock`, `.herdr-supervisor-monitor-heartbeat` - the monitor's own record, singleton lock, and beacon.
   The record carries its pid, its `fm_pid_identity`, and the home session it is bound to, so a recycled pid can never read as a live monitor.
 - `.herdr-supervisor-pending-cleanup` - an exact session, socket, workspace, tab, and pane receipt retained across uncertain establish or retirement cleanup.
+- `.herdr-supervisor-cleaned.<generation>` - confirmed native cleanup evidence retained until the matching launch projection records its terminal outcome.
+  A projection failure does not block native continuity or authorize cleanup of an unresolved endpoint; ensure retries the projection using this receipt, without repeating native cleanup.
 - `.herdr-supervisor-quarantine.<generation>` - an exact old binding retained when the recorded Herdr server or pane identity can no longer be proven safe to close.
 - `.herdr-supervisor-quarantine.pending.<generation>` - an incomplete create receipt retained when bounded visibility reconciliation cannot prove that Herdr created nothing.
 - `.herdr-supervisor-alarm` - the latest durable actionable diagnostic, retained until three consecutive successful non-rapid cycles prove stability.

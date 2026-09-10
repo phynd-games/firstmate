@@ -74,6 +74,105 @@ setup() {
   pass 'R3: unsuccessful prior cleanup preserves the binding and launch obligation'
 ) || exit 1
 
+for projection_mode in transient persistent; do
+  (
+    setup "cleanup-projection-$projection_mode"
+    cmd_ensure review >/dev/null || fail 'cleanup projection setup failed'
+    before=$(fm_launch_record get --helper herdr-supervisor launch.id)
+    generation=$(record_get generation)
+    live_get() { printf ''; }
+    recorded_herdr_identity_matches() { return 0; }
+    recorded_workspace_matches() { return 0; }
+    herdr_workspace_control() { printf '%s\n' "$*" >> "$STATE/cleanup-calls"; return 0; }
+    hs_launch() {
+      local command=$1
+      shift
+      case "$command" in stop|exit) return 1 ;; esac
+      fm_launch_record "$command" --helper herdr-supervisor "$@" >/dev/null 2>&1
+    }
+    cmd_retire review >/dev/null || fail 'mirror write failure changed native retirement outcome'
+    [ ! -f "$RECORD" ] && [ ! -f "$PENDING" ] || fail 'confirmed retirement retained active ownership'
+    receipt="$STATE/.herdr-supervisor-cleaned.$generation"
+    assert_present "$receipt" 'native cleanup proof was lost after failed terminal projection'
+    assert_grep 'cleanup_state=closed' "$receipt" 'retained receipt does not prove cleanup'
+    assert_eq "$(fm_launch_record get --helper herdr-supervisor launch.id)" "$before" 'failed terminal projection unexpectedly replaced the launch'
+    if [ "$projection_mode" = transient ]; then
+      hs_launch() { local command=$1; shift; fm_launch_record "$command" --helper herdr-supervisor "$@" >/dev/null 2>&1; }
+    fi
+    cmd_ensure retry >/dev/null || fail 'terminal projection failure independently disabled continuity'
+    [ "$(record_get generation)" != "$generation" ] || fail 'native replacement generation did not advance'
+    assert_eq "$(grep -c 'workspace create' "$STATE/native-calls")" 2 'continuity did not issue exactly one replacement after cleanup'
+    assert_eq "$(wc -l < "$STATE/cleanup-calls" | tr -d ' ')" 1 'projection recovery repeated native cleanup'
+    if [ "$projection_mode" = persistent ]; then
+      assert_present "$receipt" 'persistent mirror failure lost the old cleanup receipt'
+      hs_launch() { local command=$1; shift; fm_launch_record "$command" --helper herdr-supervisor "$@" >/dev/null 2>&1; }
+      cmd_ensure recovered >/dev/null || fail 'healthy native owner could not recover its pending projection'
+      assert_eq "$(fm_launch_record get --helper herdr-supervisor launch.phase)" stopped 'retained cleanup proof did not recover terminal projection'
+    else
+      fm_launch_record show --helper herdr-supervisor --json | jq -e --arg launch "$before" \
+        '.previous[-1].id == $launch and .previous[-1].phase == "stopped" and .launch.phase == "ready"' >/dev/null \
+        || fail 'cleanup recovery did not settle the exact predecessor before projection of its successor'
+    fi
+    assert_absent "$receipt" 'recovered terminal projection did not release its cleanup receipt'
+    pass "R29: $projection_mode terminal projection failure preserves native continuity and cleanup proof"
+  ) || exit 1
+done
+
+(
+  setup unresolved-cleanup
+  cmd_ensure review >/dev/null || fail 'unresolved cleanup setup failed'
+  generation=$(record_get generation)
+  live_get() { printf ''; }
+  recorded_herdr_identity_matches() { return 0; }
+  recorded_workspace_matches() { return 0; }
+  recorded_workspace_absent() { return 1; }
+  herdr_workspace_control() { return 1; }
+  rollback_workspace() { return 1; }
+  cmd_retire review >/dev/null 2>&1 && fail 'failed native cleanup reported retirement'
+  assert_absent "$STATE/.herdr-supervisor-cleaned.$generation" 'failed native cleanup minted settled evidence'
+  cmd_ensure retry >/dev/null 2>&1 && fail 'unresolved native cleanup permitted replacement'
+  assert_eq "$(grep -c 'workspace create' "$STATE/native-calls")" 1 'failed cleanup issued another allocation'
+  pass 'R29: unresolved native cleanup remains blocking without settled evidence'
+) || exit 1
+
+for receipt_mode in available unavailable; do
+  (
+    setup "rollback-projection-$receipt_mode"
+    pending_put() { return 1; }
+    rollback_workspace() { printf '%s\n' "$*" >> "$STATE/rollback-calls"; return 0; }
+    hs_launch() {
+      local command=$1
+      shift
+      case "$command" in stop|exit|fail) return 1 ;; esac
+      fm_launch_record "$command" --helper herdr-supervisor "$@" >/dev/null 2>&1
+    }
+    if [ "$receipt_mode" = unavailable ]; then
+      cleanup_receipt_put() { return 1; }
+    fi
+    cmd_ensure review >/dev/null 2>&1 && fail 'failed native binding publication reported successful establishment'
+    generation=$(pending_get generation)
+    before=$(fm_launch_record get --helper herdr-supervisor launch.id)
+    receipt="$STATE/.herdr-supervisor-cleaned.$generation"
+    assert_eq "$(pending_get cleanup_state)" closed 'successful rollback did not retain its closed pending authority'
+    assert_eq "$(pending_get workspace)" workspace-review 'rollback lost returned native workspace identity'
+    if [ "$receipt_mode" = unavailable ]; then
+      assert_present "$RECORD" 'unpersisted cleanup receipt allowed binding evidence to disappear'
+      assert_absent "$receipt" 'unavailable cleanup receipt was reported as persisted'
+    else
+      assert_present "$receipt" 'successful rollback lost its generation-bound cleanup receipt'
+    fi
+    setup "rollback-projection-$receipt_mode"
+    cmd_ensure retry >/dev/null || fail 'confirmed rollback could not recover after projection publication resumed'
+    assert_eq "$(wc -l < "$STATE/rollback-calls" | tr -d ' ')" 1 'recovery repeated already confirmed rollback'
+    assert_eq "$(grep -c 'workspace create' "$STATE/native-calls")" 2 'recovery did not create exactly one successor'
+    fm_launch_record show --helper herdr-supervisor --json | jq -e --arg launch "$before" \
+      '.previous[-1].id == $launch and .previous[-1].phase == "exited" and .launch.phase == "ready"' >/dev/null \
+      || fail 'rollback evidence did not settle the exact prior projection'
+    assert_absent "$receipt" 'recovered rollback projection retained its receipt'
+    pass "R29: rollback retains cleanup authority with $receipt_mode receipt storage"
+  ) || exit 1
+done
+
 for scenario in missing-python persistence ambiguous live; do
   (
     setup "monitor-$scenario"

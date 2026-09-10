@@ -823,7 +823,33 @@ def require_effects_digest(args, path: str, kind: str, subject: str, launch: dic
 def cmd_journal(args, path: str, kind: str, subject: str) -> int:
     journal = create_journal_path(path, kind, subject)
     with RecordLock(path):
-        launch = require_launch(read_record(path), args.launch, False)
+        data = read_record(path)
+        launch = require_launch(data, args.launch, False)
+        if args.settle:
+            if launch.get("phase") not in TERMINAL_PHASES or not args.effects_digest:
+                raise ContractRefusal("journal settlement requires a settled predecessor and inspected effects")
+            retained = parse_pairs(args.identity, IDENTITY_KEYS, "--identity")
+            keys = ("session", "workspace_id", "tab_id", "pane_id", "terminal_id")
+            expected = {key: launch.get("identity", {}).get(key, "") for key in keys}
+            if retained != expected or not all(expected.values()):
+                raise ContractRefusal("retained endpoint must match the predecessor's exact native identity")
+            require_effects_digest(args, path, kind, subject, launch)
+            if not os.path.lexists(journal):
+                return 0
+            digest, effects = launch_effects(path, kind, subject, launch)
+            evidence = []
+            for effect in effects:
+                identity = dict(zip(keys, effect))
+                evidence.append({"identity": identity, "state": "retained" if identity == retained else "gone"})
+            if len(evidence) > HISTORY_MAX:
+                raise ContractRefusal("too many create effects for retained journal evidence")
+            append_history(launch, "journal-settled", effects_digest=digest, effects=evidence)
+            write_record(path, data)
+            try:
+                os.unlink(journal)
+            except OSError as exc:
+                raise RecordError(f"cannot remove settled create journal: {exc.strerror}") from exc
+            return 0
         if launch.get("phase") != "intended":
             raise ContractRefusal("create journal requires an intended launch")
         if args.init:
@@ -861,7 +887,12 @@ def cmd_reconcile(args, path: str, kind: str, subject: str) -> int:
         data = read_record(path)
         launch = require_launch(data, args.launch, args.current)
         require_effects_digest(args, path, kind, subject, launch)
-        if launch.get("phase") not in OPEN_PHASES:
+        stopped_journal = (kind == "task" and args.verdict == "manual" and args.launch
+                           and launch.get("phase") in ("stopped", "exited")
+                           and os.path.lexists(create_journal_path(path, kind, subject)))
+        if stopped_journal:
+            read_create_journal(create_journal_path(path, kind, subject), launch)
+        if launch.get("phase") not in OPEN_PHASES and not stopped_journal:
             raise ContractRefusal(f"reconcile is only valid from an open phase, not {launch.get('phase')}")
         if args.pre_create_journal:
             if not args.launch or args.verdict != "absent" or launch.get("phase") != "intended":
@@ -1065,6 +1096,9 @@ def build_parser() -> argparse.ArgumentParser:
     action = p.add_mutually_exclusive_group(required=True)
     action.add_argument("--init", action="store_true")
     action.add_argument("--line")
+    action.add_argument("--settle", action="store_true")
+    p.add_argument("--effects-digest")
+    p.add_argument("--identity", action="append", default=[])
 
     p = sub.add_parser("reconcile")
     subject(p)
