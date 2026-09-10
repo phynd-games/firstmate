@@ -1150,6 +1150,42 @@ test_torn_down_worktree() {
   pass "torn-down worktree is handled gracefully"
 }
 
+# Regression for the firstmate-controlled-launch inbox-014 reconciliation
+# (data/firstmate-controlled-launch/evidence/05-validation-gate.md):
+# unreadable validation evidence for a LIVE, attributed run shares the exact
+# "state: unknown · source: none" prefix with a genuinely torn-down worktree
+# or missing task record (both above), and nothing distinguished them. The
+# reader now appends the same "(not proof of death)" qualifier already used
+# for an unreachable remote endpoint (the unknown-remote cases below), and
+# bin/fm-handoff-confirm.sh's endpoint_is_gone() honors it
+# (tests/fm-handoff-confirm.test.sh).
+run_malformed_findings() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: running
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings: 15 awaiting, 3 auto
+EOF
+}
+
+test_unreadable_validation_evidence_is_not_worded_as_death() {
+  reset_fakes
+  local d; d=$(new_case unreadable-not-death)
+  make_repo_on_branch "$d/wt" fm/feat-unread
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/unread.meta" "window=fm:fm-unread" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_malformed_findings fm/feat-unread)"
+  local out; out=$(run_crew_state "$d" unread)
+  assert_contains "$out" "state: unknown" "unreadable validation evidence -> unknown"
+  assert_contains "$out" "source: none" "unreadable validation evidence -> none source"
+  assert_contains "$out" "not proof of death" \
+    "unreadable validation evidence must carry the same not-proof-of-death qualifier already used for an unreachable remote endpoint"
+  pass "unreadable validation run evidence is worded as inconclusive, never as established death"
+}
+
 # --- remote secondmate arm ---------------------------------------------------
 # A meta recording remote_host= must never be read through the local worktree
 # probe or a local backend adapter: the recorded worktree and pane live on the
@@ -1589,6 +1625,7 @@ test_dead_window_still_reports_active_run_step
 test_no_timeout_uses_perl_bound
 test_scout_skips_run_lookup
 test_torn_down_worktree
+test_unreadable_validation_evidence_is_not_worded_as_death
 test_remote_alive_with_log_uses_status_log
 test_remote_alive_idle_is_healthy_not_gone
 test_remote_unreachable_is_unknown_remote_not_dead

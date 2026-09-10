@@ -891,6 +891,255 @@ test_head_transition_is_coherent() {
   pass "head transition: repeated or regressed run heads stop instead of refreshing progress"
 }
 
+# Regression for the firstmate-controlled-launch inbox-014 reconciliation
+# (data/firstmate-controlled-launch/evidence/05-validation-gate.md): the real
+# daemon prints `findings: 15 awaiting, 3 auto-fix` mid fix-round, which the
+# scalar validator rejected outright (only "none" and "<N> awaiting" were
+# accepted), reading a live, actively-progressing run as unreadable evidence.
+test_findings_scalar_accepts_mixed_awaiting_autofix() {
+  local state ev dir rc
+
+  dir=$(make_case vloop-findings-mixed); state="$dir/state"; ev="$dir/ev"
+
+  # Real daemon shape, unquoted (evidence/raw/nm-run-1-review-gate.log:14
+  # proves the plain "<N> awaiting" form is unquoted; the mixed form extends
+  # that same convention).
+  ev_running "$ev" 01RUN running pending
+  sed -i.bak 's/^  findings: none/  findings: 15 awaiting, 3 auto-fix/' "$ev" && rm -f "$ev.bak"
+  fold "$state" mixed "$ev" 1000
+  [ "$(verdict_at "$state" mixed 1010)" = continue ] \
+    || fail "a real daemon mixed awaiting/auto-fix scalar was rejected as unreadable"
+
+  # Quoted form: a value containing a comma is exactly what a TOON-like
+  # format has reason to quote, so both spellings must validate identically.
+  local state_q="$dir/state-quoted"; mkdir -p "$state_q"
+  ev_running "$ev" 02RUN running pending
+  sed -i.bak 's/^  findings: none/  findings: "15 awaiting, 3 auto-fix"/' "$ev" && rm -f "$ev.bak"
+  fold "$state_q" mixed-quoted "$ev" 1000
+  [ "$(verdict_at "$state_q" mixed-quoted 1010)" = continue ] \
+    || fail "a quoted daemon mixed awaiting/auto-fix scalar was rejected as unreadable"
+
+  # Counterfactual: the EXACT SAME valid bytes against the unpatched library
+  # at this task's approved base commit must still reject - proving the fix
+  # closes a real, reproducible gap rather than describing an unchanged input
+  # as both accepted and rejected.
+  local base_verdict
+  base_verdict=$(
+    set -eu
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    git -C "$ROOT" show fe601e80363dca6469775ca98ad0643071fb48f3:bin/fm-validation-loop-lib.sh \
+      > "$tmp/fm-validation-loop-lib.sh"
+    git -C "$ROOT" show fe601e80363dca6469775ca98ad0643071fb48f3:bin/fm-nm-run-lib.sh \
+      > "$tmp/fm-nm-run-lib.sh"
+    cd "$tmp"
+    # shellcheck disable=SC1091
+    . ./fm-nm-run-lib.sh
+    _FM_VLOOP_LIB_DIR=.
+    # shellcheck disable=SC1091
+    . ./fm-validation-loop-lib.sh
+    content='run:
+  id: "01RUN"
+  branch: fm/loop
+  status: running
+  head: "abc1234"
+  pr: ""
+  findings: 15 awaiting, 3 auto-fix'
+    if _fm_vloop_findings_valid "$content"; then printf accepted; else printf rejected; fi
+  )
+  [ "$base_verdict" = rejected ] \
+    || fail "the counterfactual did not reproduce the original rejection on the unpatched base commit (got: $base_verdict) - the acceptance case above would then prove nothing"
+
+  # Malformed near-misses must still reject - the acceptance is exact, not a
+  # loosened regex.
+  local ev2 state2 i=0 bad
+  for bad in "15 awaiting, 3 auto" "15awaiting" "-5 awaiting" "15 awaiting, auto-fix" "15 awaiting, 3 autofix"; do
+    i=$((i + 1))
+    ev2="$dir/ev-bad-$i"; state2="$dir/state-bad-$i"; mkdir -p "$state2"
+    ev_running "$ev2" "0${i}BAD" running pending
+    sed -i.bak "s/^  findings: none/  findings: $bad/" "$ev2" && rm -f "$ev2.bak"
+    if fm_vloop_observe "$state2" "bad-$i" "$ev2"; then rc=0; else rc=$?; fi
+    [ "$rc" -eq 2 ] || fail "a malformed near-miss findings scalar '$bad' was accepted (rc=$rc)"
+  done
+
+  # Foreign/garbled run structure: a validly-shaped findings scalar spliced
+  # into an otherwise-contradictory run block (a duplicated id, as a
+  # concatenated foreign run would look) must still fail the OVERALL
+  # predicate - the findings fix narrows only the findings-scalar branch.
+  local ev3="$dir/ev-foreign" state3="$dir/state-foreign"
+  mkdir -p "$state3"
+  ev_running "$ev3" 01RUN running pending
+  sed -i.bak 's/^  findings: none/  findings: 15 awaiting, 3 auto-fix/' "$ev3" && rm -f "$ev3.bak"
+  printf '  id: "99FOREIGN"\n' >> "$ev3"
+  if fm_vloop_observe "$state3" foreign "$ev3"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 2 ] || fail "a valid findings scalar spliced into a foreign/duplicated run block was accepted (rc=$rc)"
+
+  pass "findings scalar: quoted and unquoted mixed awaiting/auto-fix accepted (proven against the unpatched base commit), malformed and foreign-run evidence still rejected"
+}
+
+# Regression for the same reconciliation's second finding: once evidence is
+# readable again, the pipeline's own lane head (a fix-round commit that lives
+# only in the daemon's repo, never pushed back to this worktree - git
+# cat-file -t on it fails with "Not a valid object name") was read as a
+# PROVEN incoherent transition. It is unresolvable, not proven bad:
+# bin/fm-nm-run-lib.sh already names this exact distinction
+# (fm_nm_head_resolvable). The fix must keep refusing to continue
+# automatically (never silently absorbed, never credited as progress) while
+# no longer asserting a proof this check never made, and must not let the
+# journal's head identity advance past the last verified anchor.
+test_unresolvable_head_is_unknown_not_incoherent() {
+  local state ev dir repo old_head unresolvable_head v
+  dir=$(make_case vloop-unresolvable-head); state="$dir/state"; ev="$dir/ev"; repo="$dir/repo"
+  git init -q "$repo"
+  git -C "$repo" config user.email test@example.com
+  git -C "$repo" config user.name test
+  printf 'one\n' > "$repo/file"
+  git -C "$repo" add file && git -C "$repo" commit -qm one
+  old_head=$(git -C "$repo" rev-parse HEAD)
+  ev_running "$ev" 01RUN running pending
+  sed -i.bak "s/^  head: \"abc1234\"/  head: \"$old_head\"/" "$ev" && rm -f "$ev.bak"
+  fold "$state" unresolvable "$ev" 1000 "$repo"
+
+  # An unpublished pipeline-lane head: a syntactically valid sha that is not
+  # a git object anywhere in this worktree.
+  unresolvable_head="412c36a4133097b5be5e5025f6eb39117fef231a"
+  sed -i.bak "s/^  head: \"$old_head\"/  head: \"$unresolvable_head\"/" "$ev" && rm -f "$ev.bak"
+  fold "$state" unresolvable "$ev" 1010 "$repo"
+
+  v=$(verdict_at "$state" unresolvable 1020)
+  case "$v" in
+    stop*"incoherent head transition"*) fail "an unresolvable unpublished head was reported as a demonstrated incoherent transition: '$v'" ;;
+    stop*"unproven head ancestry"*) ;;
+    *) fail "an unresolvable head did not conservatively stop: '$v'" ;;
+  esac
+  grep -q '^stop_reason=incoherent head transition' "$state/unresolvable.validation-loop" \
+    && fail "the journal durably recorded a false demonstrated-incoherent stop for unresolvable ancestry"
+  # The anchor must stay pinned at the last VERIFIED head, never advance to
+  # the unresolvable one (the "laundering" this must not permit: a later
+  # actually-resolvable head must be judged against real history).
+  grep -q "^head=$old_head\$" "$state/unresolvable.validation-loop" \
+    || fail "the journal's head anchor advanced past the last verified head on unresolvable ancestry"
+  # No free progress credit either.
+  grep -q '^last_progress=1000$' "$state/unresolvable.validation-loop" \
+    || fail "an unresolvable head was wrongly credited as proven progress"
+
+  # The stop is immediate, not a delayed fallback to the stall bound -
+  # unresolvable ancestry alone never authorizes indefinite continuation
+  # while a supervisor waits for the stall bound to eventually catch it. It
+  # is also STICKY like every other recorded stop (fm_vloop_verdict returns
+  # the durable reason unconditionally once set, the same contract
+  # test_recovery_handoff pins for other reasons): a further poll with no
+  # new information must not silently clear it back to continue.
+  fold "$state" unresolvable "$ev" 1050 "$repo"
+  v=$(verdict_at "$state" unresolvable 1200)
+  case "$v" in
+    stop*"unproven head ancestry"*) ;;
+    continue) fail "an unresolvable-ancestry stop silently self-cleared back to continue on the next poll" ;;
+    *) fail "an unresolvable-ancestry stop changed to an unexpected reason on the next poll: '$v'" ;;
+  esac
+  pass "unresolvable pipeline-owned head: unproven ancestry stops immediately and stays stopped, never credited as progress, distinct from a demonstrated incoherent transition, with the anchor pinned at the last verified head"
+}
+
+test_scope_bearing_unpublished_head_retains_verified_anchor() {
+  local state ev dir repo base_head old_head next_head unknown_head v epoch
+  dir=$(make_case vloop-scope-unpublished); state="$dir/state"; ev="$dir/ev"; repo="$dir/repo"
+  git init -q "$repo"
+  git -C "$repo" config user.email test@example.com
+  git -C "$repo" config user.name test
+  printf 'base\n' > "$repo/file"
+  git -C "$repo" add file && git -C "$repo" commit -qm base
+  base_head=$(git -C "$repo" rev-parse HEAD)
+  printf 'one\n' > "$repo/file"
+  git -C "$repo" commit -qam one
+  old_head=$(git -C "$repo" rev-parse HEAD)
+  ev_running "$ev" 01RUN running pending
+  sed -i.bak "s/abc1234/$old_head/" "$ev" && rm -f "$ev.bak"
+  printf 'base: "%s"\nchanges[1]{path}:\n  file\n' "$base_head" >> "$ev"
+  fold "$state" scoped "$ev" 1000 "$repo"
+  [ "$(verdict_at "$state" scoped 1001)" = continue ] || fail "authenticated initial scope stopped"
+
+  unknown_head=412c36a4133097b5be5e5025f6eb39117fef231a
+  if git -C "$repo" cat-file -e "${unknown_head}^{commit}" 2>/dev/null; then
+    fail "unpublished fixture unexpectedly resolves"
+  fi
+  sed -i.bak "s/$old_head/$unknown_head/" "$ev" && rm -f "$ev.bak"
+  for epoch in 1010 1050; do
+    fold "$state" scoped "$ev" "$epoch" "$repo"
+    grep -Fxq "head=$old_head" "$state/scoped.validation-loop" \
+      || fail "scope rejection advanced the journal beyond its verified anchor"
+    grep -Fxq "heads=$old_head" "$state/scoped.validation-loop" \
+      || fail "unpublished scope head entered verified history"
+    grep -Fxq 'last_progress=1000' "$state/scoped.validation-loop" \
+      || fail "repeated unpublished scope head counted as progress"
+    grep -Fxq "scope_base=$base_head" "$state/scoped.validation-loop" || fail "scope base was lost"
+    grep -Fxq "scope_head=$old_head" "$state/scoped.validation-loop" || fail "scope anchor was lost"
+    grep -Fxq 'scope_paths=file' "$state/scoped.validation-loop" || fail "scope paths were lost"
+    v=$(verdict_at "$state" scoped "$epoch")
+    case "$v" in
+      stop*"unproven head ancestry"*) ;;
+      *) fail "scope-bearing unpublished head lost its unproven-ancestry stop: '$v'" ;;
+    esac
+  done
+
+  printf 'two\n' > "$repo/file"
+  git -C "$repo" commit -qam two
+  next_head=$(git -C "$repo" rev-parse HEAD)
+  sed -i.bak "s/$unknown_head/$next_head/" "$ev" && rm -f "$ev.bak"
+  fold "$state" scoped "$ev" 1100 "$repo"
+  grep -Fxq "head=$next_head" "$state/scoped.validation-loop" \
+    || fail "a proven descendant was not judged against the retained anchor"
+  grep -Fxq "heads=$old_head $next_head" "$state/scoped.validation-loop" \
+    || fail "verified history included the unpublished intermediate"
+  v=$(verdict_at "$state" scoped 1101)
+  case "$v" in
+    stop*"unproven head ancestry"*) ;;
+    *) fail "proven descendant silently cleared the prior conservative stop: '$v'" ;;
+  esac
+  pass "scope-bearing unpublished head retains anchor, history, scope and progress until ancestry is proven"
+}
+
+# Disconfirming counterpart: a head that DOES resolve locally but is
+# genuinely not a descendant of the last verified head (a real regression,
+# not an unpublished lane head) must still stop as a demonstrated incoherent
+# transition - the fix narrows a false positive, it does not weaken the real
+# check.
+test_resolvable_non_ancestor_head_still_incoherent() {
+  local state ev dir repo base_sha head_a head_b v
+  dir=$(make_case vloop-non-ancestor); state="$dir/state"; ev="$dir/ev"; repo="$dir/repo"
+  git init -q "$repo"
+  git -C "$repo" config user.email test@example.com
+  git -C "$repo" config user.name test
+  printf 'base\n' > "$repo/file"
+  git -C "$repo" add file && git -C "$repo" commit -qm base
+  base_sha=$(git -C "$repo" rev-parse HEAD)
+  printf 'a\n' > "$repo/file"; git -C "$repo" commit -qam a
+  head_a=$(git -C "$repo" rev-parse HEAD)
+  git -C "$repo" checkout -q "$base_sha"
+  printf 'b\n' > "$repo/file"; git -C "$repo" commit -qam b
+  head_b=$(git -C "$repo" rev-parse HEAD)
+
+  ev_running "$ev" 01RUN running pending
+  sed -i.bak "s/^  head: \"abc1234\"/  head: \"$head_a\"/" "$ev" && rm -f "$ev.bak"
+  printf 'base: "%s"\nchanges[1]{path}:\n  file\n' "$base_sha" >> "$ev"
+  git -C "$repo" checkout -q "$head_a"
+  fold "$state" nonancestor "$ev" 1000 "$repo"
+  [ "$(verdict_at "$state" nonancestor 1001)" = continue ] || fail "initial nonancestor fixture was already stopped"
+  git -C "$repo" checkout -q "$head_b"
+  sed -i.bak "s/^  head: \"$head_a\"/  head: \"$head_b\"/" "$ev" && rm -f "$ev.bak"
+  fold "$state" nonancestor "$ev" 1010 "$repo"
+
+  v=$(verdict_at "$state" nonancestor 1020)
+  case "$v" in
+    stop*"incoherent head transition"*) ;;
+    *) fail "a resolvable, genuinely diverged (non-ancestor) head did not stop as a demonstrated incoherent transition: '$v'" ;;
+  esac
+  grep -q "^head=$head_a\$" "$state/nonancestor.validation-loop" \
+    || fail "a demonstrated incoherent transition's anchor advanced past the last verified head"
+  grep -Fxq 'last_progress=1000' "$state/nonancestor.validation-loop" \
+    || fail "a demonstrated incoherent transition counted as progress"
+  pass "resolvable non-ancestor head transition: still a demonstrated incoherent transition, anchor pinned - the unresolvable-ancestry fix does not weaken this"
+}
+
 test_threshold_overrides_cannot_disable_bounds() {
   local state ev dir v
   dir=$(make_case vloop-override); state="$dir/state"
@@ -1084,6 +1333,10 @@ test_head_change_set_is_bounded
 test_initial_scope_manifest_is_authenticated
 test_head_change_set_allows_authenticated_addition
 test_head_transition_is_coherent
+test_findings_scalar_accepts_mixed_awaiting_autofix
+test_unresolvable_head_is_unknown_not_incoherent
+test_scope_bearing_unpublished_head_retains_verified_anchor
+test_resolvable_non_ancestor_head_still_incoherent
 test_threshold_overrides_cannot_disable_bounds
 test_watcher_surfaces_validation_loop_limit
 test_watcher_surfaces_limit_after_generic_stale

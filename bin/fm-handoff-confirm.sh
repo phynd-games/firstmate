@@ -42,10 +42,16 @@
 #
 #   fm-handoff-confirm.sh confirm --task <id> --record <path>
 #       [--timeout <secs>] [--poll <secs>] [--no-rering]
-#     Wait up to --timeout for the acknowledgement, then prove the start. A
-#     first window that expires without acknowledgement re-rings the exact
-#     record ONCE and waits one further window. A worker whose endpoint is
-#     already gone fails immediately rather than burning the window.
+#     Wait up to --timeout for the acknowledgement. A first window that
+#     expires without acknowledgement re-rings the exact record ONCE and waits
+#     one further window. After acknowledgement, start a separate --timeout
+#     window to observe a non-unknown state. Unknown evidence without proof
+#     of departure keeps polling; if it stays unknown, the handoff remains
+#     unconfirmed without claiming the worker departed. A concrete state
+#     matching the baseline fails immediately when a state change is required;
+#     ordinary steers do not require a change in aggregate state.
+#     A worker whose endpoint is proven gone fails at the initial check or
+#     the post-acknowledgement check without waiting out that window.
 #     Exit 0 = acknowledged AND started; both proven, and the obligation closes.
 #     Exit 3 = not proven. A `stale` wake naming the task and the exact reason
 #     is queued first, so the failure reaches supervision as recovery work
@@ -162,9 +168,11 @@ result_path() {  # <expect-file>
 
 # An endpoint that is provably gone is a failure NOW: waiting the full window
 # for an acknowledgement no process can ever write is exactly the delay this
-# script exists to remove.
+# script exists to remove. Honor bin/fm-crew-state.sh's documented uncertainty
+# qualifier before interpreting its source field as proof of departure.
 endpoint_is_gone() {  # <crew-state-line>
   case "$1" in
+    *"not proof of death"*) return 1 ;;
     *"source: none"*) return 0 ;;
   esac
   return 1
@@ -275,6 +283,33 @@ await_ack() {  # <task> <record-basename> <digest> <deadline> <poll>
   done
 }
 
+# Apply the header's post-acknowledgement observation contract.
+# Sets AWAIT_START_LINE to the final read.
+# Returns: 0 started/proven, 1 deadline reached with evidence still
+# persistently unknown (not death), 2 endpoint genuinely gone, 3 concrete
+# state unchanged from baseline when a change is required.
+AWAIT_START_LINE=''
+await_start() {  # <task> <expect_change> <baseline_sig> <deadline> <poll>
+  local task=$1 expect_change=$2 baseline_sig=$3 deadline=$4 poll=$5 line token now
+  while :; do
+    line=$(crew_state_line "$task")
+    AWAIT_START_LINE=$line
+    if endpoint_is_gone "$line"; then
+      return 2
+    fi
+    token=$(state_token "$line")
+    if [ "$token" != unknown ]; then
+      if [ "$expect_change" != 1 ] || [ "$(state_signature "$line")" != "$baseline_sig" ]; then
+        return 0
+      fi
+      return 3
+    fi
+    now=$(date +%s)
+    [ "$now" -lt "$deadline" ] || return 1
+    sleep "$poll"
+  done
+}
+
 cmd_confirm() {
   local task='' record='' timeout=$TIMEOUT_DEFAULT poll=$POLL_DEFAULT rering=1
   while [ "$#" -gt 0 ]; do
@@ -348,18 +383,31 @@ cmd_confirm() {
     return 3
   fi
 
-  # Acknowledged. Now prove the work actually began.
-  line=$(crew_state_line "$task")
-  if endpoint_is_gone "$line"; then
-    reason="the worker acknowledged record $base and then went away without starting the work ($line)"
-    finish_failed "$expect" "$task" "$reason"
-    return 3
-  fi
-  if [ "$expect_change" = 1 ] && [ "$(state_signature "$line")" = "$baseline_sig" ]; then
-    reason="record $base was acknowledged but the work never started: the run is still $line"
-    finish_failed "$expect" "$task" "$reason"
-    return 3
-  fi
+  # The start-observation window begins after acknowledgement, independently
+  # of time already spent waiting for the record to move.
+  local start_deadline start_rc
+  start_deadline=$(( $(date +%s) + timeout ))
+  start_rc=0
+  await_start "$task" "$expect_change" "$baseline_sig" "$start_deadline" "$poll" || start_rc=$?
+  line=$AWAIT_START_LINE
+  case "$start_rc" in
+    0) ;;
+    2)
+      reason="the worker acknowledged record $base and then went away without starting the work ($line)"
+      finish_failed "$expect" "$task" "$reason"
+      return 3
+      ;;
+    3)
+      reason="record $base was acknowledged but the work never started: the run is still $line"
+      finish_failed "$expect" "$task" "$reason"
+      return 3
+      ;;
+    1)
+      reason="record $base was acknowledged but the worker's validation evidence stayed unreadable through the window; the work's start could not be proven, and unreadable evidence alone never establishes that the worker departed ($line)"
+      finish_failed "$expect" "$task" "$reason"
+      return 3
+      ;;
+  esac
 
   printf 'schema=%s\nresult=confirmed\nat=%s\nstate=%s\n' \
     "$HANDOFF_SCHEMA" "$(date +%s)" "$(state_signature "$line")" \

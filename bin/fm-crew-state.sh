@@ -46,6 +46,10 @@
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log.
+#      Unreadable validation evidence also reports unknown · none, but carries
+#      "(not proof of death)", as does an unreachable remote endpoint.
+#      Consumers must honor that qualifier: source: none alone cannot prove
+#      that a worker is dead or departed.
 #
 # Read-only and side-effect free, with one env-gated exception: when
 # FM_CREW_STATE_EVIDENCE_FILE names a path and a run is attributed, the raw run
@@ -489,7 +493,7 @@ COARSE_STATUS=""
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
   RUN_OUT=$(nm_run axi status)
   if [ -n "$RUN_OUT" ]; then
-    fm_vloop_evidence_valid "$RUN_OUT" || emit unknown none "unreadable validation run evidence"
+    fm_vloop_evidence_valid "$RUN_OUT" || emit unknown none "unreadable validation run evidence (not proof of death)"
     run_branch=$(strip_quotes "$(nm_field branch)")
     # Head equality, or the pipeline-owned-active exemption: while the
     # pipeline owns this branch, the daemon's own branch attribution is

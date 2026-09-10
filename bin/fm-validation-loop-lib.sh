@@ -21,6 +21,12 @@
 #     run evidence frozen past the stall bound), or its pipeline evidence has
 #     gone stale (an active run recorded here, but no readable run evidence
 #     within the freshness bound - the unknown/unreadable/dead case).
+#   - A changed head whose ancestry cannot be resolved stops with an
+#     "unproven head ancestry" reason, without crediting progress. A resolvable
+#     non-ancestor still stops as an "incoherent head transition". Neither
+#     advances the journal's head past its last verified anchor. A later
+#     proven advance is checked against that anchor and may update it, but
+#     does not clear the recorded stop; recovery follows the reset below.
 #   - A stop NEVER touches the worker, the branch, the worktree, or the run:
 #     it only flips the absorb verdict so the wake surfaces to the supervisor
 #     with the recorded reason. Custody of the branch and the validation run
@@ -65,8 +71,12 @@
 # EVIDENCE. fm_vloop_observe consumes the evidence file bin/fm-crew-state.sh
 # exports when FM_CREW_STATE_EVIDENCE_FILE is set: the raw `axi status` TOON
 # for a fully attributed run, or one `coarse: <status>` line from the
-# runs-list fallback. A missing or unparseable evidence file folds nothing -
-# this library never fabricates an observation.
+# runs-list fallback. Findings may be a table or a run-level scalar: `none`,
+# `<N> awaiting`, or `<N> awaiting, <M> auto-fix`, with nonnegative decimal
+# counts; scalar values may be unquoted or enclosed in double quotes.
+# Acceptance still requires the surrounding run and table structure to pass
+# fm_vloop_evidence_valid. Missing evidence folds nothing; malformed evidence
+# records a stop without fabricating an observation.
 #
 # All functions are safe under `set -u` and never exit the caller; observe
 # returns 2 for malformed evidence and 1 when the journal write itself fails.
@@ -263,7 +273,8 @@ _fm_vloop_findings_valid() {  # <evidence-content>
       sub(/^[^:]*:/, "", value)
       sub(/^[[:space:]]+/, "", value)
       sub(/[[:space:]]+$/, "", value)
-      if (value != "none" && value !~ /^[0-9]+ awaiting$/) invalid = 1
+      if (value ~ /^".*"$/) value = substr(value, 2, length(value) - 2)
+      if (value != "none" && value !~ /^[0-9]+ awaiting$/ && value !~ /^[0-9]+ awaiting, [0-9]+ auto-fix$/) invalid = 1
       next
     }
     /^findings:/ { invalid = 1; next }
@@ -680,7 +691,7 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   local s_scope_base s_scope_head s_scope_paths scope_base scope_head scope_paths evidence_base evidence_paths
   local scope_evidence_present
   local fix_rounds themes heads last_progress active stop_reason='' max_fix max_theme theme_max tmp prior_terminal coarse_run coarse_head
-  local head_transition=0
+  local head_transition=0 head_pinned=0 journal_head
   [ -n "$state" ] && [ -d "$state" ] || return 0
   journal=$(fm_vloop_journal_path "$state" "$id")
   now=$(_fm_vloop_now)
@@ -780,6 +791,9 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   status=$(fm_nm_strip_quotes "$(fm_nm_field "$content" status)")
   outcome=$(fm_nm_strip_quotes "$(fm_nm_field "$content" outcome)")
   head=$(fm_nm_strip_quotes "$(fm_nm_field "$content" head)")
+  if [ "$run_id" = "$s_run" ] && [ -n "$s_head" ] && [ "$head" != "$s_head" ]; then
+    head_pinned=1
+  fi
   phase=$(_fm_vloop_phase "$content" "$status" "$outcome")
   if [ "$run_id" = "$s_run" ] && [ "$phase" != terminal ] && {
     [ "$s_phase" = terminal ] || [ "$prior_terminal" = 1 ]
@@ -845,14 +859,22 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
     scope_head=$s_scope_head
     scope_paths=$s_scope_paths
   fi
-  if [ -z "$stop_reason" ] && [ "$run_id" = "$s_run" ] && [ -n "$s_head" ] && [ "$head" != "$s_head" ]; then
+  if [ "$run_id" = "$s_run" ] && [ -n "$s_head" ] && [ "$head" != "$s_head" ]; then
     if _fm_vloop_head_seen "$heads" "$head"; then
       stop_reason="incoherent head transition from ${s_head:-unknown} to $head for run $run_id"
+      head_pinned=1
     elif _fm_vloop_head_advance_valid "$worktree" "$s_head" "$head" "$scope_paths"; then
       head_transition=1
+      head_pinned=0
       heads="$heads $head"
+    elif ! fm_nm_head_resolvable "$worktree" "$s_head" || ! fm_nm_head_resolvable "$worktree" "$head"; then
+      # The pipeline may not have published this commit back to the worktree;
+      # apply the header's unproven-ancestry contract, not a claim of divergence.
+      stop_reason="unproven head ancestry: $head could not be resolved from the last verified head ${s_head:-unknown} for run $run_id (not a demonstrated incoherent transition)"
+      head_pinned=1
     else
       stop_reason="incoherent head transition from ${s_head:-unknown} to $head for run $run_id"
+      head_pinned=1
     fi
   fi
 
@@ -889,11 +911,16 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
     fi
   fi
 
+  # Preserve the header's verified anchor even when scope validation also
+  # rejected this observation; rejected intermediate heads cannot become history.
+  journal_head=$head
+  [ "$head_pinned" = 1 ] && journal_head=$s_head
+
   tmp="$journal.tmp.$$"
   {
     printf 'version=1\n'
     printf 'run=%s\n' "$run_id"
-    printf 'head=%s\n' "$head"
+    printf 'head=%s\n' "$journal_head"
     printf 'status=%s\n' "$status"
     printf 'phase=%s\n' "$phase"
     printf 'findings_sig=%s\n' "$findings_sig"
