@@ -49,9 +49,10 @@ jobs:
   # Excluded per current captain instruction (recorded in this Firstmate
   # home's private data/captain.md, Firstmate-repository-only): the hosted
   # portable-parallel shards, the four-way portable-serial matrix, and their
-  # dependent timing aggregate were failing on every push to main on the
-  # hosted ubuntu-latest runner. Skip/exclude rather than spend cycles
-  # repairing them; their owners remain available for deliberate local use:
+  # dependent timing aggregate are excluded because the behavior jobs have
+  # pre-existing hosted ubuntu-latest runner/Herdr-availability failures.
+  # These jobs are not claimed as passing; their owners remain available
+  # for deliberate local use:
   # bin/fm-test-run.sh's portable-parallel-1, portable-parallel-2, and
   # portable-serial-<N>of4 lanes, and its --aggregate-json flag
   # (docs/fm-test-portable-shards.md). Test coverage guard and Repo
