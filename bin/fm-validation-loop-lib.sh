@@ -21,6 +21,12 @@
 #     run evidence frozen past the stall bound), or its pipeline evidence has
 #     gone stale (an active run recorded here, but no readable run evidence
 #     within the freshness bound - the unknown/unreadable/dead case).
+#   - A changed head whose ancestry cannot be resolved stops with an
+#     "unproven head ancestry" reason, without crediting progress. A resolvable
+#     non-ancestor still stops as an "incoherent head transition". Neither
+#     advances the journal's head past its last verified anchor. A later
+#     proven advance is checked against that anchor and may update it, but
+#     does not clear the recorded stop; recovery follows the reset below.
 #   - A stop NEVER touches the worker, the branch, the worktree, or the run:
 #     it only flips the absorb verdict so the wake surfaces to the supervisor
 #     with the recorded reason. Custody of the branch and the validation run
@@ -65,8 +71,12 @@
 # EVIDENCE. fm_vloop_observe consumes the evidence file bin/fm-crew-state.sh
 # exports when FM_CREW_STATE_EVIDENCE_FILE is set: the raw `axi status` TOON
 # for a fully attributed run, or one `coarse: <status>` line from the
-# runs-list fallback. A missing or unparseable evidence file folds nothing -
-# this library never fabricates an observation.
+# runs-list fallback. Findings may be a table or a run-level scalar: `none`,
+# `<N> awaiting`, or `<N> awaiting, <M> auto-fix`, with nonnegative decimal
+# counts; scalar values may be unquoted or enclosed in double quotes.
+# Acceptance still requires the surrounding run and table structure to pass
+# fm_vloop_evidence_valid. Missing evidence folds nothing; malformed evidence
+# records a stop without fabricating an observation.
 #
 # All functions are safe under `set -u` and never exit the caller; observe
 # returns 2 for malformed evidence and 1 when the journal write itself fails.
@@ -858,17 +868,8 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
       head_pinned=0
       heads="$heads $head"
     elif ! fm_nm_head_resolvable "$worktree" "$s_head" || ! fm_nm_head_resolvable "$worktree" "$head"; then
-      # Unresolvable ancestry (e.g. an unpublished pipeline-owned lane head -
-      # fm_nm_head_resolvable's own documented distinction in
-      # bin/fm-nm-run-lib.sh) is UNKNOWN, not a demonstrated incoherent
-      # transition: the daemon's own repo may simply not have pushed this
-      # commit back here yet. Still refuse automatic continuation on unproved
-      # evidence - this stays a stop, never a silently-absorbed wake, and
-      # never counts as progress - but say plainly that ancestry could not be
-      # established rather than asserting a proof this check never made. The
-      # journal keeps the last VERIFIED head as its anchor (head_pinned,
-      # below) so a later genuinely resolvable head is judged against real
-      # history, not against an unproven intermediate value.
+      # The pipeline may not have published this commit back to the worktree;
+      # apply the header's unproven-ancestry contract, not a claim of divergence.
       stop_reason="unproven head ancestry: $head could not be resolved from the last verified head ${s_head:-unknown} for run $run_id (not a demonstrated incoherent transition)"
       head_pinned=1
     else
@@ -910,13 +911,8 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
     fi
   fi
 
-  # The journal's head identity advances only on a PROVEN transition (or a
-  # clean slate: unchanged head, or a new run). Any non-advancing outcome
-  # above (a seen/regressed head, unproven/unresolvable ancestry, or a
-  # demonstrated incoherent transition) pins the anchor at the last verified
-  # head instead of the newly reported one, so a later observation is always
-  # judged against real proven history and never against an unproven or
-  # rejected intermediate value.
+  # Preserve the header's verified anchor even when scope validation also
+  # rejected this observation; rejected intermediate heads cannot become history.
   journal_head=$head
   [ "$head_pinned" = 1 ] && journal_head=$s_head
 

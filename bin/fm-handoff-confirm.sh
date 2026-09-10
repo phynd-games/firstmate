@@ -42,10 +42,16 @@
 #
 #   fm-handoff-confirm.sh confirm --task <id> --record <path>
 #       [--timeout <secs>] [--poll <secs>] [--no-rering]
-#     Wait up to --timeout for the acknowledgement, then prove the start. A
-#     first window that expires without acknowledgement re-rings the exact
-#     record ONCE and waits one further window. A worker whose endpoint is
-#     already gone fails immediately rather than burning the window.
+#     Wait up to --timeout for the acknowledgement. A first window that
+#     expires without acknowledgement re-rings the exact record ONCE and waits
+#     one further window. After acknowledgement, start a separate --timeout
+#     window to observe a non-unknown state. Unknown evidence without proof
+#     of departure keeps polling; if it stays unknown, the handoff remains
+#     unconfirmed without claiming the worker departed. A concrete state
+#     matching the baseline fails immediately when a state change is required;
+#     ordinary steers do not require a change in aggregate state.
+#     A worker whose endpoint is proven gone fails at the initial check or
+#     the post-acknowledgement check without waiting out that window.
 #     Exit 0 = acknowledged AND started; both proven, and the obligation closes.
 #     Exit 3 = not proven. A `stale` wake naming the task and the exact reason
 #     is queued first, so the failure reaches supervision as recovery work
@@ -162,15 +168,8 @@ result_path() {  # <expect-file>
 
 # An endpoint that is provably gone is a failure NOW: waiting the full window
 # for an acknowledgement no process can ever write is exactly the delay this
-# script exists to remove. "source: none" alone is not that proof: it also
-# covers a crew-state read that found a live attributed run but could not
-# parse its validation evidence (bin/fm-crew-state.sh's own "(not proof of
-# death)" qualifier, the same wording already used for an unreachable remote
-# endpoint) - a worker mid-fix-round is not gone merely because one poll's
-# evidence shape was unreadable. Only a line WITHOUT that qualifier counts as
-# gone, so a genuinely missing task, torn-down worktree, or absent backend
-# target - none of which ever carry the qualifier - keeps failing immediately
-# exactly as before.
+# script exists to remove. Honor bin/fm-crew-state.sh's documented uncertainty
+# qualifier before interpreting its source field as proof of departure.
 endpoint_is_gone() {  # <crew-state-line>
   case "$1" in
     *"not proof of death"*) return 1 ;;
@@ -284,17 +283,8 @@ await_ack() {  # <task> <record-basename> <digest> <deadline> <poll>
   done
 }
 
-# Poll crew-state after acknowledgement until the work's start is either
-# positively proven or a genuinely gone endpoint is found, or the deadline
-# expires. Unreadable-but-live evidence (state: unknown, not carrying a
-# genuinely-gone signal per endpoint_is_gone) is neither death nor proof of a
-# start: acknowledgement plus an unreadable read does not mean the work
-# began, so this keeps polling for a LATER positively observed state rather
-# than confirming a start nobody actually proved. When expect_change=1, a
-# concrete (non-unknown, non-gone) state matching the pre-handoff baseline
-# returns immediately as acknowledged without starting. Ordinary steers
-# retain their existing confirmation behavior without requiring an aggregate
-# state change. Sets AWAIT_START_LINE to the final read.
+# Apply the header's post-acknowledgement observation contract.
+# Sets AWAIT_START_LINE to the final read.
 # Returns: 0 started/proven, 1 deadline reached with evidence still
 # persistently unknown (not death), 2 endpoint genuinely gone, 3 concrete
 # state unchanged from baseline when a change is required.
@@ -393,9 +383,8 @@ cmd_confirm() {
     return 3
   fi
 
-  # Acknowledged. Now prove the work actually began. A persistent unreadable
-  # read is neither death nor a proven start, so this polls the same window
-  # for a later positively observed state before giving up (await_start).
+  # The start-observation window begins after acknowledgement, independently
+  # of time already spent waiting for the record to move.
   local start_deadline start_rc
   start_deadline=$(( $(date +%s) + timeout ))
   start_rc=0
