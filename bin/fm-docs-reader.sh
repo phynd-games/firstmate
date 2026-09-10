@@ -530,7 +530,8 @@ wait_ready() {  # <pid> <port> - until the token answers, the pid dies, or the b
   local pid=$1 port=$2 deadline
   deadline=$(( $(date +%s) + FM_DOCS_READER_READY_SECS ))
   while [ "$(date +%s)" -le "$deadline" ]; do
-    if port_answers_as_ours "$port"; then
+    if port_answers_as_ours "$port" \
+      && lsof -nP -a -p "$pid" -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | grep -qx "$pid"; then
       return 0
     fi
     fm_pid_alive "$pid" || return 1
@@ -575,22 +576,22 @@ start_server() {  # <python> - prints the URL on success
     nohup "$python" -m mkdocs serve -f "$MKDOCS_CONFIG" -a "127.0.0.1:$port" \
       >> "$SERVE_LOG" 2>&1 </dev/null &
     pid=$!
-    identity=$(fm_pid_identity "$pid" 2>/dev/null || true)
-    if [ -z "$identity" ]; then
-      # A process whose start identity cannot be read cannot be proven ours
-      # later, so it cannot become this home's reader; end it now.
-      kill "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-      dr_launch_fail "start identity for pid $pid could not be read; process ended" cleaned
-      continue
-    fi
-    dr_launch_created "$pid" "$port" "$identity" process || {
-      kill "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-      dr_launch_fail "process identity could not be recorded; process ended" cleaned
-      return 1
-    }
     if wait_ready "$pid" "$port"; then
+      identity=$(fm_pid_identity "$pid" 2>/dev/null || true)
+      if [ -z "$identity" ]; then
+        # A process whose start identity cannot be read cannot be proven ours
+        # later, so it cannot become this home's reader; end it now.
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        dr_launch_fail "start identity for pid $pid could not be read; process ended" cleaned
+        continue
+      fi
+      dr_launch_created "$pid" "$port" "$identity" process || {
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        dr_launch_fail "process identity could not be recorded; process ended" cleaned
+        return 1
+      }
       record_write "$pid" "$port" "$python" "$identity"
       dr_launch_ready
       printf 'http://127.0.0.1:%s/\n' "$port"
@@ -600,9 +601,9 @@ start_server() {  # <python> - prints the URL on success
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
     if fm_pid_alive "$pid"; then
-      dr_launch_fail "no token answered on port $port within ${FM_DOCS_READER_READY_SECS}s and the process did not exit" unknown
+      dr_launch_fail "no token-verified listener owned by pid $pid on port $port within ${FM_DOCS_READER_READY_SECS}s and the process did not exit" unknown
     else
-      dr_launch_fail "no token answered on port $port within ${FM_DOCS_READER_READY_SECS}s; process ended" cleaned
+      dr_launch_fail "no token-verified listener owned by pid $pid on port $port within ${FM_DOCS_READER_READY_SECS}s; process ended" cleaned
     fi
   done
   return 1

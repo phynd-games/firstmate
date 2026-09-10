@@ -567,12 +567,27 @@ SH
   printf '# report\n\nDone.\n' > "$CASE_DIR/home/data/sp13/report.md"
   in_case "$ROOT/bin/fm-captain-hold.sh" complete sp13 --none >/dev/null 2>&1 || fail "captain-hold completion should succeed for an empty inventory"
   : > "$CASE_DIR/wrap.log"
+  exec 9<"$CASE_DIR/home/state/sp13.launch.lock"
   out=$(FM_TEST_WRAP_LOG="$CASE_DIR/wrap.log" FM_TEST_REAL_PYTHON="$(command -v python3)" FM_LAUNCH_RECORD_PYTHON="$wrap/python3" \
     in_case "$ROOT/bin/fm-teardown.sh" sp13 2>&1) || fail "teardown should succeed: $out"
   assert_contains "$out" "teardown sp13 complete" "teardown must report completion"
   grep -q 'retire --task sp13 --current --reason teardown' "$CASE_DIR/wrap.log" || fail "teardown must record the retired outcome before removing the record"
   [ ! -e "$CASE_DIR/home/state/sp13.launch" ] || fail "teardown must remove the launch record with the task's other runtime state"
-  [ ! -e "$CASE_DIR/home/state/sp13.launch.lock" ] || fail "teardown must remove the record lock"
+  python3 - "$OWNER" "$CASE_DIR/home/state" <<'PYTEST' || fail "teardown replaced the launch lock"
+import fcntl, os, subprocess, sys
+owner, state = sys.argv[1:]
+path = os.path.join(state, 'sp13.launch.lock')
+assert os.fstat(9).st_ino == os.stat(path).st_ino
+fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+command = [sys.executable, owner, '--state', state, 'intend', '--task', 'sp13',
+           '--owner', 'tester', '--origin', 'fresh']
+result = subprocess.run(command, capture_output=True, text=True)
+assert result.returncode == 1 and 'locked by another writer' in result.stderr, result
+fcntl.flock(9, fcntl.LOCK_UN)
+result = subprocess.run(command, capture_output=True, text=True)
+assert result.returncode == 0, result
+PYTEST
+  exec 9<&-
   [ "$(fake_tabs)" -eq 0 ] || fail "teardown must close the endpoint"
   assert_other_home_untouched "lifecycle"
   pass "control and teardown: relaunch stops then re-records, exit records stopped, teardown records retired before removal"
@@ -605,6 +620,11 @@ test_missing_python_refuses_before_any_create() {
   fake_log | grep -q 'create' && fail "nothing may be created when the record owner cannot run"
   pass "spawn: a missing python3 refuses before any Herdr create request"
 }
+
+if [ "${1:-}" = launch-retirement ]; then
+  test_control_exit_relaunch_and_teardown_record_outcomes
+  exit 0
+fi
 
 test_fresh_spawn_records_intent_before_creation_and_native_identity
 test_readiness_positive_and_negative_controls

@@ -535,8 +535,24 @@ test_procevent_runner_records_intent_before_fork_claim_identity_start_and_exit()
   [ "$(precord "$home" src-a launch.phase)" = exited ] || fail "a finished runner must read exited, got '$(precord "$home" src-a launch.phase)'"
   [ "$(precord "$home" src-a launch.outcome.code)" = 0 ] || fail "the runner's exit code must be retained"
   [ -f "$home/state/.launch-$subject" ] || fail "the record must live under the helper name"
+  exec 9<"$home/state/.launch-$subject.lock"
   pe "$home" retire src-a >/dev/null 2>&1 || true
   [ ! -e "$home/state/.launch-$subject" ] || fail "retiring the source must remove its record"
+  python3 - "$OWNER" "$home/state" "$subject" <<'PYTEST' || fail "retirement replaced the launch lock"
+import fcntl, os, subprocess, sys
+owner, state, subject = sys.argv[1:]
+path = os.path.join(state, '.launch-' + subject + '.lock')
+assert os.fstat(9).st_ino == os.stat(path).st_ino
+fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+command = [sys.executable, owner, '--state', state, 'intend', '--helper', subject,
+           '--owner', 'tester', '--origin', 'fresh']
+result = subprocess.run(command, capture_output=True, text=True)
+assert result.returncode == 1 and 'locked by another writer' in result.stderr, result
+fcntl.flock(9, fcntl.LOCK_UN)
+result = subprocess.run(command, capture_output=True, text=True)
+assert result.returncode == 0, result
+PYTEST
+  exec 9<&-
   pass "procevent: intent precedes the fork, the claimed runner is the identity, the started wait is readiness, and the exit and retirement are recorded"
 }
 
@@ -570,6 +586,11 @@ test_procevent_fork_that_cannot_claim_leaves_the_attempt_accounted() {
   pe "$home" retire src-b >/dev/null 2>&1 || true
   pass "procevent: a refused claim and a fork that died before claiming both leave an accounted attempt the next start settles"
 }
+
+if [ "${1:-}" = launch-retirement ]; then
+  test_procevent_runner_records_intent_before_fork_claim_identity_start_and_exit
+  exit 0
+fi
 
 test_supervisor_establish_records_intent_identity_readiness_and_stop
 test_supervisor_create_refusal_records_the_owner_uncertainty

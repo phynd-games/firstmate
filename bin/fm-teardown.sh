@@ -698,7 +698,6 @@ remote_secondmate_teardown() {
   fm_backlog_atomic_transition remove "$STATE/$ID.meta" "task record" "$STATE" || return 1
   rm -f -- "$STATE/$ID.turn-ended" "$STATE/$ID.validation-loop" \
     "$STATE/.branch-note-sig-$ID" "$STATE/$ID.launch"
-  rm -rf -- "$STATE/$ID.launch.lock"
   printf 'teardown %s complete (remote %s:%s)\n' "$ID" "$remote_host" "$remote_home"
   return 0
 }
@@ -3029,7 +3028,6 @@ remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 status_retire_presentation_task "$STATE" "$ID" || exit 1
 teardown_retire_launch_record
-rm -rf "$STATE/$ID.launch.lock"
 rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.launch" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \

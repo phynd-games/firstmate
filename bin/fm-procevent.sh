@@ -269,8 +269,7 @@ pe_launch_retire() {  # <source-id> - the source is gone; its record leaves with
   local subject
   subject=$(pe_launch_subject "$1")
   fm_launch_record retire --helper "$subject" --current --reason "source retired" >/dev/null 2>&1 || true
-  rm -f -- "$STATE/.launch-$subject" "$STATE/.launch-$subject.lock" 2>/dev/null || true
-  rmdir -- "$STATE/.launch-$subject.lock" 2>/dev/null || true
+  rm -f -- "$STATE/.launch-$subject" 2>/dev/null || true
 }
 
 REG=$(fm_procevent_registry_dir "$STATE")

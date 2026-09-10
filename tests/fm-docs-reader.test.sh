@@ -682,6 +682,55 @@ SH
   pass "the reader records intent before its process, binds pid plus start identity, and records stop and observed exit"
 }
 
+test_delayed_exec_records_serving_identity() {
+  local home wrapper reader_job pid before current recorded digest base out real_nohup real_curl
+  home=$(new_home delayed-exec)
+  wrapper="$home/wrapper"
+  mkdir -p "$wrapper"
+  cat > "$wrapper/nohup" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$$" > "$FM_TEST_READER_STARTED"
+while [ ! -e "$FM_TEST_READER_RELEASE" ]; do sleep 0.05; done
+exec "$FM_TEST_REAL_NOHUP" "$@"
+SH
+  cat > "$wrapper/curl" <<'SH'
+#!/usr/bin/env bash
+[ ! -e "$FM_TEST_READER_STARTED" ] || : > "$FM_TEST_READER_PROBED"
+exec "$FM_TEST_REAL_CURL" "$@"
+SH
+  chmod +x "$wrapper/nohup" "$wrapper/curl"
+  real_nohup=$(command -v nohup)
+  real_curl=$(command -v curl)
+  PATH="$wrapper:$PATH" FM_TEST_REAL_NOHUP="$real_nohup" FM_TEST_REAL_CURL="$real_curl" \
+    FM_TEST_READER_STARTED="$home/started" FM_TEST_READER_RELEASE="$home/release" FM_TEST_READER_PROBED="$home/probed" \
+    reader "$home" ensure > "$home/ensure.out" 2>&1 &
+  reader_job=$!
+  wait_until 15 test -s "$home/started" || fail "the delayed reader did not fork"
+  pid=$(cat "$home/started")
+  before=$(fm_pid_identity "$pid")
+  RECOVERY_PID=$pid
+  RECOVERY_IDENTITY=$before
+  wait_until 15 test -e "$home/probed" || fail "ensure never probed the delayed reader"
+  [ ! -e "$home/state/.docs-reader" ] || fail "ownership was published before the server executed"
+  : > "$home/release"
+  wait "$reader_job" || fail "ensure failed after exec: $(cat "$home/ensure.out")"
+  current=$(fm_pid_identity "$pid")
+  RECOVERY_IDENTITY=$current
+  [ "$current" != "$before" ] || fail "the fixture did not change process identity at exec"
+  recorded=$(awk -F= '$1 == "pid_identity" {sub(/^[^=]*=/, ""); print}' "$home/state/.docs-reader")
+  [ "$recorded" = "$current" ] || fail "ownership retained the pre-exec identity"
+  digest=$(printf '%s' "$current" | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())')
+  [ "$(python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" get --helper docs-reader launch.identity.pid_identity_sha256)" = "$digest" ] \
+    || fail "the launch record retained the pre-exec identity"
+  base=$(ensure_url "$home")
+  assert_contains "$(cat "$home/ensure.out")" "$base" "ensure must reuse the serving reader"
+  reader "$home" status >/dev/null || fail "the new reader is not verifiably owned"
+  out=$(reader "$home" stop) || fail "stop failed"
+  assert_contains "$out" "stopped pid $pid" "stop did not recognize the serving identity"
+  fm_pid_alive "$pid" && fail "stop left the serving reader alive"
+  pass "reader binds its post-exec listening process and stops it by that identity"
+}
+
 test_adopt_interrupted_launch() {
   local home out rc pid port id original identity digest
   home=$(new_home interrupted-launch)
@@ -736,6 +785,7 @@ PYTEST
 }
 
 if [ "${1:-}" = launch-recovery ]; then
+  test_delayed_exec_records_serving_identity
   test_adopt_interrupted_launch
   exit 0
 fi
@@ -751,5 +801,6 @@ test_disabled_paths_print_no_url
 test_navigation_scales_with_inventory
 test_ensure_converges_theme_on_live_reader
 test_launch_record_and_identity_binding
+test_delayed_exec_records_serving_identity
 test_adopt_interrupted_launch
 test_install_from_pinned_requirements

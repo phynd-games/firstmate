@@ -24,6 +24,7 @@ The record closes that gap by being written before the first external creation c
 | `state/.launch-procevent-<source>-<checksum>` | one registered process-event runner (`bin/fm-procevent.sh`); removed when the source is retired |
 
 Records are private JSON, mode 0600, replaced atomically, and refused when the path is a symlink or not a regular file.
+Their sibling `.lock` files retain a stable inode across retirement so concurrent writers continue to share one kernel lock.
 Each holds the current launch plus a bounded history of its transitions and a bounded list of previous launches with their outcomes, so the last few terminal results of a subject survive its next launch.
 
 ## One launch, in order
