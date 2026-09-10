@@ -22,6 +22,7 @@ While supervision is still needed and away mode remains inactive, an actionable 
 
 Every owner above lives inside the primary harness process, so a home whose harness never loaded its owner has none at all and supervision ends after one cycle.
 `bin/fm-herdr-supervisor.sh` is the fallback for exactly that case: it hosts one continuity owner in a Herdr-tracked pane, stands down whenever a live harness-native or away-mode owner is provable, and never becomes a second authority over the watcher.
+Like the Pi extension, it re-arms after an actionable close as a handling successor of the arm that closed, so its immediate re-arm is never read as a new down stretch by the recovery-episode contract below.
 [`herdr-supervisor.md`](herdr-supervisor.md) owns its eligibility, health, recovery, and the boundary it does not promise to recover across.
 
 ## Actionable wake ordering

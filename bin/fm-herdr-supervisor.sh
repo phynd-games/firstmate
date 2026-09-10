@@ -578,10 +578,31 @@ backend_load() {
 }
 
 HERDR_LOADED=0
+# The gateway's first refusal line, kept so a failed load can be reported with
+# the native reason (a stopped host server, an unreadable session) instead of
+# the bare "adapter unavailable" that hides it.
+HS_HERDR_LOAD_ERROR=
 herdr_load() {
+  local err session
   [ "$HERDR_LOADED" -eq 0 ] || return 0
   backend_load || return 1
-  fm_backend_source herdr >/dev/null 2>&1 || return 1
+  # Bounded preflight before the gateway load. The gateway's own native checks
+  # call the vendor CLI without a bound, and this script's contract is that no
+  # Herdr call it triggers can wedge its caller (`ensure` runs inside bootstrap's
+  # command substitution). The session is the same ambient selection
+  # fm_backend_herdr_session makes; the adapter is not loaded yet to ask it.
+  session=${HERDR_SESSION:-default}
+  if ! hs_herdr "$session" status --json >/dev/null 2>&1; then
+    HS_HERDR_LOAD_ERROR="could not read herdr status for session '$session' within ${HERDR_CALL_TIMEOUT}s"
+    return 1
+  fi
+  err=$(mktemp "${TMPDIR:-/tmp}/fm-herdr-supervisor-load.XXXXXX" 2>/dev/null) || err=/dev/null
+  if ! fm_backend_source herdr >/dev/null 2>"$err"; then
+    HS_HERDR_LOAD_ERROR=$(sed -n '1p' "$err" 2>/dev/null || printf '')
+    [ "$err" = /dev/null ] || rm -f "$err"
+    return 1
+  fi
+  [ "$err" = /dev/null ] || rm -f "$err"
   HERDR_LOADED=1
 }
 
@@ -632,7 +653,10 @@ herdr_identity() {
   HS_SESSION=
   HS_SOCKET=
   HS_SOCKET_IDENTITY=
-  herdr_load || { echo "herdr backend adapter could not be loaded" >&2; return 1; }
+  herdr_load || {
+    echo "herdr backend adapter could not be loaded${HS_HERDR_LOAD_ERROR:+: $HS_HERDR_LOAD_ERROR}" >&2
+    return 1
+  }
   command -v herdr >/dev/null 2>&1 || { echo "the herdr CLI is not installed" >&2; return 1; }
   command -v jq >/dev/null 2>&1 || { echo "jq is not installed and the herdr adapter requires it" >&2; return 1; }
   HS_SESSION=$(fm_backend_herdr_session)
@@ -905,7 +929,12 @@ supervisor_eligible() {
     HS_INELIGIBLE_REASON="this home's runtime backend is '${backend:-unknown}', not herdr"
     return 1
   fi
-  herdr_load || {
+  # A present herdr CLI whose native session check the gateway refuses (a
+  # stopped host server, an unreadable status) is a hosting FAILURE for
+  # `establish` to report with a durable alarm, never a silent ineligibility:
+  # a home whose host server is down is exactly the lapse the captain must hear
+  # about, and no server is ever started from here.
+  herdr_load || command -v herdr >/dev/null 2>&1 || {
     HS_INELIGIBLE_REASON="the herdr backend adapter is unavailable"
     return 1
   }
@@ -1055,18 +1084,28 @@ recorded_workspace_matches() {
   pane_binding_intact "$session" "$workspace" "$tab" "$pane" || return 1
 }
 
-recorded_workspace_absent() {
-  local session socket socket_identity workspace out
-  session=$(record_get herdr_session || printf '')
-  socket=$(record_get herdr_socket || printf '')
-  socket_identity=$(record_get herdr_socket_identity || printf '')
-  workspace=$(record_get workspace || printf '')
-  [ -n "$session" ] && [ -n "$socket" ] && [ -n "$socket_identity" ] \
-    && [ -n "$workspace" ] || return 1
+# workspace_absent_on_verified_server: true only when the exact socket, bound to
+# the exact socket-instance identity, returns a readable workspace list that
+# does not contain the exact workspace id. An unreadable list, an identity
+# mismatch (the helper refuses it itself), or a present workspace is never
+# absence. Callers prove the server is the recorded one before asking.
+workspace_absent_on_verified_server() {  # <socket> <socket-identity> <workspace>
+  local socket=$1 socket_identity=$2 workspace=$3 out
+  [ -n "$socket" ] && [ -n "$socket_identity" ] && [ -n "$workspace" ] || return 1
   out=$(herdr_workspace_control "$socket" "$socket_identity" list 2>/dev/null) || return 1
   printf '%s' "$out" | jq -e --arg workspace "$workspace" \
     '[.result.workspaces[]? | select(.workspace_id == $workspace)] | length == 0' \
     >/dev/null 2>&1
+}
+
+recorded_workspace_absent() {
+  local session socket socket_identity workspace
+  session=$(record_get herdr_session || printf '')
+  socket=$(record_get herdr_socket || printf '')
+  socket_identity=$(record_get herdr_socket_identity || printf '')
+  workspace=$(record_get workspace || printf '')
+  [ -n "$session" ] || return 1
+  workspace_absent_on_verified_server "$socket" "$socket_identity" "$workspace"
 }
 
 supervisor_label() {
@@ -1483,8 +1522,19 @@ reconcile_pending_locked() {
   [ "$HS_SESSION" = "$session" ] && [ "$HS_SOCKET" = "$socket" ] \
     && [ "$HS_SOCKET_IDENTITY" = "$socket_identity" ] || return 1
   if ! rollback_workspace "$session" "$workspace" "$socket" "$socket_identity"; then
-    pending_restore_record quarantine || true
-    return 1
+    # The close can outrun its own bookkeeping: when the loop retires itself
+    # from inside the pane it hosts, closing that workspace ends the process
+    # before the `closed` record lands (2026-09-10). The receipt then names an
+    # exact workspace the SAME verified server already reports absent, and that
+    # is completed cleanup, not a failure to retry forever. Anything short of a
+    # readable list from the recorded server that lacks the exact id keeps the
+    # receipt and the quarantine exactly as before.
+    if workspace_absent_on_verified_server "$socket" "$socket_identity" "$workspace"; then
+      ledger_append reconciled "exact workspace $workspace is already absent on the verified Herdr server; recording its cleanup as complete"
+    else
+      pending_restore_record quarantine || true
+      return 1
+    fi
   fi
   pending_set_cleanup_state closed || return 1
   if [ -f "$RECORD" ] && [ "$record_generation" = "$generation" ]; then
@@ -1870,6 +1920,21 @@ loop_stop_arm() {
   return 0
 }
 
+# loop_sleep: the loop's long sleeps, made interruptible. Bash defers a trap
+# while a foreground command runs, so a TERM that arrives during a 5s rapid
+# floor or a 30s idle sleep would be answered only when that sleep ends -
+# later than the bounded 1s quarantine and 5s retire waits that signal this
+# loop, which then read the still-running process as one that would not stop
+# and quarantine the binding. Sleeping in a child and waiting on it lets the
+# trap run at once; the trap ends the child.
+LOOP_SLEEP_PID=
+loop_sleep() {  # <seconds>
+  sleep "$1" &
+  LOOP_SLEEP_PID=$!
+  wait "$LOOP_SLEEP_PID" 2>/dev/null || true
+  LOOP_SLEEP_PID=
+}
+
 backoff_delay() {  # <attempt>
   local attempt=$1 delay=$RETRY_BASE i=1
   while [ "$i" -lt "$attempt" ]; do
@@ -1948,6 +2013,16 @@ loop_launch_wait() {  # <pid>
 cmd_run() {
   local self out rc reason failures=0 rapid=0 started ended elapsed delay process_state arm_match
   local previous_reason='' stable_cycles=0 floor_delay=0
+  # The arm that just closed on an actionable reason, carried into exactly the
+  # next launch as FM_WATCH_PREDECESSOR_ARM_PID. That declares the successor
+  # as an Option B handling successor - the same declaration the Pi extension
+  # makes - so the watcher neither reopens the announced episode nor mints a
+  # new generation for what is not a new down stretch (2026-09-10: every plain
+  # immediate re-arm re-announced within seconds and no acknowledgement could
+  # ever match). It is consumed by that one launch and dropped on every idle,
+  # standby, or failure path, so an arm after a genuine gap still announces.
+  local closed_arm='' predecessor=''
+  local LOOP_PREDECESSOR_ARM_PID=''
   local LOOP_ARM_OUT
   local LOOP_ARM_UNRESOLVED=0 LOOP_ARM_UNRESOLVED_NEXT=0
   local LOOP_ARM_UNRESOLVED_ATTEMPTS=0
@@ -1973,7 +2048,7 @@ cmd_run() {
   # A retire, a supersession, or an operator closing the pane must end this
   # cleanly rather than leaving a record claiming a process that is going away.
   LOOP_ARM_OUT=
-  trap 'if loop_stop_arm; then [ "$LOOP_CLAIM_HELD" -eq 1 ] && fm_lock_release "$SUPERVISION_CLAIM"; LOOP_CLAIM_HELD=0; ledger_append loop-signal "terminated"; [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT"; loop_release_live; exit 0; else escalate "the arm child could not be terminated with a verified identity; retaining supervisor ownership"; fi' HUP TERM INT
+  trap '[ -z "$LOOP_SLEEP_PID" ] || kill "$LOOP_SLEEP_PID" 2>/dev/null; if loop_stop_arm; then [ "$LOOP_CLAIM_HELD" -eq 1 ] && fm_lock_release "$SUPERVISION_CLAIM"; LOOP_CLAIM_HELD=0; ledger_append loop-signal "terminated"; [ -z "$LOOP_ARM_OUT" ] || rm -f "$LOOP_ARM_OUT"; loop_release_live; exit 0; else escalate "the arm child could not be terminated with a verified identity; retaining supervisor ownership"; fi' HUP TERM INT
 
   while :; do
     if ! loop_owns_generation; then
@@ -2029,18 +2104,21 @@ cmd_run() {
         loop_release_live
         exit 0
       fi
-      sleep "$IDLE_INTERVAL"
+      LOOP_PREDECESSOR_ARM_PID=
+      loop_sleep "$IDLE_INTERVAL"
       continue
     fi
     if harness_owner_provable; then
       : > "$HEARTBEAT" 2>/dev/null || true
-      sleep "$IDLE_INTERVAL"
+      LOOP_PREDECESSOR_ARM_PID=
+      loop_sleep "$IDLE_INTERVAL"
       continue
     fi
 
     if [ "$(record_get mode || printf '')" != active ]; then
       : > "$HEARTBEAT" 2>/dev/null || true
-      sleep "$IDLE_INTERVAL"
+      LOOP_PREDECESSOR_ARM_PID=
+      loop_sleep "$IDLE_INTERVAL"
       continue
     fi
 
@@ -2049,7 +2127,8 @@ cmd_run() {
     if ! fm_supervision_needed "$STATE"; then
       # Idle, not finished: work can arrive at any time and re-establishing on
       # every quiet stretch would only add failure modes.
-      sleep "$IDLE_INTERVAL"
+      LOOP_PREDECESSOR_ARM_PID=
+      loop_sleep "$IDLE_INTERVAL"
       continue
     fi
 
@@ -2064,7 +2143,8 @@ cmd_run() {
     if [ "$LOOP_CLAIM_HELD" -eq 0 ]; then
       if ! fm_supervision_claim_acquire "$SUPERVISION_CLAIM" "$SUPERVISOR_LOCK_TRIES"; then
         escalate "the continuity ownership claim could not be acquired before arming"
-        sleep "$IDLE_INTERVAL"
+        LOOP_PREDECESSOR_ARM_PID=
+        loop_sleep "$IDLE_INTERVAL"
         continue
       fi
       LOOP_CLAIM_HELD=1
@@ -2074,7 +2154,8 @@ cmd_run() {
       LOOP_ARM_OUT=
       fm_lock_release "$SUPERVISION_CLAIM"
       LOOP_CLAIM_HELD=0
-      sleep "$IDLE_INTERVAL"
+      LOOP_PREDECESSOR_ARM_PID=
+      loop_sleep "$IDLE_INTERVAL"
       continue
     fi
     started=$(date +%s)
@@ -2082,7 +2163,13 @@ cmd_run() {
     if watcher_stale_lock_verified; then
       ledger_append watcher-restart "replacing identity-verified watcher with stale beacon"
     fi
-    "$ARM" >"$out" 2>&1 &
+    predecessor=$LOOP_PREDECESSOR_ARM_PID
+    LOOP_PREDECESSOR_ARM_PID=
+    if [ -n "$predecessor" ]; then
+      FM_WATCH_PREDECESSOR_ARM_PID=$predecessor "$ARM" >"$out" 2>&1 &
+    else
+      "$ARM" >"$out" 2>&1 &
+    fi
     LOOP_ARM_PID=$!
     LOOP_ARM_UNRESOLVED_ATTEMPTS=0
     herdr_blocked_clear || true
@@ -2099,7 +2186,7 @@ cmd_run() {
             loop_release_live
             exit 0
           fi
-          sleep "$IDLE_INTERVAL"
+          loop_sleep "$IDLE_INTERVAL"
           continue 2
         fi
         if harness_owner_provable; then
@@ -2108,7 +2195,7 @@ cmd_run() {
           rm -f "$out" 2>/dev/null || true
           LOOP_ARM_OUT=
           ledger_append handoff "another continuity owner became provable while arming; retaining standby supervisor binding"
-          sleep "$IDLE_INTERVAL"
+          loop_sleep "$IDLE_INTERVAL"
           continue 2
         fi
         : > "$HEARTBEAT" 2>/dev/null || true
@@ -2135,9 +2222,11 @@ cmd_run() {
       wait "$LOOP_ARM_PID" 2>/dev/null
       rc=$?
     fi
+    closed_arm=$LOOP_ARM_PID
     loop_release_claim || {
       escalate "the continuity ownership claim could not be released after the arm ended; retaining ownership"
-      sleep "$IDLE_INTERVAL"
+      LOOP_PREDECESSOR_ARM_PID=
+      loop_sleep "$IDLE_INTERVAL"
       continue
     }
     LOOP_ARM_PID=
@@ -2154,7 +2243,8 @@ cmd_run() {
         loop_release_live
         exit 0
       fi
-      sleep "$IDLE_INTERVAL"
+      LOOP_PREDECESSOR_ARM_PID=
+      loop_sleep "$IDLE_INTERVAL"
       continue
     fi
 
@@ -2166,6 +2256,7 @@ cmd_run() {
       ledger_append cycle "rc=0 elapsed=${elapsed}s $(ledger_clean_field "$reason")"
       rm -f "$out" 2>/dev/null || true
       LOOP_ARM_OUT=
+      LOOP_PREDECESSOR_ARM_PID=$closed_arm
       floor_delay=0
       if [ "$elapsed" -le "$RAPID_CYCLE_SECONDS" ]; then
         rapid=$((rapid + 1))
@@ -2184,7 +2275,7 @@ cmd_run() {
       fi
       previous_reason=$reason
       if [ "$floor_delay" -eq 1 ]; then
-        sleep "$RAPID_CYCLE_FLOOR"
+        loop_sleep "$RAPID_CYCLE_FLOOR"
       fi
       continue
     fi
@@ -2205,11 +2296,11 @@ cmd_run() {
       failures=0
       delay=$RETRY_MAX
       [ "$delay" -gt 0 ] || delay=1
-      sleep "$delay"
+      loop_sleep "$delay"
       continue
     fi
     delay=$(backoff_delay "$failures")
-    sleep "$delay"
+    loop_sleep "$delay"
   done
 }
 

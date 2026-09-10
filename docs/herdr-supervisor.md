@@ -94,7 +94,8 @@ Recovery is bounded, idempotent, and generation-safe.
 
 | Situation | What happens |
 | --- | --- |
-| Watcher exits on a wake | The loop re-arms immediately; the wake is already durable on the queue |
+| Watcher exits on a wake | The loop re-arms immediately as a handling successor of the arm that just closed (the same `FM_WATCH_PREDECESSOR_ARM_PID` declaration the Pi extension makes), so the delivered recovery generation is announced once and kept, not reopened as a new down stretch on every cycle; the wake is already durable on the queue and the model's exact acknowledgement retires it |
+| Watcher lost without a delivered wake | The next arm carries no predecessor, so a still-unacknowledged episode is announced exactly once more as a genuine gap, then the following handling successor holds |
 | Arm crashes, is killed, or fails | Every attempt leaves a durable alarm, ledger entry, and queue escalation; bounded exponential retry runs in rounds of five attempts by default while the tracked continuity owner remains alive |
 | Stale or dead watcher lock | The arm layer's own self-eviction and steal path reclaims a stale holder while preserving a live singleton |
 | Stale or missing watcher beacon | The plain arm rechecks the holder and recovers through its bounded identity-safe path; unknown holders fail closed with durable escalation |
@@ -105,7 +106,9 @@ Recovery is bounded, idempotent, and generation-safe.
 | Herdr server or session replaced | The old binding is retained as generation-named quarantine evidence without closing through the new server; once the named server is available again, `ensure` can establish a fresh generation |
 | Duplicate arm | Only the generation the binding record names may arm; every other generation stands down |
 | Rapid repeated cycles | Identical rapid cycles receive the floor delay before re-arming and create at most one durable alarm per episode, never a stop |
-| Herdr server not running | Refused with a durable diagnostic naming the missing server; no server is ever started from here |
+| Retire or replacement signal while the loop sleeps | The loop's idle, floor, and backoff sleeps run in a child it waits on, so a termination signal is answered at once instead of after the sleep ends; the bounded retire and quarantine waits therefore see the loop stop rather than reading a sleeping loop as one that would not |
+| Exact workspace already closed before its `closed` record landed | `retire` and `ensure` reconcile the receipt as completed cleanup only when the same recorded server, proven by socket and socket-instance identity, returns a readable workspace list without that exact id; an unreadable list, a different server, a still-present workspace, or an incomplete create identity keeps the receipt and quarantine unchanged, and nothing is ever resolved by label |
+| Herdr server not running | Refused with a durable diagnostic carrying the adapter gateway's native session-check refusal; the supervisor never reads that refusal as silent ineligibility, and no server is ever started from here |
 | Herdr CLI hangs | Bounded and treated as a failed read, so no caller can be wedged |
 
 Every failed or ambiguous establish and every failed arm attempt writes `state/.herdr-supervisor-alarm` and appends one `check: herdr-supervisor` record to the durable wake queue.
@@ -185,6 +188,7 @@ All under `state/`, all private to the home.
 - `.herdr-supervisor-monitor`, `.herdr-supervisor-monitor.lock`, `.herdr-supervisor-monitor-heartbeat` - the monitor's own record, singleton lock, and beacon.
   The record carries its pid, its `fm_pid_identity`, and the home session it is bound to, so a recycled pid can never read as a live monitor.
 - `.herdr-supervisor-pending-cleanup` - an exact session, socket, workspace, tab, and pane receipt retained across uncertain establish or retirement cleanup.
+  It is written before the native close on purpose: when the loop retires itself from inside the pane it hosts, closing that workspace ends the loop before the `closed` record lands, and the receipt is what lets the next `retire` or `ensure` finish the bookkeeping against the same verified server.
 - `.herdr-supervisor-quarantine.<generation>` - an exact old binding retained when the recorded Herdr server or pane identity can no longer be proven safe to close.
 - `.herdr-supervisor-quarantine.pending.<generation>` - an incomplete create receipt retained when bounded visibility reconciliation cannot prove that Herdr created nothing.
 - `.herdr-supervisor-alarm` - the latest durable actionable diagnostic, retained until three consecutive successful non-rapid cycles prove stability.
@@ -202,6 +206,7 @@ All under `state/`, all private to the home.
 
 `tests/fm-herdr-supervisor.test.sh` drives the real script against a stateful fake Herdr CLI and a scripted arm.
 It proves the central claim by counting arm invocations - one establish must produce many cycles, which is exactly what the incident lacked - and covers deference to away mode and to a loaded Pi extension, standby handoff, idempotent repeat establishes, recycled pids, post-query identity changes, superseded generations, stale heartbeats on a live but stopped supervisor, foreign pane processes, replaced Herdr servers, broken pane bindings, bounded retry with durable escalation, incomplete and partial Herdr responses, quarantine cleanup, retire, beacon separation, and both config gates.
+Two cases drive the real `bin/fm-watch-arm.sh` and `bin/fm-watch.sh` under the real loop against the 2026-09-10 incident: one delivered event must yield exactly one cycle, a stable handling successor with an unchanged recovery generation, a drain whose exact acknowledgement retires the episode while the same watcher keeps the lock, and a genuine watcher loss that announces exactly once more; and a self-retire whose native close ends the hosted loop before its `closed` record must be reconciled as completed cleanup on the same verified server, with an unreadable list and a changed server identity each keeping the receipt and quarantine.
 
 Every gate in that list is mutation-tested: reverting the guard in the script makes its case fail.
 
