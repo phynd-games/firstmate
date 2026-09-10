@@ -37,8 +37,8 @@ jobs:
 
   # Excluded per current captain instruction (recorded in this Firstmate
   # home's private data/captain.md, Firstmate-repository-only): the hosted
-  # portable-parallel shards, the four-way portable-serial matrix, and their
-  # dependent timing aggregate are excluded because the behavior jobs have
+  # portable-parallel shards and four-way portable-serial matrix are
+  # excluded because the behavior jobs have
   # pre-existing hosted ubuntu-latest runner/Herdr-availability failures.
   # These jobs are not claimed as passing; their owners remain available
   # for deliberate local use:
@@ -46,6 +46,41 @@ jobs:
   # portable-serial-<N>of4 lanes, and its --aggregate-json flag
   # (docs/fm-test-portable-shards.md). Test coverage guard and Repo
   # invariants above/below are unaffected and remain required.
+
+  # Retain timing aggregation and its existing no-artifacts path while hosted
+  # behavior producers are excluded.
+  tests-timing-aggregate:
+    name: Behavior timing aggregate
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download lane timing artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: fm-test-timing-*
+          path: ${{ runner.temp }}/fm-test-aggregate
+          merge-multiple: true
+      - name: Build aggregate timing summary
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/fm-test"
+          shopt -s nullglob
+          inputs=("$RUNNER_TEMP"/fm-test-aggregate/fm-test-timing-*.json)
+          if [ "${#inputs[@]}" -eq 0 ]; then
+            echo "::warning::no per-lane timing JSON found to aggregate"
+            exit 0
+          fi
+          bin/fm-test-run.sh --aggregate-json \
+            "$RUNNER_TEMP/fm-test/fm-test-timing-aggregate.json" \
+            "${inputs[@]}"
+      - name: Upload aggregate timing artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fm-test-timing-aggregate
+          path: ${{ runner.temp }}/fm-test/fm-test-timing-aggregate.json
+          if-no-files-found: warn
 
   invariants:
     name: Repo invariants
