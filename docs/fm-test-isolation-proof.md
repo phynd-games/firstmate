@@ -78,7 +78,7 @@ This record owns concurrent isolation evidence for the portable parallel candida
 
 ## Family concurrency proofs
 
-`bin/fm-test-isolation-proof.sh --pool <family>` runs the same concurrent proof over a whole `bin/fm-test-run.sh` family, for a stateful family that stays serial on CI but can earn bounded local concurrency.
+`bin/fm-test-isolation-proof.sh --pool <family>` runs the same concurrent proof over a whole `bin/fm-test-run.sh` family, for a stateful family that stays in the portable serial lane but can earn bounded local concurrency.
 A family is admitted to `list_concurrent_safe_families` in `bin/fm-test-run.sh` only by a passing proof recorded here.
 
 ### watcher-wake-lock: admitted

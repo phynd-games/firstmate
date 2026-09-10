@@ -2,12 +2,13 @@
 # fm-lint.sh - the single owner of firstmate's lint definition.
 #
 # Runs its file set with ShellCheck's default severity, extended analysis,
-# ambient configuration disabled, and one exact ShellCheck version. CI and
-# no-mistakes both invoke this script with no arguments, so the rule set,
-# version, bounded execution, and diagnostics ordering cannot drift.
+# ambient configuration disabled, and one exact ShellCheck version. no-mistakes
+# invokes this script with no arguments, so the rule set, version, bounded
+# execution, and diagnostics ordering cannot drift; .github/workflows/ci.yml
+# owns whether and how a hosted job also invokes it.
 # The explicit --fast mode is local-only and disables ShellCheck's extended
-# dataflow analysis while preserving ordinary shell lint checks. CI and
-# no-mistakes keep the full-analysis no-argument default.
+# dataflow analysis while preserving ordinary shell lint checks. no-mistakes
+# keeps the full-analysis no-argument default.
 # Tests stop source analysis at imported production modules because every
 # production shell is already a canonical, source-aware root of this same run.
 # The default (no explicit-path) path also runs bin/fm-lint-workflows.sh so a
@@ -15,10 +16,12 @@
 # before merge instead of only failing to run as CI.
 #
 # With no explicit paths, the file set depends on context:
-#   - In CI (GITHUB_ACTIONS=true or CI=true), on the main branch, or when no
+#   - When GITHUB_ACTIONS=true or CI=true, on the main branch, or when no
 #     merge-base against origin/main (or local main) can be found, it lints
-#     the full canonical set: bin/*.sh bin/backends/*.sh tests/*.sh. This is
-#     what CI always runs, so CI coverage never depends on a local diff.
+#     the full canonical set: bin/*.sh bin/backends/*.sh tests/*.sh, so a
+#     hosted invocation never depends on a local diff. Whether a hosted job
+#     currently invokes this script is owned by .github/workflows/ci.yml, not
+#     by this script.
 #   - Otherwise (an ordinary local branch with a real merge-base) it lints
 #     only the canonical-set files changed since that merge-base, including
 #     uncommitted local edits, via plain local `git diff` (no network, no
