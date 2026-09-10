@@ -489,7 +489,7 @@ COARSE_STATUS=""
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
   RUN_OUT=$(nm_run axi status)
   if [ -n "$RUN_OUT" ]; then
-    fm_vloop_evidence_valid "$RUN_OUT" || emit unknown none "unreadable validation run evidence"
+    fm_vloop_evidence_valid "$RUN_OUT" || emit unknown none "unreadable validation run evidence (not proof of death)"
     run_branch=$(strip_quotes "$(nm_field branch)")
     # Head equality, or the pipeline-owned-active exemption: while the
     # pipeline owns this branch, the daemon's own branch attribution is

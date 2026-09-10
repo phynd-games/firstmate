@@ -199,6 +199,39 @@ EOF
   pass "a worker that is already gone fails the handoff immediately"
 }
 
+# --- 5b. unreadable validation evidence is not death ---------------------------
+# The paired disconfirming case for #5. bin/fm-crew-state.sh reports
+# "state: unknown · source: none" both for a genuinely gone worker (case #5,
+# above) and for a live, attributed run whose validation evidence merely
+# failed the loop's stricter shape check - a real incident traced to
+# bin/fm-crew-state.sh's own "(not proof of death)" qualifier (matching the
+# existing wording already used for an unreachable remote endpoint) and to
+# endpoint_is_gone() here honoring it. This line is live throughout - at the
+# pre-acknowledgement gate AND the post-acknowledgement started-work gate -
+# proving neither short-circuits a handoff into a false "worker is gone"
+# failure merely because one poll's evidence was unreadable, while case #5
+# above proves a genuinely gone worker still fails immediately.
+test_unreadable_validation_evidence_is_not_treated_as_departure() {
+  local rec root home crew record out status=0
+  rec=$(new_world unreadable-not-gone)
+  IFS='|' read -r root home crew <<EOF
+$rec
+EOF
+  record=$(seed_task "$home" hotel)
+  printf 'state: unknown · source: none · unreadable validation run evidence (not proof of death)\n' > "$crew"
+  hc "$root" "$home" "$crew" register --task hotel --record "$record" >/dev/null \
+    || fail "register refused a well-formed obligation while evidence was unreadable"
+  acknowledge "$home" hotel "$record"
+  out=$(hc "$root" "$home" "$crew" confirm --task hotel --record "$record" \
+    --timeout 5 --poll 1 --no-rering 2>&1) || status=$?
+  expect_code 0 "$status" \
+    "unreadable-but-live validation evidence was treated as a departed worker: $out"
+  assert_not_contains "$out" "is gone" \
+    "unreadable validation evidence was worded as the worker being gone"
+  assert_contains "$out" "acknowledged and started" "the success did not state both proofs"
+  pass "unreadable validation evidence on a live, attributed run is never read as a departed worker"
+}
+
 # --- 6. delayed acknowledgement ------------------------------------------------
 # The worker was simply busy. One re-ring and a second window must let it
 # through: a slow worker is not a stuck worker, and failing it would be the
@@ -382,6 +415,7 @@ test_acknowledged_without_starting_is_refused
 test_wrong_message_bytes_are_refused
 test_expectation_mismatch_is_refused_at_registration
 test_departed_worker_fails_immediately
+test_unreadable_validation_evidence_is_not_treated_as_departure
 test_delayed_acknowledgement_still_confirms
 test_acknowledged_and_started_confirms
 test_failed_handoff_queues_recovery_work

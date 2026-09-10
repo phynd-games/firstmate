@@ -263,7 +263,8 @@ _fm_vloop_findings_valid() {  # <evidence-content>
       sub(/^[^:]*:/, "", value)
       sub(/^[[:space:]]+/, "", value)
       sub(/[[:space:]]+$/, "", value)
-      if (value != "none" && value !~ /^[0-9]+ awaiting$/) invalid = 1
+      if (value ~ /^".*"$/) value = substr(value, 2, length(value) - 2)
+      if (value != "none" && value !~ /^[0-9]+ awaiting$/ && value !~ /^[0-9]+ awaiting, [0-9]+ auto-fix$/) invalid = 1
       next
     }
     /^findings:/ { invalid = 1; next }
@@ -680,7 +681,7 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   local s_scope_base s_scope_head s_scope_paths scope_base scope_head scope_paths evidence_base evidence_paths
   local scope_evidence_present
   local fix_rounds themes heads last_progress active stop_reason='' max_fix max_theme theme_max tmp prior_terminal coarse_run coarse_head
-  local head_transition=0
+  local head_transition=0 head_pinned=0 journal_head
   [ -n "$state" ] && [ -d "$state" ] || return 0
   journal=$(fm_vloop_journal_path "$state" "$id")
   now=$(_fm_vloop_now)
@@ -848,11 +849,27 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
   if [ -z "$stop_reason" ] && [ "$run_id" = "$s_run" ] && [ -n "$s_head" ] && [ "$head" != "$s_head" ]; then
     if _fm_vloop_head_seen "$heads" "$head"; then
       stop_reason="incoherent head transition from ${s_head:-unknown} to $head for run $run_id"
+      head_pinned=1
     elif _fm_vloop_head_advance_valid "$worktree" "$s_head" "$head" "$scope_paths"; then
       head_transition=1
       heads="$heads $head"
+    elif ! fm_nm_head_resolvable "$worktree" "$s_head" || ! fm_nm_head_resolvable "$worktree" "$head"; then
+      # Unresolvable ancestry (e.g. an unpublished pipeline-owned lane head -
+      # fm_nm_head_resolvable's own documented distinction in
+      # bin/fm-nm-run-lib.sh) is UNKNOWN, not a demonstrated incoherent
+      # transition: the daemon's own repo may simply not have pushed this
+      # commit back here yet. Still refuse automatic continuation on unproved
+      # evidence - this stays a stop, never a silently-absorbed wake, and
+      # never counts as progress - but say plainly that ancestry could not be
+      # established rather than asserting a proof this check never made. The
+      # journal keeps the last VERIFIED head as its anchor (head_pinned,
+      # below) so a later genuinely resolvable head is judged against real
+      # history, not against an unproven intermediate value.
+      stop_reason="unproven head ancestry: $head could not be resolved from the last verified head ${s_head:-unknown} for run $run_id (not a demonstrated incoherent transition)"
+      head_pinned=1
     else
       stop_reason="incoherent head transition from ${s_head:-unknown} to $head for run $run_id"
+      head_pinned=1
     fi
   fi
 
@@ -889,11 +906,21 @@ fm_vloop_observe() {  # <state> <id> <evidence-file>
     fi
   fi
 
+  # The journal's head identity advances only on a PROVEN transition (or a
+  # clean slate: unchanged head, or a new run). Any non-advancing outcome
+  # above (a seen/regressed head, unproven/unresolvable ancestry, or a
+  # demonstrated incoherent transition) pins the anchor at the last verified
+  # head instead of the newly reported one, so a later observation is always
+  # judged against real proven history and never against an unproven or
+  # rejected intermediate value.
+  journal_head=$head
+  [ "$head_pinned" = 1 ] && journal_head=$s_head
+
   tmp="$journal.tmp.$$"
   {
     printf 'version=1\n'
     printf 'run=%s\n' "$run_id"
-    printf 'head=%s\n' "$head"
+    printf 'head=%s\n' "$journal_head"
     printf 'status=%s\n' "$status"
     printf 'phase=%s\n' "$phase"
     printf 'findings_sig=%s\n' "$findings_sig"
