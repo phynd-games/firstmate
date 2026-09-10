@@ -37,7 +37,7 @@ Use the Herdr-owned endpoint and worktree checks through `bin/fm-crew-state.sh` 
 Herdr is the sole supported runtime; legacy tmux, zellij, cmux, and Orca records are read-only and must not be operated or probed through their retained adapters.
 Do not sweep another home's endpoints or infer ownership from a matching window label.
 
-Before relaunch, prove that no live agent still owns the recorded task and that the existing worktree remains available.
+Before relaunch, confirm that the attempt remains authorized to run, prove that no live agent still owns the recorded task, and verify that the existing worktree remains available.
 Preserve its uncommitted changes and commits, keep the same task identity, and resume or relaunch the recorded harness in that existing worktree with the same brief plus a concise progress note.
 Do not use a fresh generic spawn while the recorded worktree is unaccounted for, because allocating another worktree can split one task across two copies.
 If the worktree or ownership cannot be reconciled safely, leave all state intact and report the task failed or blocked with the conflicting evidence.
@@ -46,8 +46,8 @@ If the worktree or ownership cannot be reconciled safely, leave all state intact
 
 An explicit stop is authoritative: retained files, an open PR, a stale working event, or a missing agent never authorize reviving that attempt.
 Separate retiring an obsolete monitoring identity from deleting the work it once tracked.
-Use the supported record-retirement or archival owner only after its ownership and preservation checks pass; do not strip live metadata, force teardown of unlanded work, or erase an unresolved captain decision to quiet notifications.
-If no supported path can remove obsolete runtime tracking while preserving the work, record that tooling gap and leave the work discoverable rather than claiming retirement is complete.
+Task retirement remains with [`bin/fm-teardown.sh`](../../../bin/fm-teardown.sh) and its [`record-transition owner`](../../../bin/fm-backlog-transition-lib.sh); do not strip live metadata, bypass the unlanded-work guard, fabricate completion, or erase an unresolved captain decision to quiet notifications.
+There is currently no supported ordinary-task command to remove monitoring while preserving an unlanded worktree; record that tooling gap and leave the work discoverable rather than claiming retirement is complete.
 
 Before an authorized fresh worker starts, firstmate performs a reconciliation pass over the retained artifacts and the actual current state.
 Write one durable handoff under the work item's retained data directory that records:
