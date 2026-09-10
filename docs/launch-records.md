@@ -57,7 +57,11 @@ The launch owners settle an open record only from native evidence, never from th
   The refusal reports what the exact-label inventory shows as a hint: a tab carrying the task's label, with its native agent state, is never adopted as the task's endpoint, and the absence of such a tab never proves the create had no effect.
 - A create request that left and did not answer with exact ids is an obligation whatever the answer was: a structured Herdr error is not source-proven to exclude an allocation, and the adapter's immediate inventory of the creation scope is journaled as a hint (`refused ... inventory=empty:<scope>`, or `hint ... <ids>` when it found a matching label), never as proof.
   Only exact-identity cleanup of a launch's known effects, confirmed by the launcher itself, closes such an attempt as failed and cleaned.
+  Retry and teardown inspect every response-derived effect retained in the attempt-bound journal, including a projected seed or reclaim replacement that task metadata does not name.
+  Their settlement checks the same effect snapshot under the record lock; a new journal entry invalidates earlier inspection.
+  Incomplete native responses retain each unambiguous returned identity axis and require inspected settlement; missing axes are never inferred from labels.
 - A helper whose recorded process is alive with its recorded identity refuses a second start; a gone or recycled pid is recorded as an observed exit.
+  An unavailable process identity remains unresolved, and a runner publishes created only with its verified claim identity and digest.
 
 Session start prints one `LAUNCH_RECONCILE:` line per open obligation; the `bootstrap-diagnostics` playbook owns the response.
 `bin/fm-launch-record.py --home <home> list --reconcile` prints the same list on demand, and `show --task <id>` or `show --helper <name>` prints one record with its history.

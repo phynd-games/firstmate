@@ -719,6 +719,7 @@ def cmd_retire(args, path: str, kind: str, subject: str) -> int:
     with RecordLock(path):
         data = read_record(path)
         launch = require_launch(data, args.launch, args.current)
+        require_effects_digest(args, path, kind, subject, launch)
         if launch.get("phase") not in OPEN_PHASES + TERMINAL_PHASES:
             raise ContractRefusal("retirement requires a recognized launch phase")
         if launch.get("phase") != "retired":
@@ -757,6 +758,68 @@ def read_create_journal(path: str, launch: dict) -> list[str]:
     return lines[1:]
 
 
+def launch_effects(path: str, kind: str, subject: str, launch: dict) -> tuple[str, list[list[str]]]:
+    journal = create_journal_path(path, kind, subject)
+    lines = read_create_journal(journal, launch) if os.path.lexists(journal) else None
+    identity = launch.get("identity", {})
+    digest = hashlib.sha256(json.dumps([launch["id"], identity, lines], sort_keys=True).encode()).hexdigest()
+    outcome = launch.get("outcome", {})
+    if launch.get("phase") == "reconciled" and outcome.get("verdict") == "manual":
+        return digest, []
+    if launch.get("phase") == "failed" and outcome.get("effect") in ("none", "cleaned"):
+        return digest, []
+    effects = []
+    session = identity.get("session", "")
+    axes = ("workspace_id", "tab_id", "pane_id", "terminal_id")
+    if any(identity.get(key) for key in axes):
+        effects.append([session] + [identity.get(key, "") for key in axes])
+    if lines is not None:
+        pending = None
+        for line in lines:
+            tag, _, rest = line.partition(" ")
+            if tag == "issued":
+                if pending is not None:
+                    raise ContractRefusal("create journal has an unanswered request")
+                pending = rest
+            elif tag in ("created", "created-workspace"):
+                pairs = dict(word.split("=", 1) for word in rest.split() if "=" in word)
+                expected = "task-tab" if tag == "created" else pairs.get("kind", "") + "-workspace"
+                if pending != expected or not all(pairs.get(key) for key in ("workspace", "tab", "pane", "terminal")):
+                    raise ContractRefusal("create journal lacks complete response evidence")
+                if expected != "home-workspace":
+                    effects.append([session] + [pairs[key] for key in ("workspace", "tab", "pane", "terminal")])
+                pending = None
+            elif tag == "partial":
+                raise ContractRefusal("partial create response requires inspected settlement")
+        if pending is not None:
+            raise ContractRefusal("create journal retains an unanswered request")
+    if not effects and lines is None:
+        raise ContractRefusal("launch has no native effect identity or pre-create journal")
+    for effect in effects:
+        if not effect[0] or not all(effect[1:]):
+            raise ContractRefusal("launch has incomplete native effect identity")
+        if any(not re.fullmatch(r"[A-Za-z0-9_.:/-]+", value) for value in effect):
+            raise ContractRefusal("launch has unsupported native effect identity")
+    return digest, effects
+
+
+def cmd_effects(args, path: str, kind: str, subject: str) -> int:
+    with RecordLock(path):
+        launch = require_launch(read_record(path), args.launch, False)
+        digest, effects = launch_effects(path, kind, subject, launch)
+    print("digest=" + digest)
+    for effect in effects:
+        print("\t".join(effect))
+    return 0
+
+
+def require_effects_digest(args, path: str, kind: str, subject: str, launch: dict) -> None:
+    if args.effects_digest:
+        digest, _ = launch_effects(path, kind, subject, launch)
+        if digest != args.effects_digest:
+            raise ContractRefusal("launch effects changed after native inspection")
+
+
 def cmd_journal(args, path: str, kind: str, subject: str) -> int:
     journal = create_journal_path(path, kind, subject)
     with RecordLock(path):
@@ -777,7 +840,7 @@ def cmd_journal(args, path: str, kind: str, subject: str) -> int:
         else:
             read_create_journal(journal, launch)
             line = check_value("--line", args.line)
-            if not re.fullmatch(r"(?:issued|created|created-workspace|refused|lost|hint) [A-Za-z0-9_=.: /-]+", line):
+            if not re.fullmatch(r"(?:issued|created|created-workspace|partial|refused|lost|hint) [A-Za-z0-9_=.: /-]+", line):
                 raise UsageError("invalid create journal line")
             mode = "a"
         try:
@@ -797,6 +860,7 @@ def cmd_reconcile(args, path: str, kind: str, subject: str) -> int:
     with RecordLock(path):
         data = read_record(path)
         launch = require_launch(data, args.launch, args.current)
+        require_effects_digest(args, path, kind, subject, launch)
         if launch.get("phase") not in OPEN_PHASES:
             raise ContractRefusal(f"reconcile is only valid from an open phase, not {launch.get('phase')}")
         if args.pre_create_journal:
@@ -987,8 +1051,13 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--reason", required=True)
         if name == "retire":
             p.add_argument("--remove", action="store_true")
+            p.add_argument("--effects-digest")
         if name == "exit":
             p.add_argument("--code", type=int)
+
+    p = sub.add_parser("effects")
+    subject(p)
+    p.add_argument("--launch", required=True)
 
     p = sub.add_parser("journal")
     subject(p)
@@ -1003,6 +1072,7 @@ def build_parser() -> argparse.ArgumentParser:
     sel.add_argument("--launch")
     sel.add_argument("--current", action="store_true")
     p.add_argument("--pre-create-journal", action="store_true")
+    p.add_argument("--effects-digest")
     p.add_argument("--verdict", required=True)
     p.add_argument("--evidence", required=True)
 
@@ -1029,6 +1099,7 @@ def build_parser() -> argparse.ArgumentParser:
 COMMANDS = {
     "intend": cmd_intend,
     "journal": cmd_journal,
+    "effects": cmd_effects,
     "created": cmd_created,
     "ready": cmd_ready,
     "unready": cmd_unready,

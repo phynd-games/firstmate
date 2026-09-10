@@ -711,7 +711,12 @@ teardown_retire_launch_record() {
   local launch
   [ -e "$STATE/$ID.launch" ] || return 0
   launch=$(fm_launch_record get --task "$ID" launch.id) || return 1
-  fm_launch_record retire --task "$ID" --launch "$launch" --reason teardown --remove
+  local -a evidence=()
+  if [ "$BACKEND" = herdr ]; then
+    fm_launch_record_effects_gone "$ID" "$launch" || return 1
+    evidence+=(--effects-digest "$FM_LAUNCH_EFFECTS_DIGEST")
+  fi
+  fm_launch_record retire --task "$ID" --launch "$launch" --reason teardown --remove "${evidence[@]}"
 }
 
 remote_secondmate_herdr_preflight() {
@@ -2769,6 +2774,10 @@ if [ "$BACKEND" = herdr ]; then
   fm_backend_herdr_parse_target "$T" || exit 1
   TEARDOWN_HERDR_SESSION=$FM_BACKEND_HERDR_SESSION
   TEARDOWN_HERDR_PANE=$FM_BACKEND_HERDR_PANE
+  if [ -e "$STATE/$ID.launch" ]; then
+    teardown_launch=$(fm_launch_record get --task "$ID" launch.id) || exit 1
+    fm_launch_record_effects_gone "$ID" "$teardown_launch" "$META" || exit 1
+  fi
 fi
 
 BACKLOG_CLOSED=0

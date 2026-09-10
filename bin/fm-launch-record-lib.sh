@@ -89,3 +89,24 @@ fm_launch_record_launcher_args() {
     printf -- '--launcher-pid\n%s\n' "$pid"
   fi
 }
+
+fm_launch_record_effects_gone() {
+  local task=$1 launch=$2 allowed=${3:-} out line session workspace tab pane terminal state expected
+  FM_LAUNCH_EFFECTS_DIGEST=
+  out=$(fm_launch_record effects --task "$task" --launch "$launch") || return 1
+  FM_LAUNCH_EFFECTS_DIGEST=${out%%$'\n'*}
+  FM_LAUNCH_EFFECTS_DIGEST=${FM_LAUNCH_EFFECTS_DIGEST#digest=}
+  while IFS= read -r line; do
+    case "$line" in digest=*) continue ;; esac
+    IFS=$'\t' read -r session workspace tab pane terminal <<< "$line"
+    if [ -n "$allowed" ]; then
+      expected="$(fm_meta_get "$allowed" herdr_session)"$'\t'"$(fm_meta_get "$allowed" herdr_workspace_id)"$'\t'"$(fm_meta_get "$allowed" herdr_tab_id)"$'\t'"$(fm_meta_get "$allowed" herdr_pane_id)"$'\t'"$(fm_meta_get "$allowed" herdr_terminal_id)"
+      [ "$line" != "$expected" ] || continue
+    fi
+    state=$(fm_backend_herdr_pane_presence_state "$session" "$pane" "$workspace" "$tab" "$terminal") || return 1
+    [ "$state" = dead ] || {
+      printf 'error: launch %s retains native effect %s:%s; settlement refused\n' "$launch" "$session" "$pane" >&2
+      return 1
+    }
+  done <<< "$out"
+}

@@ -985,6 +985,10 @@ spawn_launch_reconcile_open() {  # <check-output>
     echo "error: task $ID has an open launch record (phase $phase) this launcher cannot settle; settle it with: $settle" >&2
     return 1
   fi
+  if [ "$BACKEND" = herdr ] && [ -n "$pane" ]; then
+    fm_launch_record_effects_gone "$ID" "$(spawn_launch_field "$out" launch)" || return 1
+    settlement_args+=(--effects-digest "$FM_LAUNCH_EFFECTS_DIGEST")
+  fi
   if ! spawn_launch_record reconcile "${settlement_args[@]}" --verdict "$verdict" --evidence "$evidence" >/dev/null; then
     echo "error: task $ID's open launch record could not be reconciled ($verdict); refusing to launch" >&2
     return 1
@@ -1056,24 +1060,25 @@ spawn_launch_created() {  # <identity-source> <identity K=V>...
 spawn_launch_partial_create() {
   local line workspace='' tab='' pane='' terminal='' word container=''
   [ -n "${FM_BACKEND_HERDR_CREATE_ISSUED_FILE:-}" ] && [ -f "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" ] || return 0
-  if line=$(grep '^created ' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tail -n 1) && [ -n "$line" ]; then
+  if line=$(grep -E '^(created |partial kind=task-tab )' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tail -n 1) && [ -n "$line" ]; then
     container='task-tab'
-  elif line=$(grep '^created-workspace kind=task ' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tail -n 1) && [ -n "$line" ]; then
+  elif line=$(grep -E '^(created-workspace kind=task |partial kind=(task|home)-workspace )' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tail -n 1) && [ -n "$line" ]; then
     container='task-workspace'
   else
     return 0
   fi
   for word in $line; do
     case "$word" in
+      kind=home-workspace) container=home-workspace ;;
       workspace=*) workspace=${word#workspace=} ;;
       tab=*) tab=${word#tab=} ;;
       pane=*) pane=${word#pane=} ;;
       terminal=*) terminal=${word#terminal=} ;;
     esac
   done
-  [ -n "$pane" ] || [ -n "$tab" ] || [ -n "$workspace" ] || return 0
+  [ -n "$pane" ] || [ -n "$tab" ] || [ -n "$workspace" ] || [ -n "$terminal" ] || return 0
   local -a ids=("backend=herdr" "session=${HERDR_SES:-}")
-  [ -z "${workspace:-${HERDR_WORKSPACE_ID:-}}" ] || ids+=("workspace_id=${workspace:-${HERDR_WORKSPACE_ID:-}}")
+  [ -z "$workspace" ] || ids+=("workspace_id=$workspace")
   [ -z "$tab" ] || ids+=("tab_id=$tab")
   [ -z "$pane" ] || ids+=("pane_id=$pane")
   [ -z "$terminal" ] || ids+=("terminal_id=$terminal")
