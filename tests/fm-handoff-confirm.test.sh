@@ -199,37 +199,65 @@ EOF
   pass "a worker that is already gone fails the handoff immediately"
 }
 
-# --- 5b. unreadable validation evidence is not death ---------------------------
-# The paired disconfirming case for #5. bin/fm-crew-state.sh reports
-# "state: unknown · source: none" both for a genuinely gone worker (case #5,
-# above) and for a live, attributed run whose validation evidence merely
-# failed the loop's stricter shape check - a real incident traced to
-# bin/fm-crew-state.sh's own "(not proof of death)" qualifier (matching the
-# existing wording already used for an unreachable remote endpoint) and to
-# endpoint_is_gone() here honoring it. This line is live throughout - at the
-# pre-acknowledgement gate AND the post-acknowledgement started-work gate -
-# proving neither short-circuits a handoff into a false "worker is gone"
-# failure merely because one poll's evidence was unreadable, while case #5
-# above proves a genuinely gone worker still fails immediately.
-test_unreadable_validation_evidence_is_not_treated_as_departure() {
+# --- 5b/5c. unreadable validation evidence is neither death nor a start ------
+# bin/fm-crew-state.sh reports "state: unknown · source: none" both for a
+# genuinely gone worker (case #5, above) and for a live, attributed run whose
+# validation evidence merely failed the loop's stricter shape check - a real
+# incident traced to bin/fm-crew-state.sh's own "(not proof of death)"
+# qualifier (matching the existing wording already used for an unreachable
+# remote endpoint) and to endpoint_is_gone() here honoring it. An earlier
+# version of this suite made unreadable evidence confirm as "acknowledged and
+# started" whenever it merely was not proven dead - swapping false death for
+# false completion, since acknowledgement plus an unreadable read is not
+# proof the work began. await_start() (bin/fm-handoff-confirm.sh) now polls
+# the post-acknowledgement window for a LATER positively observed state
+# instead: these two cases pin the negative (persistent unknown never
+# resolves -> unconfirmed, not death) and positive (unknown resolves to a
+# real observed state within the window -> confirmed) halves of that fix
+# through the real consumer, with the crew-state content genuinely mutated
+# mid-poll rather than a fixture merely labeled "live".
+test_persistent_unknown_evidence_is_unconfirmed_not_dead() {
   local rec root home crew record out status=0
-  rec=$(new_world unreadable-not-gone)
+  rec=$(new_world persistent-unknown)
   IFS='|' read -r root home crew <<EOF
 $rec
 EOF
-  record=$(seed_task "$home" hotel)
+  record=$(seed_task "$home" india)
   printf 'state: unknown · source: none · unreadable validation run evidence (not proof of death)\n' > "$crew"
-  hc "$root" "$home" "$crew" register --task hotel --record "$record" >/dev/null \
+  hc "$root" "$home" "$crew" register --task india --record "$record" >/dev/null \
     || fail "register refused a well-formed obligation while evidence was unreadable"
-  acknowledge "$home" hotel "$record"
-  out=$(hc "$root" "$home" "$crew" confirm --task hotel --record "$record" \
-    --timeout 5 --poll 1 --no-rering 2>&1) || status=$?
-  expect_code 0 "$status" \
-    "unreadable-but-live validation evidence was treated as a departed worker: $out"
+  acknowledge "$home" india "$record"
+  out=$(hc "$root" "$home" "$crew" confirm --task india --record "$record" \
+    --timeout 2 --poll 1 --no-rering 2>&1) || status=$?
+  expect_code 3 "$status" \
+    "validation evidence that never resolved past unknown was confirmed as a started handoff: $out"
   assert_not_contains "$out" "is gone" \
-    "unreadable validation evidence was worded as the worker being gone"
+    "persistently unreadable evidence was worded as the worker being gone"
+  assert_contains "$out" "could not be proven" \
+    "the failure did not say the start could not be proven"
+  pass "validation evidence that stays unreadable through the whole window is unconfirmed - never death, never a false start"
+}
+
+test_unknown_evidence_confirms_once_a_real_start_is_observed() {
+  local rec root home crew record out status=0 flip_pid
+  rec=$(new_world unknown-then-started)
+  IFS='|' read -r root home crew <<EOF
+$rec
+EOF
+  record=$(seed_task "$home" juliet)
+  printf 'state: unknown · source: none · unreadable validation run evidence (not proof of death)\n' > "$crew"
+  hc "$root" "$home" "$crew" register --task juliet --record "$record" >/dev/null \
+    || fail "register refused a well-formed obligation while evidence was unreadable"
+  acknowledge "$home" juliet "$record"
+  ( sleep 1; printf '%s\n' "$WORKING" > "$crew" ) &
+  flip_pid=$!
+  out=$(hc "$root" "$home" "$crew" confirm --task juliet --record "$record" \
+    --timeout 5 --poll 1 --no-rering 2>&1) || status=$?
+  wait "$flip_pid" 2>/dev/null || true
+  expect_code 0 "$status" \
+    "a real observed start reached after a transient unreadable read was not confirmed: $out"
   assert_contains "$out" "acknowledged and started" "the success did not state both proofs"
-  pass "unreadable validation evidence on a live, attributed run is never read as a departed worker"
+  pass "validation evidence that starts unreadable but later shows a real observed state confirms once proven"
 }
 
 # --- 6. delayed acknowledgement ------------------------------------------------
@@ -415,7 +443,8 @@ test_acknowledged_without_starting_is_refused
 test_wrong_message_bytes_are_refused
 test_expectation_mismatch_is_refused_at_registration
 test_departed_worker_fails_immediately
-test_unreadable_validation_evidence_is_not_treated_as_departure
+test_persistent_unknown_evidence_is_unconfirmed_not_dead
+test_unknown_evidence_confirms_once_a_real_start_is_observed
 test_delayed_acknowledgement_still_confirms
 test_acknowledged_and_started_confirms
 test_failed_handoff_queues_recovery_work
