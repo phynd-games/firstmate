@@ -181,9 +181,18 @@ SH
   # The workspace-control helper is honest about closure the way the real
   # bin/backends/herdr-workspace-control.py is against a real server: a closed
   # workspace disappears from `list`, and closing it again fails (the real
-  # helper exits 4 on Herdr's workspace_not_found error). `close-kills-loop`
-  # models the one native effect the incident turned on: closing the workspace
-  # that hosts the supervisor loop ends that loop's process tree.
+  # helper exits 4 on Herdr's workspace_not_found error).
+  # `close-abruptly-crashes-loop` models an ABRUPT loss of the supervisor loop's
+  # process tree at the exact moment the native close of its own hosting
+  # workspace succeeds - deliberately unhandled (SIGKILL, from a child of the
+  # loop, sent only to the loop pid this test's own fixture recorded), because
+  # production's own termination trap answers HUP/TERM/INT identically and a
+  # signal that trap can catch would exercise graceful shutdown, not the crash
+  # this fixture exists to model. This is a fixture-modeled abrupt loss, not a
+  # proven reproduction of the real backend's exact signal sequence or of
+  # whole-process-tree termination; treat it as that model, not as native-
+  # equivalence evidence. Graceful HUP handling has its own deterministic
+  # coverage, parameterized alongside TERM in section 24 below.
   cat > "$fb/herdr-workspace-control" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -214,9 +223,9 @@ case "$operation" in
     fi
     printf '%s\n' "$workspace" >> "$S/closed-workspaces"
     [ "$workspace" != "$(cat "$S/workspace" 2>/dev/null || true)" ] || : > "$S/workspace-closed"
-    if [ -f "$S/close-kills-loop" ]; then
+    if [ -f "$S/close-abruptly-crashes-loop" ]; then
       loop=$(cat "$S/loop-pid" 2>/dev/null || true)
-      [ -z "$loop" ] || kill -HUP "$loop" 2>/dev/null || true
+      [ -z "$loop" ] || kill -9 "$loop" 2>/dev/null || true
     fi
     ;;
   *) exit 2 ;;
@@ -2216,16 +2225,28 @@ loop_gone23() {  # <home>
   ! kill -0 "$(cat "$1/fakestate/loop-pid" 2>/dev/null || echo 0)" 2>/dev/null
 }
 prepare_dead_retire() {  # <home> -> the generation whose cleanup was interrupted
+  # Deterministic abrupt-crash boundary: the fake workspace-control helper
+  # records the exact-workspace close FIRST, then SIGKILLs this fixture's own
+  # recorded loop pid (fakebin/close-abruptly-crashes-loop above) before the
+  # loop's own bash script can ever resume to write its durable completion.
+  # SIGKILL cannot be deferred behind whatever the loop was doing (unlike
+  # HUP/TERM/INT, which share one production trap and could be deferred behind
+  # a foreground command), so this boundary is reached the same way every run,
+  # not raced. The three checks below are the required proof that this exact
+  # boundary was reached: close happened (closed-workspaces), completion did
+  # not (mode remains retiring - record_field reads through to an empty result
+  # if the binding record itself had already been cleared, so this also proves
+  # the record survived), and the pending-cleanup receipt is still open.
   local home=$1 generation
   make_arm_stub "$home/arm.sh" ok
   fm_write_meta "$home/state/absent-task.meta" "window=firstmate:fm-absent-task"
   run_supervisor "$home" "$FAKEBIN" ensure >/dev/null 2>&1 \
     || fail "establish failed for the interrupted-cleanup case in $home"
   generation=$(record_field "$home" generation)
-  : > "$home/fakestate/close-kills-loop"
+  : > "$home/fakestate/close-abruptly-crashes-loop"
   printf 'off\n' > "$home/config/herdr-supervisor"
   wait_for 15 loop_gone23 "$home" || fail "the self-retiring loop did not end with its workspace in $home"
-  rm -f "$home/fakestate/close-kills-loop"
+  rm -f "$home/fakestate/close-abruptly-crashes-loop"
   [ "$(record_field "$home" mode)" = retiring ] \
     || fail "the interrupted retire did not leave the binding in retiring mode: $(record_field "$home" mode)"
   assert_grep 'cleanup_state=open' "$home/state/.herdr-supervisor-pending-cleanup" \
@@ -2369,18 +2390,29 @@ pass "a valid nonempty target-absent inventory reconciles cleanup and permits re
 stop_loop "$HOME23D"
 
 # =============================================================================
-# 24. A loop asleep in its rapid-cycle floor must still answer a retire or
-#     replacement signal at once. Bash defers a trap while a foreground command
-#     runs, so a plain `sleep 5` floor (or the 30s idle sleep) made the loop
-#     answer TERM only when that sleep ended - longer than the bounded 1s
-#     quarantine and 5s retire waits that signal it - and the signalled loop
-#     then read as one that would not stop. The measurement is the loop's own
-#     TERM-to-exit latency while a `sleep 5` child proves it is inside the floor
-#     sleep, so retire's unrelated overhead cannot mask the result.
+# 24. A loop asleep in its rapid-cycle floor must still answer a retire,
+#     replacement, or graceful-shutdown signal at once. Bash defers a trap
+#     while a foreground command runs, so a plain `sleep 5` floor (or the 30s
+#     idle sleep) made the loop answer only when that sleep ended - longer
+#     than the bounded 1s quarantine and 5s retire waits that signal it - and
+#     the signalled loop then read as one that would not stop. The measurement
+#     is the loop's own signal-to-exit latency while a `sleep 5` child proves
+#     it is inside the floor sleep, so retire's unrelated overhead cannot mask
+#     the result. Parameterized over every signal production's own trap
+#     answers identically (HUP, TERM, INT share one trap in cmd_loop): TERM
+#     is the existing replacement/retire path, and HUP is this section's
+#     deterministic proof that graceful signal handling still works exactly
+#     as before, now that section 23 above models an abrupt loss with an
+#     unhandled SIGKILL instead of relying on a racy HUP delivered through a
+#     fake close call. A gracefully signalled loop must reach the SAME clean
+#     shutdown as TERM - unlike section 23's abrupt-crash receipt, nothing
+#     here is expected to remain open.
 # =============================================================================
-HOME24=$(new_home floor-sleep-signal)
-fm_write_meta "$HOME24/state/floor-task.meta" "window=firstmate:fm-floor-task"
-cat > "$HOME24/arm.sh" <<'SH'
+assert_floor_sleep_signal_answered() {  # <signal:TERM|HUP>
+  local sig=$1 home loop found_child start elapsed
+  home=$(new_home "floor-sleep-signal-$sig")
+  fm_write_meta "$home/state/floor-task.meta" "window=firstmate:fm-floor-task"
+  cat > "$home/arm.sh" <<'SH'
 #!/usr/bin/env bash
 set -u
 C="${FM_TEST_ARM_COUNT:?}"
@@ -2389,37 +2421,46 @@ echo "$n" > "$C"
 sleep 0.5
 echo "signal: /fake/state/task.status"
 SH
-chmod +x "$HOME24/arm.sh"
-out=$(FM_HERDR_SUPERVISOR_RAPID_CYCLE_SECONDS=10 FM_HERDR_SUPERVISOR_RAPID_CYCLE_FLOOR=5 \
-  run_supervisor "$HOME24" "$FAKEBIN" ensure 2>&1)
-assert_contains "$out" "herdr-supervisor: started" "the floor-sleep fixture establishes a supervisor"
-LOOP24=$(cat "$HOME24/fakestate/loop-pid")
-loop_in_floor_sleep() {  # <loop-pid>
-  local child
-  for child in $(pgrep -P "$1" 2>/dev/null); do
-    # Exactly the 5s floor sleep, never one of the loop's half-second waits.
-    case "$(ps -o command= -p "$child" 2>/dev/null | sed 's/[[:space:]]*$//')" in "sleep 5") return 0 ;; esac
-  done
-  return 1
+  chmod +x "$home/arm.sh"
+  out=$(FM_HERDR_SUPERVISOR_RAPID_CYCLE_SECONDS=10 FM_HERDR_SUPERVISOR_RAPID_CYCLE_FLOOR=5 \
+    run_supervisor "$home" "$FAKEBIN" ensure 2>&1)
+  assert_contains "$out" "herdr-supervisor: started" \
+    "the floor-sleep fixture establishes a supervisor ($sig)"
+  loop=$(cat "$home/fakestate/loop-pid")
+  found_child=""
+  floor_sleep_child() {  # <loop-pid> - captures the child pid on success
+    local child
+    for child in $(pgrep -P "$1" 2>/dev/null); do
+      # Exactly the 5s floor sleep, never one of the loop's half-second waits.
+      case "$(ps -o command= -p "$child" 2>/dev/null | sed 's/[[:space:]]*$//')" in
+        "sleep 5") found_child=$child; return 0 ;;
+      esac
+    done
+    return 1
+  }
+  wait_for 20 floor_sleep_child "$loop" \
+    || { stop_loop "$home"; fail "the loop did not enter its rapid-cycle floor sleep ($sig)"; }
+  start=$(date +%s)
+  kill "-$sig" "$loop" 2>/dev/null || fail "could not signal the sleeping loop ($sig)"
+  loop_exited_now() { ! kill -0 "$loop" 2>/dev/null; }
+  if ! wait_for 10 loop_exited_now; then
+    elapsed=$(( $(date +%s) - start ))
+    stop_loop "$home"
+    fail "the sleeping loop ignored $sig for ${elapsed}s; the trap was deferred by its foreground sleep"
+  fi
+  elapsed=$(( $(date +%s) - start ))
+  [ "$elapsed" -le 2 ] \
+    || fail "the sleeping loop took ${elapsed}s to answer $sig; the trap was deferred by its foreground sleep"
+  assert_grep 'loop-signal' "$home/state/.herdr-supervisor.log" \
+    "the signalled sleeping loop did not run its termination trap ($sig)"
+  assert_absent "$home/state/.herdr-supervisor-live" \
+    "the signalled sleeping loop left its live record behind ($sig)"
+  ! kill -0 "$found_child" 2>/dev/null \
+    || fail "the signalled loop's floor-sleep child $found_child outlived its own termination ($sig)"
+  pass "a loop asleep in its rapid-cycle floor answers $sig at once and terminates its floor-sleep child"
 }
-wait_for 20 loop_in_floor_sleep "$LOOP24" \
-  || { stop_loop "$HOME24"; fail "the loop did not enter its rapid-cycle floor sleep"; }
-FLOOR_START=$(date +%s)
-kill -TERM "$LOOP24" 2>/dev/null || fail "could not signal the sleeping loop"
-loop_exited24() { ! kill -0 "$LOOP24" 2>/dev/null; }
-if ! wait_for 10 loop_exited24; then
-  FLOOR_ELAPSED=$(( $(date +%s) - FLOOR_START ))
-  stop_loop "$HOME24"
-  fail "the sleeping loop ignored TERM for ${FLOOR_ELAPSED}s; the trap was deferred by its foreground sleep"
-fi
-FLOOR_ELAPSED=$(( $(date +%s) - FLOOR_START ))
-[ "$FLOOR_ELAPSED" -le 2 ] \
-  || fail "the sleeping loop took ${FLOOR_ELAPSED}s to answer TERM; the trap was deferred by its foreground sleep"
-assert_grep 'loop-signal' "$HOME24/state/.herdr-supervisor.log" \
-  "the signalled sleeping loop did not run its termination trap"
-assert_absent "$HOME24/state/.herdr-supervisor-live" \
-  "the signalled sleeping loop left its live record behind"
-pass "a loop asleep in its rapid-cycle floor answers a termination signal at once"
+assert_floor_sleep_signal_answered TERM
+assert_floor_sleep_signal_answered HUP
 
 # =============================================================================
 # The always-running monitor. `ensure` alone only repairs supervision at session
