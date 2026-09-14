@@ -362,6 +362,11 @@ fm_backend_herdr_workspace_label() {
   printf 'firstmate'
 }
 
+# FM_BACKEND_HERDR_CALL_TIMEOUT optionally bounds native calls in positive
+# integer seconds through the shared process-group timeout runner; unset or
+# empty preserves direct invocation, and invalid values refuse before launch.
+# The supervisor scopes this setting to gateway load so subsequent capability
+# probes use its per-call bound as well as the initial status preflight.
 fm_backend_herdr_native() {
   local timeout=${FM_BACKEND_HERDR_CALL_TIMEOUT:-}
   if [ -n "$timeout" ]; then

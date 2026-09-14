@@ -33,7 +33,7 @@
 # standby whenever a harness-native or away-mode owner is provable, so only one
 # active owner can arm a watcher.
 #
-# It always uses the plain attach-or-start arm. The arm layer owns stale-lock
+# It always uses the attach-or-start arm. The arm layer owns stale-lock
 # self-eviction and stealing, so a duplicate supervisor cannot evict a live
 # watcher and the one-watcher singleton holds under duplication.
 #
@@ -1528,7 +1528,7 @@ reconcile_pending_locked() {
   if ! rollback_workspace "$session" "$workspace" "$socket" "$socket_identity"; then
     # The close can outrun its own bookkeeping: when the loop retires itself
     # from inside the pane it hosts, closing that workspace ends the process
-    # before the `closed` record lands (2026-09-10). The receipt then names an
+    # before the `closed` record lands. The receipt then names an
     # exact workspace the SAME verified server already reports absent, and that
     # is completed cleanup, not a failure to retry forever. Anything short of a
     # readable list from the recorded server that lacks the exact id keeps the
@@ -2021,10 +2021,9 @@ cmd_run() {
   # next launch as FM_WATCH_PREDECESSOR_ARM_PID. That declares the successor
   # as an Option B handling successor - the same declaration the Pi extension
   # makes - so the watcher neither reopens the announced episode nor mints a
-  # new generation for what is not a new down stretch (2026-09-10: every plain
-  # immediate re-arm re-announced within seconds and no acknowledgement could
-  # ever match). It is consumed by that one launch and dropped on every idle,
-  # standby, or failure path, so an arm after a genuine gap still announces.
+  # new generation for what is not a new down stretch. It is consumed by that
+  # one launch and dropped on every idle, standby, claim-wait, or failure path,
+  # so an arm after a genuine gap still announces.
   local closed_arm='' predecessor=''
   local LOOP_PREDECESSOR_ARM_PID=''
   local LOOP_ARM_OUT
