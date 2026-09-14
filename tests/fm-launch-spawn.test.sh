@@ -149,22 +149,119 @@ assert_other_home_untouched() {  # <label>
 
 # Kill the spawn while the fake blocks at <key>; returns after the spawn is dead.
 spawn_killed_at() {  # <block-key>
-  local key=$1
-  : > "$CASE_DIR/block/$key"
-  in_case "$ROOT/bin/fm-spawn.sh" "$CASE_ID" "$CASE_DIR/proj" --scout "sh -c true" >"$CASE_DIR/killed.out" 2>&1 &
-  for _ in $(seq 1 300); do
-    if grep -q "^$(printf '%s' "$key" | tr '-' '\037')" "$CASE_DIR/fake/log" 2>/dev/null; then break; fi
-    sleep 0.1
-  done
-  sleep 0.3
-  pgrep -f "fm-spawn.sh $CASE_ID " >/dev/null || fail "spawn for $CASE_ID was not found running while the fake blocked at $key"
-  # SIGKILL the whole spawn process chain: the launcher runs its adapter calls
-  # inside command substitutions, and an orphaned subshell would otherwise
-  # carry on past the block and create on the dead launcher's behalf.
-  pkill -9 -f "fm-spawn.sh $CASE_ID " || true
-  rm -f "$CASE_DIR/block/$key"
-  wait 2>/dev/null || true
-  sleep 0.3
+  in_case python3 - "$ROOT" "$CASE_DIR" "$CASE_ID" "$1" <<'PYTEST' || fail "owned spawn interruption failed for $CASE_ID at $1"
+import hashlib
+import json
+import os
+import pathlib
+import signal
+import subprocess
+import sys
+import time
+
+root, directory, task, key = sys.argv[1:]
+case = pathlib.Path(directory)
+owner = root + '/bin/fm-launch-record.py'
+block = case / 'block' / key
+block.touch()
+processes = []
+ps_env = dict(os.environ, LC_ALL='C')
+
+def start_identity(pid):
+    result = subprocess.run(['ps', '-p', str(pid), '-o', 'lstart='], env=ps_env,
+                            capture_output=True, text=True, check=True)
+    identity = result.stdout.strip()
+    assert identity, 'process start identity unavailable'
+    return identity
+
+def owned_group(process, identity):
+    assert process.returncode is None, 'refusing a reaped process identifier'
+    pid = process.pid
+    assert pid > 1 and pid != os.getpid()
+    assert os.getpgid(pid) == os.getsid(pid) == pid, 'private session/group not established'
+    assert pid != os.getpgrp() and pid != os.getpgid(os.getppid()), 'shared supervisor group'
+    assert start_identity(pid) == identity, 'process start identity changed'
+    return pid
+
+def start_owned(command, **kwargs):
+    reader, writer = os.pipe()
+    process = None
+    try:
+        gate = 'import os,sys; fd=int(sys.argv[1]); permit=os.read(fd,1); os.close(fd); sys.exit(125) if permit != b"G" else os.execvp(sys.argv[2],sys.argv[2:])'
+        process = subprocess.Popen([sys.executable, '-c', gate, str(reader)] + command,
+                                   start_new_session=True, pass_fds=(reader,), **kwargs)
+        identity = start_identity(process.pid)
+        owned_group(process, identity)
+        os.write(writer, b'G')
+        processes.append((process, identity))
+        return process, identity
+    finally:
+        os.close(reader)
+        os.close(writer)
+        if process is not None and not any(owned is process for owned, _ in processes):
+            process.wait(timeout=5)
+
+def group_members(pgid):
+    output = subprocess.check_output(['ps', '-axo', 'pid=,pgid=,stat='], env=ps_env, text=True)
+    return {int(pid): status for pid, group, status in (line.split() for line in output.splitlines())
+            if int(group) == pgid and not status.startswith('Z')}
+
+def interrupt(process, identity):
+    group = owned_group(process, identity)
+    os.killpg(group, signal.SIGKILL)
+    status = process.wait(timeout=5)
+    deadline = time.monotonic() + 5
+    while group_members(group):
+        assert time.monotonic() < deadline, 'owned group members survived interruption'
+        time.sleep(.05)
+    return status
+
+try:
+    sentinel, sentinel_identity = start_owned(
+        ['bash', '-c', 'IFS= read -r answer && printf "%s\n" "$answer"',
+         root + '/bin/fm-spawn.sh', task, 'sentinel'],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    with (case / 'killed.out').open('w') as output:
+        child, identity = start_owned(
+            [root + '/bin/fm-spawn.sh', task, str(case / 'proj'), '--scout', 'sh -c true'],
+            stdout=output, stderr=subprocess.STDOUT)
+        deadline = time.monotonic() + 30
+        prefix = key.replace('-', '\x1f')
+        while not any(line.startswith(prefix) for line in (case / 'fake/log').read_text().splitlines()):
+            assert child.pid in group_members(owned_group(child, identity)), 'launcher exited before the block'
+            assert time.monotonic() < deadline, 'launcher never reached the requested block'
+            time.sleep(.1)
+        launch = json.loads((case / 'home/state' / (task + '.launch')).read_text())['launch']
+        native = subprocess.check_output([sys.executable, owner, 'pid-identity', str(child.pid)], text=True).rstrip('\n')
+        assert launch['launcher']['pid'] == child.pid, 'record names another launcher'
+        assert launch['launcher']['pid_identity_sha256'] == hashlib.sha256(native.encode('utf-8', 'surrogateescape')).hexdigest()
+        members = group_members(owned_group(child, identity))
+        assert child.pid in members and len(members) > 1, 'blocked descendants were not observed'
+        assert sentinel.pid not in members
+        try:
+            interrupt(sentinel, sentinel_identity + '-stale')
+        except AssertionError as error:
+            assert str(error) == 'process start identity changed'
+        else:
+            raise AssertionError('stale identity was accepted for signalling')
+        assert interrupt(child, identity) == -signal.SIGKILL
+        try:
+            interrupt(child, identity)
+        except AssertionError as error:
+            assert str(error) == 'refusing a reaped process identifier'
+        else:
+            raise AssertionError('reaped identifier was accepted for signalling')
+        owned_group(sentinel, sentinel_identity)
+        reply, errors = sentinel.communicate('survived\n', timeout=5)
+        assert sentinel.returncode == 0 and reply == 'survived\n', (reply, errors)
+finally:
+    try:
+        for process, identity in reversed(processes):
+            if process.returncode is None:
+                interrupt(process, identity)
+    finally:
+        block.unlink(missing_ok=True)
+PYTEST
 }
 
 # --- 1. fresh spawn -------------------------------------------------------------------
@@ -774,6 +871,12 @@ test_kimi_banner_requires_native_registration() {
 }
 
 if [ "${1:-}" = fixture-library ]; then return 0; fi
+
+if [ "${1:-}" = launch-interruption ]; then
+  test_launcher_killed_before_creation
+  test_launcher_killed_after_creation
+  exit 0
+fi
 
 if [ "${1:-}" = launch-retirement ]; then
   test_control_exit_relaunch_and_teardown_record_outcomes
