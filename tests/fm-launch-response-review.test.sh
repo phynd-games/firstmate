@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -u
+# shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TMP_ROOT=$(fm_test_tmproot fm-launch-response-review)
 trap fm_test_cleanup EXIT
@@ -24,11 +25,17 @@ setup() {
   printf '%s\n' '{"result":{"workspace":{"workspace_id":"w9"},"tab":{"tab_id":"w9:t1","workspace_id":"w9"},"root_pane":{"pane_id":"w9:p1","workspace_id":"w9","tab_id":"w9:t1","terminal_id":"term-w9:p1"}}}' > "$FM_STATE_OVERRIDE/workspace-response"
   printf '%s\n' '{"result":{"tab":{"tab_id":"w9:t2","workspace_id":"w9"}}}' > "$FM_STATE_OVERRIDE/tab-response"
   : > "$FM_STATE_OVERRIDE/native-calls"
+  # shellcheck disable=SC2329 # invoked indirectly by the sourced Herdr adapter
   fm_backend_policy_refuse() { return 0; }
+  # shellcheck disable=SC2329 # invoked indirectly by the sourced Herdr adapter
   fm_backend_herdr_version_check() { return 0; }
+  # shellcheck disable=SC2329 # invoked indirectly by the sourced Herdr adapter
   fm_backend_herdr_server_ensure() { return 0; }
+  # shellcheck disable=SC2329 # invoked indirectly by the sourced Herdr adapter
   fm_backend_herdr_session() { printf lab-response; }
+  # shellcheck disable=SC2329 # invoked indirectly by the sourced Herdr adapter
   fm_backend_herdr_projection_focus_snapshot() { printf 'w0\tw0:t0'; }
+  # shellcheck disable=SC2329 # invoked indirectly by the sourced Herdr adapter
   fm_backend_herdr_projection_focus_restore() { return 0; }
   fm_backend_herdr_cli() {
     printf '%s\n' "$*" >> "$FM_STATE_OVERRIDE/native-calls"
@@ -85,6 +92,7 @@ for code in 0 1; do
   (
     setup "reclaim-$code"
     TAB_RC=$code
+    # shellcheck disable=SC2329 # invoked indirectly by the sourced Herdr adapter
     fm_backend_herdr_projection_journal_snapshot() {
       FM_BACKEND_HERDR_JOURNAL_VERSION=2
       FM_BACKEND_HERDR_JOURNAL_HOME=$FM_HOME
@@ -98,7 +106,9 @@ for code in 0 1; do
       FM_BACKEND_HERDR_JOURNAL_PARENT_WORKSPACE_ID=w0
       FM_BACKEND_HERDR_JOURNAL_WORKSPACE_LABEL=projection
     }
+    # shellcheck disable=SC2329 # invoked indirectly by the sourced Herdr adapter
     fm_backend_herdr_projection_live_binding_matches() { return 0; }
+    # shellcheck disable=SC2329 # invoked indirectly by the sourced Herdr adapter
     fm_backend_herdr_pane_agent_state() { printf no-agent; }
     expect_refusal fm_backend_herdr_projection_reclaim_task lab-response unused response "$FM_HOME" w9 w9:t1 w9:p1 firstmate fm-response "$FM_HOME"
     assert_journal '^partial kind=task-tab workspace=w9 tab=w9:t2$' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 'reclaim response axes were discarded'
@@ -151,6 +161,7 @@ done
   setup persistence-failure
   TAB_RC=1
   printf '%s\n' '{"error":{"code":"internal"},"result":{"tab":{"tab_id":"w9:t2","workspace_id":"w9"}}}' > "$FM_STATE_OVERRIDE/tab-response"
+  # shellcheck disable=SC2329 # invoked indirectly by the sourced Herdr adapter
   fm_backend_herdr_create_note() {
     case "$1" in partial*) return 1 ;; *) printf '%s\n' "$1" >> "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" ;; esac
   }

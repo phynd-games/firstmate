@@ -620,23 +620,25 @@ test_missing_python_refuses_before_any_create() {
 }
 
 test_parent_only_interruption_revokes_old_issuance() {
-  local old parent job second i
+  local old parent job second
   new_case parent-only sp25
   : > "$CASE_DIR/block/workspace-list"
   in_case "$ROOT/bin/fm-spawn.sh" sp25 "$CASE_DIR/proj" --scout "sh -c true" >"$CASE_DIR/parent.out" 2>&1 &
   job=$!
-  for i in $(seq 1 300); do
+  for _ in $(seq 1 300); do
     grep -q '^workspace.list' "$CASE_DIR/fake/log" && break
     sleep 0.1
   done
   old=$(record launch.id)
   parent=$(record launch.launcher.pid)
-  [ -n "$parent" ] && kill -0 "$parent" || fail "launch parent missing at inventory boundary"
+  if ! { [ -n "$parent" ] && kill -0 "$parent"; }; then
+    fail "launch parent missing at inventory boundary"
+  fi
   kill -9 "$parent" || fail "could not interrupt fixture launcher"
   wait "$job" 2>/dev/null || true
   in_case "$ROOT/bin/fm-spawn.sh" sp25 "$CASE_DIR/proj" --scout "sh -c true" >"$CASE_DIR/successor.out" 2>&1 &
   second=$!
-  for i in $(seq 1 300); do
+  for _ in $(seq 1 300); do
     [ "$(record launch.id)" != "$old" ] && break
     sleep 0.1
   done
@@ -668,6 +670,7 @@ test_projected_partial_identity_and_protected_cleanup() {
   expect_code 1 "$SPAWN_RC" "partial projection retry must refuse"
   fake_log | grep -q 'create' && fail "partial projection must block duplicate creation"
   set +e
+  # shellcheck disable=SC2016 # expanded by the child shell, deliberately
   out=$(in_case bash -c '. "$FM_ROOT_OVERRIDE/bin/backends/herdr.sh"; fm_backend_herdr_projection_cleanup_exact default w0:p0 "" w0 w0:t0 ""' 2>&1)
   rc=$?
   set -e
@@ -675,10 +678,12 @@ test_projected_partial_identity_and_protected_cleanup() {
   assert_contains "$out" "captain's active tab" "cleanup must preserve active-tab protection"
   fake_log | grep -E '(pane|tab) close' && fail "protected cleanup must issue no close"
   set +e
+  # shellcheck disable=SC2016 # expanded by the child shell, deliberately
   out=$(in_case bash -c '. "$FM_ROOT_OVERRIDE/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving() { return 0; }; fm_backend_herdr_projection_cleanup_exact default w0:p0 "" w0 w0:t0 ""' 2>&1)
   rc=$?
   set -e
   expect_code 1 "$rc" "acknowledged close without exact absence must remain unconfirmed: $out"
+  # shellcheck disable=SC2016 # expanded by the child shell, deliberately
   in_case bash -c '. "$FM_ROOT_OVERRIDE/bin/backends/herdr.sh"; fm_backend_herdr_projection_cleanup_exact default w999:p1 "" w999 w999:t1 ""' || fail "natively absent exact pane should confirm cleanup"
   new_case projected-prune sp28
   set +e

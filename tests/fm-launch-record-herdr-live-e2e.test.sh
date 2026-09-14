@@ -112,7 +112,8 @@ printf 'call\n' >> "$FM_TEST_LAB_HELPER_CALLS"
 exec "$FM_TEST_LAB_REAL_HELPER" "$@"
 SH
 chmod +x "$preflight_bin/herdr" "$TMP_ROOT/preflight-helper"
-FM_TEST_LAB_REAL_HELPER="$LAB" LAB="$TMP_ROOT/preflight-helper" \
+real_lab_helper=$LAB
+FM_TEST_LAB_REAL_HELPER="$real_lab_helper" LAB="$TMP_ROOT/preflight-helper" \
   PATH="$preflight_bin:$PATH" FM_TEST_LAB_SESSION=fm-lab-wrapper \
   FM_TEST_LAB_HELPER_CALLS="$TMP_ROOT/preflight-helper-calls" \
   FM_TEST_LAB_MUTATIONS="$TMP_ROOT/preflight-mutations" \

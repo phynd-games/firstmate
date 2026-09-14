@@ -644,7 +644,7 @@ test_procevent_fork_that_cannot_claim_leaves_the_attempt_accounted() {
 test_procevent_retirement_serializes_start() {
   local home retiring starting i=0 rc
   home=$(new_procevent_home retirement-race)
-  PE_ID=src-race
+  PE_ID='src-race'
   WRAPPER="$home/record-wrapper"
   WRAP_LOG="$home/wrap.log"
   cat > "$WRAPPER" <<'SH'
@@ -690,7 +690,7 @@ test_procevent_start_refuses_invalid_claim_root() {
   pe "$home" register lavish invalid-root -- /bin/true >/dev/null || fail "register failed"
   rmdir "$home/claims" || fail "the fixture claim root is not empty"
   printf occupied > "$home/claims"
-  python3 - "$ROOT" "$home" <<'PYTEST'
+  python3 - "$ROOT" "$home" <<'PYTEST' || fail "start did not refuse the invalid claim root promptly"
 import os, subprocess, sys
 root, home = sys.argv[1:]
 env = dict(os.environ, FM_HOME=home, FM_ROOT_OVERRIDE=root, FM_STATE_OVERRIDE=home + '/state',
@@ -699,7 +699,6 @@ result = subprocess.run([root + '/bin/fm-procevent.sh', 'start', 'invalid-root']
                         capture_output=True, text=True, timeout=10)
 assert result.returncode != 0 and 'cannot lock source' in result.stderr, result
 PYTEST
-  [ "$?" -eq 0 ] || fail "start did not refuse the invalid claim root promptly"
   pass "procevent: an invalid claim root refuses start instead of waiting forever"
 }
 

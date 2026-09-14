@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -u
+# shellcheck source=tests/fm-launch-spawn.test.sh
 . "$(dirname "${BASH_SOURCE[0]}")/fm-launch-spawn.test.sh" fixture-library
 
 new_case interrupted-metadata rl28

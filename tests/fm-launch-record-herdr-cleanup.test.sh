@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -u
+# shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TMP_ROOT=$(fm_test_tmproot launch-cleanup)
 for scenario in '0 0 0 0' '0 1 0 1' '17 0 0 17' '17 1 0 17' '0 0 1 1' '17 0 1 17'; do

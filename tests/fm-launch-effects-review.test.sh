@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -u
+# shellcheck source=tests/fm-launch-spawn.test.sh
 . "$(dirname "${BASH_SOURCE[0]}")/fm-launch-spawn.test.sh" fixture-library
 
 new_case reclaim-retire fx25
@@ -139,7 +140,7 @@ for mode in home terminal; do
     printf '%s\n' '{"error":{"code":"internal"},"result":{"workspace":{"workspace_id":"w-native"}}}' > "$CASE_DIR/fail/workspace-create"
     field=workspace_id
     value=w-native
-    container=home-workspace
+    container='home-workspace'
   else
     printf '%s\n' '{"error":{"code":"internal"},"result":{"terminal":{"terminal_id":"term-native"}}}' > "$CASE_DIR/fail/tab-create"
     field=terminal_id

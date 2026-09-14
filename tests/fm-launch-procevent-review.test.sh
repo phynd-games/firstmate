@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -eu
+# shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TMP_ROOT=$(fm_test_tmproot fm-launch-procevent-review)
 python3 - "$ROOT" "$TMP_ROOT" "$(command -v python3)" "$(command -v ps)" <<'PY'
