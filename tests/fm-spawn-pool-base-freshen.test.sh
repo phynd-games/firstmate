@@ -14,7 +14,9 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-spawn-pool-base-freshen)
 
 write_exempt_brief() {
-  local home=$1 id=$2 body=${3:-"brief for $id"} reason="configuration: task=$id; target=tests/fm-spawn-pool-base-freshen.test.sh pooled spawn fixture; action=exercise spawn behavior without product change"
+  local home=$1 id=$2
+  local body=${3:-"brief for $id"}
+  local reason="configuration: task=$id; target=tests/fm-spawn-pool-base-freshen.test.sh pooled spawn fixture; action=exercise spawn behavior without product change"
   printf '%s\nLavish intake contract: not-applicable\nLavish intake reason: %s\n' "$body" "$reason" > "$home/data/$id/brief.md"
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-lavish-intake.sh" exempt "$id" --reason "$reason" >/dev/null
 }
@@ -88,7 +90,8 @@ test_stale_pool_base_refreshes_before_branching() {
 
   id='pool-current-base-repeat-r1'
   mkdir -p "$HOME_DIR/data/$id"
-  printf '%s\n' "brief for $id" "Target-project approved base: ref=$DEFAULT_BRANCH; sha=$current" > "$HOME_DIR/data/$id/brief.md"
+  write_exempt_brief "$HOME_DIR" "$id" "brief for $id"
+  printf '%s\n' "Target-project approved base: ref=$DEFAULT_BRANCH; sha=$current" >> "$HOME_DIR/data/$id/brief.md"
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "repeating the base refresh should be idempotent"
@@ -298,7 +301,8 @@ EOF
 strand_submodule_pin_via_spawn() {  # <seed-id>
   local id=$1 out status
   mkdir -p "$HOME_DIR/data/$id"
-  printf '%s\n' "brief for $id" "Target-project approved base: ref=main; sha=$ADVANCED_SHA" > "$HOME_DIR/data/$id/brief.md"
+  write_exempt_brief "$HOME_DIR" "$id"
+  printf '%s\n' "Target-project approved base: ref=main; sha=$ADVANCED_SHA" >> "$HOME_DIR/data/$id/brief.md"
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "the spawn that moves the submodule pin should succeed"

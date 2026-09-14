@@ -27,6 +27,9 @@
 # The real-Herdr counterpart (config-declared herdr actually spawns; HERDR_ENV=1
 # alone does not) is tests/fm-backend-herdr-only-smoke.test.sh in the
 # real-herdr-gated lane.
+# The policy probes intentionally pass nested shell snippets through bash -c
+# and eval; ShellCheck parses those data strings as the outer script.
+# shellcheck disable=SC1012,SC1078,SC1079,SC1083,SC2016
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -994,11 +997,18 @@ SH
 
 test_spawn_refuses_missing_or_incapable_herdr_without_fallback() {
   local proj="$TMP_ROOT/herdr-gate-project" state="$TMP_ROOT/herdr-gate-state" config="$TMP_ROOT/herdr-gate-config"
+  local missing_state="$TMP_ROOT/herdr-gate-missing-state"
   local log="$TMP_ROOT/herdr-gate.log" fb id=herdrgate1 stublog="$TMP_ROOT/herdr-stub.log"
+  local base_sha reason
   command -v jq >/dev/null 2>&1 || { pass "skip: jq not installed (the herdr adapter needs it to read the protocol)"; return 0; }
   make_project "$proj"
-  mkdir -p "$state" "$config" "$TMP_ROOT/spawn-data/$id"
-  printf 'brief\n' > "$TMP_ROOT/spawn-data/$id/brief.md"
+  mkdir -p "$state" "$missing_state" "$config" "$TMP_ROOT/spawn-data/$id"
+  base_sha=$(git -C "$proj" rev-parse HEAD)
+  reason="configuration: task=$id; target=tests/fm-backend-herdr-only.test.sh Herdr capability fixture; action=exercise fail-closed backend preflight without product change"
+  printf 'brief\nLavish intake contract: not-applicable\nLavish intake reason: %s\nTarget-project approved base: ref=main; sha=%s\n' \
+    "$reason" "$base_sha" > "$TMP_ROOT/spawn-data/$id/brief.md"
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$missing_state" \
+    "$ROOT/bin/fm-lavish-intake.sh" exempt "$id" --reason "$reason" >/dev/null
   printf 'off\n' > "$config/herdr-presentation-spaces"
   printf 'herdr\n' > "$config/backend"
   fb=$(make_recording_fakebin "$TMP_ROOT/herdr-gate-fake" "$log")
@@ -1006,13 +1016,16 @@ test_spawn_refuses_missing_or_incapable_herdr_without_fallback() {
   # no herdr binary at all.
   : > "$log"
   run_capture missing-herdr policy_env "PATH=$fb:/usr/bin:/bin:/usr/sbin:/sbin" "FM_ROOT_OVERRIDE=$ROOT" \
-    "FM_STATE_OVERRIDE=$state" "FM_DATA_OVERRIDE=$TMP_ROOT/spawn-data" "FM_CONFIG_OVERRIDE=$config" \
+    "FM_STATE_OVERRIDE=$missing_state" "FM_DATA_OVERRIDE=$TMP_ROOT/spawn-data" "FM_CONFIG_OVERRIDE=$config" \
     "FM_PROJECTS_OVERRIDE=$TMP_ROOT/unused-projects" FM_SPAWN_NO_GUARD=1 -- \
     "$ROOT/bin/fm-spawn.sh" "$id" "$proj" "sh -c true" --mode no-mistakes --yolo off
   [ "$RC" -ne 0 ] || fail "spawn with herdr declared but not installed must refuse"
   assert_contains "$ERR" "the 'herdr' CLI is not installed" "missing-herdr refusal must name the herdr install requirement"
   assert_not_contains "$ERR" "NOTICE" "missing herdr must not print a fallback notice"
-  assert_spawn_left_nothing "missing herdr" "$state" "$log"
+  rm -f "$missing_state/$id.lavish-intake" "$missing_state/$id.lavish-intake-classification"
+  assert_spawn_left_nothing "missing herdr" "$missing_state" "$log"
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$state" \
+    "$ROOT/bin/fm-lavish-intake.sh" exempt "$id" --reason "$reason" >/dev/null
   # Below the protocol floor: a herdr that answers status with protocol 13.
   make_herdr_stub "$fb" 13
   : > "$log"; : > "$stublog"
@@ -1020,6 +1033,7 @@ test_spawn_refuses_missing_or_incapable_herdr_without_fallback() {
   [ "$RC" -ne 0 ] || fail "spawn on a below-floor herdr must refuse"
   assert_contains "$ERR" "herdr protocol 13" "floor refusal must name the observed protocol"
   assert_contains "$ERR" "older than the verified minimum" "floor refusal must name the floor"
+  rm -f "$state/$id.lavish-intake" "$state/$id.lavish-intake-classification"
   assert_spawn_left_nothing "below-floor herdr" "$state" "$log"
   [ ! -s "$stublog" ] || fail "a below-floor herdr must be refused after the status read, before any lifecycle call; recorded:"$'\n'"$(cat "$stublog")"
   run_capture target-floor lib_probe "PATH=$fb:$PATH" -- "fm_backend_target_exists herdr 'default:p1'"

@@ -156,6 +156,13 @@ test_brief_assertion_precedes_branch() {
 run_spawn() {
   local home=$1 id=$2 proj=$3 pane=$4 fakebin=$5
   fm_test_spawn_brief "$home" "$id" brief
+  local reason="configuration: task=$id; target=tests/fm-tangle-guard.test.sh spawn fixture; action=exercise worktree isolation without product change"
+  printf 'brief\nLavish intake contract: not-applicable\nLavish intake reason: %s\n' \
+    "$reason" > "$home/data/$id/brief.md"
+  printf 'Target-project approved base: ref=main; sha=%s\n' \
+    "$(git -C "$proj" rev-parse HEAD)" >> "$home/data/$id/brief.md"
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-lavish-intake.sh" exempt "$id" --reason "$reason" >/dev/null
   fm_test_run_spawn "$home" "$pane" "$fakebin" \
     "$id" "$proj" codex --mode no-mistakes --yolo off
 }
@@ -230,6 +237,13 @@ SH
 run_spawn_record() {
   local home=$1 id=$2 proj=$3 pane=$4 fakebin=$5 rec=$6
   fm_test_spawn_brief "$home" "$id" brief
+  local reason="configuration: task=$id; target=tests/fm-tangle-guard.test.sh recording fixture; action=exercise tmux command construction without product change"
+  printf 'brief\nLavish intake contract: not-applicable\nLavish intake reason: %s\n' \
+    "$reason" > "$home/data/$id/brief.md"
+  printf 'Target-project approved base: ref=main; sha=%s\n' \
+    "$(git -C "$proj" rev-parse HEAD)" >> "$home/data/$id/brief.md"
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-lavish-intake.sh" exempt "$id" --reason "$reason" >/dev/null
   FM_TMUX_REC="$rec" \
     fm_test_run_spawn "$home" "$pane" "$fakebin" \
     "$id" "$proj" codex --mode no-mistakes --yolo off
