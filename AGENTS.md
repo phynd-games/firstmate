@@ -329,6 +329,7 @@ Serialize only for a true semantic dependency, shared mutable external state, in
 Write the task-specific brief under section 11 before spawning.
 
 A stalled or failed prior attempt at a task is not authority to leave independently implementable work idle: when a fresh attempt is authorized, dispatch an isolated replacement rather than waiting on it, preserve the prior attempt's worktree and any committed work instead of discarding it, and record in the backlog note which attempt is authoritative.
+Before handing retained work to that fresh worker, load `stuck-crewmate-recovery` for the firstmate reconciliation pass and durable handoff contract.
 Missing status is not evidence of death; reconcile a quiet or failed attempt through `stuck-crewmate-recovery` rather than inferring it, and never run a second live supervision cycle or competing controller for the same task (section 8).
 
 ### Dispatch and supervision handoff
@@ -593,7 +594,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `project-management` - load before adding, creating, removing, or initializing a project.
   Cloning or registering a project is add intake and uses the same trigger.
 - `confirmed-handoff` - load before reporting any actionable steer dispatched, before ending a turn that sent one, and before relaying a parked finding, decision, or blocker again.
-- `stuck-crewmate-recovery` - load when session-start digest reports an ordinary direct report endpoint dead or metadata has no window, or after a stale notification, looping worker, repeated confusion, answered-by-instructions question, unresponsive worker, failed steer, or validation-loop limit stop.
+- `stuck-crewmate-recovery` - load before handing retained work to an authorized fresh worker, when session-start digest reports an ordinary direct report endpoint dead or metadata has no window, or after a stale notification, looping worker, repeated confusion, answered-by-instructions question, unresponsive worker, failed steer, or validation-loop limit stop.
 - `secondmate-provisioning` - load before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
 - `captain-hold-lifecycle` - load before treating an investigation or visual review as complete, before ending a visual review that exposed a captain decision, when recording or routing the captain's answer, and on any `RECORD DIVERGENCE` line from the wake drain.
 - `process-event-sources` - load before arming a long-polling source, before registering a deterministic condition->action watch (do X as soon as Y is true), and on any `procevent <adapter> <source-id> <sequence>` check wake.
