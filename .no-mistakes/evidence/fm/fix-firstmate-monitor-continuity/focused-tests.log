@@ -1,0 +1,16 @@
+ok - a Herdr session with no running server is refused loudly and starts no server
+ok - a hanging Herdr CLI is bounded and can never wedge the caller
+ok - hang-version-status refuses within the native deadline after a completed status preflight
+ok - hang-session-status refuses within the native deadline after a completed status preflight
+ok - hang-session-list refuses within the native deadline after a completed status preflight
+ok - session-list-fails refuses within the native deadline after a completed status preflight
+ok - an actionable close is followed by one ready handling successor with an unchanged generation
+ok - the exact acknowledgement retires the delivered episode while the same watcher keeps the lock
+ok - a genuine watcher gap announces once and settles into one handling successor
+ok - an exact workspace already absent on the verified server is reconciled as completed cleanup
+ok - an unreadable workspace list keeps the receipt and quarantine until the server can be read
+ok - a receipt naming a different Herdr server is retained without touching the replacement server
+ok - ambiguous inventories and a present target preserve receipt, quarantine, and generation
+ok - a valid nonempty target-absent inventory reconciles cleanup and permits replacement
+ok - a loop asleep in its rapid-cycle floor answers a termination signal at once
+focused recovery assertions passed

@@ -1,0 +1,70 @@
+ok - a non-herdr home is not eligible and creates nothing
+ok - zero Herdr timeout is rejected before ownership
+ok - a stale away marker does not masquerade as a live owner
+ok - away mode defers only to a live identity-matched daemon
+ok - away mode treats a live daemon with unknown identity as occupied
+ok - a loaded Pi extension is a provable owner and the supervisor stands down
+ok - the individually loaded Pi watcher extension defers takeover
+ok - the turn-end marker alone does not suppress Herdr takeover
+ok - Pi ownership rejects a live non-harness pid despite matching markers
+ok - a home with nothing in flight establishes no supervisor
+ok - one establish keeps re-arming the watcher across many actionable closes
+ok - identical rapid cycles back off and emit one non-self-triggering alarm
+ok - rapid alarms clear only after three stable non-rapid cycles
+ok - the Herdr runtime loop completes cycles without AI agents or model calls
+ok - a repeated ensure is idempotent and creates no second supervisor
+ok - the public run path requires its recorded Herdr pane and process
+ok - a stale watcher beacon uses the plain arm singleton path
+ok - a recycled pid is never reported healthy
+ok - a stale supervisor heartbeat is unhealthy and re-establishes a new generation
+ok - replacement retires the prior exact workspace before establishing a new generation
+ok - an unknown or contradictory Herdr pane is never healthy
+ok - a Herdr server restart is detected as a lost supervisor, not as healthy
+ok - server replacement quarantines old ownership before fresh establishment
+ok - a live record from a superseded generation is never read as healthy
+ok - a live but wedged supervisor is unhealthy on its heartbeat alone
+ok - a Herdr pane tracking a different process is never read as healthy
+ok - health revalidates supervisor identity after the pane query
+ok - a repeatedly failing arm is bounded, alarms, escalates, and keeps its owner alive
+ok - a superseded generation refuses to arm, so a duplicate arm cannot start
+ok - an incomplete Herdr response fails loudly and closes nothing it cannot identify
+ok - verified absence of an incomplete create does not permanently block recovery
+ok - a partial Herdr create response is quarantined without label adoption or cleanup
+ok - a Herdr session with no running server is refused loudly and starts no server
+ok - a hanging Herdr CLI is bounded and can never wedge the caller
+ok - hang-version-status refuses within the native deadline after a completed status preflight
+ok - hang-session-status refuses within the native deadline after a completed status preflight
+ok - hang-session-list refuses within the native deadline after a completed status preflight
+ok - session-list-fails refuses within the native deadline after a completed status preflight
+ok - the Herdr pane consumer executes a short launcher with caller tuning
+ok - foreground arm heartbeat and exact-child cleanup remain bounded
+ok - retire releases the record and closes exactly the workspace it owns
+ok - the supervisor never touches the watcher's liveness beacon
+ok - a non-extension harness needs an explicit opt-in before Herdr hosts continuity
+ok - config/herdr-supervisor=off is honored
+ok - config/herdr-supervisor=off retires a running owner on the next loop pass
+ok - handoff retains a standby owner and resumes after foreign ownership ends
+ok - cleanup failures quarantine exact ownership before replacement
+ok - each failed arm leaves durable evidence after a later success
+ok - unknown arm children are abandoned without stopping supervisor recovery
+ok - an actionable close is followed by one ready handling successor with an unchanged generation
+ok - the exact acknowledgement retires the delivered episode while the same watcher keeps the lock
+ok - a genuine watcher gap announces once and settles into one handling successor
+ok - an exact workspace already absent on the verified server is reconciled as completed cleanup
+ok - an unreadable workspace list keeps the receipt and quarantine until the server can be read
+ok - a receipt naming a different Herdr server is retained without touching the replacement server
+ok - ambiguous inventories and a present target preserve receipt, quarantine, and generation
+ok - a valid nonempty target-absent inventory reconciles cleanup and permits replacement
+ok - a loop asleep in its rapid-cycle floor answers a termination signal at once
+ok - the monitor starts and publishes a live, identity-bound record
+ok - a repeated monitor start is idempotent and keeps one owner
+ok - a monitor pid whose identity no longer matches is never accepted as live
+ok - the monitor exits when its home session ends, so it cannot orphan
+ok - a captured monitor start returns promptly and holds no caller descriptor
+ok - the monitor runs with zero AI agents and zero model calls
+ok - the latest highest-priority alarm wins and superseded ones stay in the history
+all fm-herdr-supervisor tests passed
+/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M26CEVEQSBWS3JXTP7Q3DA3B/capture-supervisor.sh: line 36: unexpected EOF while looking for matching `"'
+rm: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.TwyjLT/monitor-fds/state: Directory not empty
+rm: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.TwyjLT/monitor-fds: Directory not empty
+rm: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.TwyjLT: Directory not empty

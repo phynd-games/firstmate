@@ -1,0 +1,18 @@
+Target: 87c071fd1e079f3819b88f8abceda2e6b3651fd0
+Base: fe601e80363dca6469775ca98ad0643071fb48f3
+
+1. bash <evidence-dir>/capture-supervisor.sh
+   Sourced and executed all of tests/fm-herdr-supervisor.test.sh with observer overrides for pass/fail that copied CLI output and persisted state.
+   Every assertion completed and the test file printed its final success message.
+   The outer evidence wrapper then exited 2 because it had been edited while its shell was still reading it; this was an observer setup error, not a product failure.
+   Its fixture cleanup also raced with terminating test monitor processes. Remaining fixture processes were identified by their exact test paths and stopped.
+2. TEST_SCRIPT=tests/.focused-recovery.test.sh OBS_FILE=focused-recovery-observations.log bash <evidence-dir>/capture-supervisor.sh
+   Re-ran unchanged setup plus cases 13c, 13d (including every later native probe), 22, 23a-d and 24 from the repository test file using the corrected, unchanged-during-execution observer. Exit 0.
+3. TEST_SCRIPT=tests/.baseline-event.test.sh OBS_FILE=baseline-event-observations.log bash <evidence-dir>/capture-supervisor.sh
+   Current case 22 with the two changed production files restored to base. Exit 1 as expected: four cycles, three repeated rearm-resurface announcements, changing generation and watcher holder.
+4. TEST_SCRIPT=tests/.baseline-cleanup.test.sh OBS_FILE=baseline-cleanup-observations.log bash <evidence-dir>/capture-supervisor.sh
+   Current case 23a with the two changed production files restored to base. Exit 1 as expected: already-absent exact workspace leaves cleanup unreconciled and retire returns 1.
+
+All commands used FM_TEST_SKIP_ORPHAN_REAP=1 and TMPDIR=$PWD/.test-tmp, set by the observer. Tests used only fake Herdr and isolated fixture processes. No real Herdr server or live installation was changed.
+No linters, static analyzers, whole-repository test suite, delivery commands or other pipeline phases ran. No CI exclusions or configuration edits were made in this test phase.
+The original unproved preflight-removal mutation was not reclassified or rerun. The supplied primary-tree self-review prerequisite and load-dependent arm-handshake timing limitation remain outside this local proof; passing fixtures do not establish live restoration.

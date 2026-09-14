@@ -1,0 +1,9 @@
+--- ledger ---
+1789398314  establish-required 4171 no supervisor record
+1789398315 1789398315.eac8ea9c6e6d2a89 establish-begin 4588 requested (no supervisor record)
+1789398317 1789398315.eac8ea9c6e6d2a89 loop-start 5684 pid=4833
+1789398318 1789398315.eac8ea9c6e6d2a89 established 6416 generation=1789398315.eac8ea9c6e6d2a89 pane=wZ:p1 workspace=wZ
+1789398319 1789398315.eac8ea9c6e6d2a89 loop-signal 7609 terminated
+1789398321 1789398315.eac8ea9c6e6d2a89 rollback-failed 8795 could not close workspace wZ after a failed establish
+1789398321 1789398315.eac8ea9c6e6d2a89 escalated 9072 pending Herdr supervisor cleanup could not be reconciled for retire
+not ok - retire refused an exact workspace the verified server already reports absent (rc=1): 

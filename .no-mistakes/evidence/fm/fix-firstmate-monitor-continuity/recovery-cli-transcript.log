@@ -1,0 +1,782 @@
+Target: 87c071fd1e079f3819b88f8abceda2e6b3651fd0
+Executable test cases: tests/fm-herdr-supervisor.test.sh 13c, 13d (including later native probes), 22, 23a-d, 24.
+Real supervisor, watcher, arm and drain scripts; simulated Herdr CLI/workspace server.
+These are observed CLI outputs and persisted runtime records, captured after behavior assertions.
+No live installation or shared server was changed.
+
+=== a Herdr session with no running server is refused loudly and starts no server ===
+out=herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+herdr-supervisor: FAILED - Herdr identity could not be established: herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+
+no-server persisted records:
+state/.watcher-down:
+pending:downtime:5658.1789398150.b6k4MP
+
+state/.watch.lock/pid:
+(absent)
+state/.watch-cycle-exits.log:
+(absent)
+state/.herdr-supervisor:
+(absent)
+state/.herdr-supervisor-pending-cleanup:
+(absent)
+state/.herdr-supervisor-alarm:
+at=2026-09-14T15:02:30Z
+home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/no-server
+generation=none
+priority=20
+reason=Herdr identity could not be established: herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+
+state/.herdr-supervisor.log:
+1789398149		establish-required	4817	no supervisor record
+1789398150		escalated	5439	Herdr identity could not be established: herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+
+fakestate/closed-workspaces:
+(absent)
+fakestate/workspace-closed:
+(absent)
+
+=== a hanging Herdr CLI is bounded and can never wedge the caller ===
+out=herdr backend adapter could not be loaded: could not read herdr status for session 'default' within 3s
+herdr-supervisor: FAILED - Herdr identity could not be established: herdr backend adapter could not be loaded: could not read herdr status for session 'default' within 3s
+HANG_ELAPSED=10
+
+hanging-cli persisted records:
+state/.watcher-down:
+pending:downtime:10397.1789398160.lSlGp7
+
+state/.watch.lock/pid:
+(absent)
+state/.watch-cycle-exits.log:
+(absent)
+state/.herdr-supervisor:
+(absent)
+state/.herdr-supervisor-pending-cleanup:
+(absent)
+state/.herdr-supervisor-alarm:
+at=2026-09-14T15:02:40Z
+home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/hanging-cli
+generation=none
+priority=20
+reason=Herdr identity could not be established: herdr backend adapter could not be loaded: could not read herdr status for session 'default' within 3s
+
+state/.herdr-supervisor.log:
+1789398154		establish-required	7514	no supervisor record
+1789398160		escalated	10245	Herdr identity could not be established: herdr backend adapter could not be loaded: could not read herdr status for session 'default' within 3s
+
+fakestate/closed-workspaces:
+(absent)
+fakestate/workspace-closed:
+(absent)
+
+=== hang-version-status refuses within the native deadline after a completed status preflight ===
+out=herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr capability check failed: error: 'herdr status --json' failed; is herdr installed correctly? Upgrade or repair Herdr, then verify with 'herdr status --json'.
+herdr-supervisor: FAILED - Herdr identity could not be established: herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr capability check failed: error: 'herdr status --json' failed; is herdr installed correctly? Upgrade or repair Herdr, then verify with 'herdr status --json'.
+probe_failure=hang-version-status
+probe_elapsed=4
+
+hang-version-status persisted records:
+state/.watcher-down:
+pending:downtime:12400.1789398165.m7tlUF
+
+state/.watch.lock/pid:
+(absent)
+state/.watch-cycle-exits.log:
+(absent)
+state/.herdr-supervisor:
+(absent)
+state/.herdr-supervisor-pending-cleanup:
+(absent)
+state/.herdr-supervisor-alarm:
+at=2026-09-14T15:02:45Z
+home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/hang-version-status
+generation=none
+priority=20
+reason=Herdr identity could not be established: herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr capability check failed: error: 'herdr status --json' failed; is herdr installed correctly? Upgrade or repair Herdr, then verify with 'herdr status --json'.
+
+state/.herdr-supervisor.log:
+1789398163		establish-required	11607	no supervisor record
+1789398165		escalated	12257	Herdr identity could not be established: herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr capability check failed: error: 'herdr status --json' failed; is herdr installed correctly? Upgrade or repair Herdr, then verify with 'herdr status --json'.
+
+fakestate/closed-workspaces:
+(absent)
+fakestate/workspace-closed:
+(absent)
+
+=== hang-session-status refuses within the native deadline after a completed status preflight ===
+out=herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+herdr-supervisor: FAILED - Herdr identity could not be established: herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+probe_failure=hang-session-status
+probe_elapsed=5
+
+hang-session-status persisted records:
+state/.watcher-down:
+pending:downtime:13719.1789398170.Pj01aq
+
+state/.watch.lock/pid:
+(absent)
+state/.watch-cycle-exits.log:
+(absent)
+state/.herdr-supervisor:
+(absent)
+state/.herdr-supervisor-pending-cleanup:
+(absent)
+state/.herdr-supervisor-alarm:
+at=2026-09-14T15:02:50Z
+home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/hang-session-status
+generation=none
+priority=20
+reason=Herdr identity could not be established: herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+
+state/.herdr-supervisor.log:
+1789398167		establish-required	12959	no supervisor record
+1789398170		escalated	13594	Herdr identity could not be established: herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+
+fakestate/closed-workspaces:
+(absent)
+fakestate/workspace-closed:
+(absent)
+
+=== hang-session-list refuses within the native deadline after a completed status preflight ===
+out=herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+herdr-supervisor: FAILED - Herdr identity could not be established: herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+probe_failure=hang-session-list
+probe_elapsed=5
+
+hang-session-list persisted records:
+state/.watcher-down:
+pending:downtime:15599.1789398176.43cedq
+
+state/.watch.lock/pid:
+(absent)
+state/.watch-cycle-exits.log:
+(absent)
+state/.herdr-supervisor:
+(absent)
+state/.herdr-supervisor-pending-cleanup:
+(absent)
+state/.herdr-supervisor-alarm:
+at=2026-09-14T15:02:55Z
+home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/hang-session-list
+generation=none
+priority=20
+reason=Herdr identity could not be established: herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+
+state/.herdr-supervisor.log:
+1789398172		establish-required	14497	no supervisor record
+1789398175		escalated	15459	Herdr identity could not be established: herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+
+fakestate/closed-workspaces:
+(absent)
+fakestate/workspace-closed:
+(absent)
+
+=== session-list-fails refuses within the native deadline after a completed status preflight ===
+out=herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+herdr-supervisor: FAILED - Herdr identity could not be established: herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+probe_failure=session-list-fails
+probe_elapsed=1
+
+session-list-fails persisted records:
+state/.watcher-down:
+pending:downtime:16661.1789398177.uLo5TY
+
+state/.watch.lock/pid:
+(absent)
+state/.watch-cycle-exits.log:
+(absent)
+state/.herdr-supervisor:
+(absent)
+state/.herdr-supervisor-pending-cleanup:
+(absent)
+state/.herdr-supervisor-alarm:
+at=2026-09-14T15:02:57Z
+home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/session-list-fails
+generation=none
+priority=20
+reason=Herdr identity could not be established: herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+
+state/.herdr-supervisor.log:
+1789398176		establish-required	16162	no supervisor record
+1789398177		escalated	16537	Herdr identity could not be established: herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+
+fakestate/closed-workspaces:
+(absent)
+fakestate/workspace-closed:
+(absent)
+
+=== an actionable close is followed by one ready handling successor with an unchanged generation ===
+out=herdr-supervisor: started generation=1789398178.c9b84546da95ca8c pane=wZ:p1 pid=17551
+GEN22=22433.1789398185.5U4nxN
+SUCCESSOR22=24539
+
+handling-successor persisted records:
+state/.watcher-down:
+announced:downtime:22433.1789398185.5U4nxN
+
+state/.watch.lock/pid:
+24539
+
+state/.watch-cycle-exits.log:
+arm_pid=18772	watcher_pid=18837	origin=started	started_at=1789398180	ended_at=1789398186	exit_code=0	signal=none	reason=actionable-signal	beacon_age=3	lock_before=pid:18837|identity:Mon Sep 14 11:03:00 2026     bash /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/bin/fm-watch.sh	lock_after=pid:none|identity:none	successor=started:24539
+
+state/.herdr-supervisor:
+version=1
+generation=1789398178.c9b84546da95ca8c
+fm_home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/handling-successor
+fm_root=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B
+herdr_session=default
+herdr_socket=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/handling-successor/fakestate/herdr.sock
+herdr_socket_identity=16777234:253024306
+workspace=wZ
+tab=wZ:t1
+pane=wZ:p1
+mode=active
+cleanup_state=open
+established_at=1789398178
+establish_reason=requested (no supervisor record)
+
+state/.herdr-supervisor-pending-cleanup:
+(absent)
+state/.herdr-supervisor-alarm:
+(absent)
+state/.herdr-supervisor.log:
+1789398178		establish-required	17200	no supervisor record
+1789398178	1789398178.c9b84546da95ca8c	establish-begin	17352	requested (no supervisor record)
+1789398179	1789398178.c9b84546da95ca8c	loop-start	18103	pid=17551
+1789398179	1789398178.c9b84546da95ca8c	established	18415	generation=1789398178.c9b84546da95ca8c pane=wZ:p1 workspace=wZ
+1789398187	1789398178.c9b84546da95ca8c	cycle	24404	rc=0 elapsed=7s signal: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/handling-successor/state/crew.status
+
+fakestate/closed-workspaces:
+(absent)
+fakestate/workspace-closed:
+(absent)
+
+=== the exact acknowledgement retires the delivered episode while the same watcher keeps the lock ===
+out=herdr-supervisor: started generation=1789398178.c9b84546da95ca8c pane=wZ:p1 pid=17551
+drain_out=1789398185	2	signal	crew.status	signal: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/handling-successor/state/crew.status
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 2 --recovery-generation 22433.1789398185.5U4nxN
+wake annotation: latest wake-EVENT observed at drain, not current state: crew.status: done: crew finished its task
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+ack_out=
+GEN22=22433.1789398185.5U4nxN
+SUCCESSOR22=24539
+
+handling-successor persisted records:
+state/.watcher-down:
+acked:handling:22433.1789398185.5U4nxN
+
+state/.watch.lock/pid:
+24539
+
+state/.watch-cycle-exits.log:
+arm_pid=18772	watcher_pid=18837	origin=started	started_at=1789398180	ended_at=1789398186	exit_code=0	signal=none	reason=actionable-signal	beacon_age=3	lock_before=pid:18837|identity:Mon Sep 14 11:03:00 2026     bash /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/bin/fm-watch.sh	lock_after=pid:none|identity:none	successor=started:24539
+
+state/.herdr-supervisor:
+version=1
+generation=1789398178.c9b84546da95ca8c
+fm_home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/handling-successor
+fm_root=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B
+herdr_session=default
+herdr_socket=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/handling-successor/fakestate/herdr.sock
+herdr_socket_identity=16777234:253024306
+workspace=wZ
+tab=wZ:t1
+pane=wZ:p1
+mode=active
+cleanup_state=open
+established_at=1789398178
+establish_reason=requested (no supervisor record)
+
+state/.herdr-supervisor-pending-cleanup:
+(absent)
+state/.herdr-supervisor-alarm:
+(absent)
+state/.herdr-supervisor.log:
+1789398178		establish-required	17200	no supervisor record
+1789398178	1789398178.c9b84546da95ca8c	establish-begin	17352	requested (no supervisor record)
+1789398179	1789398178.c9b84546da95ca8c	loop-start	18103	pid=17551
+1789398179	1789398178.c9b84546da95ca8c	established	18415	generation=1789398178.c9b84546da95ca8c pane=wZ:p1 workspace=wZ
+1789398187	1789398178.c9b84546da95ca8c	cycle	24404	rc=0 elapsed=7s signal: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/handling-successor/state/crew.status
+
+fakestate/closed-workspaces:
+(absent)
+fakestate/workspace-closed:
+(absent)
+
+=== a genuine watcher gap announces once and settles into one handling successor ===
+out=herdr-supervisor: started generation=1789398178.c9b84546da95ca8c pane=wZ:p1 pid=17551
+drain_out=1789398185	2	signal	crew.status	signal: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/handling-successor/state/crew.status
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 2 --recovery-generation 22433.1789398185.5U4nxN
+wake annotation: latest wake-EVENT observed at drain, not current state: crew.status: done: crew finished its task
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+ack_out=
+GEN22=22433.1789398185.5U4nxN
+SUCCESSOR22=24539
+GAP_GEN22=32715.1789398198.3Zo83k
+GAP_HOLDER22=35668
+
+handling-successor persisted records:
+state/.watcher-down:
+announced:downtime:32715.1789398198.3Zo83k
+
+state/.watch.lock/pid:
+35668
+
+state/.watch-cycle-exits.log:
+arm_pid=18772	watcher_pid=18837	origin=started	started_at=1789398180	ended_at=1789398186	exit_code=0	signal=none	reason=actionable-signal	beacon_age=3	lock_before=pid:18837|identity:Mon Sep 14 11:03:00 2026     bash /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/bin/fm-watch.sh	lock_after=pid:none|identity:none	successor=started:24539
+arm_pid=24494	watcher_pid=24539	origin=started	started_at=1789398187	ended_at=1789398199	exit_code=1	signal=none	reason=nonzero-exit	beacon_age=3	lock_before=pid:24539|identity:Mon Sep 14 11:03:07 2026     bash /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/bin/fm-watch.sh	lock_after=pid:none|identity:none	successor=none
+arm_pid=34128	watcher_pid=34156	origin=started	started_at=1789398200	ended_at=1789398202	exit_code=0	signal=none	reason=actionable-check	beacon_age=1	lock_before=pid:34156|identity:Mon Sep 14 11:03:20 2026     bash /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/bin/fm-watch.sh	lock_after=pid:none|identity:none	successor=started:35668
+
+state/.herdr-supervisor:
+version=1
+generation=1789398178.c9b84546da95ca8c
+fm_home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/handling-successor
+fm_root=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B
+herdr_session=default
+herdr_socket=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/handling-successor/fakestate/herdr.sock
+herdr_socket_identity=16777234:253024306
+workspace=wZ
+tab=wZ:t1
+pane=wZ:p1
+mode=active
+cleanup_state=open
+established_at=1789398178
+establish_reason=requested (no supervisor record)
+
+state/.herdr-supervisor-pending-cleanup:
+(absent)
+state/.herdr-supervisor-alarm:
+at=2026-09-14T15:03:19Z
+home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/handling-successor
+generation=1789398178.c9b84546da95ca8c
+priority=20
+reason=watcher arm attempt 1 failed in Herdr pane wZ:p1 (rc=1 elapsed=12s no actionable reason); bounded recovery will continue
+
+state/.herdr-supervisor.log:
+1789398178		establish-required	17200	no supervisor record
+1789398178	1789398178.c9b84546da95ca8c	establish-begin	17352	requested (no supervisor record)
+1789398179	1789398178.c9b84546da95ca8c	loop-start	18103	pid=17551
+1789398179	1789398178.c9b84546da95ca8c	established	18415	generation=1789398178.c9b84546da95ca8c pane=wZ:p1 workspace=wZ
+1789398187	1789398178.c9b84546da95ca8c	cycle	24404	rc=0 elapsed=7s signal: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/handling-successor/state/crew.status
+1789398199	1789398178.c9b84546da95ca8c	cycle-failed	33653	rc=1 elapsed=12s attempt=1 watcher: started pid=24539 (beacon fresh) recovery-generation=22433.1789398185.5U4nxN watcher: FAILED - watcher cycle exited 1 without an actionable reason 
+1789398200	1789398178.c9b84546da95ca8c	escalated	33797	watcher arm attempt 1 failed in Herdr pane wZ:p1 (rc=1 elapsed=12s no actionable reason); bounded recovery will continue
+1789398202	1789398178.c9b84546da95ca8c	cycle	35548	rc=0 elapsed=2s check: rearm-resurface
+
+fakestate/closed-workspaces:
+(absent)
+fakestate/workspace-closed:
+(absent)
+
+=== an exact workspace already absent on the verified server is reconciled as completed cleanup ===
+out=herdr-supervisor: started generation=1789398218.c8b89adac8d158ab pane=wZ:p1 pid=41970
+
+cleanup-absent persisted records:
+state/.watcher-down:
+(absent)
+state/.watch.lock/pid:
+(absent)
+state/.watch-cycle-exits.log:
+(absent)
+state/.herdr-supervisor:
+version=1
+generation=1789398218.c8b89adac8d158ab
+fm_home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-absent
+fm_root=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B
+herdr_session=default
+herdr_socket=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-absent/fakestate/herdr.sock
+herdr_socket_identity=16777234:253025828
+workspace=wZ
+tab=wZ:t1
+pane=wZ:p1
+mode=active
+cleanup_state=open
+established_at=1789398219
+establish_reason=requested (no supervisor record)
+
+state/.herdr-supervisor-pending-cleanup:
+(absent)
+state/.herdr-supervisor-alarm:
+(absent)
+state/.herdr-supervisor.log:
+1789398212		establish-required	39148	no supervisor record
+1789398212	1789398212.7751db4b7d3024e7	establish-begin	39292	requested (no supervisor record)
+1789398213	1789398212.7751db4b7d3024e7	loop-start	39798	pid=39399
+1789398214	1789398212.7751db4b7d3024e7	established	40138	generation=1789398212.7751db4b7d3024e7 pane=wZ:p1 workspace=wZ
+1789398215	1789398212.7751db4b7d3024e7	loop-signal	40615	terminated
+1789398217	1789398212.7751db4b7d3024e7	rollback-failed	41149	could not close workspace wZ after a failed establish
+1789398217	1789398212.7751db4b7d3024e7	reconciled	41222	exact workspace wZ is already absent on the verified Herdr server; recording its cleanup as complete
+1789398218		establish-required	41565	no supervisor record
+1789398218	1789398218.c8b89adac8d158ab	establish-begin	41790	requested (no supervisor record)
+1789398220	1789398218.c8b89adac8d158ab	loop-start	42782	pid=41970
+1789398221	1789398218.c8b89adac8d158ab	established	43357	generation=1789398218.c8b89adac8d158ab pane=wZ:p1 workspace=wZ
+
+fakestate/closed-workspaces:
+wZ
+
+fakestate/workspace-closed:
+(absent)
+
+=== an unreadable workspace list keeps the receipt and quarantine until the server can be read ===
+out=herdr-supervisor: started generation=1789398231.313772cbddc0c4e1 pane=wZ:p1 pid=49715
+
+cleanup-absent-unreadable persisted records:
+state/.watcher-down:
+pending:downtime:48308.1789398229.DKxVAy
+
+state/.watch.lock/pid:
+(absent)
+state/.watch-cycle-exits.log:
+(absent)
+state/.herdr-supervisor:
+version=1
+generation=1789398231.313772cbddc0c4e1
+fm_home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-absent-unreadable
+fm_root=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B
+herdr_session=default
+herdr_socket=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-absent-unreadable/fakestate/herdr.sock
+herdr_socket_identity=16777234:253028317
+workspace=wZ
+tab=wZ:t1
+pane=wZ:p1
+mode=active
+cleanup_state=open
+established_at=1789398231
+establish_reason=requested (no supervisor record)
+
+state/.herdr-supervisor-pending-cleanup:
+(absent)
+state/.herdr-supervisor-alarm:
+at=2026-09-14T15:03:48Z
+home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-absent-unreadable
+generation=1789398223.b8eaf50727e52d8a
+priority=20
+reason=pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+
+state/.herdr-supervisor.log:
+1789398222		establish-required	44327	no supervisor record
+1789398223	1789398223.b8eaf50727e52d8a	establish-begin	44619	requested (no supervisor record)
+1789398224	1789398223.b8eaf50727e52d8a	loop-start	45431	pid=44857
+1789398225	1789398223.b8eaf50727e52d8a	established	46062	generation=1789398223.b8eaf50727e52d8a pane=wZ:p1 workspace=wZ
+1789398226	1789398223.b8eaf50727e52d8a	loop-signal	46886	terminated
+1789398228	1789398223.b8eaf50727e52d8a	rollback-failed	47962	could not close workspace wZ after a failed establish
+1789398229	1789398223.b8eaf50727e52d8a	escalated	48172	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398230	1789398223.b8eaf50727e52d8a	rollback-failed	49057	could not close workspace wZ after a failed establish
+1789398230	1789398223.b8eaf50727e52d8a	reconciled	49188	exact workspace wZ is already absent on the verified Herdr server; recording its cleanup as complete
+1789398231		establish-required	49271	no supervisor record
+1789398231	1789398231.313772cbddc0c4e1	establish-begin	49449	requested (no supervisor record)
+1789398232	1789398231.313772cbddc0c4e1	loop-start	50475	pid=49715
+1789398233	1789398231.313772cbddc0c4e1	established	51010	generation=1789398231.313772cbddc0c4e1 pane=wZ:p1 workspace=wZ
+
+fakestate/closed-workspaces:
+wZ
+
+fakestate/workspace-closed:
+(absent)
+
+=== a receipt naming a different Herdr server is retained without touching the replacement server ===
+out=
+
+cleanup-absent-other-server persisted records:
+state/.watcher-down:
+pending:downtime:55968.1789398239.pWqsSu
+
+state/.watch.lock/pid:
+(absent)
+state/.watch-cycle-exits.log:
+(absent)
+state/.herdr-supervisor:
+version=1
+generation=1789398234.64549e0f88c68cf4
+fm_home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-absent-other-server
+fm_root=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B
+herdr_session=default
+herdr_socket=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-absent-other-server/fakestate/herdr.sock
+herdr_socket_identity=16777234:253028837
+workspace=wZ
+tab=wZ:t1
+pane=wZ:p1
+cleanup_state=open
+established_at=1789398235
+establish_reason=requested (no supervisor record)
+mode=retiring
+
+state/.herdr-supervisor-pending-cleanup:
+generation=1789398234.64549e0f88c68cf4
+fm_home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-absent-other-server
+fm_root=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B
+herdr_session=default
+herdr_socket=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-absent-other-server/fakestate/herdr.sock
+herdr_socket_identity=16777234:253028837
+workspace=wZ
+tab=wZ:t1
+pane=wZ:p1
+cleanup_state=open
+
+state/.herdr-supervisor-alarm:
+at=2026-09-14T15:03:58Z
+home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-absent-other-server
+generation=1789398234.64549e0f88c68cf4
+priority=20
+reason=pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+
+state/.herdr-supervisor.log:
+1789398234		establish-required	52141	no supervisor record
+1789398235	1789398234.64549e0f88c68cf4	establish-begin	52414	requested (no supervisor record)
+1789398236	1789398234.64549e0f88c68cf4	loop-start	53456	pid=52695
+1789398237	1789398234.64549e0f88c68cf4	established	54293	generation=1789398234.64549e0f88c68cf4 pane=wZ:p1 workspace=wZ
+1789398237	1789398234.64549e0f88c68cf4	loop-signal	54815	terminated
+1789398239	1789398234.64549e0f88c68cf4	escalated	55838	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+
+fakestate/closed-workspaces:
+wZ
+
+fakestate/workspace-closed:
+
+
+=== ambiguous inventories and a present target preserve receipt, quarantine, and generation ===
+out=
+
+cleanup-invalid-inventory persisted records:
+state/.watcher-down:
+pending:downtime:61073.1789398245.jfLv3G
+
+state/.watch.lock/pid:
+(absent)
+state/.watch-cycle-exits.log:
+(absent)
+state/.herdr-supervisor:
+version=1
+generation=1789398240.e354ad4a8b9f91d3
+fm_home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-invalid-inventory
+fm_root=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B
+herdr_session=default
+herdr_socket=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-invalid-inventory/fakestate/herdr.sock
+herdr_socket_identity=16777234:253029196
+workspace=wZ
+tab=wZ:t1
+pane=wZ:p1
+mode=quarantine
+cleanup_state=open
+established_at=1789398271
+establish_reason=pending-cleanup
+
+state/.herdr-supervisor-pending-cleanup:
+generation=1789398240.e354ad4a8b9f91d3
+fm_home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-invalid-inventory
+fm_root=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B
+herdr_session=default
+herdr_socket=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-invalid-inventory/fakestate/herdr.sock
+herdr_socket_identity=16777234:253029196
+workspace=wZ
+tab=wZ:t1
+pane=wZ:p1
+cleanup_state=open
+
+state/.herdr-supervisor-alarm:
+at=2026-09-14T15:04:31Z
+home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-invalid-inventory
+generation=1789398240.e354ad4a8b9f91d3
+priority=20
+reason=pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+
+state/.herdr-supervisor.log:
+1789398240		establish-required	56617	no supervisor record
+1789398240	1789398240.e354ad4a8b9f91d3	establish-begin	56913	requested (no supervisor record)
+1789398241	1789398240.e354ad4a8b9f91d3	loop-start	57720	pid=57213
+1789398242	1789398240.e354ad4a8b9f91d3	established	58529	generation=1789398240.e354ad4a8b9f91d3 pane=wZ:p1 workspace=wZ
+1789398243	1789398240.e354ad4a8b9f91d3	loop-signal	59253	terminated
+1789398244	1789398240.e354ad4a8b9f91d3	rollback-failed	60680	could not close workspace wZ after a failed establish
+1789398245	1789398240.e354ad4a8b9f91d3	escalated	60987	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398246	1789398240.e354ad4a8b9f91d3	rollback-failed	61939	could not close workspace wZ after a failed establish
+1789398246	1789398240.e354ad4a8b9f91d3	escalated	62125	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398247	1789398240.e354ad4a8b9f91d3	rollback-failed	62845	could not close workspace wZ after a failed establish
+1789398247	1789398240.e354ad4a8b9f91d3	escalated	63100	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398248	1789398240.e354ad4a8b9f91d3	rollback-failed	64372	could not close workspace wZ after a failed establish
+1789398249	1789398240.e354ad4a8b9f91d3	escalated	64624	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398250	1789398240.e354ad4a8b9f91d3	rollback-failed	65485	could not close workspace wZ after a failed establish
+1789398250	1789398240.e354ad4a8b9f91d3	escalated	65627	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398251	1789398240.e354ad4a8b9f91d3	rollback-failed	66275	could not close workspace wZ after a failed establish
+1789398251	1789398240.e354ad4a8b9f91d3	escalated	66412	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398252	1789398240.e354ad4a8b9f91d3	rollback-failed	66997	could not close workspace wZ after a failed establish
+1789398252	1789398240.e354ad4a8b9f91d3	escalated	67135	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398253	1789398240.e354ad4a8b9f91d3	rollback-failed	67771	could not close workspace wZ after a failed establish
+1789398253	1789398240.e354ad4a8b9f91d3	escalated	67920	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398254	1789398240.e354ad4a8b9f91d3	rollback-failed	68501	could not close workspace wZ after a failed establish
+1789398254	1789398240.e354ad4a8b9f91d3	escalated	68688	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398255	1789398240.e354ad4a8b9f91d3	rollback-failed	69285	could not close workspace wZ after a failed establish
+1789398255	1789398240.e354ad4a8b9f91d3	escalated	69423	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398256	1789398240.e354ad4a8b9f91d3	rollback-failed	70042	could not close workspace wZ after a failed establish
+1789398256	1789398240.e354ad4a8b9f91d3	escalated	70210	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398257	1789398240.e354ad4a8b9f91d3	rollback-failed	70791	could not close workspace wZ after a failed establish
+1789398257	1789398240.e354ad4a8b9f91d3	escalated	70924	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398258	1789398240.e354ad4a8b9f91d3	rollback-failed	71579	could not close workspace wZ after a failed establish
+1789398258	1789398240.e354ad4a8b9f91d3	escalated	71711	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398259	1789398240.e354ad4a8b9f91d3	rollback-failed	72299	could not close workspace wZ after a failed establish
+1789398259	1789398240.e354ad4a8b9f91d3	escalated	72497	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398260	1789398240.e354ad4a8b9f91d3	rollback-failed	73354	could not close workspace wZ after a failed establish
+1789398260	1789398240.e354ad4a8b9f91d3	escalated	73628	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398262	1789398240.e354ad4a8b9f91d3	rollback-failed	74685	could not close workspace wZ after a failed establish
+1789398262	1789398240.e354ad4a8b9f91d3	escalated	74949	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398263	1789398240.e354ad4a8b9f91d3	rollback-failed	75952	could not close workspace wZ after a failed establish
+1789398263	1789398240.e354ad4a8b9f91d3	escalated	76207	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398265	1789398240.e354ad4a8b9f91d3	rollback-failed	77209	could not close workspace wZ after a failed establish
+1789398265	1789398240.e354ad4a8b9f91d3	escalated	77509	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398266	1789398240.e354ad4a8b9f91d3	rollback-failed	78368	could not close workspace wZ after a failed establish
+1789398266	1789398240.e354ad4a8b9f91d3	escalated	78629	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398268	1789398240.e354ad4a8b9f91d3	rollback-failed	79714	could not close workspace wZ after a failed establish
+1789398268	1789398240.e354ad4a8b9f91d3	escalated	79856	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398269	1789398240.e354ad4a8b9f91d3	rollback-failed	81220	could not close workspace wZ after a failed establish
+1789398269	1789398240.e354ad4a8b9f91d3	escalated	81490	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398271	1789398240.e354ad4a8b9f91d3	rollback-failed	82360	could not close workspace wZ after a failed establish
+1789398271	1789398240.e354ad4a8b9f91d3	escalated	82499	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+
+fakestate/closed-workspaces:
+wZ
+
+fakestate/workspace-closed:
+
+
+=== a valid nonempty target-absent inventory reconciles cleanup and permits replacement ===
+out=herdr-supervisor: started generation=1789398272.7a67e633edceb300 pane=wZ:p1 pid=83654
+
+cleanup-invalid-inventory persisted records:
+state/.watcher-down:
+pending:downtime:61073.1789398245.jfLv3G
+
+state/.watch.lock/pid:
+(absent)
+state/.watch-cycle-exits.log:
+(absent)
+state/.herdr-supervisor:
+version=1
+generation=1789398272.7a67e633edceb300
+fm_home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-invalid-inventory
+fm_root=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B
+herdr_session=default
+herdr_socket=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-invalid-inventory/fakestate/herdr.sock
+herdr_socket_identity=16777234:253029196
+workspace=wZ
+tab=wZ:t1
+pane=wZ:p1
+mode=active
+cleanup_state=open
+established_at=1789398272
+establish_reason=requested (no supervisor record)
+
+state/.herdr-supervisor-pending-cleanup:
+(absent)
+state/.herdr-supervisor-alarm:
+at=2026-09-14T15:04:31Z
+home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/cleanup-invalid-inventory
+generation=1789398240.e354ad4a8b9f91d3
+priority=20
+reason=pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+
+state/.herdr-supervisor.log:
+1789398240		establish-required	56617	no supervisor record
+1789398240	1789398240.e354ad4a8b9f91d3	establish-begin	56913	requested (no supervisor record)
+1789398241	1789398240.e354ad4a8b9f91d3	loop-start	57720	pid=57213
+1789398242	1789398240.e354ad4a8b9f91d3	established	58529	generation=1789398240.e354ad4a8b9f91d3 pane=wZ:p1 workspace=wZ
+1789398243	1789398240.e354ad4a8b9f91d3	loop-signal	59253	terminated
+1789398244	1789398240.e354ad4a8b9f91d3	rollback-failed	60680	could not close workspace wZ after a failed establish
+1789398245	1789398240.e354ad4a8b9f91d3	escalated	60987	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398246	1789398240.e354ad4a8b9f91d3	rollback-failed	61939	could not close workspace wZ after a failed establish
+1789398246	1789398240.e354ad4a8b9f91d3	escalated	62125	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398247	1789398240.e354ad4a8b9f91d3	rollback-failed	62845	could not close workspace wZ after a failed establish
+1789398247	1789398240.e354ad4a8b9f91d3	escalated	63100	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398248	1789398240.e354ad4a8b9f91d3	rollback-failed	64372	could not close workspace wZ after a failed establish
+1789398249	1789398240.e354ad4a8b9f91d3	escalated	64624	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398250	1789398240.e354ad4a8b9f91d3	rollback-failed	65485	could not close workspace wZ after a failed establish
+1789398250	1789398240.e354ad4a8b9f91d3	escalated	65627	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398251	1789398240.e354ad4a8b9f91d3	rollback-failed	66275	could not close workspace wZ after a failed establish
+1789398251	1789398240.e354ad4a8b9f91d3	escalated	66412	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398252	1789398240.e354ad4a8b9f91d3	rollback-failed	66997	could not close workspace wZ after a failed establish
+1789398252	1789398240.e354ad4a8b9f91d3	escalated	67135	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398253	1789398240.e354ad4a8b9f91d3	rollback-failed	67771	could not close workspace wZ after a failed establish
+1789398253	1789398240.e354ad4a8b9f91d3	escalated	67920	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398254	1789398240.e354ad4a8b9f91d3	rollback-failed	68501	could not close workspace wZ after a failed establish
+1789398254	1789398240.e354ad4a8b9f91d3	escalated	68688	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398255	1789398240.e354ad4a8b9f91d3	rollback-failed	69285	could not close workspace wZ after a failed establish
+1789398255	1789398240.e354ad4a8b9f91d3	escalated	69423	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398256	1789398240.e354ad4a8b9f91d3	rollback-failed	70042	could not close workspace wZ after a failed establish
+1789398256	1789398240.e354ad4a8b9f91d3	escalated	70210	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398257	1789398240.e354ad4a8b9f91d3	rollback-failed	70791	could not close workspace wZ after a failed establish
+1789398257	1789398240.e354ad4a8b9f91d3	escalated	70924	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398258	1789398240.e354ad4a8b9f91d3	rollback-failed	71579	could not close workspace wZ after a failed establish
+1789398258	1789398240.e354ad4a8b9f91d3	escalated	71711	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398259	1789398240.e354ad4a8b9f91d3	rollback-failed	72299	could not close workspace wZ after a failed establish
+1789398259	1789398240.e354ad4a8b9f91d3	escalated	72497	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398260	1789398240.e354ad4a8b9f91d3	rollback-failed	73354	could not close workspace wZ after a failed establish
+1789398260	1789398240.e354ad4a8b9f91d3	escalated	73628	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398262	1789398240.e354ad4a8b9f91d3	rollback-failed	74685	could not close workspace wZ after a failed establish
+1789398262	1789398240.e354ad4a8b9f91d3	escalated	74949	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398263	1789398240.e354ad4a8b9f91d3	rollback-failed	75952	could not close workspace wZ after a failed establish
+1789398263	1789398240.e354ad4a8b9f91d3	escalated	76207	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398265	1789398240.e354ad4a8b9f91d3	rollback-failed	77209	could not close workspace wZ after a failed establish
+1789398265	1789398240.e354ad4a8b9f91d3	escalated	77509	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398266	1789398240.e354ad4a8b9f91d3	rollback-failed	78368	could not close workspace wZ after a failed establish
+1789398266	1789398240.e354ad4a8b9f91d3	escalated	78629	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398268	1789398240.e354ad4a8b9f91d3	rollback-failed	79714	could not close workspace wZ after a failed establish
+1789398268	1789398240.e354ad4a8b9f91d3	escalated	79856	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398269	1789398240.e354ad4a8b9f91d3	rollback-failed	81220	could not close workspace wZ after a failed establish
+1789398269	1789398240.e354ad4a8b9f91d3	escalated	81490	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398271	1789398240.e354ad4a8b9f91d3	rollback-failed	82360	could not close workspace wZ after a failed establish
+1789398271	1789398240.e354ad4a8b9f91d3	escalated	82499	pending Herdr supervisor cleanup could not be reconciled; replacement is blocked
+1789398272	1789398240.e354ad4a8b9f91d3	rollback-failed	83209	could not close workspace wZ after a failed establish
+1789398272	1789398240.e354ad4a8b9f91d3	reconciled	83277	exact workspace wZ is already absent on the verified Herdr server; recording its cleanup as complete
+1789398272		establish-required	83347	no supervisor record
+1789398272	1789398272.7a67e633edceb300	establish-begin	83477	requested (no supervisor record)
+1789398273	1789398272.7a67e633edceb300	loop-start	84109	pid=83654
+1789398275	1789398272.7a67e633edceb300	established	84632	generation=1789398272.7a67e633edceb300 pane=wZ:p1 workspace=wZ
+
+fakestate/closed-workspaces:
+wZ
+
+fakestate/workspace-closed:
+(absent)
+
+=== a loop asleep in its rapid-cycle floor answers a termination signal at once ===
+out=herdr-supervisor: started generation=1789398277.4b3986c7753f4315 pane=wZ:p1 pid=85530
+FLOOR_ELAPSED=1
+
+floor-sleep-signal persisted records:
+state/.watcher-down:
+(absent)
+state/.watch.lock/pid:
+(absent)
+state/.watch-cycle-exits.log:
+(absent)
+state/.herdr-supervisor:
+version=1
+generation=1789398277.4b3986c7753f4315
+fm_home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/floor-sleep-signal
+fm_root=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B
+herdr_session=default
+herdr_socket=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.B3Ee4w/floor-sleep-signal/fakestate/herdr.sock
+herdr_socket_identity=16777234:253030745
+workspace=wZ
+tab=wZ:t1
+pane=wZ:p1
+mode=active
+cleanup_state=open
+established_at=1789398277
+establish_reason=requested (no supervisor record)
+
+state/.herdr-supervisor-pending-cleanup:
+(absent)
+state/.herdr-supervisor-alarm:
+(absent)
+state/.herdr-supervisor.log:
+1789398277		establish-required	85214	no supervisor record
+1789398277	1789398277.4b3986c7753f4315	establish-begin	85414	requested (no supervisor record)
+1789398278	1789398277.4b3986c7753f4315	loop-start	86041	pid=85530
+1789398279	1789398277.4b3986c7753f4315	established	86464	generation=1789398277.4b3986c7753f4315 pane=wZ:p1 workspace=wZ
+1789398281	1789398277.4b3986c7753f4315	cycle	86879	rc=0 elapsed=2s signal: /fake/state/task.status
+1789398282	1789398277.4b3986c7753f4315	cycle	87262	rc=0 elapsed=1s signal: /fake/state/task.status
+1789398282	1789398277.4b3986c7753f4315	loop-signal	87373	terminated
+
+fakestate/closed-workspaces:
+(absent)
+fakestate/workspace-closed:
+(absent)

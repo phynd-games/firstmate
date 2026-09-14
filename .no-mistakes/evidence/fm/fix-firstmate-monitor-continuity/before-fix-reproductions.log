@@ -1,0 +1,147 @@
+Before-fix comparison: fe601e80363dca6469775ca98ad0643071fb48f3
+Only bin/fm-herdr-supervisor.sh and bin/backends/herdr.sh were restored to base in a disposable copy within the worktree.
+All other production bin files are unchanged between base and target. Current stateful fixtures were used to expose the production failures.
+Both selected tests exited 1 at their intended behavioral assertions.
+
+
+=== baseline-event ===
+--- ledger ---
+1789398295  establish-required 91343 no supervisor record
+1789398295 1789398295.98f609003fbc0c8f establish-begin 91567 requested (no supervisor record)
+1789398296 1789398295.98f609003fbc0c8f loop-start 92465 pid=91687
+1789398298 1789398295.98f609003fbc0c8f established 93194 generation=1789398295.98f609003fbc0c8f pane=wZ:p1 workspace=wZ
+1789398304 1789398295.98f609003fbc0c8f cycle 97171 rc=0 elapsed=5s signal: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.IK63aU/handling-successor/state/crew.status
+1789398307 1789398295.98f609003fbc0c8f cycle 98873 rc=0 elapsed=3s check: rearm-resurface
+1789398309 1789398295.98f609003fbc0c8f cycle 717 rc=0 elapsed=2s check: rearm-resurface
+1789398312 1789398295.98f609003fbc0c8f cycle 2523 rc=0 elapsed=3s check: rearm-resurface
+--- marker: pending:downtime:2932.1789398313.qwwCt0 lock: 2685 ---
+not ok - the immediate re-arm did not hold one ready cycle: lock 97414->2685 generation 96129.1789398302.L7FzRo->2932.1789398313.qwwCt0 cycles=4 resurfaces=3
+
+Persisted state:
+
+OBSERVATION: FAILURE: the immediate re-arm did not hold one ready cycle: lock 97414->2685 generation 96129.1789398302.L7FzRo->2932.1789398313.qwwCt0 cycles=4 resurfaces=3
+out=herdr-supervisor: started generation=1789398295.98f609003fbc0c8f pane=wZ:p1 pid=91687
+GEN22=96129.1789398302.L7FzRo
+SUCCESSOR22=97414
+
+HOME handling-successor
+state/.watcher-down:
+pending:downtime:2932.1789398313.qwwCt0
+
+state/.watch.lock/pid:
+2685
+
+state/.watch-cycle-exits.log:
+arm_pid=93693	watcher_pid=93930	origin=started	started_at=1789398299	ended_at=1789398303	exit_code=0	signal=none	reason=actionable-signal	beacon_age=3	lock_before=pid:93930|identity:Mon Sep 14 11:04:59 2026     bash /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-baseline/bin/fm-watch.sh	lock_after=pid:none|identity:none	successor=none
+arm_pid=97356	watcher_pid=97414	origin=started	started_at=1789398304	ended_at=1789398306	exit_code=0	signal=none	reason=actionable-check	beacon_age=1	lock_before=pid:97414|identity:Mon Sep 14 11:05:04 2026     bash /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-baseline/bin/fm-watch.sh	lock_after=pid:none|identity:none	successor=none
+arm_pid=98972	watcher_pid=99002	origin=started	started_at=1789398307	ended_at=1789398309	exit_code=0	signal=none	reason=actionable-check	beacon_age=1	lock_before=pid:99002|identity:Mon Sep 14 11:05:07 2026     bash /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-baseline/bin/fm-watch.sh	lock_after=pid:none|identity:none	successor=none
+arm_pid=833	watcher_pid=880	origin=started	started_at=1789398309	ended_at=1789398311	exit_code=0	signal=none	reason=actionable-check	beacon_age=1	lock_before=pid:880|identity:Mon Sep 14 11:05:09 2026     bash /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-baseline/bin/fm-watch.sh	lock_after=pid:none|identity:none	successor=none
+
+state/.herdr-supervisor:
+version=1
+generation=1789398295.98f609003fbc0c8f
+fm_home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.IK63aU/handling-successor
+fm_root=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-baseline
+herdr_session=default
+herdr_socket=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.IK63aU/handling-successor/fakestate/herdr.sock
+herdr_socket_identity=16777234:253031484
+workspace=wZ
+tab=wZ:t1
+pane=wZ:p1
+mode=active
+cleanup_state=open
+established_at=1789398295
+establish_reason=requested (no supervisor record)
+
+state/.herdr-supervisor-pending-cleanup:
+(absent)
+state/.herdr-supervisor-alarm:
+(absent)
+state/.herdr-supervisor.log:
+1789398295		establish-required	91343	no supervisor record
+1789398295	1789398295.98f609003fbc0c8f	establish-begin	91567	requested (no supervisor record)
+1789398296	1789398295.98f609003fbc0c8f	loop-start	92465	pid=91687
+1789398298	1789398295.98f609003fbc0c8f	established	93194	generation=1789398295.98f609003fbc0c8f pane=wZ:p1 workspace=wZ
+1789398304	1789398295.98f609003fbc0c8f	cycle	97171	rc=0 elapsed=5s signal: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.IK63aU/handling-successor/state/crew.status
+1789398307	1789398295.98f609003fbc0c8f	cycle	98873	rc=0 elapsed=3s check: rearm-resurface
+1789398309	1789398295.98f609003fbc0c8f	cycle	717	rc=0 elapsed=2s check: rearm-resurface
+1789398312	1789398295.98f609003fbc0c8f	cycle	2523	rc=0 elapsed=3s check: rearm-resurface
+
+fakestate/closed-workspaces:
+(absent)
+fakestate/workspace-closed:
+(absent)
+
+=== baseline-cleanup ===
+--- ledger ---
+1789398314  establish-required 4171 no supervisor record
+1789398315 1789398315.eac8ea9c6e6d2a89 establish-begin 4588 requested (no supervisor record)
+1789398317 1789398315.eac8ea9c6e6d2a89 loop-start 5684 pid=4833
+1789398318 1789398315.eac8ea9c6e6d2a89 established 6416 generation=1789398315.eac8ea9c6e6d2a89 pane=wZ:p1 workspace=wZ
+1789398319 1789398315.eac8ea9c6e6d2a89 loop-signal 7609 terminated
+1789398321 1789398315.eac8ea9c6e6d2a89 rollback-failed 8795 could not close workspace wZ after a failed establish
+1789398321 1789398315.eac8ea9c6e6d2a89 escalated 9072 pending Herdr supervisor cleanup could not be reconciled for retire
+not ok - retire refused an exact workspace the verified server already reports absent (rc=1): 
+
+Persisted state:
+
+OBSERVATION: FAILURE: retire refused an exact workspace the verified server already reports absent (rc=1): 
+out=
+
+HOME cleanup-absent
+state/.watcher-down:
+pending:downtime:9233.1789398322.biBbHD
+
+state/.watch.lock/pid:
+(absent)
+state/.watch-cycle-exits.log:
+(absent)
+state/.herdr-supervisor:
+version=1
+generation=1789398315.eac8ea9c6e6d2a89
+fm_home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.DLOafw/cleanup-absent
+fm_root=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-baseline
+herdr_session=default
+herdr_socket=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.DLOafw/cleanup-absent/fakestate/herdr.sock
+herdr_socket_identity=16777234:253032710
+workspace=wZ
+tab=wZ:t1
+pane=wZ:p1
+mode=quarantine
+cleanup_state=open
+established_at=1789398321
+establish_reason=pending-cleanup
+
+state/.herdr-supervisor-pending-cleanup:
+generation=1789398315.eac8ea9c6e6d2a89
+fm_home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.DLOafw/cleanup-absent
+fm_root=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-baseline
+herdr_session=default
+herdr_socket=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.DLOafw/cleanup-absent/fakestate/herdr.sock
+herdr_socket_identity=16777234:253032710
+workspace=wZ
+tab=wZ:t1
+pane=wZ:p1
+cleanup_state=open
+
+state/.herdr-supervisor-alarm:
+at=2026-09-14T15:05:21Z
+home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.DLOafw/cleanup-absent
+generation=1789398315.eac8ea9c6e6d2a89
+priority=20
+reason=pending Herdr supervisor cleanup could not be reconciled for retire
+
+state/.herdr-supervisor.log:
+1789398314		establish-required	4171	no supervisor record
+1789398315	1789398315.eac8ea9c6e6d2a89	establish-begin	4588	requested (no supervisor record)
+1789398317	1789398315.eac8ea9c6e6d2a89	loop-start	5684	pid=4833
+1789398318	1789398315.eac8ea9c6e6d2a89	established	6416	generation=1789398315.eac8ea9c6e6d2a89 pane=wZ:p1 workspace=wZ
+1789398319	1789398315.eac8ea9c6e6d2a89	loop-signal	7609	terminated
+1789398321	1789398315.eac8ea9c6e6d2a89	rollback-failed	8795	could not close workspace wZ after a failed establish
+1789398321	1789398315.eac8ea9c6e6d2a89	escalated	9072	pending Herdr supervisor cleanup could not be reconciled for retire
+
+fakestate/closed-workspaces:
+wZ
+
+fakestate/workspace-closed:
+

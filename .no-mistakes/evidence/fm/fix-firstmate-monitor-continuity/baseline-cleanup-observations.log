@@ -1,0 +1,61 @@
+
+OBSERVATION: FAILURE: retire refused an exact workspace the verified server already reports absent (rc=1): 
+out=
+
+HOME cleanup-absent
+state/.watcher-down:
+pending:downtime:9233.1789398322.biBbHD
+
+state/.watch.lock/pid:
+(absent)
+state/.watch-cycle-exits.log:
+(absent)
+state/.herdr-supervisor:
+version=1
+generation=1789398315.eac8ea9c6e6d2a89
+fm_home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.DLOafw/cleanup-absent
+fm_root=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-baseline
+herdr_session=default
+herdr_socket=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.DLOafw/cleanup-absent/fakestate/herdr.sock
+herdr_socket_identity=16777234:253032710
+workspace=wZ
+tab=wZ:t1
+pane=wZ:p1
+mode=quarantine
+cleanup_state=open
+established_at=1789398321
+establish_reason=pending-cleanup
+
+state/.herdr-supervisor-pending-cleanup:
+generation=1789398315.eac8ea9c6e6d2a89
+fm_home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.DLOafw/cleanup-absent
+fm_root=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-baseline
+herdr_session=default
+herdr_socket=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.DLOafw/cleanup-absent/fakestate/herdr.sock
+herdr_socket_identity=16777234:253032710
+workspace=wZ
+tab=wZ:t1
+pane=wZ:p1
+cleanup_state=open
+
+state/.herdr-supervisor-alarm:
+at=2026-09-14T15:05:21Z
+home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M26CEVEQSBWS3JXTP7Q3DA3B/.test-tmp/fm-herdr-supervisor-tests.DLOafw/cleanup-absent
+generation=1789398315.eac8ea9c6e6d2a89
+priority=20
+reason=pending Herdr supervisor cleanup could not be reconciled for retire
+
+state/.herdr-supervisor.log:
+1789398314		establish-required	4171	no supervisor record
+1789398315	1789398315.eac8ea9c6e6d2a89	establish-begin	4588	requested (no supervisor record)
+1789398317	1789398315.eac8ea9c6e6d2a89	loop-start	5684	pid=4833
+1789398318	1789398315.eac8ea9c6e6d2a89	established	6416	generation=1789398315.eac8ea9c6e6d2a89 pane=wZ:p1 workspace=wZ
+1789398319	1789398315.eac8ea9c6e6d2a89	loop-signal	7609	terminated
+1789398321	1789398315.eac8ea9c6e6d2a89	rollback-failed	8795	could not close workspace wZ after a failed establish
+1789398321	1789398315.eac8ea9c6e6d2a89	escalated	9072	pending Herdr supervisor cleanup could not be reconciled for retire
+
+fakestate/closed-workspaces:
+wZ
+
+fakestate/workspace-closed:
+
