@@ -3,7 +3,8 @@ name: stuck-crewmate-recovery
 description: >-
   Agent-only playbook for stuck or missing ordinary Firstmate direct reports.
   Use when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, a failed steer, or a validation-loop limit stop.
-  Reconciles recorded work before escalating from targeted inspection through safe relaunch or failure.
+  Also use before handing retained work from a stopped or failed attempt to an authorized fresh worker.
+  Reconciles recorded work before a reviewed fresh handoff or escalation through safe relaunch or failure.
 user-invocable: false
 metadata:
   internal: true
@@ -12,6 +13,7 @@ metadata:
 # stuck-crewmate-recovery
 
 Use this playbook when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or when a direct report is stale, looping, repeatedly confused, asking a question its brief already answers, unresponsive, stopped by a validation-loop limit, or when a steer failed to land.
+Also use it before transferring retained work from a stopped or failed attempt to an authorized fresh worker.
 
 Interrupt, stop, and relaunch a worker through `bin/fm-control.sh <task-id> interrupt|exit|relaunch`, which resolves the recorded runtime itself, verifies each action, and never tears down or discards anything ([`docs/agent-control.md`](../../../docs/agent-control.md)).
 That plane covers workers running in this home; a remotely placed secondmate is refused by name and reconciled through `secondmate-provisioning` instead.
@@ -35,10 +37,35 @@ Use the Herdr-owned endpoint and worktree checks through `bin/fm-crew-state.sh` 
 Herdr is the sole supported runtime; legacy tmux, zellij, cmux, and Orca records are read-only and must not be operated or probed through their retained adapters.
 Do not sweep another home's endpoints or infer ownership from a matching window label.
 
-Before relaunch, prove that no live agent still owns the recorded task and that the existing worktree remains available.
+Before relaunch, confirm that the attempt remains authorized to run, prove that no live agent still owns the recorded task, and verify that the existing worktree remains available.
 Preserve its uncommitted changes and commits, keep the same task identity, and resume or relaunch the recorded harness in that existing worktree with the same brief plus a concise progress note.
 Do not use a fresh generic spawn while the recorded worktree is unaccounted for, because allocating another worktree can split one task across two copies.
 If the worktree or ownership cannot be reconciled safely, leave all state intact and report the task failed or blocked with the conflicting evidence.
+
+## Preserved-work reconciliation before a fresh handoff
+
+An explicit stop is authoritative: retained files, an open PR, a stale working event, or a missing agent never authorize reviving that attempt.
+Separate retiring an obsolete monitoring identity from deleting the work it once tracked.
+Task retirement remains with [`bin/fm-teardown.sh`](../../../bin/fm-teardown.sh) and its [`record-transition owner`](../../../bin/fm-backlog-transition-lib.sh); do not strip live metadata, bypass the unlanded-work guard, fabricate completion, or erase an unresolved captain decision to quiet notifications.
+There is currently no supported ordinary-task command to remove monitoring while preserving an unlanded worktree; record that tooling gap and leave the work discoverable rather than claiming retirement is complete.
+
+Before an authorized fresh worker starts, firstmate performs a reconciliation pass over the retained artifacts and the actual current state.
+Write one durable handoff under the work item's retained data directory that records:
+
+- The approved goal, acceptance criteria, constraints, and current implementation, delivery, and merge authority.
+- Exact retained work and artifact locations, branch and commit identities, uncommitted changes, and useful session context that is not already captured by the artifacts.
+- The last verified result, supporting evidence, failed or incomplete checks, and distinctions between implemented, committed, published, landed, and verified behavior.
+- Decisions already made, their authoritative source, unresolved engineering questions, genuine captain-owned questions, and the next executable action.
+- Which prior attempt is stopped, which work is authoritative, and what the new worker may reuse or change without discarding other retained work.
+
+Resolve contradictions before treating the handoff as authoritative; when the evidence cannot settle a point, record the uncertainty and the discriminating check instead of copying both claims as facts.
+Answer engineering questions within existing authority and carry genuine captain calls through `../captain-hold-lifecycle/SKILL.md`; a handoff does not invent an answer or expand scope.
+Keep detail sufficient for independent assessment under `../communication-discipline/SKILL.md`, not constrained by captain-facing chat brevity.
+
+Give an authorized fresh worker its own isolated task identity and the reviewed handoff with exact artifact pointers.
+Do not copy old process identities, blindly replay old instructions, or assume every retained change belongs in the new deliverable.
+Have the new worker verify the relevant artifacts and starting state, acknowledge the handoff, and confirm observable work through the existing confirmed-handoff owner before reporting a successful transfer.
+Preserve the old work and its durable navigation until the selected landing and cleanup owners authorize removal.
 
 ## Validation-loop limit stop
 

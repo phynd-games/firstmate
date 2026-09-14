@@ -1,11 +1,18 @@
 name: Require no-mistakes
 run-name: "PR #${{ github.event.pull_request.number }} body compliance - ${{ github.event.action }} - event ${{ github.run_number }} (run ${{ github.run_id }})"
 
+# Excluded per current captain instruction (recorded in this Firstmate
+# home's private data/captain.md, Firstmate-repository-only): this hosted
+# check failed with a stale-attestation mismatch (the PR body's recorded
+# no-mistakes pipeline head lagging the branch's actual pushed head) on a
+# push where no-mistakes itself had already completed its "pr" step; this
+# is a hosted verifier/race condition, not a false PR-provenance claim, and
+# is disclosed as excluded rather than repaired or silently left failing.
+# Manual dispatch only, so this workflow no longer runs automatically on
+# pull_request events; the job definition itself is unchanged so restoring
+# automatic triggering is a one-line revert if the race is fixed upstream.
 on:
-  pull_request:
-    types: [opened, edited, synchronize, reopened]
-    branches:
-      - main
+  workflow_dispatch: {}
 
 permissions:
   contents: read

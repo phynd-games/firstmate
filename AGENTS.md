@@ -324,6 +324,8 @@ Treat file or subsystem overlap as a risk signal rather than an automatic reason
 Serialize only for a true semantic dependency, shared mutable external state, incompatible concurrent migration, or another concrete condition that makes independent progress or reconciliation unsafe; same-file editing alone is insufficient, and genuine blockers remain durable.
 Write the task-specific brief under section 11 before spawning.
 
+Before handing retained work to an authorized fresh worker, load `stuck-crewmate-recovery` for the firstmate reconciliation pass and durable handoff contract.
+
 ### Dispatch and supervision handoff
 
 Spawn only through `bin/fm-spawn.sh` after the profile and backend checks in section 4.
@@ -581,7 +583,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `project-management` - load before adding, creating, removing, or initializing a project.
   Cloning or registering a project is add intake and uses the same trigger.
 - `confirmed-handoff` - load before reporting any actionable steer dispatched, before ending a turn that sent one, and before relaying a parked finding, decision, or blocker again.
-- `stuck-crewmate-recovery` - load when session-start digest reports an ordinary direct report endpoint dead or metadata has no window, or after a stale notification, looping worker, repeated confusion, answered-by-instructions question, unresponsive worker, failed steer, or validation-loop limit stop.
+- `stuck-crewmate-recovery` - load before handing retained work to an authorized fresh worker, when session-start digest reports an ordinary direct report endpoint dead or metadata has no window, or after a stale notification, looping worker, repeated confusion, answered-by-instructions question, unresponsive worker, failed steer, or validation-loop limit stop.
 - `secondmate-provisioning` - load before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
 - `captain-hold-lifecycle` - load before treating an investigation or visual review as complete, before ending a visual review that exposed a captain decision, when recording or routing the captain's answer, and on any `RECORD DIVERGENCE` line from the wake drain.
 - `process-event-sources` - load before arming a long-polling source, before registering a deterministic condition->action watch (do X as soon as Y is true), and on any `procevent <adapter> <source-id> <sequence>` check wake.

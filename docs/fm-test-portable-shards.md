@@ -53,22 +53,22 @@ The two parallel lanes use longest-processing-time assignment from those measure
 It keeps watcher, lock, AFK, daemon, fake-Herdr secondmate lifecycle, bootstrap, live-harness opt-in, GUI-backend, and other unproven work serial.
 Membership is derived rather than enumerated, so a newly added test lands here by default.
 
-## Portable serial CI shards
+## Portable serial shards
 
 On green CI run [30725985757](https://github.com/kunchenguid/firstmate/actions/runs/30725985757), that remainder accumulated 19m04s of script time against a 20-minute job timeout.
 On [PR 1495](https://github.com/kunchenguid/firstmate/pull/1495), its main step ran about 19m51s before the job was cancelled at that boundary.
-`portable-serial-<k>of<n>` splits it across `n` separate CI runners.
-Each shard is still strictly serial in itself, and separate runners mean no two of these stateful scripts ever share a machine, so the split needs no concurrency isolation proof.
+`portable-serial-<k>of<n>` partitions the remainder for execution on separate machines.
+Each shard is still strictly serial in itself; concurrent shards require separate machines so these stateful scripts do not share a machine without a concurrency isolation proof.
 
 `bin/fm-test-run.sh` owns `n` and refuses any lane whose `of<n>` disagrees with it.
-`.github/workflows/ci.yml` derives the same `n` from `strategy.job-total` rather than a literal, so changing the shard count in either file without the other fails the lane loudly instead of leaving part of the required suite unrun.
+The current hosted execution policy and exclusion rationale belong to [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
 
 Assignment is longest-processing-time bin packing over per-script duration hints embedded in `bin/fm-test-run.sh`.
 The hints came from the `fm-test-timing-portable-serial-*` artifacts of green CI run [32491999845](https://github.com/kunchenguid/firstmate/actions/runs/32491999845) on 2026-08-21, where the lane ran 116 scripts in 2541548 ms of serial work.
 `tests/fm-tool-update-check.test.sh` did not exist on that run, so its 12846 ms hint comes from the shard 3 artifact of run [32461816719](https://github.com/kunchenguid/firstmate/actions/runs/32461816719), which is the first run that measured it.
 A script with no hint gets the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default.
 Hints only affect balance: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard rather than lost coverage.
-Balance is still worth keeping current, because enough unmeasured scripts let one shard carry more than twice another shard's real work and reach the job cap while another runner sits idle.
+Balance is still worth keeping current, because enough unmeasured scripts let one shard carry more than twice another shard's real work while another runner sits idle.
 Refresh the hints whenever the serial lane gains scripts, rather than waiting for a shard to time out.
 
 | Lane | Script count | Estimated duration |
@@ -81,11 +81,12 @@ Refresh the hints whenever the serial lane gains scripts, rather than waiting fo
 
 The single longest script, `tests/fm-pr-check-security.test.sh` at 250417 ms, is the floor for any shard count.
 
-Refresh the hints by downloading the per-shard timing artifacts from a green CI run, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the measured `path`/`duration_ms` pairs, and updating the table above:
+Refresh the hints from successful deliberate lane runs using the runner's `--json` output and measured `path`/`duration_ms` pairs to replace `portable_serial_weight_hints` in `bin/fm-test-run.sh`.
+The historical CI artifacts above are provenance for the existing hints, not an available refresh path under the current workflow.
+Set `timing_directory` to the directory containing the collected lane JSON files, then extract measurements and check coverage with:
 
 ```sh
-gh run download <run-id> -R kunchenguid/firstmate --pattern 'fm-test-timing-portable-serial-*' -D /tmp/fm-serial
-jq -r '.scripts[] | [.path, .duration_ms] | @tsv' /tmp/fm-serial/*.json | LC_ALL=C sort
+jq -r '.scripts[] | [.path, .duration_ms] | @tsv' "$timing_directory"/*.json | LC_ALL=C sort
 bin/fm-test-run.sh --check-coverage
 ```
 
@@ -93,25 +94,14 @@ bin/fm-test-run.sh --check-coverage
 
 `bin/fm-test-run.sh --check-coverage` verifies that both parallel lanes partition the proven-isolated set.
 It also verifies that the parallel lanes, portable serial lane, and explicit `legacy-adapter` lane (including its cmux, zellij, and orca families) are disjoint and cover every `tests/*.test.sh` script.
-It separately verifies that the portable serial CI shards are non-empty, disjoint, and together equal the portable serial lane.
+It separately verifies that the portable serial shards are non-empty, disjoint, and together equal the portable serial lane.
 
 ## Timing artifacts
 
-Portable shards and each portable serial shard upload runner-generated timing JSON.
-`bin/fm-test-run.sh --aggregate-json` creates the combined summary artifact.
-`.github/workflows/ci.yml` owns the exact artifact names and aggregation wiring.
+`bin/fm-test-run.sh --json` writes timing JSON for a deliberate lane run, and `--aggregate-json` combines collected results.
+Its header and help own the artifact format and aggregation mechanics.
 
 ## Local entry points
 
 [CONTRIBUTING.md](../CONTRIBUTING.md) owns the local test policy and common entry points.
 `bin/fm-test-run.sh --help` owns exact lane names, selection flags, and bounded `--jobs` mechanics.
-
-## Timeouts
-
-| Lane | Bound | Rationale |
-|---|---|---|
-| portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial 1-4 | job `timeout-minutes: 20` | Each balanced shard is about eleven minutes of measured script time, leaving roughly 2x hang-tripwire margin for job setup and runner-speed spread. |
-
-Timeouts are hang tripwires rather than expected healthy durations.
-`.github/workflows/ci.yml` owns the exact numbers.

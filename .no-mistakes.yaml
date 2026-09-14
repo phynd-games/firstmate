@@ -22,18 +22,21 @@ document:
     evidence destination, and unique safety facts, then review the complete
     branch diff again after every documentation or lint fix.
 
-# Pin lint to the same owner CI runs instead of leaving it to no-mistakes'
-# default handling, which does not invoke the repository's canonical lint gate.
-# `bin/fm-lint.sh` owns the complete lint definition, including GitHub workflow
-# lint via pinned actionlint in `bin/fm-lint-workflows.sh`, and
-# `.github/workflows/ci.yml` invokes it directly, with parity asserted by
+# Pin lint to the repository's canonical lint gate instead of leaving it to
+# no-mistakes' default handling, which does not invoke it. `bin/fm-lint.sh`
+# owns the complete lint definition, including GitHub workflow lint via pinned
+# actionlint in `bin/fm-lint-workflows.sh`, with parity asserted by
 # `tests/fm-lint.test.sh` and `tests/fm-lint-workflows.test.sh`.
+# `.github/workflows/ci.yml` owns whether and how a hosted job also invokes it;
+# see that file for its current, possibly narrower, execution policy.
 #
 # Do not set commands.test to a complete tests/*.test.sh walk. Local no-mistakes
 # Test is intent-targeted validation of whether the change meets its brief;
-# .github/workflows/ci.yml owns broad regression (behavior suite, platform,
-# security, Herdr, tmux, and lifecycle coverage). A full-suite override here
-# would duplicate CI and defeat the targeted Test contract.
+# `.github/workflows/ci.yml` owns whatever broad hosted regression it currently
+# runs, which may be narrower than the full behavior/platform/security/Herdr/
+# tmux/lifecycle coverage described there historically. A full-suite override
+# here would duplicate any hosted coverage that does exist and defeat the
+# targeted Test contract.
 commands:
   lint: 'bin/fm-lint.sh'
 

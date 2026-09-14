@@ -95,7 +95,7 @@ Where a surface signal is unavoidable, back it with a guard that fails loudly na
 
 Every such check needs two tests, because they fail for different reasons:
 
-- A portable regression in `tests/` that pins the logic with real processes and no harness, so CI enforces the classifier everywhere it runs tmux.
+- A portable regression in `tests/` that pins the logic with real processes and no harness; [`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml) owns hosted execution policy and exclusions.
   Drive the signals apart deliberately and assert the verdict survives losing one; assert the divergence itself so the case cannot go quietly vacuous.
   Confirm which signal a given construction actually blinds on each supported platform rather than assuming, because the same trick can break different sources on macOS and Linux.
 - A live guard in the `live-harness-optin` family (`bin/fm-test-run.sh`), env-gated and self-skipping, that exercises every INSTALLED harness for real and fails naming the harness and version.
@@ -123,7 +123,7 @@ Run `bin/fm-doc-audience-check.sh`; it enforces classification, README setup rou
 - Plain dash `-`, never an em dash.
 - Never add an agent name as a commit co-author.
 - `bin/*.sh` and `bin/backends/*.sh` must pass `shellcheck`.
-- Run `bin/fm-lint.sh` before treating a script change as done; it is the single owner of the lint definition (file set, config, pinned shellcheck version, and pinned actionlint workflow lint) that CI and the no-mistakes pre-push gate both invoke, and it refuses to run under any other version of either linter.
+- Run `bin/fm-lint.sh` before treating a script change as done; its header and help own the lint definition used locally and by the no-mistakes pre-push gate.
 - When a task names a specific tool, implement the work with that tool, or explicitly flag the substitution and its new dependency footprint for review before shipping.
 - Colocate tests with the existing pattern in `tests/`, name them `<subject>.test.sh`, and extend an existing script rather than inventing a new runner.
 - Tests must exercise behavior through an executable or public interface and must never assert implementation-source bytes, including through parsers, regexes, snapshots, or indirect wrappers.
