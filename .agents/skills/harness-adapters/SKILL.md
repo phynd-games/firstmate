@@ -28,7 +28,7 @@ Never dispatch a crewmate or secondmate on an unverified adapter.
 If `config/crew-harness` or `config/secondmate-harness` names one, tell the captain under `../../../AGENTS.md` section 9 that the requested worker runtime is not verified, use firstmate's own verified runtime for current work, and ask only whether to verify the requested runtime for future work.
 Do not pause current work for that choice.
 
-On `unknown`, ask the captain instead of guessing.
+`unknown` is the result of `bin/fm-harness.sh`'s own two-tier detection (environment markers, then process ancestry), not an unexamined default; it is this safety boundary's consequence, not a general ambiguity policy, so ask the captain rather than guessing or dispatching on an unverified adapter.
 A current captain override beats detection, while a per-task override governs only that dispatch.
 For recovery and control, use the exact `harness=` in `state/<id>.meta`; never infer it from a model or provider.
 
