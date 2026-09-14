@@ -442,7 +442,9 @@ test_lock_decides_without_process_identity() {
   local dir="$TMP_ROOT/lock-no-identity"
   make_identity_fixture "$dir" no
 
-  run_lock_bounded "$dir" first
+  # Disable both identity sources: a failing ps alone still leaves Linux's
+  # real /proc available. Keep the identity-available test on the native path.
+  FM_PROC_ROOT_OVERRIDE="$dir/proc" run_lock_bounded "$dir" first
   [ "$(tr -d '[:space:]' < "$dir/first.rc")" = 0 ] \
     || fail "a host that cannot identify a process was refused the helm: $(cat "$dir/first.out")"
   assert_contains "$(cat "$dir/first.out")" "lock acquired" \
@@ -452,7 +454,7 @@ test_lock_decides_without_process_identity() {
     "an identity was recorded on a host that cannot produce one"
 
   # Re-entry must not wedge either: the same owner asking again still decides.
-  run_lock_bounded "$dir" second
+  FM_PROC_ROOT_OVERRIDE="$dir/proc" run_lock_bounded "$dir" second
   [ "$(tr -d '[:space:]' < "$dir/second.rc")" = 0 ] \
     || fail "re-entrant acquisition was refused without an identity: $(cat "$dir/second.out")"
 

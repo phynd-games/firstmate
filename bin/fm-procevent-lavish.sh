@@ -8,6 +8,9 @@
 #   fm-procevent-lavish.sh silent <result-file>
 #   fm-procevent-lavish.sh answers [--intake] <result-file>
 #   fm-procevent-lavish.sh intake <result-file> <task-id>
+#   fm-procevent-lavish.sh lineage-answers <result-file> <task-id>
+#     Parse retained intake answer bytes only; the receipt owner must authenticate
+#     their source, task, hashes, and handled acknowledgement separately.
 #   fm-procevent-lavish.sh read <result-file>
 #   fm-procevent-lavish.sh source-id <artifact.html>
 #   fm-procevent-lavish.sh retire <artifact.html> [--expect-intake-task <task-id>]
@@ -125,7 +128,10 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,111p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() {
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "${BASH_SOURCE[0]}"
+  exit 2
+}
 
 # Canonical identity is physical, not the path string: Lavish itself keys a
 # session on the realpath of the artifact, so two names for one file are one
@@ -539,6 +545,18 @@ cmd_answers() {
       fi
     fi
   fi
+  parse_answer_payload "$file" "$expected" "$intake"
+}
+
+cmd_lineage_answers() {
+  [ "$#" -eq 2 ] || usage
+  [ -f "$1" ] && [ ! -L "$1" ] || die "result file does not exist: $1"
+  fm_task_id_path_safe "$2" || die "lineage task id must be path-safe"
+  parse_answer_payload "$1" "$2" 1
+}
+
+parse_answer_payload() {
+  local file=$1 expected=$2 intake=$3
   perl -MJSON::PP -e '
     use strict; use warnings;
     my ($path, $expected, $intake) = @ARGV;
@@ -838,6 +856,7 @@ case "${1-}" in
   silent)    shift; cmd_silent "$@" ;;
   answers)   shift; cmd_answers "$@" ;;
   intake)    shift; cmd_intake "$@" ;;
+  lineage-answers) shift; cmd_lineage_answers "$@" ;;
   read)      shift; cmd_read "$@" ;;
   ''|-h|--help|help) usage ;;
   *) die "unknown command: $1" ;;

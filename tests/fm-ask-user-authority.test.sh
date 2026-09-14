@@ -9,12 +9,15 @@ BRIEF="$ROOT/bin/fm-brief.sh"
 TMP_ROOT=$(fm_test_tmproot fm-ask-user-authority)
 
 test_primary_and_secondmate_instruction_generation() {
-  local home ship charter
+  local home ship charter out base_sha
   home="$TMP_ROOT/home"
   mkdir -p "$home/data"
 
-  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
-    "$BRIEF" authority-worker sample --mode no-mistakes >/dev/null 2>&1
+  base_sha=$(git -C "$ROOT" rev-parse HEAD) || fail "could not resolve fixture approved base"
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$BRIEF" authority-worker sample --mode no-mistakes \
+    --approved-base-ref main --approved-base-sha "$base_sha" 2>&1) \
+    || fail "implementation brief generation failed: $out"
   ship="$home/data/authority-worker/brief.md"
   assert_grep 'ask-user findings are never yours to answer' "$ship" \
     "generated implementation brief lets the worker own an ask-user decision"
@@ -28,8 +31,9 @@ test_primary_and_secondmate_instruction_generation() {
   assert_no_grep 'the captain, not you, owns the ask-user decisions' "$ship" \
     "generated implementation brief retained conflicting captain-only wording"
 
-  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_SECONDMATE_CHARTER='Handle sample work.' \
-    "$BRIEF" authority-mate --secondmate --no-projects >/dev/null 2>&1
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_SECONDMATE_CHARTER='Handle sample work.' \
+    "$BRIEF" authority-mate --secondmate --no-projects 2>&1) \
+    || fail "secondmate charter generation failed: $out"
   charter="$home/data/authority-mate/brief.md"
   # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
   assert_grep 'The local `AGENTS.md` is your job description' "$charter" \
@@ -175,7 +179,7 @@ test_adjudication_advisor_contract
 # two generated interfaces that actually carry it - the emitted branch prompt and
 # the generated worker brief - plus the named policy owner.
 test_material_classification_governs_disposition() {
-  local prompt skill grounds class home ship
+  local prompt skill grounds class home ship out base_sha
   prompt="$TMP_ROOT/branch-prompt-material.txt"
   skill="$ROOT/.agents/skills/ask-user-authority/SKILL.md"
   "$ROOT/bin/fm-branch-prompt.sh" > "$prompt"
@@ -239,8 +243,11 @@ test_material_classification_governs_disposition() {
   #    it approve past open findings on its own.
   home="$TMP_ROOT/material-home"
   mkdir -p "$home/data"
-  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
-    "$ROOT/bin/fm-brief.sh" material-worker sample --mode no-mistakes >/dev/null 2>&1
+  base_sha=$(git -C "$ROOT" rev-parse HEAD) || fail "could not resolve fixture approved base"
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$BRIEF" material-worker sample --mode no-mistakes \
+    --approved-base-ref main --approved-base-sha "$base_sha" 2>&1) \
+    || fail "implementation brief generation failed: $out"
   ship="$home/data/material-worker/brief.md"
   assert_grep "Approving a review step while findings are still open is firstmate's disposition, not yours" "$ship" \
     "the generated worker brief lets the worker approve past open findings itself"

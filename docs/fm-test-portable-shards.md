@@ -2,6 +2,7 @@
 
 `bin/fm-test-run.sh` owns portable lane composition and execution.
 `bin/fm-test-isolation-proof.sh` owns the proven-isolated candidate set.
+`.github/workflows/ci.yml` does not currently run these lanes automatically; run them locally through the entry points below.
 
 ## Verification inputs
 

@@ -11,6 +11,7 @@ Pushing through it runs an AI-driven review/test/lint pipeline in an isolated wo
 
 A local `no-mistakes` push is what actually produces a compliant PR: it runs the review/test/document pipeline before forwarding to the parent repo, and its attestation records that step completion.
 The parent repo does not currently run an automated GitHub Actions check enforcing this on every PR; treat the requirement above as the contribution expectation rather than something CI blocks on for you.
+`tests/fm-no-mistakes-required.test.sh` exercises the pinned shared verifier action directly for anyone who wants to reuse it elsewhere.
 
 ## Workflow
 
@@ -106,7 +107,7 @@ Its header and `--help` own the flags, family labels, lanes, and changed-file ma
 Portable shard balance evidence lives in `docs/fm-test-portable-shards.md`.
 Local no-mistakes Test stays intent-targeted and must not wire `commands.test` to `--all` or a `tests/*.test.sh` walk.
 Family selection is the ordinary local path; `--all` is deliberate full regression only.
-Automatic CI runs the repo invariants job and the static test-coverage guard in [`.github/workflows/ci.yml`](.github/workflows/ci.yml); the portable parallel shards and the portable serial lane's shards remain available through `bin/fm-test-run.sh` for deliberate local or no-mistakes-driven use, not as an automatic PR gate, since the hosted behavior-runner jobs that would execute them were retired.
+Automatic CI runs the repo invariants job, the static test-coverage guard, and the behavior timing aggregate in [`.github/workflows/ci.yml`](.github/workflows/ci.yml); the portable parallel shards and the portable serial lane's shards remain available through `bin/fm-test-run.sh` for deliberate local or no-mistakes-driven use, not as an automatic PR gate, since the hosted behavior-runner jobs that would execute them were retired.
 Use `bin/fm-test-run.sh --list-lanes` for exact lane names and `--help` for `--jobs` rules and required gate-skip flags when reproducing a lane locally.
 Discover tests by listing `tests/*.test.sh`: each is a self-contained bash script named `<subject>.test.sh`, and its header comment describes what it covers, so pass one to `bin/fm-test-run.sh` to focus on a subject with canonical timing output.
 Shared test helpers live in `tests/lib.sh` (reporters, temp roots, git fixtures), `tests/fixtures.sh` (fake toolchain and spawn-world builders), `tests/wake-helpers.sh`, and `tests/secondmate-helpers.sh`.
