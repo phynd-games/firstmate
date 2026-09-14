@@ -51,7 +51,9 @@ mkdir -p "$S"
 args=()
 for a in "$@"; do args+=("$a"); done
 n=${#args[@]}
+scoped=0
 if [ "$n" -ge 2 ] && [ "${args[$((n-2))]}" = --session ]; then
+  scoped=1
   unset 'args[n-1]'
   unset 'args[n-2]'
 fi
@@ -64,6 +66,17 @@ mkdir -p "$(dirname "$sock")"
 case "${1:-}" in
   status)
     if [ -f "$S/hang" ]; then sleep 300; exit 0; fi
+    if [ "$scoped" -eq 1 ]; then
+      scoped_count=$(( $(cat "$S/scoped-status-count" 2>/dev/null || echo 0) + 1 ))
+      printf '%s\n' "$scoped_count" > "$S/scoped-status-count"
+    fi
+    if { [ -f "$S/hang-version-status" ] && [ "$scoped" -eq 0 ]; } \
+      || { [ -f "$S/hang-session-status" ] && [ "$scoped" -eq 1 ] && [ "$((scoped_count % 2))" -eq 0 ]; }; then
+      printf '%s\n' "$$" >> "$S/hung-pids"
+      sleep 300
+      exit 0
+    fi
+    printf '%s\n' "$scoped" >> "$S/completed-status"
     running=true
     server_status=running
     [ ! -f "$S/server-stopped" ] || { running=false; server_status=stopped; }
@@ -75,6 +88,12 @@ case "${1:-}" in
     ;;
   session)
     if [ "${2:-}" = list ]; then
+      if [ -f "$S/hang-session-list" ]; then
+        printf '%s\n' "$$" >> "$S/hung-pids"
+        sleep 300
+        exit 0
+      fi
+      [ ! -f "$S/session-list-fails" ] || exit 3
       printf '{"sessions":[{"name":"%s","running":true,"socket_path":"%s"}]}\n' \
         "${HERDR_SESSION:-default}" "$sock"
       exit 0
@@ -173,6 +192,10 @@ printf 'wsctl\x1f%s\x1f%s\n' "$operation" "$workspace" >> "$S/calls.log"
 case "$operation" in
   list)
     [ ! -f "$S/list-fails" ] || exit 3
+    if [ -f "$S/list-response" ]; then
+      cat "$S/list-response"
+      exit 0
+    fi
     live=$(cat "$S/workspace" 2>/dev/null || true)
     label=$(cat "$S/workspace-label" 2>/dev/null || true)
     if [ -n "$live" ] && [ ! -f "$S/workspace-closed" ]; then
@@ -1000,6 +1023,34 @@ assert_contains "$out" "could not read herdr status" "the bound is reported as a
 assert_present "$HOME13D/state/.herdr-supervisor-alarm" "a hanging Herdr CLI leaves a durable alarm"
 pass "a hanging Herdr CLI is bounded and can never wedge the caller"
 
+for probe_failure in hang-version-status hang-session-status hang-session-list session-list-fails; do
+  PROBE_HOME=$(new_home "$probe_failure")
+  make_arm_stub "$PROBE_HOME/arm.sh" ok
+  fm_write_meta "$PROBE_HOME/state/probe-task.meta" "window=firstmate:fm-probe-task"
+  : > "$PROBE_HOME/fakestate/$probe_failure"
+  probe_start=$(date +%s)
+  probe_rc=0
+  out=$(FM_HERDR_SUPERVISOR_HERDR_TIMEOUT=1 run_supervisor "$PROBE_HOME" "$FAKEBIN" ensure 2>&1) \
+    || probe_rc=$?
+  probe_elapsed=$(( $(date +%s) - probe_start ))
+  [ "$probe_rc" -eq 1 ] || fail "$probe_failure returned $probe_rc instead of a hosting refusal: $out"
+  [ "$probe_elapsed" -lt 15 ] || fail "$probe_failure wedged ensure for ${probe_elapsed}s"
+  assert_present "$PROBE_HOME/fakestate/completed-status" "the status preflight did not finish before $probe_failure"
+  assert_contains "$out" "capability check failed" "$probe_failure lost the gateway refusal diagnostic"
+  assert_not_contains "$out" "not eligible" "$probe_failure was treated as silent ineligibility"
+  assert_present "$PROBE_HOME/state/.herdr-supervisor-alarm" "$probe_failure left no durable alarm"
+  assert_absent "$PROBE_HOME/state/.herdr-supervisor" "$probe_failure published a supervisor binding"
+  assert_absent "$PROBE_HOME/state/.herdr-supervisor-pending-cleanup" "$probe_failure created a cleanup receipt"
+  assert_absent "$PROBE_HOME/fakestate/workspace" "$probe_failure created a workspace"
+  if [ "$probe_failure" != session-list-fails ]; then
+    assert_present "$PROBE_HOME/fakestate/hung-pids" "$probe_failure never reached the hanging native probe"
+    while IFS= read -r hung_pid; do
+      ! kill -0 "$hung_pid" 2>/dev/null || fail "$probe_failure left native probe $hung_pid alive"
+    done < "$PROBE_HOME/fakestate/hung-pids"
+  fi
+  pass "$probe_failure refuses within the native deadline after a completed status preflight"
+done
+
 # =============================================================================
 # 13e. The pane command must stay SHORT and constant, with everything the loop
 #      needs in a launcher script.
@@ -1499,6 +1550,59 @@ assert_grep 'cleanup_state=open' "$HOME23C/state/.herdr-supervisor-pending-clean
 [ "$(record_field "$HOME23C" generation)" = "$GEN23C" ] \
   || fail "a changed server identity allowed a replacement generation"
 pass "a receipt naming a different Herdr server is retained without touching the replacement server"
+
+HOME23D=$(new_home cleanup-invalid-inventory)
+GEN23D=$(prepare_dead_retire "$HOME23D")
+printf 'on\n' > "$HOME23D/config/herdr-supervisor"
+cp "$HOME23D/state/.herdr-supervisor-pending-cleanup" "$HOME23D/expected-receipt"
+while IFS= read -r inventory; do
+  printf '%s\n' "$inventory" > "$HOME23D/fakestate/list-response"
+  out=$(run_supervisor "$HOME23D" "$FAKEBIN" ensure 2>&1) \
+    && fail "an unproven inventory authorized replacement: $inventory"
+  assert_grep 'could not be reconciled' "$HOME23D/state/.herdr-supervisor-alarm" \
+    "an unproven inventory left no durable alarm: $inventory"
+  cmp -s "$HOME23D/expected-receipt" "$HOME23D/state/.herdr-supervisor-pending-cleanup" \
+    || fail "an unproven inventory changed the cleanup receipt: $inventory"
+  [ "$(record_field "$HOME23D" mode)" = quarantine ] \
+    || fail "an unproven inventory did not retain quarantine: $inventory"
+  [ "$(record_field "$HOME23D" generation)" = "$GEN23D" ] \
+    || fail "an unproven inventory changed generation: $inventory"
+  [ "$(grep -c 'workspace.create' "$HOME23D/fakestate/calls.log")" = 1 ] \
+    || fail "an unproven inventory created a replacement workspace: $inventory"
+  [ "$(grep -c '^wZ$' "$HOME23D/fakestate/closed-workspaces")" = 1 ] \
+    || fail "an unproven inventory credited a second close: $inventory"
+done <<'JSON'
+{"result":{"workspaces":[{}]}}
+{"result":{"workspaces":[{"workspace_id":null}]}}
+{"result":{"workspaces":[{"workspace_id":""}]}}
+{"result":{"workspaces":[{"workspace_id":" \t\r\n"}]}}
+{"result":{"workspaces":[{"workspace_id":42}]}}
+{"result":{"workspaces":[{"workspace_id":false}]}}
+{"result":{"workspaces":[{"workspace_id":[]}]}}
+{"result":{"workspaces":[{"workspace_id":{}}]}}
+{"result":{"workspaces":[{"workspace_id":"other"},{}]}}
+{"result":{"workspaces":[null]}}
+{"result":{"workspaces":["other"]}}
+{"result":{"workspaces":null}}
+{"result":{"workspaces":{}}}
+{"result":{"workspaces":""}}
+{"result":{}}
+{"result":[]}
+{}
+null
+[]
+not-json
+{"result":{"workspaces":[]}} {"result":{"workspaces":[]}}
+{"result":{"workspaces":[{"workspace_id":"wZ"}]}}
+JSON
+pass "ambiguous inventories and a present target preserve receipt, quarantine, and generation"
+printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"other"}]}}' > "$HOME23D/fakestate/list-response"
+out=$(run_supervisor "$HOME23D" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "herdr-supervisor: started" "a valid target-absent inventory did not permit replacement"
+assert_absent "$HOME23D/state/.herdr-supervisor-pending-cleanup" "a valid target-absent inventory retained the receipt"
+[ "$(record_field "$HOME23D" generation)" != "$GEN23D" ] || fail "a valid target-absent inventory reused the old generation"
+pass "a valid nonempty target-absent inventory reconciles cleanup and permits replacement"
+stop_loop "$HOME23D"
 
 # =============================================================================
 # 24. A loop asleep in its rapid-cycle floor must still answer a retire or

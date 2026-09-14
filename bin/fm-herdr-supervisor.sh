@@ -586,10 +586,7 @@ herdr_load() {
   local err session
   [ "$HERDR_LOADED" -eq 0 ] || return 0
   backend_load || return 1
-  # Bounded preflight before the gateway load. The gateway's own native checks
-  # call the vendor CLI without a bound, and this script's contract is that no
-  # Herdr call it triggers can wedge its caller (`ensure` runs inside bootstrap's
-  # command substitution). The session is the same ambient selection
+  # Bounded preflight before the gateway load. The session is the same ambient selection
   # fm_backend_herdr_session makes; the adapter is not loaded yet to ask it.
   session=${HERDR_SESSION:-default}
   if ! hs_herdr "$session" status --json >/dev/null 2>&1; then
@@ -597,7 +594,7 @@ herdr_load() {
     return 1
   fi
   err=$(mktemp "${TMPDIR:-/tmp}/fm-herdr-supervisor-load.XXXXXX" 2>/dev/null) || err=/dev/null
-  if ! fm_backend_source herdr >/dev/null 2>"$err"; then
+  if ! FM_BACKEND_HERDR_CALL_TIMEOUT=$HERDR_CALL_TIMEOUT fm_backend_source herdr >/dev/null 2>"$err"; then
     HS_HERDR_LOAD_ERROR=$(sed -n '1p' "$err" 2>/dev/null || printf '')
     [ "$err" = /dev/null ] || rm -f "$err"
     return 1
@@ -1093,9 +1090,16 @@ workspace_absent_on_verified_server() {  # <socket> <socket-identity> <workspace
   local socket=$1 socket_identity=$2 workspace=$3 out
   [ -n "$socket" ] && [ -n "$socket_identity" ] && [ -n "$workspace" ] || return 1
   out=$(herdr_workspace_control "$socket" "$socket_identity" list 2>/dev/null) || return 1
-  printf '%s' "$out" | jq -e --arg workspace "$workspace" \
-    '[.result.workspaces[]? | select(.workspace_id == $workspace)] | length == 0' \
-    >/dev/null 2>&1
+  printf '%s' "$out" | jq -se --arg workspace "$workspace" '
+    if length != 1 or ($workspace | test("\\S") | not) then false
+    else .[0].result.workspaces
+      | if type != "array" then false
+        else all(.[]; .workspace_id
+          | if type == "string" then test("\\S") else false end)
+          and all(.[]; .workspace_id != $workspace)
+        end
+    end
+  ' >/dev/null 2>&1
 }
 
 recorded_workspace_absent() {
