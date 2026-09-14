@@ -9,10 +9,8 @@ We require this to reduce the maintainer's burden of reviewing and merging contr
 `no-mistakes` puts a local git proxy in front of your real remote.
 Pushing through it runs an AI-driven review/test/lint pipeline in an isolated worktree, forwards the push upstream only after every check passes, and opens a clean PR automatically.
 
-Contributor PRs require both the deterministic signature and a parseable structured attestation from no-mistakes v1.46.0 or newer.
-The attestation must bind to the current PR head commit and report the review, test, and document steps as completed.
-The hosted check's execution policy and exclusion rationale are owned by [`.github/workflows/no-mistakes-required.yml`](.github/workflows/no-mistakes-required.yml).
-GitHub Actions and Dependabot are exempt so their automation keeps working, but other contributor PRs that do not satisfy the attestation contract will not be reviewed or merged.
+A local `no-mistakes` push is what actually produces a compliant PR: it runs the review/test/document pipeline before forwarding to the parent repo, and its attestation records that step completion.
+The parent repo does not currently run an automated GitHub Actions check enforcing this on every PR; treat the requirement above as the contribution expectation rather than something CI blocks on for you.
 
 ## Workflow
 
@@ -49,7 +47,7 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
 - Helper scripts in `bin/` are plain bash.
   Each starts with a usage header comment; keep it accurate when you change behavior.
   Test scripts and helpers in `tests/` are plain bash too.
-  `bin/fm-lint.sh` must pass locally and in the no-mistakes pre-push gate; its header and `--help` own the lint definition and full-analysis default.
+  `bin/fm-lint.sh` must pass locally and in the no-mistakes pre-push gate; its header and `--help` are the single owner of the lint definition (the shellcheck file set, config, pinned shellcheck version, and pinned actionlint workflow lint) and its full-analysis default; the hosted CI lint job was retired.
   Its header and `--help` output own the exact local lint modes and flags.
   A malformed `.github/workflows/*.yml`, including a self-broken `ci.yml`, fails that local lint path before merge because a broken workflow cannot report its own breakage.
   It pins one exact shellcheck version and one exact actionlint version and refuses to run under any other.
@@ -102,12 +100,13 @@ bin/fm-instruction-sources-check.sh
 tmp=$(mktemp -d) && printf 'done: smoke\n' > "$tmp/smoke.status" && FM_STATE_OVERRIDE="$tmp" FM_SIGNAL_GRACE=1 FM_POLL=1 FM_HEARTBEAT=999999 bin/fm-watch-arm.sh  # watcher re-arm smoke test (prints arm status, then an actionable signal)
 ```
 
-`bin/fm-test-run.sh` is the single owner of behavior-suite selection, portable CI lane composition, bounded concurrency admission, per-script timing markers, family totals, the coverage guard, and the optional JSON timing artifact.
+`bin/fm-test-run.sh` is the single owner of behavior-suite selection, portable lane composition, bounded concurrency admission, per-script timing markers, family totals, the coverage guard, and the optional JSON timing artifact.
 Its header and `--help` own the flags, family labels, lanes, and changed-file map; this section only documents the entry points.
 `bin/fm-test-isolation-proof.sh` remains the single owner of the portable candidate proof and reusable family proof harness; see `docs/fm-test-isolation-proof.md`.
 Portable shard balance evidence lives in `docs/fm-test-portable-shards.md`.
 Local no-mistakes Test stays intent-targeted and must not wire `commands.test` to `--all` or a `tests/*.test.sh` walk.
 Family selection is the ordinary local path; `--all` is deliberate full regression only.
+Automatic CI now runs only the repo invariants job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml); the portable parallel shards, the portable serial lane's shards, and the coverage guard remain available through `bin/fm-test-run.sh` for deliberate local or no-mistakes-driven use, not as an automatic PR gate.
 Use `bin/fm-test-run.sh --list-lanes` for exact lane names and `--help` for `--jobs` rules and required gate-skip flags when reproducing a lane locally.
 Discover tests by listing `tests/*.test.sh`: each is a self-contained bash script named `<subject>.test.sh`, and its header comment describes what it covers, so pass one to `bin/fm-test-run.sh` to focus on a subject with canonical timing output.
 Shared test helpers live in `tests/lib.sh` (reporters, temp roots, git fixtures), `tests/fixtures.sh` (fake toolchain and spawn-world builders), `tests/wake-helpers.sh`, and `tests/secondmate-helpers.sh`.

@@ -33,11 +33,12 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-# shellcheck source=bin/fm-pending-reply-lib.sh
+# Production modules are separate canonical lint roots; keep test analysis local.
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-pending-reply-lib.sh"
-# shellcheck source=bin/fm-marker-lib.sh
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-marker-lib.sh"
-# shellcheck source=bin/fm-task-inbox-lib.sh
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-task-inbox-lib.sh"
 
 SEND="$ROOT/bin/fm-send.sh"

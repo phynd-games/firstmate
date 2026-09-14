@@ -257,13 +257,31 @@ _fm_vloop_findings_valid() {  # <evidence-content>
     function valid_table(value) {
       return value ~ /^[[:space:]]*findings\[[0-9]+\]\{[^{}]+\}:[[:space:]]*$/
     }
+    function valid_scalar(value) {
+      # The daemon prints one of: "none", "<N> awaiting" (a run parked at a
+      # gate), or a severity breakdown with only the present severities
+      # (each count >= 1) joined by ", " in fixed descending-severity order
+      # error, warning, info. The captured compatibility sample lives in
+      # tests/fm-validation-loop.test.sh; unfamiliar shapes fail closed.
+      # Do not use an apostrophe in this single-quoted awk script: even a
+      # comment would close the shell string early.
+      return value == "none" \
+        || value ~ /^[1-9][0-9]* awaiting$/ \
+        || value ~ /^[1-9][0-9]* info$/ \
+        || value ~ /^[1-9][0-9]* warning$/ \
+        || value ~ /^[1-9][0-9]* warning, [1-9][0-9]* info$/ \
+        || value ~ /^[1-9][0-9]* error$/ \
+        || value ~ /^[1-9][0-9]* error, [1-9][0-9]* info$/ \
+        || value ~ /^[1-9][0-9]* error, [1-9][0-9]* warning$/ \
+        || value ~ /^[1-9][0-9]* error, [1-9][0-9]* warning, [1-9][0-9]* info$/
+    }
     /^  findings:/ {
       scalar_count++
       value = $0
       sub(/^[^:]*:/, "", value)
       sub(/^[[:space:]]+/, "", value)
       sub(/[[:space:]]+$/, "", value)
-      if (value != "none" && value !~ /^[0-9]+ awaiting$/) invalid = 1
+      if (!valid_scalar(value)) invalid = 1
       next
     }
     /^findings:/ { invalid = 1; next }
