@@ -1,0 +1,50 @@
+Public interface: bin/fm-harness.sh
+Target: 71118e32513760209cc8f9be2e7a987053331db7
+Purpose: verify the existing two-tier detection described by the edited instructions.
+Controlled process fixtures below replace ps only; the real detector is executed.
+These checks do not establish agent interpretation, publication, merge, or end-to-end goal completion.
+
+verified environment marker bypasses ancestry
+Input markers: {"CLAUDECODE": "1"}
+Parent fixture: codex
+$ bash bin/fm-harness.sh
+claude
+Exit: 0
+Ancestry observations: []
+
+Cursor marker outranks inherited Claude marker
+Input markers: {"CURSOR_AGENT": "1", "CLAUDECODE": "1"}
+Parent fixture: bash
+$ bash bin/fm-harness.sh
+cursor
+Exit: 0
+Ancestry observations: []
+
+without markers, verified parent identifies Codex
+Input markers: {}
+Parent fixture: codex
+$ bash bin/fm-harness.sh
+codex
+Exit: 0
+Ancestry observations: ["-o comm= -p 97237", "-o ppid= -p 97237", "-o comm= -p 424242"]
+
+without markers or verified ancestry, return unknown
+Input markers: {}
+Parent fixture: bash
+$ bash bin/fm-harness.sh
+unknown
+Exit: 0
+Ancestry observations: ["-o comm= -p 97308", "-o ppid= -p 97308", "-o comm= -p 424242", "-o ppid= -p 424242"]
+
+unrecognized marker does not establish identity
+Input markers: {"CURSOR_INVOKED_AS": "unverified-runtime"}
+Parent fixture: bash
+$ bash bin/fm-harness.sh
+unknown
+Exit: 0
+Ancestry observations: ["-o comm= -p 97351", "-o ppid= -p 97351", "-o comm= -p 424242", "-o ppid= -p 424242"]
+
+Ambient session, real environment and real ps:
+$ bash bin/fm-harness.sh
+codex
+Exit: 0
