@@ -1040,8 +1040,11 @@ EOF
 # Herdr is the sole supported runtime backend (AGENTS.md hard rule 6). Both
 # modes run OUTSIDE the regression lane tests/lib.sh exports, so this is the real
 # session-start path judging a real home: a declared herdr home starts silently
-# and never asks for tmux, while a home that declares nothing is refused by name
-# even though it is running inside Herdr (HERDR_ENV=1 never selects).
+# and never asks for tmux. A locked session start's own bootstrap materializes
+# a missing config/backend as herdr before resolving it (AGENTS.md section 2;
+# tests/fm-bootstrap.test.sh's own dedicated coverage owns that mechanism), so
+# an undeclared home reaches the identical silent outcome here, not a refusal -
+# it is still never auto-detected from HERDR_ENV=1, it is materialized by name.
 test_herdr_backend_diagnostics_follow_real_session_start() {
   local mode rec root home fakebin mask out
   for mode in configured undeclared; do
@@ -1074,20 +1077,22 @@ SH
       assert_not_contains "$out" "MISSING: jq" "Herdr session start missed its available JSON dependency"
       assert_not_contains "$out" "MISSING: treehouse" "Herdr session start missed its available worktree provider"
     else
+      [ ! -e "$home/config/backend" ] || fail "test fixture precondition: config/backend must start absent for the undeclared case"
       out=$(FM_BACKEND_LEGACY_TEST_LANE='' TMUX='' HERDR_ENV=1 BASH_ENV="$mask" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
       assert_not_contains "$out" "NOTICE: auto-detected" \
         "an undeclared home must not auto-detect a backend from HERDR_ENV=1"
-      assert_contains "$out" "BACKEND_INVALID: none - REFUSED: neither FM_BACKEND nor $home/config/backend declares no backend identity" \
-        "an undeclared home must be refused by name at session start"
-      assert_contains "$out" "Herdr is the sole supported Firstmate runtime backend" \
-        "the session-start refusal must name Herdr"
-      assert_contains "$out" "never used for selection: HERDR_ENV=1" \
-        "the session-start refusal must show that the Herdr marker was seen and ignored"
+      assert_not_contains "$out" "BACKEND_INVALID" \
+        "a locked session start must materialize an undeclared home's backend rather than refuse it"
+      assert_not_contains "$out" "MISSING: herdr" "Herdr session start missed its available session CLI"
+      assert_not_contains "$out" "MISSING: jq" "Herdr session start missed its available JSON dependency"
+      assert_not_contains "$out" "MISSING: treehouse" "Herdr session start missed its available worktree provider"
+      [ "$(cat "$home/config/backend" 2>/dev/null)" = herdr ] \
+        || fail "a locked session start did not materialize the undeclared home's config/backend as herdr"
     fi
     assert_contains "$out" "SESSION START - $home" "the real session-start path did not run in the throwaway home"
     assert_not_contains "$out" "MISSING: tmux" "Herdr session start falsely required masked tmux"
   done
-  pass "session start: a declared Herdr home starts silently and an undeclared home is refused; neither ever requires tmux"
+  pass "session start: a declared Herdr home starts silently, and a locked start materializes an undeclared home's backend rather than refusing it; neither ever requires tmux"
 }
 
 # --- status tail bounding -----------------------------------------------------

@@ -25,6 +25,38 @@ export FM_HERDR_SESSION_CLEANUP_SOURCE_ONLY=1
 . "$ROOT/bin/fm-herdr-session-cleanup.sh"
 unset FM_HERDR_SESSION_CLEANUP_SOURCE_ONLY
 
+# Regression for the capability-probe ordering fix: the fake herdr binary
+# above exits 0 with no output, so it fails the deep protocol capability
+# check (fm_backend_herdr_capability_check) whenever that check actually
+# runs. Exercise the script's real, unmodified entry point - a fresh
+# subprocess, the same invocation session-start.sh uses - because the
+# ordering bug leaked its probe failure at source time, before any function
+# call, so only a fresh process reproduces it. With no candidate journal
+# present, the real entry point must return cleanly without ever reaching -
+# and therefore without ever failing - that probe.
+real_run_err=$("$ROOT/bin/fm-herdr-session-cleanup.sh" 2>&1 >/dev/null)
+real_run_status=$?
+[ "$real_run_status" -eq 0 ] \
+  || fail "the real cleanup entry point with no candidate journal did not exit 0: status=$real_run_status"
+[ -z "$real_run_err" ] \
+  || fail "the real cleanup entry point with no candidate journal leaked probe output with nothing to clean up: $real_run_err"
+pass "the real cleanup entry point with no candidate journal skips the native capability probe entirely"
+
+# With a genuine candidate journal present, the capability check must still
+# run and gate cleanup - the fix defers the probe, it does not remove it.
+CANDIDATE_JOURNAL="$FM_STATE_OVERRIDE/probe-candidate.herdr-presentation"
+printf 'v=1\n' > "$CANDIDATE_JOURNAL"
+cleanup_err=$(fm_herdr_session_cleanup 2>&1 >/dev/null)
+cleanup_status=$?
+[ "$cleanup_status" -eq 0 ] \
+  || fail "cleanup with a candidate journal and an unhealthy herdr did not return conservatively: status=$cleanup_status"
+case "$cleanup_err" in
+  *"capability check failed"*) ;;
+  *) fail "cleanup with a candidate journal and an unhealthy herdr did not report the native capability check: $cleanup_err" ;;
+esac
+rm -f "$CANDIDATE_JOURNAL"
+pass "cleanup with a candidate journal still runs the native capability probe and preserves the journal on failure"
+
 # The idle-shell proof now lives in the backend as
 # fm_backend_herdr_pane_idle_shell_pid; prove it still reads Linux argv
 # arrays (no argv0 field) and rejects malformed executable identities.
