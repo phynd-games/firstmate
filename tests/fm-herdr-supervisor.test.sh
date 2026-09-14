@@ -51,7 +51,9 @@ mkdir -p "$S"
 args=()
 for a in "$@"; do args+=("$a"); done
 n=${#args[@]}
+scoped=0
 if [ "$n" -ge 2 ] && [ "${args[$((n-2))]}" = --session ]; then
+  scoped=1
   unset 'args[n-1]'
   unset 'args[n-2]'
 fi
@@ -64,13 +66,34 @@ mkdir -p "$(dirname "$sock")"
 case "${1:-}" in
   status)
     if [ -f "$S/hang" ]; then sleep 300; exit 0; fi
+    if [ "$scoped" -eq 1 ]; then
+      scoped_count=$(( $(cat "$S/scoped-status-count" 2>/dev/null || echo 0) + 1 ))
+      printf '%s\n' "$scoped_count" > "$S/scoped-status-count"
+    fi
+    if { [ -f "$S/hang-version-status" ] && [ "$scoped" -eq 0 ]; } \
+      || { [ -f "$S/hang-session-status" ] && [ "$scoped" -eq 1 ] && [ "$((scoped_count % 2))" -eq 0 ]; }; then
+      printf '%s\n' "$$" >> "$S/hung-pids"
+      sleep 300
+      exit 0
+    fi
+    printf '%s\n' "$scoped" >> "$S/completed-status"
     running=true
-    [ ! -f "$S/server-stopped" ] || running=false
-    printf '{"client":{"version":"0.8.2","protocol":16},"server":{"running":%s}}\n' "$running"
+    server_status=running
+    [ ! -f "$S/server-stopped" ] || { running=false; server_status=stopped; }
+    # The shape fm_backend_herdr_server_status_healthy requires: status,
+    # compatibility, and the server protocol, not only the running flag.
+    printf '{"client":{"version":"0.8.2","protocol":16},"server":{"running":%s,"status":"%s","compatible":true,"protocol":16}}\n' \
+      "$running" "$server_status"
     exit 0
     ;;
   session)
     if [ "${2:-}" = list ]; then
+      if [ -f "$S/hang-session-list" ]; then
+        printf '%s\n' "$$" >> "$S/hung-pids"
+        sleep 300
+        exit 0
+      fi
+      [ ! -f "$S/session-list-fails" ] || exit 3
       printf '{"sessions":[{"name":"%s","running":true,"socket_path":"%s"}]}\n' \
         "${HERDR_SESSION:-default}" "$sock"
       exit 0
@@ -92,6 +115,9 @@ case "${1:-}" in
         fi
         if [ -f "$S/create-fails" ]; then exit 1; fi
         printf 'wZ\n' > "$S/workspace"
+        # A freshly created workspace is live again even if an earlier
+        # generation's exact workspace of the same fake id was closed.
+        rm -f "$S/workspace-closed"
         for i in $(seq 1 $#); do
           if [ "${!i}" = --label ]; then j=$((i + 1)); printf '%s\n' "${!j}" > "$S/workspace-label"; fi
         done
@@ -150,21 +176,46 @@ esac
 exit 1
 SH
   chmod +x "$fb/herdr"
+  # The workspace-control helper is honest about closure the way the real
+  # bin/backends/herdr-workspace-control.py is against a real server: a closed
+  # workspace disappears from `list`, and closing it again fails (the real
+  # helper exits 4 on Herdr's workspace_not_found error). `close-kills-loop`
+  # models the one native effect the incident turned on: closing the workspace
+  # that hosts the supervisor loop ends that loop's process tree.
   cat > "$fb/herdr-workspace-control" <<'SH'
 #!/usr/bin/env bash
 set -u
 operation=$3
 workspace=${4:-}
 S="${FM_FAKE_HERDR_STATE:?}"
+printf 'wsctl\x1f%s\x1f%s\n' "$operation" "$workspace" >> "$S/calls.log"
 case "$operation" in
   list)
+    [ ! -f "$S/list-fails" ] || exit 3
+    if [ -f "$S/list-response" ]; then
+      cat "$S/list-response"
+      exit 0
+    fi
+    live=$(cat "$S/workspace" 2>/dev/null || true)
     label=$(cat "$S/workspace-label" 2>/dev/null || true)
-    printf '{"id":"fm-workspace-control","result":{"workspaces":[{"workspace_id":"%s","label":"%s"}]}}\n' \
-      "$(cat "$S/workspace" 2>/dev/null || true)" "$label"
+    if [ -n "$live" ] && [ ! -f "$S/workspace-closed" ]; then
+      printf '{"id":"fm-workspace-control","result":{"workspaces":[{"workspace_id":"%s","label":"%s"}]}}\n' \
+        "$live" "$label"
+    else
+      printf '{"id":"fm-workspace-control","result":{"workspaces":[]}}\n'
+    fi
     ;;
   close)
     [ ! -f "$S/close-fails" ] || exit 1
+    if [ "$workspace" = "$(cat "$S/workspace" 2>/dev/null || true)" ] && [ -f "$S/workspace-closed" ]; then
+      exit 4
+    fi
     printf '%s\n' "$workspace" >> "$S/closed-workspaces"
+    [ "$workspace" != "$(cat "$S/workspace" 2>/dev/null || true)" ] || : > "$S/workspace-closed"
+    if [ -f "$S/close-kills-loop" ]; then
+      loop=$(cat "$S/loop-pid" 2>/dev/null || true)
+      [ -z "$loop" ] || kill -HUP "$loop" 2>/dev/null || true
+    fi
     ;;
   *) exit 2 ;;
 esac
@@ -942,7 +993,11 @@ make_arm_stub "$HOME13C/arm.sh" ok
 fm_write_meta "$HOME13C/state/noserver-task.meta" "window=firstmate:fm-noserver-task"
 : > "$HOME13C/fakestate/server-stopped"
 out=$(run_supervisor "$HOME13C" "$FAKEBIN" ensure 2>&1) && fail "a stopped Herdr server reported success"
-assert_contains "$out" "no running server" "the refusal names the missing Herdr server"
+# The adapter gateway owns the native session check and refuses to load for a
+# stopped server; the supervisor must carry that refusal into its own loud
+# diagnostic rather than reading it as a silent "not eligible".
+assert_contains "$out" "capability check failed" "the refusal names the failed native Herdr session check"
+assert_not_contains "$out" "not eligible" "a stopped server was read as silent ineligibility"
 assert_absent "$HOME13C/state/.herdr-supervisor" "a stopped server leaves no supervisor record"
 assert_present "$HOME13C/state/.herdr-supervisor-alarm" "a stopped server leaves a durable alarm"
 assert_no_grep "server" "$HOME13C/fakestate/calls.log" "the supervisor must never invoke a Herdr server command"
@@ -967,6 +1022,34 @@ HANG_ELAPSED=$(( $(date +%s) - HANG_START ))
 assert_contains "$out" "could not read herdr status" "the bound is reported as a status read failure"
 assert_present "$HOME13D/state/.herdr-supervisor-alarm" "a hanging Herdr CLI leaves a durable alarm"
 pass "a hanging Herdr CLI is bounded and can never wedge the caller"
+
+for probe_failure in hang-version-status hang-session-status hang-session-list session-list-fails; do
+  PROBE_HOME=$(new_home "$probe_failure")
+  make_arm_stub "$PROBE_HOME/arm.sh" ok
+  fm_write_meta "$PROBE_HOME/state/probe-task.meta" "window=firstmate:fm-probe-task"
+  : > "$PROBE_HOME/fakestate/$probe_failure"
+  probe_start=$(date +%s)
+  probe_rc=0
+  out=$(FM_HERDR_SUPERVISOR_HERDR_TIMEOUT=1 run_supervisor "$PROBE_HOME" "$FAKEBIN" ensure 2>&1) \
+    || probe_rc=$?
+  probe_elapsed=$(( $(date +%s) - probe_start ))
+  [ "$probe_rc" -eq 1 ] || fail "$probe_failure returned $probe_rc instead of a hosting refusal: $out"
+  [ "$probe_elapsed" -lt 15 ] || fail "$probe_failure wedged ensure for ${probe_elapsed}s"
+  assert_present "$PROBE_HOME/fakestate/completed-status" "the status preflight did not finish before $probe_failure"
+  assert_contains "$out" "capability check failed" "$probe_failure lost the gateway refusal diagnostic"
+  assert_not_contains "$out" "not eligible" "$probe_failure was treated as silent ineligibility"
+  assert_present "$PROBE_HOME/state/.herdr-supervisor-alarm" "$probe_failure left no durable alarm"
+  assert_absent "$PROBE_HOME/state/.herdr-supervisor" "$probe_failure published a supervisor binding"
+  assert_absent "$PROBE_HOME/state/.herdr-supervisor-pending-cleanup" "$probe_failure created a cleanup receipt"
+  assert_absent "$PROBE_HOME/fakestate/workspace" "$probe_failure created a workspace"
+  if [ "$probe_failure" != session-list-fails ]; then
+    assert_present "$PROBE_HOME/fakestate/hung-pids" "$probe_failure never reached the hanging native probe"
+    while IFS= read -r hung_pid; do
+      ! kill -0 "$hung_pid" 2>/dev/null || fail "$probe_failure left native probe $hung_pid alive"
+    done < "$PROBE_HOME/fakestate/hung-pids"
+  fi
+  pass "$probe_failure refuses within the native deadline after a completed status preflight"
+done
 
 # =============================================================================
 # 13e. The pane command must stay SHORT and constant, with everything the loop
@@ -1248,6 +1331,331 @@ if [ -n "$UNKNOWN_ARM_PID" ]; then
   wait "$UNKNOWN_ARM_PID" 2>/dev/null || true
 fi
 pass "unknown arm children are abandoned without stopping supervisor recovery"
+
+# =============================================================================
+# 22. THE 2026-09-10 INCIDENT, PART 1: the loop's immediate re-arm after an
+#     actionable close is an Option B handling successor, not a new down
+#     stretch. This drives the REAL bin/fm-watch-arm.sh and bin/fm-watch.sh
+#     under the real loop. Before the fix, each plain re-arm reopened the
+#     announced episode, minted a fresh generation, and closed again within
+#     seconds with `check: rearm-resurface`, so no acknowledgement could ever
+#     match and no watcher ever held the lock. One ready cycle must survive a
+#     real delivered event, the drain, the exact acknowledgement, and the
+#     successor re-arm; a genuine gap must still announce exactly once.
+# =============================================================================
+HOME22=$(new_home handling-successor)
+fm_write_meta "$HOME22/state/crew.meta" "window=firstmate:fm-crew"
+mkdir -p "$HOME22/drain-root"
+cat > "$HOME22/arm.sh" <<SH
+#!/usr/bin/env bash
+export FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999
+exec "$ROOT/bin/fm-watch-arm.sh" "\$@"
+SH
+chmod +x "$HOME22/arm.sh"
+lock_pid22() { cat "$HOME22/state/.watch.lock/pid" 2>/dev/null || true; }
+has_lock22() { [ -n "$(lock_pid22)" ]; }
+marker_gen22() { cut -d: -f3 "$HOME22/state/.watcher-down" 2>/dev/null || true; }
+# grep -c prints 0 AND exits 1 on no match, so a "|| echo 0" fallback would
+# print a second zero; count through a variable instead.
+cycles22() { local n; n=$(grep -c $'\tcycle\t' "$HOME22/state/.herdr-supervisor.log" 2>/dev/null); printf '%s' "${n:-0}"; }
+resurfaces22() { local n; n=$(grep -c 'check: rearm-resurface' "$HOME22/state/.herdr-supervisor.log" 2>/dev/null); printf '%s' "${n:-0}"; }
+stop22() {
+  local p
+  p=$(lock_pid22)
+  stop_loop "$HOME22"
+  [ -z "$p" ] || kill -TERM "$p" 2>/dev/null || true
+}
+out=$(FM_HERDR_SUPERVISOR_RAPID_CYCLE_SECONDS=0 FM_HERDR_SUPERVISOR_RAPID_CYCLE_FLOOR=0 \
+  run_supervisor "$HOME22" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "herdr-supervisor: started" "the real-watcher fixture establishes a supervisor"
+wait_for 20 has_lock22 || { stop22; fail "the real arm never started a watcher under the loop"; }
+FIRST22=$(lock_pid22)
+sleep 1
+printf 'done: crew finished its task\n' >> "$HOME22/state/crew.status"
+signal_cycle22() { grep -q $'\tcycle\t.*signal: ' "$HOME22/state/.herdr-supervisor.log" 2>/dev/null; }
+wait_for 20 signal_cycle22 || { stop22; fail "the real crew event did not close a watcher cycle"; }
+successor22() { local p; p=$(lock_pid22); [ -n "$p" ] && [ "$p" != "$FIRST22" ]; }
+wait_for 20 successor22 || { stop22; fail "no successor watcher took the lock after the event"; }
+SUCCESSOR22=$(lock_pid22)
+GEN22=$(marker_gen22)
+[ -n "$GEN22" ] || { stop22; fail "the delivered event left no recovery generation"; }
+# Long enough for the regression to close several more cycles (it closed one
+# every 1-2 seconds in production and in the reproduction).
+sleep 8
+if [ "$(lock_pid22)" != "$SUCCESSOR22" ] || [ "$(marker_gen22)" != "$GEN22" ] \
+  || [ "$(resurfaces22)" != 0 ] || [ "$(cycles22)" != 1 ]; then
+  printf -- '--- ledger ---\n' >&2; tr '\t' ' ' < "$HOME22/state/.herdr-supervisor.log" >&2
+  printf -- '--- marker: %s lock: %s ---\n' "$(cat "$HOME22/state/.watcher-down" 2>/dev/null)" "$(lock_pid22)" >&2
+  stop22
+  fail "the immediate re-arm did not hold one ready cycle: lock $SUCCESSOR22->$(lock_pid22) generation $GEN22->$(marker_gen22) cycles=$(cycles22) resurfaces=$(resurfaces22)"
+fi
+assert_grep 'successor=started:' "$HOME22/state/.watch-cycle-exits.log" \
+  "the predecessor's cycle row does not record the handling successor the loop declared"
+grep -q "^announced:" "$HOME22/state/.watcher-down" \
+  || { stop22; fail "the handling successor did not leave the delivered generation announced once"; }
+pass "an actionable close is followed by one ready handling successor with an unchanged generation"
+
+# The model drains and acknowledges exactly what it was shown, and the same
+# watcher keeps the lock across the whole handling window.
+drain_out=$(FM_HOME="$HOME22" FM_STATE_OVERRIDE="$HOME22/state" FM_CONFIG_OVERRIDE="$HOME22/config" \
+  FM_ROOT_OVERRIDE="$HOME22/drain-root" "$ROOT/bin/fm-wake-drain.sh" 2>&1) || true
+ACK_SEQ22=$(printf '%s\n' "$drain_out" | sed -n 's/.*--ack-through \([0-9][0-9]*\) --recovery-generation .*/\1/p' | tail -1)
+ACK_GEN22=$(printf '%s\n' "$drain_out" | sed -n 's/.*--recovery-generation \([A-Za-z0-9._-]*\).*/\1/p' | tail -1)
+[ -n "$ACK_SEQ22" ] && [ -n "$ACK_GEN22" ] || { stop22; fail "the drain printed no acknowledgement command: $drain_out"; }
+[ "$ACK_GEN22" = "$GEN22" ] || { stop22; fail "the drain presented generation $ACK_GEN22, not the delivered $GEN22"; }
+printf '%s\n' "$drain_out" | grep -q 'crew.status' \
+  || { stop22; fail "the drain did not present the delivered crew event: $drain_out"; }
+ack_out=$(FM_HOME="$HOME22" FM_STATE_OVERRIDE="$HOME22/state" FM_CONFIG_OVERRIDE="$HOME22/config" \
+  FM_ROOT_OVERRIDE="$HOME22/drain-root" "$ROOT/bin/fm-wake-drain.sh" \
+  --ack-through "$ACK_SEQ22" --recovery-generation "$ACK_GEN22" 2>&1)
+ack_rc=$?
+[ "$ack_rc" -eq 0 ] || { stop22; fail "the exact acknowledgement failed (rc=$ack_rc): $ack_out"; }
+assert_not_contains "$ack_out" "newer recovery episode" \
+  "the exact acknowledgement lost a generation race under a stable successor"
+grep -q "^acked:.*:$GEN22$" "$HOME22/state/.watcher-down" \
+  || { stop22; fail "the acknowledgement did not retire the delivered episode: $(cat "$HOME22/state/.watcher-down")"; }
+[ "$(lock_pid22)" = "$SUCCESSOR22" ] || { stop22; fail "the watcher lock moved during handling"; }
+[ "$(cycles22)" = 1 ] || { stop22; fail "handling closed extra cycles: $(cycles22)"; }
+pass "the exact acknowledgement retires the delivered episode while the same watcher keeps the lock"
+
+# A genuine gap still announces, exactly once: end the live watcher so the next
+# arm is a plain start with no delivered predecessor, and expect one
+# rearm-resurface announcement followed by a stable handling successor.
+kill -TERM "$SUCCESSOR22" 2>/dev/null || true
+one_resurface22() { [ "$(resurfaces22)" -ge 1 ]; }
+wait_for 30 one_resurface22 || { stop22; fail "a real watcher loss did not announce the new down stretch"; }
+after_gap22() { local p; p=$(lock_pid22); [ -n "$p" ] && [ "$p" != "$SUCCESSOR22" ] && kill -0 "$p" 2>/dev/null; }
+wait_for 20 after_gap22 || { stop22; fail "no watcher took the lock after the announced gap"; }
+GAP_HOLDER22=$(lock_pid22)
+GAP_GEN22=$(marker_gen22)
+sleep 8
+if [ "$(resurfaces22)" != 1 ] || [ "$(lock_pid22)" != "$GAP_HOLDER22" ] || [ "$(marker_gen22)" != "$GAP_GEN22" ]; then
+  printf -- '--- ledger ---\n' >&2; tr '\t' ' ' < "$HOME22/state/.herdr-supervisor.log" >&2
+  stop22
+  fail "a genuine gap was not announced exactly once and then held: resurfaces=$(resurfaces22) lock $GAP_HOLDER22->$(lock_pid22) generation $GAP_GEN22->$(marker_gen22)"
+fi
+[ "$GAP_GEN22" != "$GEN22" ] || { stop22; fail "the new down stretch reused the acknowledged generation"; }
+stop22
+pass "a genuine watcher gap announces once and settles into one handling successor"
+
+# =============================================================================
+# 23. THE 2026-09-10 INCIDENT, PART 2: the loop retired itself from inside its
+#     own Herdr pane when config/herdr-supervisor changed to off. The native
+#     close of that workspace ended the loop's process tree between the close
+#     and the durable `closed` record, so the pending receipt stayed open while
+#     the exact workspace was already gone. Every later retire or ensure tried
+#     only to close it again, failed, and refused replacement forever.
+#     The owner must reconcile an exact workspace that the SAME verified server
+#     reports absent, and must stay conservative for everything else.
+# =============================================================================
+loop_gone23() {  # <home>
+  ! kill -0 "$(cat "$1/fakestate/loop-pid" 2>/dev/null || echo 0)" 2>/dev/null
+}
+prepare_dead_retire() {  # <home> -> the generation whose cleanup was interrupted
+  local home=$1 generation
+  make_arm_stub "$home/arm.sh" ok
+  fm_write_meta "$home/state/absent-task.meta" "window=firstmate:fm-absent-task"
+  run_supervisor "$home" "$FAKEBIN" ensure >/dev/null 2>&1 \
+    || fail "establish failed for the interrupted-cleanup case in $home"
+  generation=$(record_field "$home" generation)
+  : > "$home/fakestate/close-kills-loop"
+  printf 'off\n' > "$home/config/herdr-supervisor"
+  wait_for 15 loop_gone23 "$home" || fail "the self-retiring loop did not end with its workspace in $home"
+  rm -f "$home/fakestate/close-kills-loop"
+  [ "$(record_field "$home" mode)" = retiring ] \
+    || fail "the interrupted retire did not leave the binding in retiring mode: $(record_field "$home" mode)"
+  assert_grep 'cleanup_state=open' "$home/state/.herdr-supervisor-pending-cleanup" \
+    "the interrupted retire did not leave an open exact cleanup receipt"
+  [ "$(grep -c '^wZ$' "$home/fakestate/closed-workspaces" 2>/dev/null)" = 1 ] \
+    || fail "the native close of the exact workspace was not recorded exactly once"
+  printf '%s' "$generation"
+}
+wsctl_count() {  # <home> <operation>
+  local n
+  n=$(grep -a -c "^wsctl$(printf '\x1f')$2$(printf '\x1f')" "$1/fakestate/calls.log" 2>/dev/null)
+  printf '%s' "${n:-0}"
+}
+
+# 23a. The positive case: retire while off, then ensure while on, both reconcile
+#      the already-absent exact workspace and converge without a second close.
+HOME23=$(new_home cleanup-absent)
+GEN23=$(prepare_dead_retire "$HOME23")
+out=$(run_supervisor "$HOME23" "$FAKEBIN" retire --reason "fix-forward" 2>&1)
+retire_rc=$?
+if [ "$retire_rc" -ne 0 ]; then
+  printf -- '--- ledger ---\n' >&2; tr '\t' ' ' < "$HOME23/state/.herdr-supervisor.log" >&2
+  fail "retire refused an exact workspace the verified server already reports absent (rc=$retire_rc): $out"
+fi
+assert_absent "$HOME23/state/.herdr-supervisor-pending-cleanup" \
+  "reconciling an absent exact workspace did not clear its receipt"
+assert_absent "$HOME23/state/.herdr-supervisor" \
+  "reconciling an absent exact workspace did not clear the retiring binding"
+assert_grep 'already absent' "$HOME23/state/.herdr-supervisor.log" \
+  "the ledger does not record the absence reconciliation"
+[ "$(wsctl_count "$HOME23" list)" = 1 ] \
+  || fail "absence was decided with $(wsctl_count "$HOME23" list) list calls instead of exactly one"
+[ "$(grep -c '^wZ$' "$HOME23/fakestate/closed-workspaces")" = 1 ] \
+  || fail "reconciliation closed the exact workspace again"
+printf 'on\n' > "$HOME23/config/herdr-supervisor"
+out=$(run_supervisor "$HOME23" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "herdr-supervisor: started" "replacement stays blocked after the absent workspace was reconciled"
+[ "$(record_field "$HOME23" generation)" != "$GEN23" ] || fail "the replacement reused the interrupted generation"
+pass "an exact workspace already absent on the verified server is reconciled as completed cleanup"
+stop_loop "$HOME23"
+
+# 23b. Unreadable list: absence is never assumed. The receipt and quarantine
+#      stay until the server can be read again, and then reconciliation converges.
+HOME23B=$(new_home cleanup-absent-unreadable)
+GEN23B=$(prepare_dead_retire "$HOME23B")
+: > "$HOME23B/fakestate/list-fails"
+printf 'on\n' > "$HOME23B/config/herdr-supervisor"
+out=$(run_supervisor "$HOME23B" "$FAKEBIN" ensure 2>&1) \
+  && fail "an unreadable workspace list was read as absence"
+assert_grep 'could not be reconciled' "$HOME23B/state/.herdr-supervisor-alarm" \
+  "the unreadable-list refusal left no durable alarm"
+assert_grep 'cleanup_state=open' "$HOME23B/state/.herdr-supervisor-pending-cleanup" \
+  "an unreadable list cleared the exact cleanup receipt"
+[ "$(record_field "$HOME23B" mode)" = quarantine ] \
+  || fail "an unreadable list did not keep the binding quarantined: $(record_field "$HOME23B" mode)"
+[ "$(record_field "$HOME23B" generation)" = "$GEN23B" ] \
+  || fail "an unreadable list allowed a replacement generation"
+[ "$(grep -c 'workspace.create' "$HOME23B/fakestate/calls.log")" = 1 ] \
+  || fail "an unreadable list allowed a new workspace to be created"
+rm -f "$HOME23B/fakestate/list-fails"
+out=$(run_supervisor "$HOME23B" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "herdr-supervisor: started" "a readable server did not let the receipt converge"
+assert_absent "$HOME23B/state/.herdr-supervisor-pending-cleanup" \
+  "the receipt survived a successful absence reconciliation"
+pass "an unreadable workspace list keeps the receipt and quarantine until the server can be read"
+stop_loop "$HOME23B"
+
+# 23c. Changed server identity: nothing is listed or closed through a server
+#      other than the one the receipt names, and the receipt is retained.
+HOME23C=$(new_home cleanup-absent-other-server)
+GEN23C=$(prepare_dead_retire "$HOME23C")
+lists_before=$(wsctl_count "$HOME23C" list)
+closes_before=$(wsctl_count "$HOME23C" close)
+printf '%s\n' "$HOME23C/fakestate/restarted.sock" > "$HOME23C/fakestate/socket"
+printf 'on\n' > "$HOME23C/config/herdr-supervisor"
+out=$(run_supervisor "$HOME23C" "$FAKEBIN" ensure 2>&1) \
+  && fail "a receipt naming another server was reconciled through the replacement server"
+assert_grep 'could not be reconciled' "$HOME23C/state/.herdr-supervisor-alarm" \
+  "the other-server refusal left no durable alarm"
+assert_grep 'cleanup_state=open' "$HOME23C/state/.herdr-supervisor-pending-cleanup" \
+  "a changed server identity cleared the exact cleanup receipt"
+[ "$(wsctl_count "$HOME23C" list)" = "$lists_before" ] \
+  || fail "the replacement server was asked to list workspaces for a receipt it does not own"
+[ "$(wsctl_count "$HOME23C" close)" = "$closes_before" ] \
+  || fail "the replacement server was asked to close a workspace it does not own"
+[ "$(record_field "$HOME23C" generation)" = "$GEN23C" ] \
+  || fail "a changed server identity allowed a replacement generation"
+pass "a receipt naming a different Herdr server is retained without touching the replacement server"
+
+HOME23D=$(new_home cleanup-invalid-inventory)
+GEN23D=$(prepare_dead_retire "$HOME23D")
+printf 'on\n' > "$HOME23D/config/herdr-supervisor"
+cp "$HOME23D/state/.herdr-supervisor-pending-cleanup" "$HOME23D/expected-receipt"
+while IFS= read -r inventory; do
+  printf '%s\n' "$inventory" > "$HOME23D/fakestate/list-response"
+  out=$(run_supervisor "$HOME23D" "$FAKEBIN" ensure 2>&1) \
+    && fail "an unproven inventory authorized replacement: $inventory"
+  assert_grep 'could not be reconciled' "$HOME23D/state/.herdr-supervisor-alarm" \
+    "an unproven inventory left no durable alarm: $inventory"
+  cmp -s "$HOME23D/expected-receipt" "$HOME23D/state/.herdr-supervisor-pending-cleanup" \
+    || fail "an unproven inventory changed the cleanup receipt: $inventory"
+  [ "$(record_field "$HOME23D" mode)" = quarantine ] \
+    || fail "an unproven inventory did not retain quarantine: $inventory"
+  [ "$(record_field "$HOME23D" generation)" = "$GEN23D" ] \
+    || fail "an unproven inventory changed generation: $inventory"
+  [ "$(grep -c 'workspace.create' "$HOME23D/fakestate/calls.log")" = 1 ] \
+    || fail "an unproven inventory created a replacement workspace: $inventory"
+  [ "$(grep -c '^wZ$' "$HOME23D/fakestate/closed-workspaces")" = 1 ] \
+    || fail "an unproven inventory credited a second close: $inventory"
+done <<'JSON'
+{"result":{"workspaces":[{}]}}
+{"result":{"workspaces":[{"workspace_id":null}]}}
+{"result":{"workspaces":[{"workspace_id":""}]}}
+{"result":{"workspaces":[{"workspace_id":" \t\r\n"}]}}
+{"result":{"workspaces":[{"workspace_id":42}]}}
+{"result":{"workspaces":[{"workspace_id":false}]}}
+{"result":{"workspaces":[{"workspace_id":[]}]}}
+{"result":{"workspaces":[{"workspace_id":{}}]}}
+{"result":{"workspaces":[{"workspace_id":"other"},{}]}}
+{"result":{"workspaces":[null]}}
+{"result":{"workspaces":["other"]}}
+{"result":{"workspaces":null}}
+{"result":{"workspaces":{}}}
+{"result":{"workspaces":""}}
+{"result":{}}
+{"result":[]}
+{}
+null
+[]
+not-json
+{"result":{"workspaces":[]}} {"result":{"workspaces":[]}}
+{"result":{"workspaces":[{"workspace_id":"wZ"}]}}
+JSON
+pass "ambiguous inventories and a present target preserve receipt, quarantine, and generation"
+printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"other"}]}}' > "$HOME23D/fakestate/list-response"
+out=$(run_supervisor "$HOME23D" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "herdr-supervisor: started" "a valid target-absent inventory did not permit replacement"
+assert_absent "$HOME23D/state/.herdr-supervisor-pending-cleanup" "a valid target-absent inventory retained the receipt"
+[ "$(record_field "$HOME23D" generation)" != "$GEN23D" ] || fail "a valid target-absent inventory reused the old generation"
+pass "a valid nonempty target-absent inventory reconciles cleanup and permits replacement"
+stop_loop "$HOME23D"
+
+# =============================================================================
+# 24. A loop asleep in its rapid-cycle floor must still answer a retire or
+#     replacement signal at once. Bash defers a trap while a foreground command
+#     runs, so a plain `sleep 5` floor (or the 30s idle sleep) made the loop
+#     answer TERM only when that sleep ended - longer than the bounded 1s
+#     quarantine and 5s retire waits that signal it - and the signalled loop
+#     then read as one that would not stop. The measurement is the loop's own
+#     TERM-to-exit latency while a `sleep 5` child proves it is inside the floor
+#     sleep, so retire's unrelated overhead cannot mask the result.
+# =============================================================================
+HOME24=$(new_home floor-sleep-signal)
+fm_write_meta "$HOME24/state/floor-task.meta" "window=firstmate:fm-floor-task"
+cat > "$HOME24/arm.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+C="${FM_TEST_ARM_COUNT:?}"
+n=$(( $(cat "$C" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$C"
+sleep 0.5
+echo "signal: /fake/state/task.status"
+SH
+chmod +x "$HOME24/arm.sh"
+out=$(FM_HERDR_SUPERVISOR_RAPID_CYCLE_SECONDS=10 FM_HERDR_SUPERVISOR_RAPID_CYCLE_FLOOR=5 \
+  run_supervisor "$HOME24" "$FAKEBIN" ensure 2>&1)
+assert_contains "$out" "herdr-supervisor: started" "the floor-sleep fixture establishes a supervisor"
+LOOP24=$(cat "$HOME24/fakestate/loop-pid")
+loop_in_floor_sleep() {  # <loop-pid>
+  local child
+  for child in $(pgrep -P "$1" 2>/dev/null); do
+    # Exactly the 5s floor sleep, never one of the loop's half-second waits.
+    case "$(ps -o command= -p "$child" 2>/dev/null | sed 's/[[:space:]]*$//')" in "sleep 5") return 0 ;; esac
+  done
+  return 1
+}
+wait_for 20 loop_in_floor_sleep "$LOOP24" \
+  || { stop_loop "$HOME24"; fail "the loop did not enter its rapid-cycle floor sleep"; }
+FLOOR_START=$(date +%s)
+kill -TERM "$LOOP24" 2>/dev/null || fail "could not signal the sleeping loop"
+loop_exited24() { ! kill -0 "$LOOP24" 2>/dev/null; }
+if ! wait_for 10 loop_exited24; then
+  FLOOR_ELAPSED=$(( $(date +%s) - FLOOR_START ))
+  stop_loop "$HOME24"
+  fail "the sleeping loop ignored TERM for ${FLOOR_ELAPSED}s; the trap was deferred by its foreground sleep"
+fi
+FLOOR_ELAPSED=$(( $(date +%s) - FLOOR_START ))
+[ "$FLOOR_ELAPSED" -le 2 ] \
+  || fail "the sleeping loop took ${FLOOR_ELAPSED}s to answer TERM; the trap was deferred by its foreground sleep"
+assert_grep 'loop-signal' "$HOME24/state/.herdr-supervisor.log" \
+  "the signalled sleeping loop did not run its termination trap"
+assert_absent "$HOME24/state/.herdr-supervisor-live" \
+  "the signalled sleeping loop left its live record behind"
+pass "a loop asleep in its rapid-cycle floor answers a termination signal at once"
 
 # =============================================================================
 # The always-running monitor. `ensure` alone only repairs supervision at session

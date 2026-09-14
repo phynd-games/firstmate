@@ -362,6 +362,26 @@ fm_backend_herdr_workspace_label() {
   printf 'firstmate'
 }
 
+# FM_BACKEND_HERDR_CALL_TIMEOUT optionally bounds native calls in positive
+# integer seconds through the shared process-group timeout runner; unset or
+# empty preserves direct invocation, and invalid values refuse before launch.
+# The supervisor scopes this setting to gateway load so subsequent capability
+# probes use its per-call bound as well as the initial status preflight.
+fm_backend_herdr_native() {
+  local timeout=${FM_BACKEND_HERDR_CALL_TIMEOUT:-}
+  if [ -n "$timeout" ]; then
+    case "$timeout" in
+      *[!0-9]*) return 2 ;;
+    esac
+    [ "$timeout" -gt 0 ] 2>/dev/null || return 2
+    # shellcheck source=bin/fm-timeout-lib.sh
+    . "$FM_BACKEND_HERDR_ROOT/bin/fm-timeout-lib.sh" || return 1
+    fm_run_timed "$timeout" herdr "$@"
+  else
+    herdr "$@"
+  fi
+}
+
 # fm_backend_herdr_cli: run `herdr <args...>` scoped to <session>, setting
 # BOTH the HERDR_SESSION env var AND appending a trailing `--session <name>`
 # CLI flag. Verified empirically (docs/herdr-backend.md "Session targeting: the
@@ -380,7 +400,7 @@ fm_backend_herdr_workspace_label() {
 fm_backend_herdr_cli() {  # <session> <herdr-subcommand-and-args...>
   local session=$1
   shift
-  HERDR_SESSION="$session" herdr "$@" --session "$session"
+  HERDR_SESSION="$session" fm_backend_herdr_native "$@" --session "$session"
 }
 
 # fm_backend_herdr_tool_check: refuse loudly if herdr or jq is missing.
@@ -396,7 +416,7 @@ fm_backend_herdr_tool_check() {
 fm_backend_herdr_version_check() {
   fm_backend_herdr_tool_check || return 1
   local status protocol version
-  status=$(herdr status --json 2>/dev/null) || { echo "error: 'herdr status --json' failed; is herdr installed correctly?" >&2; return 1; }
+  status=$(fm_backend_herdr_native status --json 2>/dev/null) || { echo "error: 'herdr status --json' failed; is herdr installed correctly?" >&2; return 1; }
   protocol=$(printf '%s' "$status" | jq -r '.client.protocol // empty' 2>/dev/null)
   version=$(printf '%s' "$status" | jq -r '.client.version // empty' 2>/dev/null)
   case "$protocol" in

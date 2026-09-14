@@ -22,6 +22,7 @@ While supervision is still needed and away mode remains inactive, an actionable 
 
 Every owner above lives inside the primary harness process, so a home whose harness never loaded its owner has none at all and supervision ends after one cycle.
 `bin/fm-herdr-supervisor.sh` is the fallback for exactly that case: it hosts one continuity owner in a Herdr-tracked pane, stands down whenever a live harness-native or away-mode owner is provable, and never becomes a second authority over the watcher.
+Like the Pi extension, it re-arms after an actionable close as a handling successor of the arm that closed, so its immediate re-arm is never read as a new down stretch by the recovery-episode contract below.
 [`herdr-supervisor.md`](herdr-supervisor.md) owns its eligibility, health, recovery, and the boundary it does not promise to recover across.
 
 ## Actionable wake ordering
@@ -111,7 +112,7 @@ The same suite covers automatic startup and ordinary same-process session replac
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, and exit-2 translation.
 It also covers generation-claim single-flight, stuck-claim supersession, superseded-owner silence, notice-marker refusal and retry, ownership-atomic episode reset, and the legacy upgrade shim; [`turnend-guard.md`](turnend-guard.md) owns those behavior contracts.
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.
-`tests/fm-herdr-supervisor.test.sh` covers the Herdr-hosted owner's eligibility, deference, idempotence, identity and generation safety, bounded retry, and durable escalation; [`herdr-supervisor.md`](herdr-supervisor.md#regression-coverage) lists that suite's cases and its gated real-Herdr smoke.
+[`herdr-supervisor.md`](herdr-supervisor.md#regression-coverage) owns the Herdr-hosted owner's regression coverage and the limits of its retired real-Herdr smoke.
 `tests/fm-turnend-guard.test.sh` covers the cooperative `--claude` guard, including monotonic failed-epoch progression, the integrated bounded fail-open, post-alarm continuation suppression, and positive recovery reset; [`turnend-guard.md`](turnend-guard.md#regression-coverage) lists that suite's full generation and legacy claim coverage.
 
 ## Active limits and verification
