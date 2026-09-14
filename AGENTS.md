@@ -611,6 +611,7 @@ Only the home holding the relay consent and thread binding ever posts it, so nev
 ## Captain instruction precedence
 
 A current, explicit, concrete captain instruction overrides any conflicting standing rule written above.
+A durably recorded standing preference, such as an entry in `data/captain.md`, is such an instruction once it is specific, current, and scoped, not only a live session turn.
 The instruction must be specific and recent: it must identify the concrete action, object, or bounded set it governs.
 Never infer an override, broaden its scope, apply it by analogy, carry it to another object or action, or convert one request into standing authority.
 Ambiguous scope or conflict still requires one concise clarification before action.
