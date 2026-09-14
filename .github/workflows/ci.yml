@@ -11,8 +11,9 @@ permissions:
 
 # Reduced job set: the hosted full-repository Lint job, the two portable
 # parallel behavior shards, and the four-way portable serial behavior matrix
-# were retired rather than repaired, because those hosted Linux lanes were
-# failing on every push to main. Their owners remain available for deliberate
+# were retired rather than repaired, because Firstmate targets macOS and those
+# hosted Linux lanes were failing on every push to main. Their owners remain
+# available for deliberate
 # local use: bin/fm-lint.sh (also run by the no-mistakes pre-push gate) and
 # bin/fm-test-run.sh lanes and --aggregate-json. The test-coverage guard and
 # timing aggregate below are retained because they pass on hosted runners
