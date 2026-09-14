@@ -392,6 +392,80 @@ test_attempt_bound_create_journal() {
   pass "attempt-bound journal serializes issuance with no-effect settlement"
 }
 
+test_atomic_successor_publication() {
+  local state
+  state=$(new_state atomic-successor)
+  python3 - "$OWNER" "$state" <<'PYTEST' || fail "atomic successor publication contract failed"
+import json
+import pathlib
+import subprocess
+import sys
+
+owner, state = sys.argv[1:]
+path = pathlib.Path(state) / '.launch-watcher'
+base = [sys.executable, owner, '--state', state]
+def run(*args, code=0):
+    result = subprocess.run(base + list(args), capture_output=True, text=True)
+    assert result.returncode == code, result
+    return result.stdout
+
+run('intend', '--helper', 'watcher', '--owner', 'tester', '--origin', 'cycle')
+first = json.loads(path.read_text())['launch']['id']
+run('created', '--helper', 'watcher', '--launch', first, '--identity-source', 'process',
+    '--identity', 'pid=123', '--identity', 'pid_identity_sha256=' + 'a' * 64)
+run('ready', '--helper', 'watcher', '--launch', first, '--source', 'watcher-beacon')
+before = path.read_bytes()
+predecessor = json.loads(before)['launch']
+args = ['intend', '--helper', 'watcher', '--owner', 'tester', '--origin', 'successor',
+        '--supersede', first, '--reason', 'next cycle', '--field', 'predecessor=123']
+run(*args, '--field', 'note=api_key=abcdefghijklmnop', code=2)
+assert path.read_bytes() == before
+run(*args[:-4], code=2)
+assert path.read_bytes() == before
+fault = """
+import errno, os, runpy, sys
+sys.argv = sys.argv[1:]
+def refuse_replace(source, destination):
+    raise OSError(errno.EIO, 'injected publication failure')
+os.replace = refuse_replace
+runpy.run_path(sys.argv[0], run_name='__main__')
+"""
+result = subprocess.run([sys.executable, '-c', fault, owner, '--state', state] + args,
+                        capture_output=True, text=True)
+assert result.returncode == 1 and 'injected publication failure' in result.stderr, result
+assert path.read_bytes() == before
+assert 'launch=' + first in run('check', '--helper', 'watcher', code=3)
+assert not list(path.parent.glob('.launch-watcher.tmp.*'))
+contenders = [subprocess.Popen(base + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+              for _ in range(8)]
+outputs = [process.communicate() for process in contenders]
+codes = [process.returncode for process in contenders]
+assert codes.count(0) == 1 and codes.count(3) == 7, (codes, outputs)
+data = json.loads(path.read_text())
+new = data['launch']
+assert new['id'] != first and new['phase'] == 'intended', data
+assert new['fields']['predecessor'] == '123'
+assert len(data['previous']) == 1
+old = data['previous'][0]
+assert old['id'] == first and old['phase'] == 'superseded', data
+assert old['identity'] == predecessor['identity']
+assert old['launcher'] == predecessor['launcher']
+assert old['readiness'] == predecessor['readiness']
+assert old['history'][:-1] == predecessor['history']
+assert old['history'][-1]['event'] == 'superseded'
+after = path.read_bytes()
+run(*args, code=3)
+assert path.read_bytes() == after
+run('exit', '--helper', 'watcher', '--launch', first, '--reason', 'finished', '--code', '0')
+data = json.loads(path.read_text())
+assert data['launch'] == new
+assert data['previous'][0]['outcome']['exit']['code'] == 0
+assert data['previous'][0]['history'][-1]['event'] == 'exited-after-supersede'
+PYTEST
+  pass "launch record: successor publication is atomic, retains history, and rejects stale concurrent writers"
+}
+
+test_atomic_successor_publication
 test_attempt_bound_create_journal
 
 test_atomic_retirement_removal

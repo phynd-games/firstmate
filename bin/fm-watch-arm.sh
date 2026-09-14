@@ -124,7 +124,7 @@ wa_identity_digest() {  # <pid> -> sha256 of fm_pid_identity, or empty
 wa_launch_intend() {  # non-zero = refuse to fork; WA_LAUNCH_REFUSAL says why
   local out rc line pid digest current_digest predecessor predecessor_digest launch origin=cycle
   local launcher_pid=${BASHPID:-$$}
-  local -a launcher_args=()
+  local -a launcher_args=() successor_args=()
   fm_launch_record_available >/dev/null 2>&1 || { WA_LAUNCH_REFUSAL="launch record owner unavailable (python3 or bin/fm-launch-record.py missing)"; return 1; }
   out=$(fm_launch_record check --helper watcher 2>/dev/null)
   rc=$?
@@ -148,8 +148,7 @@ wa_launch_intend() {  # non-zero = refuse to fork; WA_LAUNCH_REFUSAL says why
             WA_LAUNCH_REFUSAL="a live recorded watcher has no matching predecessor handoff"
             return 1
           fi
-          wa_launch supersede --launch "$launch" --reason "successor cycle armed by arm $ARM_PID while watcher pid $pid still runs" >/dev/null \
-            || { WA_LAUNCH_REFUSAL="the running predecessor's launch could not be superseded"; return 1; }
+          successor_args=(--supersede "$launch" --reason "successor cycle armed by arm $ARM_PID while watcher pid $pid still runs")
         else
           wa_launch exit --launch "$launch" --reason "recorded watcher process identity gone at next arm" >/dev/null \
             || { WA_LAUNCH_REFUSAL="the previous cycle's exit could not be recorded"; return 1; }
@@ -165,7 +164,7 @@ wa_launch_intend() {  # non-zero = refuse to fork; WA_LAUNCH_REFUSAL says why
   while IFS= read -r line; do
     launcher_args+=("$line")
   done < <(fm_launch_record_launcher_args "$launcher_pid")
-  out=$(fm_launch_record intend --helper watcher --owner fm-watch-arm.sh --origin "$origin" "${launcher_args[@]}" \
+  out=$(fm_launch_record intend --helper watcher --owner fm-watch-arm.sh --origin "$origin" "${launcher_args[@]}" ${successor_args[@]+"${successor_args[@]}"} \
     ${FM_WATCH_PREDECESSOR_ARM_PID:+--field "predecessor=$FM_WATCH_PREDECESSOR_ARM_PID"} 2>&1) \
     || { WA_LAUNCH_REFUSAL="launch intent could not be persisted (${out:-no detail})"; return 1; }
   WA_LAUNCH_ID=${out##*launch=}

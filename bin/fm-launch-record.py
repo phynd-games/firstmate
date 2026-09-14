@@ -49,9 +49,11 @@ Usage:
     --task <id> | --helper <name>
 
   intend    --owner NAME --origin ORIGIN [--launcher-pid N] [--launcher-identity STR]
-            [--field K=V]...
+            [--field K=V]... [--supersede ID --reason TEXT]
             Mint a launch id and publish the intent. Prints `launch=<id>`.
-            Exit 3 when an open launch exists (its `check` summary is printed).
+            --supersede atomically archives that exact open predecessor with
+            the new intent; publication failure leaves the predecessor unchanged.
+            Otherwise exit 3 when an open launch exists (its summary is printed).
   created   --launch ID --identity K=V... [--identity-source SRC] [--field K=V]...
   ready     --launch ID --source SRC [--field K=V]...
   unready   --launch ID --reason TEXT [--source SRC]
@@ -527,6 +529,10 @@ def cmd_intend(args, path: str, kind: str, subject: str) -> int:
     if not KEY_SHAPE.match(origin.replace("-", "_")):
         raise UsageError("--origin must be a short lowercase token")
     fields = parse_pairs(args.field, FIELD_KEYS, "--field")
+    if bool(args.supersede) != bool(args.reason):
+        raise UsageError("--supersede and --reason must be supplied together")
+    predecessor_id = parse_launch_id(args.supersede) if args.supersede else None
+    reason = check_value("--reason", args.reason) if args.reason else None
     launcher: dict = {}
     if args.launcher_pid is not None:
         if args.launcher_pid <= 0:
@@ -540,7 +546,10 @@ def cmd_intend(args, path: str, kind: str, subject: str) -> int:
     with RecordLock(path):
         data = read_record(path)
         launch = current_launch(data)
-        if is_open(launch):
+        if predecessor_id is not None:
+            launch = require_launch(data, predecessor_id, False)
+            supersede_launch(launch, reason)
+        elif is_open(launch):
             for line in summary_lines(launch, kind, subject):
                 print(line)
             raise ContractRefusal(
@@ -711,6 +720,15 @@ def cmd_exit(args, path: str, kind: str, subject: str) -> int:
     return _terminal(args, path, "exited", extra)
 
 
+def supersede_launch(launch: dict, reason: str) -> None:
+    if launch.get("phase") not in OPEN_PHASES:
+        raise ContractRefusal(f"supersede is only valid from an open phase, not {launch.get('phase')}")
+    launch["outcome"] = {"phase": "superseded", "reason": reason, "at": now_iso()}
+    launch["phase"] = "superseded"
+    launch["reconcile"] = {"required": False}
+    append_history(launch, "superseded", reason=reason)
+
+
 def cmd_supersede(args, path: str, kind: str, subject: str) -> int:
     """A successor-chain owner (the watcher arm) deliberately starts the next
     launch while the current one still runs: the current launch becomes
@@ -720,12 +738,7 @@ def cmd_supersede(args, path: str, kind: str, subject: str) -> int:
     with RecordLock(path):
         data = read_record(path)
         launch = require_launch(data, args.launch, args.current)
-        if launch.get("phase") not in OPEN_PHASES:
-            raise ContractRefusal(f"supersede is only valid from an open phase, not {launch.get('phase')}")
-        launch["outcome"] = {"phase": "superseded", "reason": reason, "at": now_iso()}
-        launch["phase"] = "superseded"
-        launch["reconcile"] = {"required": False}
-        append_history(launch, "superseded", reason=reason)
+        supersede_launch(launch, reason)
         write_record(path, data)
     print(f"launch={launch.get('id')} phase=superseded")
     return 0
@@ -1064,6 +1077,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--origin", required=True)
     p.add_argument("--launcher-pid", type=int)
     p.add_argument("--launcher-identity")
+    p.add_argument("--supersede", help="exact open predecessor to supersede atomically with intent")
+    p.add_argument("--reason")
     p.add_argument("--field", action="append", default=[])
 
     p = sub.add_parser("created")

@@ -107,7 +107,9 @@ Their existing authorities are unchanged: the singleton lock and cycle ledger fo
 Two owner-specific rules apply:
 
 - The watcher is a successor chain: a successor cycle is forked while its predecessor still runs and hands the lock over.
-  The next arm supersedes a live launch only when the invoking predecessor matches its recorded pid and start identity; the predecessor's real exit is annotated on its superseded launch later.
+  The next arm supersedes a live launch only when the invoking predecessor matches its recorded pid and start identity, using `intend --supersede <launch-id> --reason <reason>` to publish the predecessor's superseded outcome and successor intent together under the record owner's lock in one atomic replacement.
+  A stale predecessor id refuses publication; a validation or write failure leaves the predecessor record and claim untouched and forks no successor.
+  Successful publication retains the predecessor's identity and history, and its real exit is annotated on its superseded launch later.
   Arm preparation holds its launch lock through fork and singleton-bound identity publication; an unidentified attempt remains open for inspection.
   The intent is required before a new child: when it cannot be persisted, or a running predecessor cannot be superseded, the arm forks nothing, publishes the refusal through its ordinary failure path (a `check: watcher-arm` wake or the emergency record), and exits non-zero; a healthy predecessor is attached to before that point and is never touched by the refusal.
 - A runner's result is completion evidence, not evidence that its long wait started.

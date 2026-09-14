@@ -314,6 +314,16 @@ if [ -n "$verb" ]; then
   if [ -e "${FM_TEST_LOCK_PATH:?}" ]; then l=present; else l=absent; fi
   printf '%s lock=%s\n' "$verb" "$l" >> "${FM_TEST_WRAP_LOG:?}"
 fi
+if [ "$verb" = intend ] && [ "${FM_TEST_INTEND_WRITE_FAIL:-0}" = 1 ]; then
+  exec "${FM_TEST_REAL_PYTHON:?}" -c '
+import errno, os, runpy, sys
+sys.argv = sys.argv[1:]
+def refuse_replace(source, destination):
+    raise OSError(errno.EIO, "injected publication failure")
+os.replace = refuse_replace
+runpy.run_path(sys.argv[0], run_name="__main__")
+' "$@"
+fi
 if [ "$verb" = intend ] && [ -n "${FM_TEST_INTEND_PAUSE:-}" ]; then
   "${FM_TEST_REAL_PYTHON:?}" "$@" || exit $?
   : > "$FM_TEST_INTEND_PAUSE"
@@ -451,6 +461,26 @@ test_watcher_interrupted_attempt_and_successor_chain_are_settled_by_the_next_arm
   old=$(python3 "$OWNER" --state "$state" intend --helper watcher --owner fm-watch-arm.sh --origin cycle --launcher-pid "$$" | sed 's/^launch=//')
   python3 "$OWNER" --state "$state" created --helper watcher --launch "$old" --identity-source process --identity "pid=$sleeper" --identity "pid_identity_sha256=$digest" >/dev/null || fail "matching predecessor record could not be written"
   python3 "$OWNER" --state "$state" ready --helper watcher --launch "$old" --source watcher-beacon >/dev/null || fail "matching predecessor readiness could not be written"
+  mkdir -p "$state/.watch.lock"
+  printf '%s\n' "$sleeper" > "$state/.watch.lock/pid"
+  python3 "$OWNER" pid-identity "$sleeper" > "$state/.watch.lock/pid-identity"
+  cp -R "$state/.watch.lock" "$dir/predecessor-claim"
+  cp "$state/.launch-watcher" "$dir/predecessor-record"
+  FM_TEST_INTEND_WRITE_FAIL=1 FM_WATCH_PREDECESSOR_ARM_PID="$$" run_arm "$state" "$fakebin" "$dir/refused.out"
+  wait_pid_gone "$ARM_PID" || fail "failed successor publication did not finish"
+  wait "$ARM_PID" && fail "failed successor publication must refuse the arm"
+  cmp -s "$state/.launch-watcher" "$dir/predecessor-record" || fail "failed publication changed the live predecessor record"
+  diff -r "$state/.watch.lock" "$dir/predecessor-claim" || fail "failed publication changed the predecessor claim"
+  kill -0 "$sleeper" || fail "failed publication stopped the predecessor"
+  python3 "$OWNER" --state "$state" check --helper watcher > "$dir/check.out" && fail "failed publication erased the open launch"
+  assert_grep "launch=$old" "$dir/check.out" "the live predecessor must remain current"
+  assert_grep 'phase=ready' "$dir/check.out" "the live predecessor must remain ready"
+  assert_grep 'injected publication failure' "$dir/refused.out" "the intended publication fault was not reached"
+  assert_grep 'watcher: FAILED - no new watcher forked' "$dir/refused.out" "successor refusal was not reported"
+  grep -q '^created ' "$WRAP_LOG" && fail "failed publication forked a successor"
+  grep -q 'watcher arm refused to fork' "$state/.wake-queue" 2>/dev/null || grep -q 'watcher arm refused to fork' "$state/.watch-arm-emergency" 2>/dev/null || fail "successor refusal was not persisted"
+  rm -rf "$state/.watch.lock"
+  rm -f "$state/.wake-queue" "$state/.watcher-down"
   FM_WATCH_PREDECESSOR_ARM_PID="$$" run_arm "$state" "$fakebin" "$out"
   pid=$(wait_started "$out") || fail "the matching successor did not start: $(cat "$out")"
   wshow "$state" | grep -q "previous launch=$old phase=superseded" || fail "matching predecessor must be superseded"
@@ -701,6 +731,13 @@ assert result.returncode != 0 and 'cannot lock source' in result.stderr, result
 PYTEST
   pass "procevent: an invalid claim root refuses start instead of waiting forever"
 }
+
+if [ "${1:-}" = watcher-launch ]; then
+  test_watcher_cycle_records_intent_before_fork_identity_readiness_and_exit
+  test_watcher_interrupted_attempt_and_successor_chain_are_settled_by_the_next_arm
+  test_watcher_arm_refuses_to_fork_when_intent_cannot_be_persisted
+  exit 0
+fi
 
 if [ "${1:-}" = helper-safety ]; then
   test_afk_launcher_records_intent_identity_readiness_and_stop

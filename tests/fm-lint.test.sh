@@ -1076,6 +1076,63 @@ SH
   pass "seeded dispatcher, adapter, production-owner, and test-local diagnostics preserve parity"
 }
 
+test_timeout_fallback_preserves_child_status() {
+  local tmp bash_path perl_path runner runner_path isolated command_name expected rc mechanism child i
+  tmp=$(fm_test_tmproot fm-lint-timeout-status)
+  bash_path=$(command -v bash)
+  perl_path=$(command -v perl) || fail "Perl is required to verify the timeout fallback"
+  for runner in perl timeout gtimeout; do
+    if [ "$runner" != perl ]; then
+      runner_path=$(command -v "$runner") || continue
+    fi
+    isolated="$tmp/$runner"
+    mkdir -p "$isolated"
+    for command_name in bash perl mktemp cat rm; do
+      ln -s "$(command -v "$command_name")" "$isolated/$command_name"
+    done
+    if [ "$runner" != perl ]; then
+      ln -s "$runner_path" "$isolated/$runner"
+    fi
+    mechanism=$(PATH="$isolated" FM_TIMEOUT_MECHANISM_OVERRIDE= "$bash_path" -c '
+      . "$1"
+      fm_timeout_mechanism
+    ' _ "$ROOT/bin/fm-timeout-lib.sh")
+    [ "$mechanism" = "$runner" ] || fail "expected real $runner selection, got $mechanism"
+    for expected in 0 7 137; do
+      rc=0
+      PATH="$isolated" FM_TIMEOUT_MECHANISM_OVERRIDE= "$bash_path" -c '
+        . "$1"
+        fm_run_timed 5 "$2" -c "$3" _ "$4"
+      ' _ "$ROOT/bin/fm-timeout-lib.sh" "$bash_path" 'if [ "$1" = 137 ]; then kill -KILL "$$"; else exit "$1"; fi' "$expected" > "$tmp/output" 2>&1 || rc=$?
+      expect_code "$expected" "$rc" "$runner must preserve the child status"
+    done
+    rc=0
+    PATH="$isolated" FM_TIMEOUT_MECHANISM_OVERRIDE= "$bash_path" -c '
+      . "$1"
+      fm_run_timed 1 "$2" -e "$3" "$4"
+    ' _ "$ROOT/bin/fm-timeout-lib.sh" "$perl_path" '$SIG{TERM} = "IGNORE"; open my $file, ">", $ARGV[0] or die $!; print $file $$; close $file; sleep 30' "$tmp/child" > "$tmp/output" 2>&1 || rc=$?
+    expect_code 124 "$rc" "$runner must retain the timeout status"
+    child=$(cat "$tmp/child")
+    i=0
+    while [ "$i" -lt 100 ] && kill -0 "$child" 2>/dev/null; do
+      sleep 0.01
+      i=$((i + 1))
+    done
+    if kill -0 "$child" 2>/dev/null; then
+      kill -KILL "$child" 2>/dev/null || true
+      fail "$runner left its TERM-resistant child alive after the bound"
+    fi
+  done
+  pass "real Perl fallback and available external timeout tools preserve success, failure, SIGKILL, and deadlines"
+}
+
+if [ "${1:-}" = timeout-status ]; then
+  test_timeout_fallback_preserves_child_status
+  test_unfinished_root_is_unperformed_not_skipped
+  exit 0
+fi
+
+test_timeout_fallback_preserves_child_status
 test_help_reports_the_complete_interface
 test_list_files_reports_the_shell_inventory
 test_fast_mode_disables_extended_analysis
