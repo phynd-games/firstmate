@@ -1093,21 +1093,24 @@ test_timeout_fallback_preserves_child_status() {
     if [ "$runner" != perl ]; then
       ln -s "$runner_path" "$isolated/$runner"
     fi
-    mechanism=$(PATH="$isolated" FM_TIMEOUT_MECHANISM_OVERRIDE= "$bash_path" -c '
+    # shellcheck disable=SC2016 # Expand positional parameters in the child shell.
+    mechanism=$(PATH="$isolated" FM_TIMEOUT_MECHANISM_OVERRIDE='' "$bash_path" -c '
       . "$1"
       fm_timeout_mechanism
     ' _ "$ROOT/bin/fm-timeout-lib.sh")
     [ "$mechanism" = "$runner" ] || fail "expected real $runner selection, got $mechanism"
     for expected in 0 7 137; do
       rc=0
-      PATH="$isolated" FM_TIMEOUT_MECHANISM_OVERRIDE= "$bash_path" -c '
+      # shellcheck disable=SC2016 # Expand positional parameters and PID in the child shell.
+      PATH="$isolated" FM_TIMEOUT_MECHANISM_OVERRIDE='' "$bash_path" -c '
         . "$1"
         fm_run_timed 5 "$2" -c "$3" _ "$4"
       ' _ "$ROOT/bin/fm-timeout-lib.sh" "$bash_path" 'if [ "$1" = 137 ]; then kill -KILL "$$"; else exit "$1"; fi' "$expected" > "$tmp/output" 2>&1 || rc=$?
       expect_code "$expected" "$rc" "$runner must preserve the child status"
     done
     rc=0
-    PATH="$isolated" FM_TIMEOUT_MECHANISM_OVERRIDE= "$bash_path" -c '
+    # shellcheck disable=SC2016 # Let the child shell and Perl expand their own variables.
+    PATH="$isolated" FM_TIMEOUT_MECHANISM_OVERRIDE='' "$bash_path" -c '
       . "$1"
       fm_run_timed 1 "$2" -e "$3" "$4"
     ' _ "$ROOT/bin/fm-timeout-lib.sh" "$perl_path" '$SIG{TERM} = "IGNORE"; open my $file, ">", $ARGV[0] or die $!; print $file $$; close $file; sleep 30' "$tmp/child" > "$tmp/output" 2>&1 || rc=$?
