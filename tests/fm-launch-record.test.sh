@@ -260,6 +260,75 @@ test_launcher_alive_versus_gone() {
   pass "launch record: launcher liveness is pid plus start identity, never pid alone"
 }
 
+test_unknown_launcher_obligations_are_listed_without_mutation() {
+  local state
+  state=$(new_state unknown-launcher)
+  python3 - "$OWNER" "$state" <<'PYTEST' || fail "unknown launcher reconciliation visibility failed"
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+owner, state = sys.argv[1:]
+base = [sys.executable, owner, '--state', state]
+pid = os.getpid()
+def run(*args, env=None, code=0):
+    result = subprocess.run(base + list(args), env=env, capture_output=True, text=True)
+    assert result.returncode == code, result
+    return result.stdout
+
+identity = run('pid-identity', str(pid)).rstrip('\n')
+assert identity
+proc = pathlib.Path(state) / 'unreadable-identity' / str(pid)
+proc.mkdir(parents=True)
+(proc / 'stat').write_text('')
+(proc / 'cmdline').write_bytes(b'')
+unavailable = dict(os.environ, FM_PROC_ROOT_OVERRIDE=str(proc.parent))
+run('pid-identity', str(pid), env=unavailable, code=1)
+for phase in ('intended', 'created'):
+    for subject in ('--task', '--helper'):
+        for condition in ('missing', 'unavailable', 'alive'):
+            name = phase + '-' + subject[2:] + '-' + condition
+            selection = [subject, name]
+            run('intend', *selection, '--owner', 'tester', '--origin', 'fresh',
+                '--launcher-pid', str(pid), '--launcher-identity', '' if condition == 'missing' else identity)
+            launch = json.loads(run('show', *selection, '--json'))['launch']
+            launch_id = launch['id']
+            assert ('pid_identity_sha256' in launch['launcher']) == (condition != 'missing')
+            if phase == 'created':
+                run('created', *selection, '--launch', launch_id, '--identity', 'pane_id=w1:p1')
+            claim = pathlib.Path(state) / (name + '.claim')
+            claim.write_text(str(pid) + '\n')
+            path = pathlib.Path(state) / (name + '.launch' if subject == '--task' else '.launch-' + name)
+            before = path.read_bytes()
+            claim_before = claim.read_bytes()
+            env = unavailable if condition == 'unavailable' else None
+            expected = 'alive' if condition == 'alive' else 'unknown'
+            check = run('check', *selection, env=env, code=3)
+            assert 'launcher=' + expected in check, check
+            output = run('list', '--reconcile', env=env)
+            lines = [line for line in output.splitlines() if 'launch=' + launch_id + ' ' in line]
+            if condition == 'alive':
+                assert not lines, output
+            else:
+                assert len(lines) == 1, output
+                assert 'launcher=unknown' in lines[0] and 'needs_reconcile=yes' in lines[0], lines
+            run('intend', *selection, '--owner', 'tester', '--origin', 'retry', env=env, code=3)
+            assert path.read_bytes() == before
+            assert claim.read_bytes() == claim_before
+            if phase == 'created':
+                run('ready', *selection, '--launch', launch_id, '--source', 'probe')
+                assert 'launch=' + launch_id + ' ' not in run('list', '--reconcile', env=env)
+            run('fail', *selection, '--launch', launch_id, '--effect', 'unknown', '--reason', 'response lost')
+            required = run('list', '--reconcile', env=env)
+            assert 'launch=' + launch_id + ' ' in required, required
+            run('reconcile', *selection, '--launch', launch_id, '--verdict', 'manual', '--evidence', 'fixture inspected')
+            assert 'launch=' + launch_id + ' ' not in run('list', '--reconcile', env=env)
+PYTEST
+  pass "launch record: unknown unfinished launchers remain visible and unchanged while live launchers stay excluded"
+}
+
 test_pid_identity_parity_with_shell() {
   local sleeper shell_side record_side
   sleep 300 &
@@ -478,6 +547,7 @@ test_launcher_args_capture_caller
 test_uncertain_outcome_keeps_obligation
 test_retained_effect_is_uncertain
 test_launcher_alive_versus_gone
+test_unknown_launcher_obligations_are_listed_without_mutation
 test_pid_identity_parity_with_shell
 test_privacy_allowlist_and_secret_shapes
 test_symlink_and_directory_records_are_refused

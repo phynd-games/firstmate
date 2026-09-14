@@ -1032,7 +1032,7 @@ def cmd_list(args, state: str) -> int:
             continue
         needs_reconcile = opened and (
             launch.get("reconcile", {}).get("required")
-            or (launch.get("phase") in ("intended", "created") and launcher_state(launch) == "gone")
+            or (launch.get("phase") in ("intended", "created") and launcher_state(launch) in ("gone", "unknown"))
         )
         if args.reconcile and not needs_reconcile:
             continue

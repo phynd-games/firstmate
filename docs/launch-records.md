@@ -71,6 +71,7 @@ The launch owners settle an open record only from native evidence, never from th
   An unavailable process identity remains unresolved, and a runner publishes created only with its verified claim identity and digest.
 
 Session start prints one `LAUNCH_RECONCILE:` line per open obligation; the `bootstrap-diagnostics` playbook owns the response.
+Unfinished `intended` and `created` launches are included when their launcher is gone or its identity is unknown; listing preserves the `unknown` label and never settles the launch or changes its claims.
 `bin/fm-launch-record.py --home <home> list --reconcile` prints the same list on demand, and `show --task <id>` or `show --helper <name>` prints one record with its history.
 
 ## What is integrated
