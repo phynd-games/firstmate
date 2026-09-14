@@ -534,6 +534,58 @@ PYTEST
   pass "launch record: successor publication is atomic, retains history, and rejects stale concurrent writers"
 }
 
+test_exact_retention_limits() {
+  local state
+  state=$(new_state retention)
+  python3 - "$OWNER" "$state" <<'PYTEST' || fail "launch retention lost recent outcomes or retained excess history"
+import json
+import subprocess
+import sys
+
+owner, state = sys.argv[1:]
+
+def run(*args):
+    result = subprocess.run([sys.executable, owner, '--state', state, *args],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, (args, result.stdout, result.stderr)
+    return result.stdout
+
+launches = []
+for index in range(11):
+    run('intend', '--task', 'retained', '--owner', 'tester', '--origin', 'fresh')
+    launch = run('get', '--task', 'retained', 'launch.id').strip()
+    launches.append(launch)
+    run('created', '--task', 'retained', '--launch', launch,
+        '--identity', 'backend=herdr', '--identity', 'pane_id=fixture-pane')
+    if index == 10:
+        for event in range(70):
+            run('unready', '--task', 'retained', '--launch', launch,
+                '--reason', f'fixture observation {event}')
+    else:
+        run('stop', '--task', 'retained', '--launch', launch,
+            '--reason', f'fixture stop {index}')
+
+record = json.loads(run('show', '--task', 'retained', '--json'))
+assert record['launch']['id'] == launches[-1]
+assert record['launch']['phase'] == 'created'
+assert len(record['launch']['history']) == 64
+assert [entry['reason'] for entry in record['launch']['history']] == [
+    f'fixture observation {event}' for event in range(6, 70)]
+assert len(record['previous']) == 8
+assert {entry['id'] for entry in record['previous']} == set(launches[2:10])
+assert all(entry['phase'] == 'stopped' for entry in record['previous'])
+assert {entry['outcome']['reason'] for entry in record['previous']} == {
+    f'fixture stop {index}' for index in range(2, 10)}
+PYTEST
+  pass "launch record: retains exactly 64 current events and the last 8 previous launches"
+}
+
+if [ "${1:-}" = retention ]; then
+  test_exact_retention_limits
+  exit 0
+fi
+
+test_exact_retention_limits
 test_atomic_successor_publication
 test_attempt_bound_create_journal
 

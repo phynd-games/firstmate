@@ -10,12 +10,14 @@ Exact task chronology, branch names, temporary homes, local paths, process ids, 
 
 The launch records ([`../launch-records.md`](../launch-records.md)) rely on four native Herdr facts: creation responses carry exact ids, a plain pane reads `agent_not_found`, a reported agent reads a live status on the exact pane, and a closed pane reads `pane_not_found`.
 The opt-in guard checks them against the installed Herdr inside a helper-provisioned lab session and verifies the default session byte-identical afterwards.
+It also exercises foreground activity, delayed starts, attached children, pending input, and a detached process, then invokes the real spawn owner to verify that a present agent-free pane retains its open launch without native mutation.
+The [operator settlement boundary](../launch-records.md#what-the-obligation-does) owns how those observations constrain recovery.
 
 ```sh
 FM_LAUNCH_RECORD_LIVE=1 bash tests/fm-launch-record-herdr-live-e2e.test.sh
 ```
 
-Verified 2026-09-10 on macOS aarch64 with the installed Herdr 0.8.2 (client protocol 20):
+Identity and registration verification excerpt, recorded 2026-09-10 on macOS aarch64 with Herdr 0.8.2 (client protocol 20):
 
 ```text
 herdr: herdr 0.8.2
