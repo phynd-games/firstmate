@@ -10,14 +10,29 @@ permissions:
   contents: read
 
 # Reduced job set: the hosted full-repository Lint job, the two portable
-# parallel behavior shards, the four-way portable serial behavior matrix, and
-# their dependent coverage guard and timing aggregate were retired rather than
-# repaired, because those hosted Linux lanes were failing on every push to
-# main. Their owners remain available for deliberate local use: bin/fm-lint.sh
-# (also run by the no-mistakes pre-push gate) and bin/fm-test-run.sh lanes,
-# --check-coverage and --aggregate-json. Only the inexpensive repository
-# invariants run here.
+# parallel behavior shards, and the four-way portable serial behavior matrix
+# were retired rather than repaired, because those hosted Linux lanes were
+# failing on every push to main. Their owners remain available for deliberate
+# local use: bin/fm-lint.sh (also run by the no-mistakes pre-push gate) and
+# bin/fm-test-run.sh lanes and --aggregate-json. The test-coverage guard below
+# is retained because it passes on hosted runners (it is static and does not
+# depend on the excluded hosted behavior runner jobs), alongside the
+# inexpensive repository invariants.
 jobs:
+  # Deterministic proof that portable parallel shards + portable serial + the
+  # explicit legacy-adapter lane equal the complete tests/*.test.sh inventory
+  # with no missing or duplicates, and that the portable serial CI shards
+  # partition that serial lane exactly. This guard is static (it inspects
+  # bin/fm-test-run.sh's own lane definitions) and does not depend on the
+  # excluded hosted runner jobs above.
+  test-coverage:
+    name: Test coverage guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Prove complete regression partition
+        run: bin/fm-test-run.sh --check-coverage
+
   invariants:
     name: Repo invariants
     runs-on: ubuntu-latest

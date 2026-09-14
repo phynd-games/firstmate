@@ -589,15 +589,24 @@ herdr_load() {
   local err session
   [ "$HERDR_LOADED" -eq 0 ] || return 0
   backend_load || return 1
-  # Bounded preflight before the gateway load. The session is the same ambient selection
-  # fm_backend_herdr_session makes; the adapter is not loaded yet to ask it.
+  # Bounded preflight before the module load. The session is the same ambient
+  # selection fm_backend_herdr_session makes; the adapter is not loaded yet to
+  # ask it. This only proves the native call itself answers within budget -
+  # it never judges eligibility, so a stopped or incompatible server still
+  # reaches herdr_identity's own status/running/compatible checks below with
+  # their own attributed diagnostics, rather than an early generic refusal.
   session=${HERDR_SESSION:-default}
   if ! hs_herdr "$session" status --json >/dev/null 2>&1; then
     HS_HERDR_LOAD_ERROR="could not read herdr status for session '$session' within ${HERDR_CALL_TIMEOUT}s"
     return 1
   fi
+  # Loading must not judge eligibility: fm_backend_source's generic dispatcher
+  # runs its own native capability check at load time, which would read a
+  # stopped or incompatible server as a load failure before herdr_identity's
+  # own bounded native checks and their attributed diagnostics get to run.
   err=$(mktemp "${TMPDIR:-/tmp}/fm-herdr-supervisor-load.XXXXXX" 2>/dev/null) || err=/dev/null
-  if ! FM_BACKEND_HERDR_CALL_TIMEOUT=$HERDR_CALL_TIMEOUT fm_backend_source herdr >/dev/null 2>"$err"; then
+  # shellcheck source=/dev/null
+  if ! . "$SCRIPT_DIR/backends/herdr.sh" 2>"$err"; then
     HS_HERDR_LOAD_ERROR=$(sed -n '1p' "$err" 2>/dev/null || printf '')
     [ "$err" = /dev/null ] || rm -f "$err"
     return 1

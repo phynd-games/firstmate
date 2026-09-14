@@ -429,14 +429,18 @@ claim_alarm_loop_test() (
     printf "%s\n" "${BASHPID:-$$}" > "$STATE/loop-test-pid"
     LOOP_GENERATION=fixture
     IDLE_INTERVAL=123
-    step=0
     loop_launch_wait() { return 0; }
     sleep() {
       if [ "$1" != 123 ]; then command sleep "$@"; return; fi
-      step=$((step + 1))
-      touch "$STATE/paused-$step"
+      # loop_sleep backgrounds this call (bin/fm-herdr-supervisor.sh), forking
+      # a fresh subshell on every idle cycle, so a shell-variable step counter
+      # would never see its own prior increment and would re-touch paused-1
+      # forever. Derive the step from durable paused-N markers instead.
+      local n=1
+      while [ -e "$STATE/paused-$n" ]; do n=$((n + 1)); done
+      touch "$STATE/paused-$n"
       deadline=$(( $(date +%s) + 30 ))
-      while [ ! -e "$STATE/resume-$step" ]; do
+      while [ ! -e "$STATE/resume-$n" ]; do
         [ "$(date +%s)" -lt "$deadline" ] || exit 1
         command sleep 0.05
       done
@@ -965,7 +969,7 @@ claim_alarm_loop_arrival_test() (
       original_claim_acquire "$@"
     }
     sleep() {
-      if [ "$1" = 123 ]; then exit 0; fi
+      if [ "$1" = 123 ]; then touch "$STATE/idle-reached"; return 0; fi
       command sleep "$@"
     }
     cmd_run
@@ -982,7 +986,14 @@ claim_alarm_loop_arrival_test() (
     while :; do sleep 0.05; done
   ' > "$home/owner.out" 2>&1 &
   owner_pid=$!
-  wait "$loop_pid" || fail "the loop failed during owner arrival: $(cat "$home/loop.out")"
+  # loop_sleep backgrounds the interval sleep so a real TERM lands at once
+  # (see bin/fm-herdr-supervisor.sh), so the mocked sleep above cannot exit
+  # the whole probe from that background job; it marks arrival instead and
+  # this driver ends the loop explicitly once it observes that mark.
+  wait_for 10 test -e "$home/state/idle-reached" \
+    || fail "the loop did not reach an idle sleep after owner arrival: $(cat "$home/loop.out")"
+  kill "$loop_pid"
+  wait "$loop_pid" 2>/dev/null
   loop_pid=
   assert_absent "$home/state/.wake-queue" "a live owner arriving before arming raised a false alarm"
   assert_absent "$home/state/.herdr-supervisor-alarm" "a live owner arriving before arming raised an emergency"
@@ -1748,7 +1759,27 @@ assert_contains "$out" "could not read herdr status" "the bound is reported as a
 assert_present "$HOME13D/state/.herdr-supervisor-alarm" "a hanging Herdr CLI leaves a durable alarm"
 pass "a hanging Herdr CLI is bounded and can never wedge the caller"
 
-for probe_failure in hang-version-status hang-session-status hang-session-list session-list-fails; do
+# herdr_load's own bounded preflight (hs_herdr status --json, scoped) proves the
+# native gateway answers within budget, then loads the module with a plain
+# source instead of the generic fm_backend_source dispatcher, so the
+# dispatcher's own unscoped version-status probe never runs at all -
+# herdr_identity's bounded, attributed status/session-list calls below are the
+# only native calls this path makes. hang-version-status therefore has no
+# remaining trigger point: proven separately, not folded into the loop below.
+NOVERSION_HOME=$(new_home no-unscoped-version-probe)
+make_arm_stub "$NOVERSION_HOME/arm.sh" ok
+fm_write_meta "$NOVERSION_HOME/state/noversion-task.meta" "window=firstmate:fm-noversion-task"
+: > "$NOVERSION_HOME/fakestate/hang-version-status"
+noversion_start=$(date +%s)
+out=$(FM_HERDR_SUPERVISOR_HERDR_TIMEOUT=1 run_supervisor "$NOVERSION_HOME" "$FAKEBIN" ensure 2>&1) \
+  || fail "an unscoped-only hang trigger unexpectedly refused establish: $out"
+noversion_elapsed=$(( $(date +%s) - noversion_start ))
+[ "$noversion_elapsed" -lt 15 ] || fail "hang-version-status wedged ensure for ${noversion_elapsed}s despite no unscoped probe"
+assert_absent "$NOVERSION_HOME/fakestate/hung-pids" "an unscoped-only hang trigger was somehow reached"
+pass "hang-version-status has no remaining trigger: no unscoped native probe runs, so establish proceeds normally"
+stop_loop "$NOVERSION_HOME"
+
+for probe_failure in hang-session-status hang-session-list session-list-fails; do
   PROBE_HOME=$(new_home "$probe_failure")
   make_arm_stub "$PROBE_HOME/arm.sh" ok
   fm_write_meta "$PROBE_HOME/state/probe-task.meta" "window=firstmate:fm-probe-task"
@@ -1761,7 +1792,15 @@ for probe_failure in hang-version-status hang-session-status hang-session-list s
   [ "$probe_rc" -eq 1 ] || fail "$probe_failure returned $probe_rc instead of a hosting refusal: $out"
   [ "$probe_elapsed" -lt 15 ] || fail "$probe_failure wedged ensure for ${probe_elapsed}s"
   assert_present "$PROBE_HOME/fakestate/completed-status" "the status preflight did not finish before $probe_failure"
-  assert_contains "$out" "capability check failed" "$probe_failure lost the gateway refusal diagnostic"
+  # herdr_identity owns every diagnostic now (no generic-dispatcher refusal
+  # runs at load time; see the herdr_load comment above), so each native call
+  # that times out is reported with its own attributed message instead of a
+  # shared "capability check failed" line.
+  if [ "$probe_failure" = hang-session-status ]; then
+    assert_contains "$out" "could not read herdr status" "$probe_failure lost the attributed status-read diagnostic"
+  else
+    assert_contains "$out" "could not list herdr sessions" "$probe_failure lost the attributed session-list diagnostic"
+  fi
   assert_not_contains "$out" "not eligible" "$probe_failure was treated as silent ineligibility"
   assert_present "$PROBE_HOME/state/.herdr-supervisor-alarm" "$probe_failure left no durable alarm"
   assert_absent "$PROBE_HOME/state/.herdr-supervisor" "$probe_failure published a supervisor binding"
