@@ -88,6 +88,7 @@ session=default
 if [ "${1:-}" = --session ]; then session=$2; shift 2; fi
 case "${1:-} ${2:-}" in
   'status --json')
+    [ "${FM_FAKE_HERDR_CAPABILITY_FAILURE:-0}" != 1 ] || exit 1
     printf '%s\n' '{"client":{"version":"0.8.2","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}' ;;
   'session list')
     printf '{"sessions":[{"name":"%s","running":true}]}\n' "$session" ;;
@@ -159,10 +160,11 @@ reset_fakes() {
   FM_FAKE_BUSY=0
   FM_FAKE_BUSY_TEXT=
   FM_FAKE_HERDR_UNREADABLE=0
+  FM_FAKE_HERDR_CAPABILITY_FAILURE=0
   FM_FAKE_HERDR_AGENT_STATUS=""
   FM_FAKE_CI_LOGS=""
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT
-  export FM_FAKE_HERDR_UNREADABLE FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
+  export FM_FAKE_HERDR_UNREADABLE FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS FM_FAKE_HERDR_CAPABILITY_FAILURE
 }
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
@@ -1006,6 +1008,7 @@ test_no_run_idle_secondmate_resolved_event_not_state() {
   printf 'blocked: waiting on infra\nresolved: infra access granted\n' > "$d/state/mate.status"
   out=$(run_crew_state "$d" mate)
   assert_contains "$out" "source: none" "a bare resolved: is not a state source either"
+  assert_contains "$out" "not proof of death" "a live idle secondmate without a state log has not departed"
   assert_not_contains "$out" "infra access granted" "bare resolution prose must not leak into the detail"
   # Control: a genuine trailing state verb still renders from the log.
   printf 'working: reconciling routed items\n' > "$d/state/mate.status"
@@ -1013,6 +1016,22 @@ test_no_run_idle_secondmate_resolved_event_not_state() {
   assert_contains "$out" "state: working" "a real trailing state verb still renders"
   assert_contains "$out" "reconciling routed items" "a real state line still carries its detail"
   pass "a trailing resolved: event does not corrupt state render (idle stays idle)"
+}
+
+test_capability_failure_is_not_departure() {
+  reset_fakes
+  local d out
+  d=$(new_case capability-failure)
+  make_repo_on_branch "$d/wt" fm/capability-failure
+  make_fakebin "$d" >/dev/null
+  write_crew_meta "$d/state/capability.meta" "$d/wt" "kind=ship"
+  FM_FAKE_HERDR_CAPABILITY_FAILURE=1
+  out=$(run_crew_state "$d" capability 2>/dev/null)
+  expect_code 0 "$?" "capability failure should emit a canonical unknown state"
+  assert_contains "$out" "state: unknown" "capability failure must not invent worker state"
+  assert_contains "$out" "source: backend-identity" "capability failure prevents endpoint identity validation"
+  assert_contains "$out" "not proof of death" "capability failure must not prove departure"
+  pass "failed capability preflight emits inconclusive evidence"
 }
 
 test_unreadable_pane_ignores_stale_status_log() {
@@ -1029,6 +1048,7 @@ test_unreadable_pane_ignores_stale_status_log() {
   assert_contains "$out" "state: unknown" "unreadable pane -> unknown"
   assert_contains "$out" "source: none" "unreadable pane -> none source"
   assert_not_contains "$out" "source: status-log" "unreadable pane does not reuse stale log"
+  assert_contains "$out" "not proof of death" "capture failure must not prove departure"
   pass "unreadable pane ignores stale status log"
 }
 
@@ -1671,6 +1691,7 @@ test_no_run_idle_pane_paused
 test_no_run_idle_pane_custom_paused_verb
 test_no_run_idle_secondmate_resolved_event_not_state
 test_unreadable_pane_ignores_stale_status_log
+test_capability_failure_is_not_departure
 test_unreadable_pane_still_reports_terminal_run_step
 test_unreadable_pane_still_reports_active_run_step
 test_no_timeout_uses_perl_bound

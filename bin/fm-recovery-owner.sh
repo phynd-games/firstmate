@@ -350,10 +350,6 @@ cmd_status() {
   return 1
 }
 
-_home_slug() {
-  printf '%s' "$FM_HOME" | LC_ALL=C tr -c 'A-Za-z0-9' '-' | sed 's/-\{2,\}/-/g; s/^-//; s/-$//'
-}
-
 _home_hash() {
   local digest
   if command -v sha256sum >/dev/null 2>&1; then
@@ -396,11 +392,15 @@ _systemd_name() {
 }
 
 _launchd_label() {
-  printf 'com.firstmate.recovery-owner.%s' "$(_home_slug)"
+  local hash
+  hash=$(_home_hash) || return 1
+  printf 'com.firstmate.recovery-owner.%s' "$hash"
 }
 
 _launchd_plist_path() {
-  printf '%s/Library/LaunchAgents/%s.plist' "${HOME:?}" "$(_launchd_label)"
+  local label
+  label=$(_launchd_label) || return 1
+  printf '%s/Library/LaunchAgents/%s.plist' "${HOME:?}" "$label"
 }
 
 _systemd_unit_path() {
@@ -415,8 +415,8 @@ cmd_install() {
   case "$platform" in
     Darwin)
       local label plist
-      label=$(_launchd_label)
-      plist=$(_launchd_plist_path)
+      label=$(_launchd_label) || return 1
+      plist=$(_launchd_plist_path) || return 1
       mkdir -p "$(dirname "$plist")" 2>/dev/null || { echo "fm-recovery-owner: could not create $(dirname "$plist")" >&2; return 1; }
       cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -490,8 +490,8 @@ cmd_uninstall() {
   case "$platform" in
     Darwin)
       local label plist
-      label=$(_launchd_label)
-      plist=$(_launchd_plist_path)
+      label=$(_launchd_label) || return 1
+      plist=$(_launchd_plist_path) || return 1
       if [ -f "$plist" ]; then
         "${FM_LAUNCHCTL:-launchctl}" unload "$plist" 2>/dev/null || true
         rm -f "$plist"

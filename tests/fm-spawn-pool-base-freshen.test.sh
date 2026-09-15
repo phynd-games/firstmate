@@ -133,7 +133,7 @@ test_unreachable_origin_refuses_stale_pool_base() {
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
   [ "$status" -ne 0 ] || fail "spawn succeeded despite an unreachable origin"
-  assert_contains "$out" "could not fetch origin" \
+  assert_contains "$out" "does not resolve to its recorded SHA" \
     "spawn did not clearly refuse an unreachable origin"
   after=$(git -C "$POOL_DIR" rev-parse HEAD)
   [ "$after" = "$before" ] || fail "spawn changed the pooled worktree after origin became unreachable"
@@ -483,9 +483,33 @@ test_local_approved_refs_need_no_remote() {
 }
 
 
+test_cached_approved_remote_is_preserved() {
+  local mode id rec approved out
+  for mode in advanced offline; do
+    id="pool-cached-$mode"
+    rec=$(make_case "cached-$mode" "$id")
+    read_case_record "$rec"
+    git -C "$PROJECT_DIR" fetch --quiet origin main
+    approved=$(git -C "$POOL_DIR" rev-parse origin/main)
+    [ "$(git -C "$PROJECT_DIR" rev-parse main)" != "$approved" ] || fail "local main must differ from the approval"
+    git -C "$CASE_DIR/publisher" -c user.name=Tests -c user.email=tests@example.invalid commit --quiet --allow-empty -m advance-again
+    git -C "$CASE_DIR/publisher" push --quiet origin main
+    [ "$(git -C "$CASE_DIR/publisher" rev-parse HEAD)" != "$approved" ] || fail "upstream must advance beyond the approval"
+    if [ "$mode" = offline ]; then
+      git -C "$PROJECT_DIR" remote set-url origin "file://$CASE_DIR/missing-origin.git"
+    fi
+    out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+    expect_code 0 "$?" "cached approved base should launch with origin $mode: $out"
+    [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$approved" ] || fail "spawn lost its frozen approval"
+    [ "$(git -C "$POOL_DIR" rev-parse origin/main)" = "$approved" ] || fail "spawn overwrote the cached approved ref"
+  done
+  pass "cached remote approvals survive upstream advancement and offline launch"
+}
+
 test_stale_pool_base_refreshes_before_branching
 test_non_main_default_branch_refreshes_before_branching
 test_local_approved_refs_need_no_remote
+test_cached_approved_remote_is_preserved
 test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work
 test_missing_approved_base_refuses_ship

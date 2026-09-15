@@ -1038,31 +1038,36 @@ test_findings_scalar_accepts_mixed_awaiting_autofix() {
   # closes a real, reproducible gap rather than describing an unchanged input
   # as both accepted and rejected.
   local base_verdict
-  base_verdict=$(
-    set -eu
-    tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
-    git -C "$ROOT" show fe601e80363dca6469775ca98ad0643071fb48f3:bin/fm-validation-loop-lib.sh \
-      > "$tmp/fm-validation-loop-lib.sh"
-    git -C "$ROOT" show fe601e80363dca6469775ca98ad0643071fb48f3:bin/fm-nm-run-lib.sh \
-      > "$tmp/fm-nm-run-lib.sh"
-    cd "$tmp"
-    # shellcheck disable=SC1091
-    . ./fm-nm-run-lib.sh
-    _FM_VLOOP_LIB_DIR=.
-    # shellcheck disable=SC1091
-    . ./fm-validation-loop-lib.sh
-    content='run:
+  if git -C "$ROOT" cat-file -e fe601e80363dca6469775ca98ad0643071fb48f3:bin/fm-validation-loop-lib.sh 2>/dev/null &&
+    git -C "$ROOT" cat-file -e fe601e80363dca6469775ca98ad0643071fb48f3:bin/fm-nm-run-lib.sh 2>/dev/null; then
+    base_verdict=$(
+      set -eu
+      tmp=$(mktemp -d)
+      trap 'rm -rf "$tmp"' EXIT
+      git -C "$ROOT" show fe601e80363dca6469775ca98ad0643071fb48f3:bin/fm-validation-loop-lib.sh \
+        > "$tmp/fm-validation-loop-lib.sh"
+      git -C "$ROOT" show fe601e80363dca6469775ca98ad0643071fb48f3:bin/fm-nm-run-lib.sh \
+        > "$tmp/fm-nm-run-lib.sh"
+      cd "$tmp"
+      # shellcheck disable=SC1091
+      . ./fm-nm-run-lib.sh
+      _FM_VLOOP_LIB_DIR=.
+      # shellcheck disable=SC1091
+      . ./fm-validation-loop-lib.sh
+      content='run:
   id: "01RUN"
   branch: fm/loop
   status: running
   head: "abc1234"
   pr: ""
   findings: 15 awaiting, 3 auto-fix'
-    if _fm_vloop_findings_valid "$content"; then printf accepted; else printf rejected; fi
-  )
-  [ "$base_verdict" = rejected ] \
-    || fail "the counterfactual did not reproduce the original rejection on the unpatched base commit (got: $base_verdict) - the acceptance case above would then prove nothing"
+      if _fm_vloop_findings_valid "$content"; then printf accepted; else printf rejected; fi
+    )
+    [ "$base_verdict" = rejected ] \
+      || fail "the counterfactual did not reproduce the original rejection on the unpatched base commit (got: $base_verdict) - the acceptance case above would then prove nothing"
+  else
+    printf 'skip - historical findings counterfactual: Git objects unavailable\n'
+  fi
 
   # Malformed near-misses must still reject - the acceptance is exact, not a
   # loosened regex.
@@ -1088,7 +1093,7 @@ test_findings_scalar_accepts_mixed_awaiting_autofix() {
   if fm_vloop_observe "$state3" foreign "$ev3"; then rc=0; else rc=$?; fi
   [ "$rc" -eq 2 ] || fail "a valid findings scalar spliced into a foreign/duplicated run block was accepted (rc=$rc)"
 
-  pass "findings scalar: quoted and unquoted mixed awaiting/auto-fix accepted (proven against the unpatched base commit), malformed and foreign-run evidence still rejected"
+  pass "findings scalar: quoted and unquoted mixed awaiting/auto-fix accepted, malformed and foreign-run evidence still rejected"
 }
 
 # Regression for the same reconciliation's second finding: once evidence is
@@ -1441,6 +1446,7 @@ test_watcher_surfaces_signal_validation_loop_limit() {
 }
 
 case "${1:-}" in
+  --mixed-findings-only) test_findings_scalar_accepts_mixed_awaiting_autofix; exit $? ;;
   --findings-only) test_findings_grammar_accepts_real_daemon_output; exit $? ;;
   --watcher-limits-only)
     test_watcher_surfaces_validation_loop_limit

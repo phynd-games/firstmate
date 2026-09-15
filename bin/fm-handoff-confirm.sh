@@ -122,7 +122,12 @@ record_digest() {  # <record-path>
 }
 
 crew_state_line() {  # <task> -> the full deterministic current-state line
-  "$SCRIPT_DIR/fm-crew-state.sh" "$1" 2>/dev/null || printf 'state: unknown · source: none · crew-state read failed'
+  local line
+  if line=$("$SCRIPT_DIR/fm-crew-state.sh" "$1" 2>/dev/null) && [ -n "$line" ]; then
+    printf '%s\n' "$line"
+  else
+    printf 'state: unknown · source: none · crew-state read failed (not proof of death)\n'
+  fi
 }
 
 state_token() {  # <crew-state-line>

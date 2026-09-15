@@ -119,9 +119,9 @@ if [ -z "$REMOTE_HOST" ]; then
   TASK_BACKEND=$(fm_backend_meta_recorded_backend "$META" 2>/dev/null || true)
   case "$TASK_BACKEND" in
     herdr)
-      fm_backend_validate_task_endpoint "$META" "$ID" || exit $?
+      fm_backend_validate_task_endpoint "$META" "$ID" || emit unknown backend-identity "task endpoint identity could not be verified (not proof of death)"
       TASK_TARGET=$FM_BACKEND_VALIDATED_TARGET
-      fm_backend_herdr_capability_preflight "crew state task $ID" "${TASK_TARGET%%:*}" || exit $?
+      fm_backend_herdr_capability_preflight "crew state task $ID" "${TASK_TARGET%%:*}" || emit unknown herdr-capability "Herdr capability is unavailable (not proof of death)"
       ;;
     absent|tmux|zellij|orca|cmux)
       emit unknown legacy-backend "legacy-record: backend=${TASK_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
@@ -669,8 +669,8 @@ fi
 # liveness, so a finished-but-pane-closed crew never reaches here. Down here there
 # is no run to consult, so a dead/unreadable target means the crew is gone: report
 # unknown rather than trusting a possibly-stale status log as the current state.
-[ -n "$BACKEND_TARGET" ] || emit unknown none "no backend target recorded"
-pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACKEND_TARGET"
+[ -n "$BACKEND_TARGET" ] || emit unknown none "no backend target recorded (not proof of death)"
+pane_readable "$BACKEND_TARGET" || emit unknown none "backend target unreadable: $BACKEND_TARGET (not proof of death)"
 
 # Secondmates idle on their own watcher (idle pane = healthy), so the busy
 # state is not meaningful for them; read their state from the status log only.
@@ -712,4 +712,4 @@ if [ -n "$LOG_VERB" ]; then
   fi
 fi
 
-emit unknown none "no current-state source available"
+emit unknown none "no current-state source available (not proof of death)"

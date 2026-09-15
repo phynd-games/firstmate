@@ -22,7 +22,7 @@ TMP_ROOT=$(fm_test_tmproot fm-handoff-confirm)
 
 PARKED='state: parked · source: run-step · parked at review: 3 finding(s) (ask-user: authority decision)'
 WORKING='state: working · source: run-step · validating (fixing)'
-GONE='state: unknown · source: none · no current-state source available'
+GONE='state: unknown · source: none · no metadata for echo1'
 
 # new_world <name>: a home with a fixed bin root whose crew-state read is a stub
 # reading one file, so a case can move the worker's state between calls.
@@ -37,6 +37,7 @@ new_world() {  # <name> -> "<root>|<home>|<state-file>"
   cat > "$root/bin/fm-crew-state.sh" <<'SH'
 #!/usr/bin/env bash
 cat "${FM_FAKE_CREW_STATE:?}"
+[ ! -f "$FM_FAKE_CREW_STATE.exit" ] || exit "$(cat "$FM_FAKE_CREW_STATE.exit")"
 SH
   chmod +x "$root/bin"/*.sh
   printf '%s\n' "$PARKED" > "$w/crew-state"
@@ -236,6 +237,37 @@ EOF
   assert_contains "$out" "could not be proven" \
     "the failure did not say the start could not be proven"
   pass "validation evidence that stays unreadable through the whole window is unconfirmed - never death, never a false start"
+}
+
+test_unreadable_state_preserves_observation_window() {
+  local mode rec root home crew record out status started elapsed
+  for mode in capture capability failure empty; do
+    rec=$(new_world "read-$mode")
+    IFS='|' read -r root home crew <<EOF
+$rec
+EOF
+    record=$(seed_task "$home" read-failure)
+    hc "$root" "$home" "$crew" register --task read-failure --record "$record" >/dev/null || fail "register failed"
+    acknowledge "$home" read-failure "$record"
+    case "$mode" in
+      capture) printf 'state: unknown · source: none · backend target unreadable (not proof of death)\n' > "$crew" ;;
+      capability) printf 'state: unknown · source: herdr-capability · Herdr capability is unavailable (not proof of death)\n' > "$crew" ;;
+      failure)
+        printf '%s\n' "$WORKING" > "$crew"
+        printf '2\n' > "$crew.exit"
+        ;;
+      empty) : > "$crew" ;;
+    esac
+    status=0
+    started=$(date +%s)
+    out=$(hc "$root" "$home" "$crew" confirm --task read-failure --record "$record" --timeout 2 --poll 1 --no-rering 2>&1) || status=$?
+    elapsed=$(( $(date +%s) - started ))
+    expect_code 3 "$status" "$mode must remain unconfirmed: $out"
+    [ "$elapsed" -ge 2 ] || fail "$mode skipped the observation window"
+    assert_contains "$out" "could not be proven" "$mode must remain inconclusive"
+    assert_not_contains "$out" "went away" "$mode must not prove departure"
+  done
+  pass "capture, capability, failed, and empty reads preserve the observation window"
 }
 
 test_unknown_evidence_confirms_once_a_real_start_is_observed() {
@@ -499,6 +531,7 @@ test_wrong_message_bytes_are_refused
 test_expectation_mismatch_is_refused_at_registration
 test_departed_worker_fails_immediately
 test_persistent_unknown_evidence_is_unconfirmed_not_dead
+test_unreadable_state_preserves_observation_window
 test_unknown_evidence_confirms_once_a_real_start_is_observed
 test_unknown_to_concrete_state_preserves_handoff_modes
 test_delayed_acknowledgement_still_confirms

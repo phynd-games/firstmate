@@ -129,6 +129,29 @@ exec {shlex.quote(sleep_bin)} "$@"
     assert not plist_path.exists()
     print('ok - launchd plist round-trips special paths and supplies the supervisor PATH', flush=True)
 
+    launch_dir = user_home / 'Library/LaunchAgents'
+    collision_homes = [tmp / 'a-b', tmp / 'a/b']
+    for collision_home in collision_homes:
+        collision_home.mkdir(parents=True)
+        run('install', {'TEST_PLATFORM': 'Darwin', 'FM_HOME': str(collision_home),
+                        'FM_STATE_OVERRIDE': str(collision_home / 'state')})
+    agents = {plistlib.loads(path.read_bytes())['EnvironmentVariables']['FM_HOME']: path
+              for path in launch_dir.glob('*.plist')}
+    assert set(agents) == {str(path) for path in collision_homes}
+    labels = [plistlib.loads(path.read_bytes())['Label'] for path in agents.values()]
+    assert len(set(labels)) == 2
+    mac_alias = tmp / 'mac-home-alias'
+    mac_alias.symlink_to(collision_homes[0])
+    run('install', {'TEST_PLATFORM': 'Darwin', 'FM_HOME': str(mac_alias),
+                    'FM_STATE_OVERRIDE': str(collision_homes[0] / 'state')})
+    assert len(list(launch_dir.glob('*.plist'))) == 2
+    run('uninstall', {'TEST_PLATFORM': 'Darwin', 'FM_HOME': str(mac_alias),
+                      'FM_STATE_OVERRIDE': str(collision_homes[0] / 'state')})
+    remaining_agent, = launch_dir.glob('*.plist')
+    assert remaining_agent == agents[str(collision_homes[1])]
+    assert 'unload ' + str(agents[str(collision_homes[0])]) in (user_home / 'manager.log').read_text().splitlines()
+    print('ok - launchd names isolate formerly colliding homes and canonicalize aliases', flush=True)
+
     run('install', {'TEST_PLATFORM': 'Linux'})
     unit_dir = user_home / '.config/systemd/user'
     unit, = unit_dir.glob('*.service')
