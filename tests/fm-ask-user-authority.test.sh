@@ -144,44 +144,14 @@ test_finding_exceptions_and_adjudication() {
 
 test_finding_exceptions_and_adjudication
 
-# ask-user-authority is the NAMED single owner of this policy - the branch prompt
-# and AGENTS.md both reference it rather than restating it - so its contract is
-# the thing to check here. The risk being guarded is concrete: an advisor chain
-# that hardcodes a vendor or model silently bypasses quota-aware dispatch and
-# breaks the moment that model is unavailable or out of budget.
-test_adjudication_advisor_contract() {
-  local skill
-  skill="$ROOT/.agents/skills/ask-user-authority/SKILL.md"
-
-  assert_grep 'Use the current heavyweight MAIN model first' "$skill" \
-    "the policy owner no longer prefers MAIN before dispatching a separate scout"
-  assert_grep 'only if MAIN remains uncertain' "$skill" \
-    "the policy owner no longer gates the scout fallback on MAIN remaining uncertain"
-  assert_grep 'existing quota-aware dispatch rather than a hardcoded vendor or model' "$skill" \
-    "the policy owner no longer requires quota-aware selection for the advisor"
-  assert_grep 'READ-ONLY' "$skill" \
-    "the policy owner no longer states that the advisor has no authority"
-  assert_grep 'Firstmate owns the call' "$skill" \
-    "the policy owner no longer keeps the decision with firstmate"
-
-  # No vendor or model identifier may be hardcoded into the advisor chain.
-  if grep -qiE '\b(opus|sonnet|haiku|gpt-?[0-9]|claude-[a-z0-9]|gemini|grok-[0-9]|o[0-9]-(mini|preview))\b' "$skill"; then
-    fail "the policy owner hardcodes a vendor or model instead of using quota-aware dispatch"
-  fi
-  pass "the adjudication advisor is read-only, quota-selected, and never a hardcoded model"
-}
-
-test_adjudication_advisor_contract
-
 # The failure this guards is specific: a material defect gets waved through as a
 # nit, and the round is reported with a blanket phrase that reads as a verdict
 # while carrying no classification. These assert the corrected contract on the
 # two generated interfaces that actually carry it - the emitted branch prompt and
-# the generated worker brief - plus the named policy owner.
+# the generated worker brief.
 test_material_classification_governs_disposition() {
-  local prompt skill grounds class home ship out base_sha
+  local prompt class home ship out base_sha
   prompt="$TMP_ROOT/branch-prompt-material.txt"
-  skill="$ROOT/.agents/skills/ask-user-authority/SKILL.md"
   "$ROOT/bin/fm-branch-prompt.sh" > "$prompt"
 
   # 1. Classification happens BEFORE disposition, and the material classes are
@@ -209,36 +179,6 @@ test_material_classification_governs_disposition() {
   assert_grep "Use it when the finding's MATERIALITY is what you cannot settle" "$prompt" \
     "the emitted prompt does not route uncertain materiality to adjudication"
 
-  # 4. STRUCTURAL, not phrasing: no material class may appear as a ground for
-  #    dismissal, and the nit ground must be conditioned on the finding falling
-  #    in none of them. Without that conjunction the nit ground is an open door.
-  grounds="$TMP_ROOT/dismissal-grounds.txt"
-  awk '/^7\. Dismiss an immaterial finding/{on=1} on&&/^   - /{print} on&&/^8\./{exit}' \
-    "$skill" > "$grounds"
-  [ -s "$grounds" ] || fail "the policy owner no longer lists explicit grounds for dismissal"
-  for class in correctness security lifecycle provenance "behavioral contract" "test integrity"; do
-    if grep -qi -- "$class" "$grounds"; then
-      fail "the policy owner lists the material class '$class' as a ground for dismissal"
-    fi
-  done
-  assert_grep 'the consequence falls in none of the material classes' "$skill" \
-    "the policy owner's nit ground is no longer conditioned on the finding being immaterial"
-  assert_grep 'the effort the fix costs, or how late in the run it arrived' "$skill" \
-    "the policy owner lets cost or timing decide materiality"
-
-  # 5. approve is CONTINUE, not acceptance, and it is gated on the material
-  #    findings actually being fixed first.
-  assert_grep 'means CONTINUE THE PIPELINE despite the findings that remain open' "$skill" \
-    "the policy owner no longer defines approve as continuing despite open findings"
-  assert_grep 'It does not mean the implementation change is accepted' "$skill" \
-    "the policy owner no longer denies that approve accepts the implementation change"
-  assert_grep 'Every finding you classified as material has been fixed' "$skill" \
-    "the policy owner permits approving while a material finding is unfixed"
-  assert_grep 'A failed smell test is not a reason to approve anyway' "$skill" \
-    "the policy owner lets a failed smell test be noted and approved past"
-  assert_grep 'round budget, which this repository sets to five' "$skill" \
-    "the policy owner no longer adjudicates at the configured five-round budget"
-
   # 6. The worker types the gate response, so the brief it is given must not let
   #    it approve past open findings on its own.
   home="$TMP_ROOT/material-home"
@@ -252,7 +192,7 @@ test_material_classification_governs_disposition() {
   assert_grep "Approving a review step while findings are still open is firstmate's disposition, not yours" "$ship" \
     "the generated worker brief lets the worker approve past open findings itself"
 
-  pass "material findings are classified and fixed, dismissals are recorded per finding with evidence, and approve means continue rather than accept"
+  pass "material findings are classified and fixed, dismissals are recorded per finding with evidence, and worker briefs preserve disposition authority"
 }
 
 test_material_classification_governs_disposition

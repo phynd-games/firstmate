@@ -458,8 +458,34 @@ test_stale_pin_beside_other_dirt_reports_one_verdict() {
   pass "a stale pin beside other dirt yields the conservative refusal alone, with no stale-pin line"
 }
 
+test_local_approved_refs_need_no_remote() {
+  local kind id rec out ref
+  for kind in sha tag branch; do
+    id="pool-local-$kind"
+    rec=$(make_case "local-$kind" "$id")
+    read_case_record "$rec"
+    git -C "$PROJECT_DIR" remote remove origin
+    case "$kind" in
+      sha) ref=$INITIAL_SHA ;;
+      tag)
+        ref=approved-tag
+        git -C "$PROJECT_DIR" tag "$ref" "$INITIAL_SHA"
+        ;;
+      branch) ref=main ;;
+    esac
+    write_exempt_brief "$HOME_DIR" "$id"
+    printf '%s\n' "Target-project approved base: ref=$ref; sha=$INITIAL_SHA" >> "$HOME_DIR/data/$id/brief.md"
+    out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+    expect_code 0 "$?" "local $kind approval should launch without origin: $out"
+    [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$INITIAL_SHA" ] || fail "local $kind approval moved off its exact SHA"
+  done
+  pass "local SHA, tag, and branch approvals work without origin"
+}
+
+
 test_stale_pool_base_refreshes_before_branching
 test_non_main_default_branch_refreshes_before_branching
+test_local_approved_refs_need_no_remote
 test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work
 test_missing_approved_base_refuses_ship

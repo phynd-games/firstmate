@@ -1159,7 +1159,7 @@ test_unreadable_validation_evidence_is_not_worded_as_death() {
   local d; d=$(new_case unreadable-not-death)
   make_repo_on_branch "$d/wt" fm/feat-unread
   make_fakebin "$d" >/dev/null
-  fm_write_meta "$d/state/unread.meta" "window=fm:fm-unread" "worktree=$d/wt" "kind=ship"
+  write_crew_meta "$d/state/unread.meta" "$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_malformed_findings fm/feat-unread)"
   local out; out=$(run_crew_state "$d" unread)
   assert_contains "$out" "state: unknown" "unreadable validation evidence -> unknown"

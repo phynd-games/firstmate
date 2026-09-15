@@ -559,6 +559,24 @@ install_no_mistakes() {
     | /bin/sh
 }
 
+install_herdr() {
+  case "$DEV_OS" in
+    darwin)
+      command -v brew >/dev/null 2>&1 || die 'Homebrew is unavailable; rerun phynd-dev switch first'
+      brew install herdr || return 1
+      ;;
+    linux)
+      if ! command -v herdr >/dev/null 2>&1 || ! herdr --version >/dev/null 2>&1; then
+        command -v curl >/dev/null 2>&1 || die 'curl is required to install Herdr'
+        curl -fsSL https://herdr.dev/install.sh | HOME="$DEV_HOME" sh || return 1
+        refresh_path
+      fi
+      ;;
+  esac
+  command -v herdr >/dev/null 2>&1 || die 'Herdr installation completed but herdr is not on PATH'
+  herdr --version >/dev/null 2>&1 || die 'Herdr installation completed but herdr cannot run'
+}
+
 install_nix_tool() {
   activate >/dev/null
 }
@@ -571,10 +589,7 @@ install_tool() {
   fi
   case "$tool" in
     no-mistakes) install_no_mistakes ;;
-    herdr)
-      command -v brew >/dev/null 2>&1 || die 'Homebrew is unavailable; rerun phynd-dev switch first'
-      brew install herdr
-      ;;
+    herdr) install_herdr ;;
     wezterm)
       command -v brew >/dev/null 2>&1 || die 'Homebrew is unavailable; rerun phynd-dev switch first'
       brew install --cask wezterm
@@ -596,6 +611,9 @@ install_firstmate_tools() {
   for tool in pi gnhf gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi; do
     install_npm_tool "$tool" || return 1
   done
+  if ! command -v herdr >/dev/null 2>&1 || ! herdr --version >/dev/null 2>&1; then
+    install_herdr || return 1
+  fi
   install_no_mistakes || return 1
   for tool in gh-axi chrome-devtools-axi lavish-axi; do
     if [ -x "$DEV_NPM_PREFIX/bin/$tool" ]; then
@@ -668,6 +686,8 @@ reconcile() {
   refresh_path
   if [ "${PHYN_DEV_SKIP_TOOLS:-0}" != 1 ] && {
     [ "${PHYN_DEV_ACTIVATION_CHANGED:-0}" = 1 ] ||
+    ! command -v herdr >/dev/null 2>&1 ||
+    ! herdr --version >/dev/null 2>&1 ||
     ! no_mistakes_version_converged ||
     ! npm_command_converged pi ||
     ! npm_command_converged gnhf ||

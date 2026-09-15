@@ -51,7 +51,7 @@
 
 set -u
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 
@@ -59,6 +59,12 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-$FM_ROOT}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 mkdir -p "$STATE" 2>/dev/null || true
+
+FM_HOME=$(cd "$FM_HOME" && pwd -P) || exit 1
+export FM_HOME
+OWNER_LOCK="$FM_HOME/state/.recovery-owner.lock"
+mkdir -p "${OWNER_LOCK%/*}" || exit 1
+OWNER_GENERATION=
 
 RECORD="$STATE/.recovery-owner"
 INTENT="$STATE/.recovery-owner-intent"
@@ -175,6 +181,30 @@ _herdr_available() {
   command -v herdr >/dev/null 2>&1
 }
 
+_process_alive() {
+  local pid=$1 identity=$2 current
+  fm_pid_alive "$pid" || return 1
+  current=$(fm_pid_identity "$pid" 2>/dev/null) || return 1
+  [ -n "$identity" ] && [ "$current" = "$identity" ]
+}
+
+_clear_generation() {
+  local generation=$1 path
+  [ -n "$generation" ] || return 0
+  for path in "$RECORD" "$INTENT"; do
+    if [ "$(_record_get "$path" generation)" = "$generation" ]; then
+      rm -f "$path"
+    fi
+  done
+}
+
+_run_cleanup() {
+  if [ "$(_record_get "$RECORD" generation)" = "$OWNER_GENERATION" ]; then
+    _clear_generation "$OWNER_GENERATION"
+  fi
+  fm_lock_release "$OWNER_LOCK"
+}
+
 cmd_run() {
   local generation pid identity stop=0
   # Never capture our OWN pid through a $(...) command substitution: bash
@@ -183,7 +213,18 @@ cmd_run() {
   # a real instance of the exact BASHPID-in-subshells subtlety this task's
   # own recovery diagnostic flagged. Read $$/BASHPID inline instead.
   pid=${BASHPID:-$$}
+  fm_lock_try_acquire "$OWNER_LOCK" || {
+    printf 'fm-recovery-owner: another owner holds this home\n' >&2
+    return 1
+  }
+  trap '_run_cleanup' EXIT
+  if _owner_alive; then
+    printf 'fm-recovery-owner: an existing owner is still running\n' >&2
+    return 1
+  fi
   generation=$(_new_generation)
+  OWNER_GENERATION=$generation
+  trap 'stop=1' TERM INT HUP
 
   # Intent BEFORE any binding: a crash right here leaves an inspectable
   # partial-launch record, never silence.
@@ -206,8 +247,6 @@ cmd_run() {
     "started_at=$(_now)" \
     "home=$FM_HOME" \
     || { _log "failed to bind owner record after intent"; return 1; }
-
-  trap 'stop=1' TERM INT
 
   _log "started generation=$generation pid=$pid"
 
@@ -232,7 +271,7 @@ cmd_run() {
   done
 
   _log "stop signal received generation=$generation pid=$pid"
-  rm -f "$RECORD" "$INTENT" 2>/dev/null || true
+  _clear_generation "$generation"
   return 0
 }
 
@@ -241,7 +280,6 @@ cmd_start() {
     printf 'fm-recovery-owner: already running (pid %s)\n' "$(_record_get "$RECORD" pid)"
     return 0
   fi
-  rm -f "$RECORD" "$INTENT" 2>/dev/null || true
   nohup "$SCRIPT_DIR/fm-recovery-owner.sh" run >>"$LOG" 2>&1 &
   disown 2>/dev/null || true
 
@@ -259,34 +297,39 @@ cmd_start() {
 }
 
 cmd_stop() {
-  if ! _owner_alive; then
-    printf 'fm-recovery-owner: not running\n'
-    rm -f "$RECORD" "$INTENT" 2>/dev/null || true
-    return 0
-  fi
-  local pid waited
-  pid=$(_record_get "$RECORD" pid)
-  kill -TERM "$pid" 2>/dev/null || true
-  waited=0
-  while [ "$waited" -lt "$RECOVERY_OWNER_STOP_TIMEOUT" ]; do
-    _owner_alive || break
-    sleep 1
-    waited=$((waited + 1))
-  done
-  if _owner_alive; then
-    kill -KILL "$pid" 2>/dev/null || true
+  local pid identity generation snapshot waited
+  snapshot=$(cat "$RECORD" 2>/dev/null || true)
+  pid=$(printf '%s\n' "$snapshot" | sed -n 's/^pid=//p')
+  identity=$(printf '%s\n' "$snapshot" | sed -n 's/^identity=//p')
+  generation=$(printf '%s\n' "$snapshot" | sed -n 's/^generation=//p')
+  if _process_alive "$pid" "$identity"; then
+    kill -TERM "$pid" 2>/dev/null || true
     waited=0
-    while [ "$waited" -lt "$RECOVERY_OWNER_STOP_TIMEOUT" ] && _owner_alive; do
+    while [ "$waited" -lt "$RECOVERY_OWNER_STOP_TIMEOUT" ]; do
+      _process_alive "$pid" "$identity" || break
       sleep 1
       waited=$((waited + 1))
     done
+    if _process_alive "$pid" "$identity"; then
+      kill -KILL "$pid" 2>/dev/null || true
+      waited=0
+      while [ "$waited" -lt "$RECOVERY_OWNER_STOP_TIMEOUT" ] && _process_alive "$pid" "$identity"; do
+        sleep 1
+        waited=$((waited + 1))
+      done
+    fi
+    if _process_alive "$pid" "$identity"; then
+      printf 'fm-recovery-owner: pid %s did not exit after SIGTERM and SIGKILL\n' "$pid" >&2
+      return 1
+    fi
+    printf 'fm-recovery-owner: stopped (was pid %s)\n' "$pid"
+  else
+    printf 'fm-recovery-owner: not running\n'
   fi
-  if _owner_alive; then
-    printf 'fm-recovery-owner: pid %s did not exit after SIGTERM and SIGKILL\n' "$pid" >&2
-    return 1
+  if fm_lock_try_acquire "$OWNER_LOCK"; then
+    _clear_generation "$generation"
+    fm_lock_release "$OWNER_LOCK"
   fi
-  rm -f "$RECORD" "$INTENT" 2>/dev/null || true
-  printf 'fm-recovery-owner: stopped (was pid %s)\n' "$pid"
   return 0
 }
 
@@ -311,6 +354,47 @@ _home_slug() {
   printf '%s' "$FM_HOME" | LC_ALL=C tr -c 'A-Za-z0-9' '-' | sed 's/-\{2,\}/-/g; s/^-//; s/-$//'
 }
 
+_home_hash() {
+  local digest
+  if command -v sha256sum >/dev/null 2>&1; then
+    digest=$(printf '%s' "$FM_HOME" | sha256sum) || return 1
+  else
+    digest=$(printf '%s' "$FM_HOME" | shasum -a 256) || return 1
+  fi
+  printf '%s' "${digest%% *}"
+}
+
+_service_path() {
+  printf '%s' "${PATH:-/usr/bin:/bin}:$HOME/.local/bin:$HOME/.nix-profile/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+}
+
+_xml_string() {
+  local value=$1
+  value=${value//&/\&amp;}
+  value=${value//</\&lt;}
+  value=${value//>/\&gt;}
+  value=${value//\"/\&quot;}
+  value=${value//\'/\&apos;}
+  printf '%s' "$value"
+}
+
+_systemd_string() {
+  local value=$1
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//$'\n'/\\n}
+  value=${value//$'\r'/\\r}
+  value=${value//$'\t'/\\t}
+  value=${value//%/%%}
+  printf '"%s"' "$value"
+}
+
+_systemd_name() {
+  local hash
+  hash=$(_home_hash) || return 1
+  printf 'fm-recovery-owner.%s.service' "$hash"
+}
+
 _launchd_label() {
   printf 'com.firstmate.recovery-owner.%s' "$(_home_slug)"
 }
@@ -320,7 +404,9 @@ _launchd_plist_path() {
 }
 
 _systemd_unit_path() {
-  printf '%s/.config/systemd/user/fm-recovery-owner.service' "${HOME:?}"
+  local name
+  name=$(_systemd_name) || return 1
+  printf '%s/.config/systemd/user/%s' "${HOME:?}" "$name"
 }
 
 cmd_install() {
@@ -338,25 +424,27 @@ cmd_install() {
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>$label</string>
+  <string>$(_xml_string "$label")</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$SCRIPT_DIR/fm-recovery-owner.sh</string>
+    <string>$(_xml_string "$SCRIPT_DIR/fm-recovery-owner.sh")</string>
     <string>run</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>FM_HOME</key>
-    <string>$FM_HOME</string>
+    <string>$(_xml_string "$FM_HOME")</string>
+    <key>PATH</key>
+    <string>$(_xml_string "$(_service_path)")</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>$LOG</string>
+  <string>$(_xml_string "$LOG")</string>
   <key>StandardErrorPath</key>
-  <string>$LOG</string>
+  <string>$(_xml_string "$LOG")</string>
 </dict>
 </plist>
 PLIST
@@ -364,17 +452,20 @@ PLIST
       printf 'fm-recovery-owner: installed launchd agent %s (%s)\n' "$label" "$plist"
       ;;
     Linux)
-      local unit
-      unit=$(_systemd_unit_path)
+      local unit executable
+      unit=$(_systemd_unit_path) || return 1
       mkdir -p "$(dirname "$unit")" 2>/dev/null || { echo "fm-recovery-owner: could not create $(dirname "$unit")" >&2; return 1; }
+      executable="$SCRIPT_DIR/fm-recovery-owner.sh"
+      executable=${executable//\$/\$\$}
       cat > "$unit" <<UNIT
 [Unit]
-Description=Firstmate recovery owner ($FM_HOME)
+Description=Firstmate recovery owner
 
 [Service]
 Type=simple
-ExecStart=$SCRIPT_DIR/fm-recovery-owner.sh run
-Environment=FM_HOME=$FM_HOME
+ExecStart=$(_systemd_string "$executable") run
+Environment=$(_systemd_string "FM_HOME=$FM_HOME")
+Environment=$(_systemd_string "PATH=$(_service_path)")
 Restart=on-failure
 RestartSec=5
 
@@ -382,7 +473,7 @@ RestartSec=5
 WantedBy=default.target
 UNIT
       "${FM_SYSTEMCTL:-systemctl}" --user daemon-reload || true
-      "${FM_SYSTEMCTL:-systemctl}" --user enable --now fm-recovery-owner.service \
+      "${FM_SYSTEMCTL:-systemctl}" --user enable --now "$(_systemd_name)" \
         || { echo "fm-recovery-owner: systemctl --user enable --now failed for $unit" >&2; return 1; }
       printf 'fm-recovery-owner: installed systemd user unit %s\n' "$unit"
       ;;
@@ -411,9 +502,9 @@ cmd_uninstall() {
       ;;
     Linux)
       local unit
-      unit=$(_systemd_unit_path)
+      unit=$(_systemd_unit_path) || return 1
       if [ -f "$unit" ]; then
-        "${FM_SYSTEMCTL:-systemctl}" --user disable --now fm-recovery-owner.service 2>/dev/null || true
+        "${FM_SYSTEMCTL:-systemctl}" --user disable --now "$(_systemd_name)" 2>/dev/null || true
         rm -f "$unit"
         "${FM_SYSTEMCTL:-systemctl}" --user daemon-reload 2>/dev/null || true
         printf 'fm-recovery-owner: uninstalled systemd user unit %s\n' "$unit"

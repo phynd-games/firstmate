@@ -58,7 +58,7 @@ SH
   chmod +x "$dir/brew"
   for tool in actionlint basedpyright basedpyright-langserver fd fresh fzf gh git jq \
     lua-language-server node npm npx rg rust-analyzer shellcheck starship treehouse \
-    typescript-language-server tmux curl; do
+    typescript-language-server tmux curl herdr; do
     cat > "$dir/$tool" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' '❯'
@@ -1063,6 +1063,78 @@ test_real_nix_cross_evaluates_linux_home_configuration() {
   pass "real Nix evaluates the flake's homeConfigurations.phynd-dev output for both Linux architectures and still evaluates darwinConfigurations.phynd-dev"
 }
 
+test_linux_herdr_installer_and_failure() {
+  local case_dir fixture home fakebin out mode rc operation
+  local -a args
+  case_dir="$TMP_ROOT/linux-herdr"
+  fixture="$case_dir/repo"
+  home="$case_dir/home"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$home" "$fakebin"
+  make_phynd_fixture "$ROOT" "$fixture"
+  cat > "$fakebin/nix" <<'SH'
+#!/bin/sh
+exit 0
+SH
+  cat > "$fakebin/curl" <<'SH'
+#!/bin/sh
+[ "$*" = '-fsSL https://herdr.dev/install.sh' ] || exit 9
+printf '%s\n' "$*" >> "$PHYN_TEST_HERDR_LOG"
+case "$PHYN_TEST_HERDR_MODE" in
+  download-failure) exit 1 ;;
+  empty) exit 0 ;;
+esac
+cat <<'INSTALL'
+mkdir -p "$HOME/.local/bin"
+printf '#!/bin/sh\nprintf "herdr 0.8.0\\n"\n' > "$HOME/.local/bin/herdr"
+chmod +x "$HOME/.local/bin/herdr"
+INSTALL
+SH
+  cat > "$fakebin/npm" <<'SH'
+#!/bin/sh
+mkdir -p "$NPM_CONFIG_PREFIX/bin"
+for tool in pi gnhf gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi; do
+  printf '#!/bin/sh\nexit 0\n' > "$NPM_CONFIG_PREFIX/bin/$tool"
+  chmod +x "$NPM_CONFIG_PREFIX/bin/$tool"
+done
+SH
+  cat > "$fakebin/no-mistakes" <<'SH'
+#!/bin/sh
+printf 'no-mistakes 1.46.0\n'
+SH
+  chmod +x "$fakebin/nix" "$fakebin/curl" "$fakebin/npm" "$fakebin/no-mistakes"
+  for operation in install-tool install; do
+    home="$case_dir/$operation"
+    mkdir -p "$home"
+    args=("$operation")
+    [ "$operation" != install-tool ] || args+=(herdr)
+    for mode in download-failure empty success; do
+      out=$(HOME="$home" PHYN_DEV_HOME="$home" PHYN_DEV_UNAME_S=Linux PHYN_DEV_UNAME_M=x86_64 \
+        PHYN_DEV_USER=phynd-test PHYN_DEV_NIX_PROFILE="$fakebin" PHYN_DEV_SYSTEM_PROFILE="$fakebin" \
+        PHYN_DEV_SKIP_ACTIVATION=1 PHYN_DEV_SKIP_TOOLS=0 \
+        PHYN_TEST_HERDR_MODE="$mode" PHYN_TEST_HERDR_LOG="$case_dir/installer.log" \
+        PATH="$fakebin:/usr/bin:/bin" "$fixture/phynd-dev" "${args[@]}" 2>&1)
+      rc=$?
+      if [ "$mode" = success ]; then
+        [ "$rc" -eq 0 ] || fail "Linux Herdr $operation failed: $out"
+        [ -x "$home/.local/bin/herdr" ] || fail "Linux Herdr was not installed"
+        [ "$("$home/.local/bin/herdr" --version)" = 'herdr 0.8.0' ] || fail "installed Herdr cannot run"
+      else
+        [ "$rc" -ne 0 ] || fail "Linux Herdr $operation falsely succeeded for $mode"
+        [ ! -e "$home/.local/state/phynd-dev/activation.sha256" ] || fail "failed Herdr installation recorded convergence"
+      fi
+    done
+  done
+  pass "Linux install and install-tool install Herdr and reject missing binaries and download failures"
+}
+
+
+if [ "${1:-}" = herdr ]; then
+  test_npm_tools_ignore_stale_path_commands
+  test_linux_herdr_installer_and_failure
+  exit 0
+fi
+
 test_root_entrypoint_resolves_itself
 test_npm_tools_ignore_stale_path_commands
 test_install_tool_repairs_outdated_no_mistakes
@@ -1073,6 +1145,7 @@ test_fresh_effective_config_and_wezterm_load
 test_repo_starship_config_is_usable
 test_starship_is_nix_managed_and_loaded_once
 test_host_system_detects_linux_and_refuses_unsupported
+test_linux_herdr_installer_and_failure
 test_linux_install_bootstraps_nix_then_activates_home_manager
 test_linux_existing_nix_is_reused_without_bootstrapping
 test_linux_nix_install_failure_stops_before_activation
