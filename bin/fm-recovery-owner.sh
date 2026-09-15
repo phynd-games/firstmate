@@ -280,7 +280,10 @@ cmd_start() {
     printf 'fm-recovery-owner: already running (pid %s)\n' "$(_record_get "$RECORD" pid)"
     return 0
   fi
-  nohup "$SCRIPT_DIR/fm-recovery-owner.sh" run >>"$LOG" 2>&1 &
+  local model
+  model=$(fm_supervision_model) || return 1
+  FM_SUPERVISION_MODEL="$model" HERDR_SESSION="${HERDR_SESSION:-default}" \
+    nohup "$SCRIPT_DIR/fm-recovery-owner.sh" run >>"$LOG" 2>&1 &
   disown 2>/dev/null || true
 
   local waited=0
@@ -410,7 +413,9 @@ _systemd_unit_path() {
 }
 
 cmd_install() {
-  local platform
+  local platform model session
+  model=$(fm_supervision_model) || return 1
+  session=${HERDR_SESSION:-default}
   platform=$(uname -s 2>/dev/null || printf unknown)
   case "$platform" in
     Darwin)
@@ -436,6 +441,10 @@ cmd_install() {
     <string>$(_xml_string "$FM_HOME")</string>
     <key>PATH</key>
     <string>$(_xml_string "$(_service_path)")</string>
+    <key>FM_SUPERVISION_MODEL</key>
+    <string>$(_xml_string "$model")</string>
+    <key>HERDR_SESSION</key>
+    <string>$(_xml_string "$session")</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -456,7 +465,6 @@ PLIST
       unit=$(_systemd_unit_path) || return 1
       mkdir -p "$(dirname "$unit")" 2>/dev/null || { echo "fm-recovery-owner: could not create $(dirname "$unit")" >&2; return 1; }
       executable="$SCRIPT_DIR/fm-recovery-owner.sh"
-      executable=${executable//\$/\$\$}
       cat > "$unit" <<UNIT
 [Unit]
 Description=Firstmate recovery owner
@@ -466,6 +474,8 @@ Type=simple
 ExecStart=$(_systemd_string "$executable") run
 Environment=$(_systemd_string "FM_HOME=$FM_HOME")
 Environment=$(_systemd_string "PATH=$(_service_path)")
+Environment=$(_systemd_string "FM_SUPERVISION_MODEL=$model")
+Environment=$(_systemd_string "HERDR_SESSION=$session")
 Restart=on-failure
 RestartSec=5
 
@@ -493,8 +503,11 @@ cmd_uninstall() {
       label=$(_launchd_label) || return 1
       plist=$(_launchd_plist_path) || return 1
       if [ -f "$plist" ]; then
-        "${FM_LAUNCHCTL:-launchctl}" unload "$plist" 2>/dev/null || true
-        rm -f "$plist"
+        "${FM_LAUNCHCTL:-launchctl}" unload "$plist" || {
+          printf 'fm-recovery-owner: launchctl unload failed; retained %s for retry\n' "$plist" >&2
+          return 1
+        }
+        rm -f "$plist" || return 1
         printf 'fm-recovery-owner: uninstalled launchd agent %s\n' "$label"
       else
         printf 'fm-recovery-owner: no launchd agent installed at %s\n' "$plist"
@@ -504,8 +517,11 @@ cmd_uninstall() {
       local unit
       unit=$(_systemd_unit_path) || return 1
       if [ -f "$unit" ]; then
-        "${FM_SYSTEMCTL:-systemctl}" --user disable --now "$(_systemd_name)" 2>/dev/null || true
-        rm -f "$unit"
+        "${FM_SYSTEMCTL:-systemctl}" --user disable --now "$(_systemd_name)" || {
+          printf 'fm-recovery-owner: systemctl disable failed; retained %s for retry\n' "$unit" >&2
+          return 1
+        }
+        rm -f "$unit" || return 1
         "${FM_SYSTEMCTL:-systemctl}" --user daemon-reload 2>/dev/null || true
         printf 'fm-recovery-owner: uninstalled systemd user unit %s\n' "$unit"
       else
