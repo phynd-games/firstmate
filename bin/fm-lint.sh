@@ -5,10 +5,7 @@
 # ambient configuration disabled, and one exact ShellCheck version. The
 # no-mistakes pre-push gate invokes this script with no arguments, so the
 # rule set, version, bounded execution, and diagnostics ordering cannot drift.
-# A captain instruction (2026-09-09) retired the separate GitHub Actions Lint
-# job that used to invoke it in CI, so this definition is now enforced by the
-# no-mistakes gate and deliberate local runs; .github/workflows/ci.yml owns
-# whether and how a hosted job invokes it if that changes.
+# .github/workflows/ci.yml owns hosted execution policy and exclusions.
 # The explicit --fast mode is local-only and disables ShellCheck's extended
 # dataflow analysis while preserving ordinary shell lint checks. The
 # no-mistakes gate keeps the full-analysis no-argument default.

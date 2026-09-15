@@ -12,7 +12,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-sessionstart-run.sh` | Route a native session-open hook to the full digest, a context re-emit, or the nudge |
 | `fm-operational-input.sh` | Construct, bound, parse, and inspect the schema-controlled cross-language operational-input protocol |
 | `fm-bootstrap.sh`        | Detect toolchain and fleet problems, run the locked session-start sweeps, and install approved tools |
-| `phynd-dev`              | Reconcile the pinned macOS Nix, Fresh, Starship, WezTerm, and Firstmate developer environment |
+| `phynd-dev`              | Reconcile the pinned macOS or ordinary Linux developer environment; see its usage header |
 | `fm-startup-network.sh`  | Run session start's network checks off its blocking path, retaining every report while waking only for actionable results |
 | `fm-docs-reader.sh`      | Serve this home's `data/` Markdown as a loopback-only live-reloading site and print verified page URLs ([docs-reader.md](docs-reader.md)) |
 | `fm-docs-reader-hooks.py` | MkDocs hooks that restrict the reader to real Markdown inside `data/` and sanitize every rendered page |
@@ -35,6 +35,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-backlog-receive.sh`  | Idempotently ingest one confined remote handoff outbox through tasks-axi             |
 | `fm-captain-hold.sh`     | Hold tasks for the captain, record the captain's answers, gate investigation completion, and report record divergence between the status log and the backlog |
 | `fm-lavish-intake.sh`    | Build, capture, carry forward, verify, and explicitly exempt Lavish feature-intake evidence; see its `--help` |
+| `fm-recovery-owner.sh`   | Manage an optional OS service that periodically requests Herdr supervision recovery; see its header and `--help` |
 | `fm-decision-hold.sh`    | One-release compatibility shim mapping the retired decision commands onto fm-captain-hold.sh |
 | `fm-brief.sh`            | Scaffold ship (explicit `--mode`), scout, secondmate-charter, and Herdr-lab briefs   |
 | `fm-dod-lib.sh`          | One owner of the ship task's mode-specific definition of done, rendered by both the brief scaffold and a scout promotion |

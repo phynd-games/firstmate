@@ -9,19 +9,16 @@ on:
 permissions:
   contents: read
 
-# Reduced job set: the hosted full-repository Lint job, the two portable
-# parallel behavior shards, and the four-way portable serial behavior matrix
-# were retired rather than repaired, because Firstmate targets macOS and those
-# hosted Linux lanes were failing on every push to main. Their owners remain
-# available for deliberate
-# local use: bin/fm-lint.sh (also run by the no-mistakes pre-push gate) and
-# bin/fm-test-run.sh lanes and --aggregate-json. The test-coverage guard and
-# timing aggregate below are retained because they pass on hosted runners
-# (the coverage guard is static and does not depend on the excluded hosted
-# behavior runner jobs; the timing aggregate only downloads and combines
-# whatever per-lane artifacts those excluded jobs would have produced, so it
-# has no unmet input to fail on), alongside the inexpensive repository
-# invariants.
+# Firstmate-only captain-approved exclusions since 2026-09-09: the hosted
+# Lint job, two portable parallel behavior shards, and four-way portable
+# serial behavior matrix remain retired. Lint encountered a hosted-runner
+# shutdown before decisive diagnostics; behavior lanes had hosted Linux
+# runner/Herdr-availability failures. Neither exclusion claims those jobs pass.
+# bin/fm-lint.sh still runs locally and in the no-mistakes pre-push gate;
+# bin/fm-test-run.sh owns local lanes and --aggregate-json.
+# Retained hosted jobs are the static test-coverage guard, behavior timing
+# aggregate, and repository invariants. They do not require the excluded
+# behavior producers: aggregation warns and succeeds when no artifacts exist.
 jobs:
   # Deterministic proof that portable parallel shards + portable serial + the
   # explicit legacy-adapter lane equal the complete tests/*.test.sh inventory
@@ -36,19 +33,6 @@ jobs:
       - uses: actions/checkout@v6
       - name: Prove complete regression partition
         run: bin/fm-test-run.sh --check-coverage
-
-  # Excluded per current captain instruction (recorded in this Firstmate
-  # home's private data/captain.md, Firstmate-repository-only): the hosted
-  # portable-parallel shards and four-way portable-serial matrix are
-  # excluded because the behavior jobs have
-  # pre-existing hosted ubuntu-latest runner/Herdr-availability failures.
-  # These jobs are not claimed as passing; their owners remain available
-  # for deliberate local use:
-  # bin/fm-test-run.sh's portable-parallel-1, portable-parallel-2, and
-  # portable-serial-<N>of4 lanes, and its --aggregate-json flag
-  # (docs/fm-test-portable-shards.md). Test coverage guard, the timing
-  # aggregate below, and Repo invariants below are unaffected and remain
-  # required.
 
   # Retain timing aggregation and its existing no-artifacts path while hosted
   # behavior producers are excluded.

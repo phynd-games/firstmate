@@ -42,6 +42,8 @@
 # signal rechecks that identity immediately before sending: a pid whose birth
 # or group changed is a reused pid and is refused, an unreadable process table
 # is unknown and refused, and only a positively absent pid clears the receipt.
+# Parent identity must match the recorded parent, except for orphan
+# reparenting to pid 1.
 # Cleanup signals the direct child and then each remaining member of the
 # child's own process group individually, each after its own recheck; there
 # is no blanket group kill. A descendant that left that group (its own setsid)

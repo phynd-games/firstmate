@@ -32,6 +32,8 @@ new_world() {  # <name> -> "<root>|<home>|<state-file>"
   root="$w/root"
   home="$w/home"
   mkdir -p "$root/bin" "$home/state"
+  # Re-ring fixtures use retained tmux metadata and a fake delivery command.
+  printf '%s' firstmate-herdr-legacy-test-runner-v1 > "$home/state/.fm-backend-legacy-test-runner"
   cp "$ROOT"/bin/*.sh "$root/bin/"
   cp -R "$ROOT/bin/backends" "$root/bin/"
   cat > "$root/bin/fm-crew-state.sh" <<'SH'
@@ -60,6 +62,8 @@ hc() {  # <root> <home> <state-file> <args...>
   local root=$1 home=$2 crew=$3
   shift 3
   FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_STATE_OVERRIDE="$home/state" \
+    FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_RUNNER_ROOT="$home" \
+    FM_BACKEND_TEST_TRUST_FILE="$home/state/.fm-backend-legacy-test-runner" \
     FM_FAKE_CREW_STATE="$crew" \
     "$root/bin/fm-handoff-confirm.sh" "$@"
 }
@@ -472,6 +476,7 @@ test_send_registers_the_obligation_it_owes() {
   state="$w/state"
   fakebin="$w/fakebin"
   mkdir -p "$state" "$fakebin"
+  printf '%s' firstmate-herdr-legacy-test-runner-v1 > "$state/.fm-backend-legacy-test-runner"
   # A tmux that accepts everything: this case is about what fm-send RECORDS,
   # and the doorbell is explicitly best-effort on this plane.
   cat > "$fakebin/tmux" <<'SH'
@@ -487,6 +492,7 @@ SH
     "window=firstmate:fm-juliet" "backend=tmux" "worktree=$w/wt" "harness=claude"
 
   out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$w" \
+    FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_TRUST_FILE="$state/.fm-backend-legacy-test-runner" \
     FM_STATE_OVERRIDE="$state" FM_SEND_SETTLE=0 \
     "$ROOT/bin/fm-send.sh" fm-juliet "respond to the review gate" 2>&1) \
     || fail "fm-send refused an ordinary local steer: $out"
@@ -501,6 +507,7 @@ SH
 
   # Fire-and-forget opts out of the acknowledgement ladder, so it owes nothing.
   out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$w" \
+    FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_TRUST_FILE="$state/.fm-backend-legacy-test-runner" \
     FM_STATE_OVERRIDE="$state" FM_SEND_SETTLE=0 \
     "$ROOT/bin/fm-send.sh" fm-juliet --fire-and-forget 0123456789abcdef "no reply wanted" 2>&1) || true
   assert_absent "$state/juliet.handoff/2.expect" \

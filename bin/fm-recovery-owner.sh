@@ -41,11 +41,10 @@
 #
 # SCOPE. This is the smallest coherent owner: it starts, stops, reports its
 # own status, and calls `ensure` on a bounded interval when Herdr looks
-# available. It does not restart the shared Herdr server, does not install
-# or activate itself in the primary home from this task's own testing, and
-# defers the full fault-injection resilience proof to the plan's final
-# milestone - this increment proves basic start/stop/status/reconciliation,
-# not exhaustive crash-matrix survival.
+# available. It does not restart the shared Herdr server and requires
+# explicit installation or start; bootstrap does not activate it.
+# tests/fm-recovery-owner.test.sh covers basic lifecycle and reconciliation,
+# not live service-manager recovery or exhaustive crash-matrix survival.
 #
 # Usage: fm-recovery-owner.sh install|uninstall|start|stop|status|run
 

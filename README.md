@@ -83,18 +83,13 @@ Open TUI defaults and the Claude concise prompt remain separate in `defaults/pi-
 | Purpose | Default |
 | --- | --- |
 | Captain harness | Pi |
-| Captain model | `openai-codex/gpt-5.6-sol` |
-| Captain thinking | `medium` |
 | Runtime backend | Herdr |
 | Herdr visibility | One presentation workspace per task |
 | Pi theme | `cosmic-lagoon` |
 | Pi packages | `pi-web-access`, `awesome-pi-themes`, `pi-spark`, `pi-open-tui` |
-| Cheap code | Pi + Luna xhigh |
-| Feature design / architecture | Claude Code + Fable high |
-| Hard code | Pi + Sol high, or Claude Code + Fable xhigh |
 | Visible output | Concise by default, without reducing reasoning or verification depth |
 
-Opinionated Phynd fleet routing is checked in under `config/crew-dispatch.json`.
+[`config/crew-dispatch.json`](config/crew-dispatch.json) owns the Phynd worker model, harness, effort, and fallback selections.
 Opinionated runtime selection is checked in under `config/backend` and `config/herdr-presentation-spaces`.
 Other operational state under `config/`, `data/`, and `state/` remains local and ignored.
 

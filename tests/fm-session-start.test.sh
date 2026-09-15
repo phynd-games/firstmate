@@ -585,6 +585,12 @@ EOF
 
 run_session_start_secondmate() {
   local root=$1 home=$2 fakebin=$3 mate=$4 log=$5 spawned=$6 mode=$7
+  # These historical recovery cases deliberately use a fake tmux endpoint.
+  # Authorize only this fixture through the retained-adapter test contract;
+  # ordinary Herdr startup cases must keep exercising the production policy.
+  printf '%s' firstmate-herdr-legacy-test-runner-v1 > "$home/state/.fm-backend-legacy-test-runner"
+  FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_RUNNER_ROOT="$home" \
+    FM_BACKEND_TEST_TRUST_FILE="$home/state/.fm-backend-legacy-test-runner" \
   TMUX='' FM_BACKEND=tmux FM_FAKE_TMUX_MODE="$mode" FM_FAKE_TMUX_LOG="$log" \
     FM_FAKE_TMUX_SPAWNED="$spawned" FM_FAKE_SECOND_MATE_HOME="$mate" \
     FM_FAKE_SECOND_MATE_ID="$SESSION_START_SECOND_MATE_ID" \
@@ -1273,8 +1279,8 @@ EOF
     "SECONDMATE_LIVENESS: secondmate $SESSION_START_SECOND_MATE_ID: skipped: existing endpoint has ambiguous agent process (backend=tmux)" \
     "session start did not distinguish an existing Pi-shaped process from a missing window"
   [ ! -s "$log" ] || fail "session start touched an ambiguous existing Pi process: $(cat "$log")"
-  assert_contains "$out" "endpoint: alive (backend=tmux window=firstmate:fm-$SESSION_START_SECOND_MATE_ID)" \
-    "the later fleet read should still see the ambiguous endpoint"
+  assert_contains "$out" "endpoint: legacy record, read-only (backend=absent window=firstmate:fm-$SESSION_START_SECOND_MATE_ID)" \
+    "the fleet digest must preserve the legacy record without claiming a verified endpoint"
   pass "session start: an existing ambiguous Pi process prevents duplicate recovery"
 }
 
@@ -1292,8 +1298,8 @@ EOF
     "SECONDMATE_LIVENESS: secondmate $SESSION_START_SECOND_MATE_ID: skipped: endpoint probe unreadable (backend=tmux)" \
     "session start did not distinguish transient unreadability from absence"
   [ ! -s "$log" ] || fail "session start touched a transiently unreadable target: $(cat "$log")"
-  assert_contains "$out" "endpoint: dead (backend=tmux window=firstmate:fm-$SESSION_START_SECOND_MATE_ID)" \
-    "the later cheap presence read should preserve the visible offline symptom"
+  assert_contains "$out" "endpoint: legacy record, read-only (backend=absent window=firstmate:fm-$SESSION_START_SECOND_MATE_ID)" \
+    "the fleet digest must not turn an unverified legacy record into a dead endpoint"
   pass "session start: transient tmux unreadability never licenses a relaunch"
 }
 
@@ -2541,6 +2547,12 @@ EOF
     "the off switch was not honored by session start"
   pass "session start reports the document reader honestly and never guesses a URL"
 }
+
+# Match the focused-function convention used by the other behavior suites.
+if [ -n "${FM_TEST_ONLY:-}" ]; then
+  "$FM_TEST_ONLY"
+  exit $?
+fi
 
 test_context_digest_absent_empty_present
 test_session_start_omits_removed_dashboard_and_preserves_supervision

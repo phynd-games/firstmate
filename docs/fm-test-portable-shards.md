@@ -2,7 +2,7 @@
 
 `bin/fm-test-run.sh` owns portable lane composition and execution.
 `bin/fm-test-isolation-proof.sh` owns the proven-isolated candidate set.
-`.github/workflows/ci.yml` does not currently run these lanes automatically; run them locally through the entry points below.
+For hosted execution policy and exclusions, see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml); the entry points below remain available for local runs.
 
 ## Verification inputs
 
@@ -56,16 +56,13 @@ Membership is derived rather than enumerated, so a newly added test lands here b
 
 ## Portable serial shards
 
-Since 2026-09-09 these shards and the two portable parallel shards are no longer automatic GitHub CI jobs: the captain retired those hosted Linux behavior-runner lanes rather than repair them. The static test-coverage guard, the behavior timing aggregate, and the repository invariants remain automatic GitHub CI jobs in `.github/workflows/ci.yml`, since neither depends on the excluded hosted behavior-runner lanes.
-The lanes remain runner capabilities for deliberate local runs, and the history below records how they were balanced.
-
 On green CI run [30725985757](https://github.com/kunchenguid/firstmate/actions/runs/30725985757), that remainder accumulated 19m04s of script time against a 20-minute job timeout.
 On [PR 1495](https://github.com/kunchenguid/firstmate/pull/1495), its main step ran about 19m51s before the job was cancelled at that boundary.
 `portable-serial-<k>of<n>` partitions the remainder for execution on separate machines.
 Each shard is still strictly serial in itself; concurrent shards require separate machines so these stateful scripts do not share a machine without a concurrency isolation proof.
 
 `bin/fm-test-run.sh` owns `n` and refuses any lane whose `of<n>` disagrees with it.
-The current hosted execution policy and exclusion rationale belong to [`.github/workflows/ci.yml`](../.github/workflows/ci.yml); while these shards last ran there, it derived the same `n` from `strategy.job-total` rather than a literal, so changing the shard count in either file without the other failed the lane loudly instead of leaving part of the suite unrun.
+When these shards ran in hosted CI, it derived the same `n` from `strategy.job-total` rather than a literal, so changing the shard count in either file without the other failed the lane loudly instead of leaving part of the suite unrun.
 
 Assignment is longest-processing-time bin packing over per-script duration hints embedded in `bin/fm-test-run.sh`.
 The hints came from the `fm-test-timing-portable-serial-*` artifacts of green CI run [32491999845](https://github.com/kunchenguid/firstmate/actions/runs/32491999845) on 2026-08-21, where the lane ran 116 scripts in 2541548 ms of serial work.

@@ -666,9 +666,9 @@ fi
 
 # --- fallback: no run attributed to this crew ------------------------------
 # The run-step path above already handled any crew with a run, regardless of pane
-# liveness, so a finished-but-pane-closed crew never reaches here. Down here there
-# is no run to consult, so a dead/unreadable target means the crew is gone: report
-# unknown rather than trusting a possibly-stale status log as the current state.
+# liveness, so a finished-but-pane-closed crew never reaches here. Without a run
+# to consult, an unreadable target leaves liveness unknown; it cannot prove
+# departure or make a stale status log authoritative.
 [ -n "$BACKEND_TARGET" ] || emit unknown none "no backend target recorded (not proof of death)"
 pane_readable "$BACKEND_TARGET" || emit unknown none "backend target unreadable: $BACKEND_TARGET (not proof of death)"
 

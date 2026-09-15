@@ -68,8 +68,8 @@
 
       # Ordinary Linux (not NixOS): standalone Home Manager applies only the
       # portable nix/home.nix profile. No Darwin modules, Homebrew, or
-      # darwin-rebuild reach this path; `phynd-dev` activates it with
-      # `home-manager switch`, never `darwin-rebuild`.
+      # darwin-rebuild reach this path; `phynd-dev` builds activationPackage
+      # and runs its activate script without a separate home-manager CLI.
       homeConfigurations."phynd-dev" = home-manager.lib.homeManagerConfiguration {
         pkgs = nixpkgs.legacyPackages.${system};
         extraSpecialArgs = {

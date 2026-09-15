@@ -71,9 +71,8 @@
 # EVIDENCE. fm_vloop_observe consumes the evidence file bin/fm-crew-state.sh
 # exports when FM_CREW_STATE_EVIDENCE_FILE is set: the raw `axi status` TOON
 # for a fully attributed run, or one `coarse: <status>` line from the
-# runs-list fallback. Findings may be a table or a run-level scalar: `none`,
-# `<N> awaiting`, or `<N> awaiting, <M> auto-fix`, with nonnegative decimal
-# counts; scalar values may be unquoted or enclosed in double quotes.
+# runs-list fallback. _fm_vloop_findings_valid below owns the accepted table
+# and scalar findings grammar, including quoted scalars and severity summaries.
 # Acceptance still requires the surrounding run and table structure to pass
 # fm_vloop_evidence_valid. Missing evidence folds nothing; malformed evidence
 # records a stop without fabricating an observation.
