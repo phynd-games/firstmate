@@ -30,6 +30,7 @@
 # FM_ROOT/FM_HOME globals and runs no commands at source time.
 
 if [ -n "${_FM_BACKEND_POLICY_LIB_SOURCED:-}" ]; then
+  # shellcheck disable=SC2317 # This guard also runs when the file is sourced.
   return 0 2>/dev/null || true
 fi
 _FM_BACKEND_POLICY_LIB_SOURCED=1
@@ -38,13 +39,18 @@ FM_BACKEND_ACTIVE="herdr"
 FM_BACKEND_RETAINED_LEGACY="tmux zellij orca cmux"
 
 fm_backend_policy_legacy_lane() {
-  local trust_file trust_value
+  local trust_file trust_value runner_root
   [ "${FM_BACKEND_LEGACY_TEST_LANE:-}" = 1 ] || return 1
   [ "${FM_BACKEND_TEST_HARNESS:-}" = 1 ] || return 1
   [ "${FM_GATE_REFUSE_BYPASS:-}" = 1 ] || return 1
-  [ -n "${FM_STATE_OVERRIDE:-}" ] || return 1
-  trust_file=${FM_BACKEND_TEST_TRUST_FILE:-$FM_STATE_OVERRIDE/.fm-backend-legacy-test-runner}
-  [ "$trust_file" = "$FM_STATE_OVERRIDE/.fm-backend-legacy-test-runner" ] || return 1
+  trust_file=${FM_BACKEND_TEST_TRUST_FILE:-${FM_STATE_OVERRIDE:-}/.fm-backend-legacy-test-runner}
+  if [ "$trust_file" != "${FM_STATE_OVERRIDE:-}/.fm-backend-legacy-test-runner" ]; then
+    runner_root=${FM_BACKEND_TEST_RUNNER_ROOT:-}
+    [ -n "$runner_root" ] || return 1
+    [ "$trust_file" = "$runner_root/state/.fm-backend-legacy-test-runner" ] || return 1
+  else
+    [ -n "${FM_STATE_OVERRIDE:-}" ] || return 1
+  fi
   [ -f "$trust_file" ] || return 1
   trust_value=$(cat "$trust_file" 2>/dev/null) || return 1
   [ "$trust_value" = firstmate-herdr-legacy-test-runner-v1 ]

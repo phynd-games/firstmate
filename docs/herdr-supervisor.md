@@ -85,7 +85,8 @@ Health is never inferred from a beacon alone, and never from a name.
 Anything unreadable, contradictory, or unknown is unhealthy.
 An ambiguous answer is never resolved in favour of healthy.
 
-Every Herdr call the supervisor makes, including the adapter gateway's client-status and named-session capability probes, is hard-bounded, default 15 seconds, through the shared `bin/fm-timeout-lib.sh` runner that kills the whole process group.
+Every Herdr call the supervisor makes is hard-bounded, default 15 seconds, through the shared `bin/fm-timeout-lib.sh` runner that kills the whole process group.
+Adapter loading checks only that the initial status call returns; the supervisor's subsequent identity checks own running-server and capability eligibility and their attributed diagnostics.
 A vendor CLI that never returns is a real hazard here rather than a theoretical one, because `ensure` runs inside a command substitution during session start; an unbounded call would wedge bootstrap itself, which is strictly worse than the supervision lapse this exists to fix.
 
 ## Recovery
@@ -108,12 +109,17 @@ Recovery is bounded, idempotent, and generation-safe.
 | Rapid repeated cycles | Identical rapid cycles receive the floor delay before re-arming and create at most one durable alarm per episode, never a stop |
 | Retire or replacement signal while the loop sleeps | The loop's idle, floor, and backoff sleeps run in a child it waits on, allowing the termination trap to end that child without waiting for the sleep to finish; verified arm retirement still gates the loop's exit |
 | Exact workspace already closed before its `closed` record landed | `retire` and `ensure` reconcile the receipt as completed cleanup only when the same recorded server, proven by session, socket, and socket-instance identity, returns one valid workspace inventory whose entries all have nonempty string identities and which excludes that exact id; an unreadable or malformed inventory, a missing or whitespace-only identity, a different server, a still-present workspace, or an incomplete create identity keeps the receipt and quarantine unchanged, and nothing is ever resolved by label |
-| Herdr server not running | Refused with a durable diagnostic carrying the adapter gateway's native session-check refusal; the supervisor never reads that refusal as silent ineligibility, and no server is ever started from here |
+| Herdr server not running | Refused with the supervisor's durable no-running-server diagnostic; adapter loading does not decide eligibility, and no server is ever started from here |
 | Herdr CLI hangs | Bounded and treated as a failed read, so no caller can be wedged |
 
-Every failed or ambiguous establish and every failed arm attempt writes `state/.herdr-supervisor-alarm` and appends one `check: herdr-supervisor` record to the durable wake queue.
+Failed or ambiguous establishment and failed arm attempts use `state/.herdr-supervisor-alarm` and the durable `check: herdr-supervisor` wake queue, with claim-acquisition failures handled per episode below.
+After claim acquisition fails, both `ensure` and the loop recheck for a provable other owner before escalating; a verified live claim holder is grounds to defer even when this process cannot acquire the claim.
+If no owner is provable, one successfully persisted alarm and queue escalation suppresses repeats across `ensure` and the loop for that unresolved episode; failed persistence remains retryable.
+Successful claim acquisition or a mutating observation of a provable other owner ends the episode, allowing a later failure to alarm again.
+Recovery is bound to the observed episode and retained durably during publication contention, so an exiting caller cannot lose recovery and an old retry cannot clear a newer episode.
+Incomplete ownership observation defers action, and the monitor waits for pending recovery bookkeeping before standing down; read-only `status` never changes episode state.
 Rapid-cycle alarms use `state/.herdr-supervisor-rapid-episode` and do not append a self-triggering wake.
-The alarm clears only after three consecutive successful non-rapid cycles, and each alarm is appended to `state/.herdr-supervisor-alarm-history` for per-attempt evidence.
+The actionable alarm clears only after three consecutive successful non-rapid cycles, independently of claim-episode recovery, and each published alarm is appended to `state/.herdr-supervisor-alarm-history`.
 When another owner is provable, the Herdr loop remains alive as a standby and rechecks ownership until it can resume arming.
 That reuses the channels that already exist rather than inventing one, so the lapse reaches the captain through the normal drain.
 
@@ -168,6 +174,13 @@ Being a detached process is a specific captain-granted exception for this job al
 
 `bin/fm-bootstrap.sh` starts it idempotently on the locked path, under the same aggregate timeout as `ensure`, so a sick Herdr cannot lengthen session start.
 
+### Optional OS recovery caller
+
+[`bin/fm-recovery-owner.sh`](../bin/fm-recovery-owner.sh) provides an explicitly installed OS service that periodically calls the same `ensure` boundary independently of the primary harness and Herdr process lifetimes.
+Its header and `--help` own installation, service-manager selection, lifecycle commands, identity records, and tuning; bootstrap does not install it.
+It never restarts Herdr or adopts existing watcher processes, so a running Herdr server remains a prerequisite for restoring the hosted supervisor.
+[`tests/fm-recovery-owner.test.sh`](../tests/fm-recovery-owner.test.sh) covers its basic lifecycle and reconciliation with fixtures; this does not establish live service recovery or exhaustive crash resilience.
+
 ## Configuration
 
 `config/herdr-supervisor` is local and gitignored.
@@ -196,7 +209,8 @@ All under `state/`, all private to the home.
 - `.herdr-supervisor-quarantine.pending.<generation>` - an incomplete create receipt retained when bounded visibility reconciliation cannot prove that Herdr created nothing.
 - `.herdr-supervisor-alarm` - the latest durable actionable diagnostic, retained until three consecutive successful non-rapid cycles prove stability.
 - `.herdr-supervisor-rapid-episode` - the durable marker preventing repeated rapid-cycle alarms in one episode.
-- `.herdr-supervisor-alarm-history` - the append-only per-attempt alarm history.
+- `.herdr-supervisor-claim-alarm`, `.herdr-supervisor-claim-episode`, `.herdr-supervisor-claim-episode.*`, `.herdr-supervisor-claim-alarm.lock`, `.herdr-supervisor-claim-observation.lock` - private claim-episode bookkeeping for the recovery policy above.
+- `.herdr-supervisor-alarm-history` - the append-only published alarm history.
 - `.herdr-supervisor-emergency` - fallback evidence when alarm or queue persistence fails.
 - `.herdr-supervisor-blocked` - the exact arm pid and identity retained while an unresolved arm child prevents safe replacement.
 - `.watch-arm-blocked` - a durable blocked state used when a native arm cannot persist its normal alarm or queue escalation, so fallback ownership is not suppressed.
@@ -208,11 +222,13 @@ All under `state/`, all private to the home.
 ## Regression coverage
 
 `tests/fm-herdr-supervisor.test.sh` drives the real script against a stateful fake Herdr CLI and a scripted arm.
+Its claim-alarm cases cover competing live owners at both acquisition sites, concurrent and cross-caller suppression, persistence retries, episode recovery across process exit and lock contention, and read-only status.
 It proves the central claim by counting arm invocations - one establish must produce many cycles, which is exactly what the incident lacked - and covers deference to away mode and to a loaded Pi extension, standby handoff, idempotent repeat establishes, recycled pids, post-query identity changes, superseded generations, stale heartbeats on a live but stopped supervisor, foreign pane processes, replaced Herdr servers, broken pane bindings, bounded retry with durable escalation, incomplete and partial Herdr responses, quarantine cleanup, retire, beacon separation, and both config gates.
 Case 22 drives the real `bin/fm-watch-arm.sh` and `bin/fm-watch.sh` under the real loop: one delivered event yields one cycle and a stable handling successor, the exact drain acknowledgement retires the unchanged recovery generation while the same watcher keeps the lock, and a genuine watcher loss announces once more.
-Cases 23a-d use a scripted arm and a fake workspace close that ends the hosted loop before its `closed` record lands to check receipt reconciliation and the unreadable-inventory, invalid-identity, present-target, and changed-server refusal paths.
-Case 24 measures the loop's own TERM-to-exit latency while it is in its rapid-cycle floor sleep and checks that the trap removes the live record.
-Cases 13c-d check stopped-server refusal and the initial status deadline; subsequent gateway regressions complete that preflight before hanging each later native probe in turn or failing session listing, then require a timely hosting refusal, a durable alarm, no published binding, and no surviving hung probe.
+Cases 23a-d use a scripted arm and a fake workspace close followed by SIGKILL to model abrupt loop loss before its `closed` record lands, checking receipt reconciliation and the unreadable-inventory, invalid-identity, present-target, and changed-server refusal paths.
+That fixture does not establish native Herdr signal equivalence.
+Case 24 separately measures TERM-to-exit and HUP-to-exit latency during the loop's rapid-cycle floor sleep and checks that graceful shutdown removes the live record.
+Cases 13c-d check stopped-server refusal and the initial status deadline; subsequent regressions complete that preflight before hanging each later native probe in turn or failing session listing, then require a timely hosting refusal, a durable alarm, no published binding, and no surviving hung probe.
 
 Automated regression coverage does not establish live restoration.
 

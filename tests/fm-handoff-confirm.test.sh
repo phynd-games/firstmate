@@ -22,7 +22,7 @@ TMP_ROOT=$(fm_test_tmproot fm-handoff-confirm)
 
 PARKED='state: parked · source: run-step · parked at review: 3 finding(s) (ask-user: authority decision)'
 WORKING='state: working · source: run-step · validating (fixing)'
-GONE='state: unknown · source: none · no current-state source available'
+GONE='state: unknown · source: none · no metadata for echo1'
 
 # new_world <name>: a home with a fixed bin root whose crew-state read is a stub
 # reading one file, so a case can move the worker's state between calls.
@@ -32,11 +32,14 @@ new_world() {  # <name> -> "<root>|<home>|<state-file>"
   root="$w/root"
   home="$w/home"
   mkdir -p "$root/bin" "$home/state"
+  # Re-ring fixtures use retained tmux metadata and a fake delivery command.
+  printf '%s' firstmate-herdr-legacy-test-runner-v1 > "$home/state/.fm-backend-legacy-test-runner"
   cp "$ROOT"/bin/*.sh "$root/bin/"
   cp -R "$ROOT/bin/backends" "$root/bin/"
   cat > "$root/bin/fm-crew-state.sh" <<'SH'
 #!/usr/bin/env bash
 cat "${FM_FAKE_CREW_STATE:?}"
+[ ! -f "$FM_FAKE_CREW_STATE.exit" ] || exit "$(cat "$FM_FAKE_CREW_STATE.exit")"
 SH
   chmod +x "$root/bin"/*.sh
   printf '%s\n' "$PARKED" > "$w/crew-state"
@@ -59,6 +62,8 @@ hc() {  # <root> <home> <state-file> <args...>
   local root=$1 home=$2 crew=$3
   shift 3
   FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_STATE_OVERRIDE="$home/state" \
+    FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_RUNNER_ROOT="$home" \
+    FM_BACKEND_TEST_TRUST_FILE="$home/state/.fm-backend-legacy-test-runner" \
     FM_FAKE_CREW_STATE="$crew" \
     "$root/bin/fm-handoff-confirm.sh" "$@"
 }
@@ -199,6 +204,153 @@ EOF
   pass "a worker that is already gone fails the handoff immediately"
 }
 
+# --- 5b/5c. unreadable validation evidence is neither death nor a start ------
+# bin/fm-crew-state.sh reports "state: unknown · source: none" both for a
+# genuinely gone worker (case #5, above) and for a live, attributed run whose
+# validation evidence merely failed the loop's stricter shape check - a real
+# incident traced to bin/fm-crew-state.sh's own "(not proof of death)"
+# qualifier (matching the existing wording already used for an unreachable
+# remote endpoint) and to endpoint_is_gone() here honoring it. An earlier
+# version of this suite made unreadable evidence confirm as "acknowledged and
+# started" whenever it merely was not proven dead - swapping false death for
+# false completion, since acknowledgement plus an unreadable read is not
+# proof the work began. await_start() (bin/fm-handoff-confirm.sh) now polls
+# the post-acknowledgement window for a LATER positively observed state
+# instead: these two cases pin the negative (persistent unknown never
+# resolves -> unconfirmed, not death) and positive (unknown resolves to a
+# real observed state within the window -> confirmed) halves of that fix
+# through the real consumer, with the crew-state content genuinely mutated
+# mid-poll rather than a fixture merely labeled "live".
+test_persistent_unknown_evidence_is_unconfirmed_not_dead() {
+  local rec root home crew record out status=0
+  rec=$(new_world persistent-unknown)
+  IFS='|' read -r root home crew <<EOF
+$rec
+EOF
+  record=$(seed_task "$home" india)
+  printf 'state: unknown · source: none · unreadable validation run evidence (not proof of death)\n' > "$crew"
+  hc "$root" "$home" "$crew" register --task india --record "$record" >/dev/null \
+    || fail "register refused a well-formed obligation while evidence was unreadable"
+  acknowledge "$home" india "$record"
+  out=$(hc "$root" "$home" "$crew" confirm --task india --record "$record" \
+    --timeout 2 --poll 1 --no-rering 2>&1) || status=$?
+  expect_code 3 "$status" \
+    "validation evidence that never resolved past unknown was confirmed as a started handoff: $out"
+  assert_not_contains "$out" "is gone" \
+    "persistently unreadable evidence was worded as the worker being gone"
+  assert_contains "$out" "could not be proven" \
+    "the failure did not say the start could not be proven"
+  pass "validation evidence that stays unreadable through the whole window is unconfirmed - never death, never a false start"
+}
+
+test_unreadable_state_preserves_observation_window() {
+  local mode rec root home crew record out status started elapsed
+  for mode in capture capability failure empty; do
+    rec=$(new_world "read-$mode")
+    IFS='|' read -r root home crew <<EOF
+$rec
+EOF
+    record=$(seed_task "$home" read-failure)
+    hc "$root" "$home" "$crew" register --task read-failure --record "$record" >/dev/null || fail "register failed"
+    acknowledge "$home" read-failure "$record"
+    case "$mode" in
+      capture) printf 'state: unknown · source: none · backend target unreadable (not proof of death)\n' > "$crew" ;;
+      capability) printf 'state: unknown · source: herdr-capability · Herdr capability is unavailable (not proof of death)\n' > "$crew" ;;
+      failure)
+        printf '%s\n' "$WORKING" > "$crew"
+        printf '2\n' > "$crew.exit"
+        ;;
+      empty) : > "$crew" ;;
+    esac
+    status=0
+    started=$(date +%s)
+    out=$(hc "$root" "$home" "$crew" confirm --task read-failure --record "$record" --timeout 2 --poll 1 --no-rering 2>&1) || status=$?
+    elapsed=$(( $(date +%s) - started ))
+    expect_code 3 "$status" "$mode must remain unconfirmed: $out"
+    [ "$elapsed" -ge 2 ] || fail "$mode skipped the observation window"
+    assert_contains "$out" "could not be proven" "$mode must remain inconclusive"
+    assert_not_contains "$out" "went away" "$mode must not prove departure"
+  done
+  pass "capture, capability, failed, and empty reads preserve the observation window"
+}
+
+test_unknown_evidence_confirms_once_a_real_start_is_observed() {
+  local rec root home crew record out status=0 flip_pid
+  rec=$(new_world unknown-then-started)
+  IFS='|' read -r root home crew <<EOF
+$rec
+EOF
+  record=$(seed_task "$home" juliet)
+  printf 'state: unknown · source: none · unreadable validation run evidence (not proof of death)\n' > "$crew"
+  hc "$root" "$home" "$crew" register --task juliet --record "$record" >/dev/null \
+    || fail "register refused a well-formed obligation while evidence was unreadable"
+  acknowledge "$home" juliet "$record"
+  ( sleep 1; printf '%s\n' "$WORKING" > "$crew" ) &
+  flip_pid=$!
+  out=$(hc "$root" "$home" "$crew" confirm --task juliet --record "$record" \
+    --timeout 5 --poll 1 --no-rering 2>&1) || status=$?
+  wait "$flip_pid" 2>/dev/null || true
+  expect_code 0 "$status" \
+    "a real observed start reached after a transient unreadable read was not confirmed: $out"
+  assert_contains "$out" "acknowledged and started" "the success did not state both proofs"
+  pass "validation evidence that starts unreadable but later shows a real observed state confirms once proven"
+}
+
+test_unknown_to_concrete_state_preserves_handoff_modes() {
+  local mode baseline baseline_name target rec root home crew record out status count
+  local -a mode_args
+  for mode in steer explicit finding-response; do
+    mode_args=(--kind steer)
+    case "$mode" in
+      explicit) mode_args=(--expect-state-change) ;;
+      finding-response) mode_args=(--kind finding-response) ;;
+    esac
+    for baseline in "$PARKED" "$WORKING"; do
+      if [ "$baseline" = "$PARKED" ]; then baseline_name=parked; else baseline_name=working; fi
+      for target in same changed; do
+        rec=$(new_world "mode-$mode-$baseline_name-$target")
+        IFS='|' read -r root home crew <<EOF
+$rec
+EOF
+        record=$(seed_task "$home" mode)
+        printf '%s\n' "$baseline" > "$crew"
+        hc "$root" "$home" "$crew" register --task mode --record "$record" \
+          "${mode_args[@]}" >/dev/null || fail "register refused $mode"
+        acknowledge "$home" mode "$record"
+        if [ "$target" = changed ]; then
+          printf 'state: working · source: run-step · validating (test running)\n' > "$crew"
+        fi
+        cat > "$root/bin/fm-crew-state.sh" <<'SH'
+#!/usr/bin/env bash
+count=$(cat "${FM_FAKE_CREW_STATE}.reads" 2>/dev/null || printf 0)
+count=$((count + 1))
+printf '%s\n' "$count" > "${FM_FAKE_CREW_STATE}.reads"
+case "$count" in
+  1|2) printf 'state: unknown · source: none · unreadable validation run evidence (not proof of death)\n' ;;
+  3) cat "$FM_FAKE_CREW_STATE" ;;
+  *) printf 'state: working · source: run-step · unexpected later state\n' ;;
+esac
+SH
+        status=0
+        out=$(hc "$root" "$home" "$crew" confirm --task mode --record "$record" \
+          --timeout 5 --poll 0 --no-rering 2>&1) || status=$?
+        count=$(cat "$crew.reads")
+        [ "$count" = 3 ] || fail "$mode did not decide at the first concrete observation: $out"
+        if [ "$target" = same ] && [ "$mode" != steer ]; then
+          expect_code 3 "$status" "$mode confirmed unchanged aggregate state: $out"
+          assert_contains "$out" 'the work never started' "$mode lost unchanged-state rejection"
+          grep -Fxq 'result=failed' "$home/state/mode.handoff/4.result" || fail "$mode persisted success"
+        else
+          expect_code 0 "$status" "$mode rejected a permitted concrete observation: $out"
+          assert_contains "$out" 'acknowledged and started' "$mode did not confirm"
+          grep -Fxq 'result=confirmed' "$home/state/mode.handoff/4.result" || fail "$mode lost confirmation"
+        fi
+      done
+    done
+  done
+  pass "unknown-to-concrete handoff preserves ordinary steer and required state-change modes"
+}
+
 # --- 6. delayed acknowledgement ------------------------------------------------
 # The worker was simply busy. One re-ring and a second window must let it
 # through: a slow worker is not a stuck worker, and failing it would be the
@@ -324,6 +476,7 @@ test_send_registers_the_obligation_it_owes() {
   state="$w/state"
   fakebin="$w/fakebin"
   mkdir -p "$state" "$fakebin"
+  printf '%s' firstmate-herdr-legacy-test-runner-v1 > "$state/.fm-backend-legacy-test-runner"
   # A tmux that accepts everything: this case is about what fm-send RECORDS,
   # and the doorbell is explicitly best-effort on this plane.
   cat > "$fakebin/tmux" <<'SH'
@@ -339,6 +492,7 @@ SH
     "window=firstmate:fm-juliet" "backend=tmux" "worktree=$w/wt" "harness=claude"
 
   out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$w" \
+    FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_TRUST_FILE="$state/.fm-backend-legacy-test-runner" \
     FM_STATE_OVERRIDE="$state" FM_SEND_SETTLE=0 \
     "$ROOT/bin/fm-send.sh" fm-juliet "respond to the review gate" 2>&1) \
     || fail "fm-send refused an ordinary local steer: $out"
@@ -353,6 +507,7 @@ SH
 
   # Fire-and-forget opts out of the acknowledgement ladder, so it owes nothing.
   out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$w" \
+    FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_TRUST_FILE="$state/.fm-backend-legacy-test-runner" \
     FM_STATE_OVERRIDE="$state" FM_SEND_SETTLE=0 \
     "$ROOT/bin/fm-send.sh" fm-juliet --fire-and-forget 0123456789abcdef "no reply wanted" 2>&1) || true
   assert_absent "$state/juliet.handoff/2.expect" \
@@ -382,6 +537,10 @@ test_acknowledged_without_starting_is_refused
 test_wrong_message_bytes_are_refused
 test_expectation_mismatch_is_refused_at_registration
 test_departed_worker_fails_immediately
+test_persistent_unknown_evidence_is_unconfirmed_not_dead
+test_unreadable_state_preserves_observation_window
+test_unknown_evidence_confirms_once_a_real_start_is_observed
+test_unknown_to_concrete_state_preserves_handoff_modes
 test_delayed_acknowledgement_still_confirms
 test_acknowledged_and_started_confirms
 test_failed_handoff_queues_recovery_work

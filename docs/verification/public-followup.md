@@ -15,7 +15,7 @@ Task chronology and delivery evidence stay outside this record.
 ## Environment
 
 Recorded 2026-08-21 on Darwin 25.5.0 (arm64) with GNU bash 5.3.9, tasks-axi 0.2.5, jq 1.8.1, and ShellCheck 0.11.0 (the version `bin/fm-lint.sh` pins).
-The stock macOS compatibility lane additionally runs the focused first-registration regression with `/bin/bash` 3.2.57 and a real `tasks-axi` installation.
+The focused stock macOS first-registration regression requires `/bin/bash` 3.2.57 and a real `tasks-axi` installation.
 The relay is a fakebin `curl` in every case, so no public post is ever made; `tasks-axi` and `jq` are the real tools, because stubbing the obligation state machine would verify nothing.
 
 ## Restart end-to-end and regressions
@@ -89,7 +89,8 @@ It delivers a `report-ready` promised-final, asserts the registration is retaine
 `retire --reason` records its private receipt before removal and is the only close; replayed registration cannot reopen that retired loop.
 The concurrency and interrupted-bind cases verify that one delivered source cannot fork and that retry converges on the same destination obligation.
 A pre-change on-disk record (no `state=`, no `request_context_b64`) is an open loop and un-rechainable rather than a crash.
-The stock macOS Bash lane in [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) sets `FM_TEST_ONLY=test_first_register_succeeds_with_empty_lock_list_under_bash32` and runs `tests/fm-public-followup.test.sh` through real `/bin/bash` 3.2, proving the first `register` path is safe when its registry lock list starts empty.
+Run `FM_TEST_ONLY=test_first_register_succeeds_with_empty_lock_list_under_bash32 /bin/bash tests/fm-public-followup.test.sh` on stock macOS Bash 3.2 to check the first `register` path with an empty registry lock list.
+Hosted execution policy is owned by [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml).
 
 The existing Relay mention suite (`tests/fm-x-mode.test.sh`) is unchanged by this work.
 

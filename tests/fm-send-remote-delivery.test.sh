@@ -33,11 +33,12 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-# shellcheck source=bin/fm-pending-reply-lib.sh
+# Production modules are separate canonical lint roots; keep test analysis local.
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-pending-reply-lib.sh"
-# shellcheck source=bin/fm-marker-lib.sh
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-marker-lib.sh"
-# shellcheck source=bin/fm-task-inbox-lib.sh
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-task-inbox-lib.sh"
 
 SEND="$ROOT/bin/fm-send.sh"
@@ -134,6 +135,23 @@ fi
 exit "$rc"
 SH
   chmod +x "$fb/fake-ssh"
+  cat > "$fb/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-} ${2:-}" in
+  "status --json")
+    printf '%s\n' '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true,"status":"running","compatible":true,"protocol":14}}'
+    ;;
+  "session list")
+    printf '%s\n' '{"sessions":[{"name":"fm-remote","running":true,"socket_path":"/tmp/fm-fake-herdr.sock"}]}'
+    ;;
+  *)
+    printf '%s\n' '{"error":{"code":"pane_not_found"}}' >&2
+    exit 1
+    ;;
+esac
+SH
+  chmod +x "$fb/herdr"
   printf '%s\n' "$fb"
 }
 

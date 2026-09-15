@@ -14,7 +14,9 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-spawn-pool-base-freshen)
 
 write_exempt_brief() {
-  local home=$1 id=$2 body=${3:-"brief for $id"} reason="configuration: task=$id; target=tests/fm-spawn-pool-base-freshen.test.sh pooled spawn fixture; action=exercise spawn behavior without product change"
+  local home=$1 id=$2
+  local body=${3:-"brief for $id"}
+  local reason="configuration: task=$id; target=tests/fm-spawn-pool-base-freshen.test.sh pooled spawn fixture; action=exercise spawn behavior without product change"
   printf '%s\nLavish intake contract: not-applicable\nLavish intake reason: %s\n' "$body" "$reason" > "$home/data/$id/brief.md"
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-lavish-intake.sh" exempt "$id" --reason "$reason" >/dev/null
 }
@@ -88,7 +90,8 @@ test_stale_pool_base_refreshes_before_branching() {
 
   id='pool-current-base-repeat-r1'
   mkdir -p "$HOME_DIR/data/$id"
-  printf '%s\n' "brief for $id" "Target-project approved base: ref=$DEFAULT_BRANCH; sha=$current" > "$HOME_DIR/data/$id/brief.md"
+  write_exempt_brief "$HOME_DIR" "$id" "brief for $id"
+  printf '%s\n' "Target-project approved base: ref=$DEFAULT_BRANCH; sha=$current" >> "$HOME_DIR/data/$id/brief.md"
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "repeating the base refresh should be idempotent"
@@ -130,7 +133,7 @@ test_unreachable_origin_refuses_stale_pool_base() {
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
   [ "$status" -ne 0 ] || fail "spawn succeeded despite an unreachable origin"
-  assert_contains "$out" "could not fetch origin" \
+  assert_contains "$out" "does not resolve to its recorded SHA" \
     "spawn did not clearly refuse an unreachable origin"
   after=$(git -C "$POOL_DIR" rev-parse HEAD)
   [ "$after" = "$before" ] || fail "spawn changed the pooled worktree after origin became unreachable"
@@ -298,7 +301,8 @@ EOF
 strand_submodule_pin_via_spawn() {  # <seed-id>
   local id=$1 out status
   mkdir -p "$HOME_DIR/data/$id"
-  printf '%s\n' "brief for $id" "Target-project approved base: ref=main; sha=$ADVANCED_SHA" > "$HOME_DIR/data/$id/brief.md"
+  write_exempt_brief "$HOME_DIR" "$id"
+  printf '%s\n' "Target-project approved base: ref=main; sha=$ADVANCED_SHA" >> "$HOME_DIR/data/$id/brief.md"
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "the spawn that moves the submodule pin should succeed"
@@ -454,8 +458,58 @@ test_stale_pin_beside_other_dirt_reports_one_verdict() {
   pass "a stale pin beside other dirt yields the conservative refusal alone, with no stale-pin line"
 }
 
+test_local_approved_refs_need_no_remote() {
+  local kind id rec out ref
+  for kind in sha tag branch; do
+    id="pool-local-$kind"
+    rec=$(make_case "local-$kind" "$id")
+    read_case_record "$rec"
+    git -C "$PROJECT_DIR" remote remove origin
+    case "$kind" in
+      sha) ref=$INITIAL_SHA ;;
+      tag)
+        ref='approved-tag'
+        git -C "$PROJECT_DIR" tag "$ref" "$INITIAL_SHA"
+        ;;
+      branch) ref=main ;;
+    esac
+    write_exempt_brief "$HOME_DIR" "$id"
+    printf '%s\n' "Target-project approved base: ref=$ref; sha=$INITIAL_SHA" >> "$HOME_DIR/data/$id/brief.md"
+    out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+    expect_code 0 "$?" "local $kind approval should launch without origin: $out"
+    [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$INITIAL_SHA" ] || fail "local $kind approval moved off its exact SHA"
+  done
+  pass "local SHA, tag, and branch approvals work without origin"
+}
+
+
+test_cached_approved_remote_is_preserved() {
+  local mode id rec approved out
+  for mode in advanced offline; do
+    id="pool-cached-$mode"
+    rec=$(make_case "cached-$mode" "$id")
+    read_case_record "$rec"
+    git -C "$PROJECT_DIR" fetch --quiet origin main
+    approved=$(git -C "$POOL_DIR" rev-parse origin/main)
+    [ "$(git -C "$PROJECT_DIR" rev-parse main)" != "$approved" ] || fail "local main must differ from the approval"
+    git -C "$CASE_DIR/publisher" -c user.name=Tests -c user.email=tests@example.invalid commit --quiet --allow-empty -m advance-again
+    git -C "$CASE_DIR/publisher" push --quiet origin main
+    [ "$(git -C "$CASE_DIR/publisher" rev-parse HEAD)" != "$approved" ] || fail "upstream must advance beyond the approval"
+    if [ "$mode" = offline ]; then
+      git -C "$PROJECT_DIR" remote set-url origin "file://$CASE_DIR/missing-origin.git"
+    fi
+    out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+    expect_code 0 "$?" "cached approved base should launch with origin $mode: $out"
+    [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$approved" ] || fail "spawn lost its frozen approval"
+    [ "$(git -C "$POOL_DIR" rev-parse origin/main)" = "$approved" ] || fail "spawn overwrote the cached approved ref"
+  done
+  pass "cached remote approvals survive upstream advancement and offline launch"
+}
+
 test_stale_pool_base_refreshes_before_branching
 test_non_main_default_branch_refreshes_before_branching
+test_local_approved_refs_need_no_remote
+test_cached_approved_remote_is_preserved
 test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work
 test_missing_approved_base_refuses_ship

@@ -46,6 +46,10 @@
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log.
+#      Unreadable validation evidence also reports unknown · none, but carries
+#      "(not proof of death)", as does an unreachable remote endpoint.
+#      Consumers must honor that qualifier: source: none alone cannot prove
+#      that a worker is dead or departed.
 #
 # Read-only and side-effect free, with one env-gated exception: when
 # FM_CREW_STATE_EVIDENCE_FILE names a path and a run is attributed, the raw run
@@ -115,9 +119,9 @@ if [ -z "$REMOTE_HOST" ]; then
   TASK_BACKEND=$(fm_backend_meta_recorded_backend "$META" 2>/dev/null || true)
   case "$TASK_BACKEND" in
     herdr)
-      fm_backend_validate_task_endpoint "$META" "$ID" || exit $?
+      fm_backend_validate_task_endpoint "$META" "$ID" || emit unknown backend-identity "task endpoint identity could not be verified (not proof of death)"
       TASK_TARGET=$FM_BACKEND_VALIDATED_TARGET
-      fm_backend_herdr_capability_preflight "crew state task $ID" "${TASK_TARGET%%:*}" || exit $?
+      fm_backend_herdr_capability_preflight "crew state task $ID" "${TASK_TARGET%%:*}" || emit unknown herdr-capability "Herdr capability is unavailable (not proof of death)"
       ;;
     absent|tmux|zellij|orca|cmux)
       emit unknown legacy-backend "legacy-record: backend=${TASK_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
@@ -184,21 +188,17 @@ if [ -n "$REMOTE_HOST" ]; then
   case "$REMOTE_BACKEND" in
     absent|tmux|zellij|orca|cmux)
       emit unknown legacy-backend "legacy-record: remote backend=${REMOTE_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
-      exit 0
       ;;
     ambiguous|'')
       emit unknown backend-identity "remote backend identity is ambiguous or missing; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\""
-      exit 0
       ;;
     herdr) ;;
     *)
       emit unknown backend-identity "remote backend=${REMOTE_BACKEND} is not herdr; declare Herdr and verify with herdr status --json"
-      exit 0
       ;;
   esac
   if ! fm_backend_validate_remote_task_endpoint "$META" "$ID" fm-remote >/dev/null 2>&1; then
     emit unknown backend-identity "remote Herdr metadata is invalid; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\""
-    exit 0
   fi
   if ! REMOTE_STATE=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-on.sh" "$ID" \
     fm-remote-secondmate-control.sh state "$ID" --typed < /dev/null); then
@@ -489,7 +489,7 @@ COARSE_STATUS=""
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
   RUN_OUT=$(nm_run axi status)
   if [ -n "$RUN_OUT" ]; then
-    fm_vloop_evidence_valid "$RUN_OUT" || emit unknown none "unreadable validation run evidence"
+    fm_vloop_evidence_valid "$RUN_OUT" || emit unknown none "unreadable validation run evidence (not proof of death)"
     run_branch=$(strip_quotes "$(nm_field branch)")
     # Head equality, or the pipeline-owned-active exemption: while the
     # pipeline owns this branch, the daemon's own branch attribution is
@@ -662,11 +662,11 @@ fi
 
 # --- fallback: no run attributed to this crew ------------------------------
 # The run-step path above already handled any crew with a run, regardless of pane
-# liveness, so a finished-but-pane-closed crew never reaches here. Down here there
-# is no run to consult, so a dead/unreadable target means the crew is gone: report
-# unknown rather than trusting a possibly-stale status log as the current state.
-[ -n "$BACKEND_TARGET" ] || emit unknown none "no backend target recorded"
-pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACKEND_TARGET"
+# liveness, so a finished-but-pane-closed crew never reaches here. Without a run
+# to consult, an unreadable target leaves liveness unknown; it cannot prove
+# departure or make a stale status log authoritative.
+[ -n "$BACKEND_TARGET" ] || emit unknown none "no backend target recorded (not proof of death)"
+pane_readable "$BACKEND_TARGET" || emit unknown none "backend target unreadable: $BACKEND_TARGET (not proof of death)"
 
 # Secondmates idle on their own watcher (idle pane = healthy), so the busy
 # state is not meaningful for them; read their state from the status log only.
@@ -708,4 +708,4 @@ if [ -n "$LOG_VERB" ]; then
   fi
 fi
 
-emit unknown none "no current-state source available"
+emit unknown none "no current-state source available (not proof of death)"

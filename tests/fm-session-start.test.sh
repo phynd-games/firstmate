@@ -585,6 +585,12 @@ EOF
 
 run_session_start_secondmate() {
   local root=$1 home=$2 fakebin=$3 mate=$4 log=$5 spawned=$6 mode=$7
+  # These historical recovery cases deliberately use a fake tmux endpoint.
+  # Authorize only this fixture through the retained-adapter test contract;
+  # ordinary Herdr startup cases must keep exercising the production policy.
+  printf '%s' firstmate-herdr-legacy-test-runner-v1 > "$home/state/.fm-backend-legacy-test-runner"
+  FM_BACKEND_LEGACY_TEST_LANE=1 FM_BACKEND_TEST_RUNNER_ROOT="$home" \
+    FM_BACKEND_TEST_TRUST_FILE="$home/state/.fm-backend-legacy-test-runner" \
   TMUX='' FM_BACKEND=tmux FM_FAKE_TMUX_MODE="$mode" FM_FAKE_TMUX_LOG="$log" \
     FM_FAKE_TMUX_SPAWNED="$spawned" FM_FAKE_SECOND_MATE_HOME="$mate" \
     FM_FAKE_SECOND_MATE_ID="$SESSION_START_SECOND_MATE_ID" \
@@ -1040,8 +1046,11 @@ EOF
 # Herdr is the sole supported runtime backend (AGENTS.md hard rule 6). Both
 # modes run OUTSIDE the regression lane tests/lib.sh exports, so this is the real
 # session-start path judging a real home: a declared herdr home starts silently
-# and never asks for tmux, while a home that declares nothing is refused by name
-# even though it is running inside Herdr (HERDR_ENV=1 never selects).
+# and never asks for tmux. A locked session start's own bootstrap materializes
+# a missing config/backend as herdr before resolving it (AGENTS.md section 2;
+# tests/fm-bootstrap.test.sh's own dedicated coverage owns that mechanism), so
+# an undeclared home reaches the identical silent outcome here, not a refusal -
+# it is still never auto-detected from HERDR_ENV=1, it is materialized by name.
 test_herdr_backend_diagnostics_follow_real_session_start() {
   local mode rec root home fakebin mask out
   for mode in configured undeclared; do
@@ -1074,20 +1083,22 @@ SH
       assert_not_contains "$out" "MISSING: jq" "Herdr session start missed its available JSON dependency"
       assert_not_contains "$out" "MISSING: treehouse" "Herdr session start missed its available worktree provider"
     else
+      [ ! -e "$home/config/backend" ] || fail "test fixture precondition: config/backend must start absent for the undeclared case"
       out=$(FM_BACKEND_LEGACY_TEST_LANE='' TMUX='' HERDR_ENV=1 BASH_ENV="$mask" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
       assert_not_contains "$out" "NOTICE: auto-detected" \
         "an undeclared home must not auto-detect a backend from HERDR_ENV=1"
-      assert_contains "$out" "BACKEND_INVALID: none - REFUSED: neither FM_BACKEND nor $home/config/backend declares no backend identity" \
-        "an undeclared home must be refused by name at session start"
-      assert_contains "$out" "Herdr is the sole supported Firstmate runtime backend" \
-        "the session-start refusal must name Herdr"
-      assert_contains "$out" "never used for selection: HERDR_ENV=1" \
-        "the session-start refusal must show that the Herdr marker was seen and ignored"
+      assert_not_contains "$out" "BACKEND_INVALID" \
+        "a locked session start must materialize an undeclared home's backend rather than refuse it"
+      assert_not_contains "$out" "MISSING: herdr" "Herdr session start missed its available session CLI"
+      assert_not_contains "$out" "MISSING: jq" "Herdr session start missed its available JSON dependency"
+      assert_not_contains "$out" "MISSING: treehouse" "Herdr session start missed its available worktree provider"
+      [ "$(cat "$home/config/backend" 2>/dev/null)" = herdr ] \
+        || fail "a locked session start did not materialize the undeclared home's config/backend as herdr"
     fi
     assert_contains "$out" "SESSION START - $home" "the real session-start path did not run in the throwaway home"
     assert_not_contains "$out" "MISSING: tmux" "Herdr session start falsely required masked tmux"
   done
-  pass "session start: a declared Herdr home starts silently and an undeclared home is refused; neither ever requires tmux"
+  pass "session start: a declared Herdr home starts silently, and a locked start materializes an undeclared home's backend rather than refusing it; neither ever requires tmux"
 }
 
 # --- status tail bounding -----------------------------------------------------
@@ -1268,8 +1279,8 @@ EOF
     "SECONDMATE_LIVENESS: secondmate $SESSION_START_SECOND_MATE_ID: skipped: existing endpoint has ambiguous agent process (backend=tmux)" \
     "session start did not distinguish an existing Pi-shaped process from a missing window"
   [ ! -s "$log" ] || fail "session start touched an ambiguous existing Pi process: $(cat "$log")"
-  assert_contains "$out" "endpoint: alive (backend=tmux window=firstmate:fm-$SESSION_START_SECOND_MATE_ID)" \
-    "the later fleet read should still see the ambiguous endpoint"
+  assert_contains "$out" "endpoint: legacy record, read-only (backend=absent window=firstmate:fm-$SESSION_START_SECOND_MATE_ID)" \
+    "the fleet digest must preserve the legacy record without claiming a verified endpoint"
   pass "session start: an existing ambiguous Pi process prevents duplicate recovery"
 }
 
@@ -1287,8 +1298,8 @@ EOF
     "SECONDMATE_LIVENESS: secondmate $SESSION_START_SECOND_MATE_ID: skipped: endpoint probe unreadable (backend=tmux)" \
     "session start did not distinguish transient unreadability from absence"
   [ ! -s "$log" ] || fail "session start touched a transiently unreadable target: $(cat "$log")"
-  assert_contains "$out" "endpoint: dead (backend=tmux window=firstmate:fm-$SESSION_START_SECOND_MATE_ID)" \
-    "the later cheap presence read should preserve the visible offline symptom"
+  assert_contains "$out" "endpoint: legacy record, read-only (backend=absent window=firstmate:fm-$SESSION_START_SECOND_MATE_ID)" \
+    "the fleet digest must not turn an unverified legacy record into a dead endpoint"
   pass "session start: transient tmux unreadability never licenses a relaunch"
 }
 
@@ -2536,6 +2547,12 @@ EOF
     "the off switch was not honored by session start"
   pass "session start reports the document reader honestly and never guesses a URL"
 }
+
+# Match the focused-function convention used by the other behavior suites.
+if [ -n "${FM_TEST_ONLY:-}" ]; then
+  "$FM_TEST_ONLY"
+  exit $?
+fi
 
 test_context_digest_absent_empty_present
 test_session_start_omits_removed_dashboard_and_preserves_supervision

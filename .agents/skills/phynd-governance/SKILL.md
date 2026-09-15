@@ -28,7 +28,7 @@ The mobile application is Expo with React Native.
 
 Use Sandcastle from Matt Pocock for isolated agent execution when available.
 Use the configured model-and-harness dispatch profiles rather than selecting a tool by habit.
-The current Phynd defaults are Pi with Luna xhigh for routine work, Claude Code with Fable high for feature design and architecture, and Sol high or Claude Code with Fable xhigh for ambiguous or high-risk implementation.
+[`config/crew-dispatch.json`](../../../config/crew-dispatch.json) owns the current Phynd dispatch defaults and task-specific selections.
 Choose a combination that preserves the required local tool access and complies with every applicable provider and service term.
 Never work around usage limits, authentication boundaries, sandbox controls, or provider safety restrictions.
 

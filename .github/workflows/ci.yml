@@ -9,24 +9,23 @@ on:
 permissions:
   contents: read
 
+# Firstmate-only captain-approved exclusions since 2026-09-09: the hosted
+# Lint job, two portable parallel behavior shards, and four-way portable
+# serial behavior matrix remain retired. Lint encountered a hosted-runner
+# shutdown before decisive diagnostics; behavior lanes had hosted Linux
+# runner/Herdr-availability failures. Neither exclusion claims those jobs pass.
+# bin/fm-lint.sh still runs locally and in the no-mistakes pre-push gate;
+# bin/fm-test-run.sh owns local lanes and --aggregate-json.
+# Retained hosted jobs are the static test-coverage guard, behavior timing
+# aggregate, and repository invariants. They do not require the excluded
+# behavior producers: aggregation warns and succeeds when no artifacts exist.
 jobs:
-  # Excluded per current captain instruction (recorded in this Firstmate
-  # home's private data/captain.md, Firstmate-repository-only): the hosted
-  # Lint job's most recent run was cancelled mid-scan by a runner shutdown
-  # signal (exit 143) before ShellCheck produced any decisive output, not by
-  # a reported lint finding; this is not claimed to be a code-content lint
-  # failure, but the job is excluded rather than spending cycles chasing a
-  # hosted-runner instability. `bin/fm-lint.sh` (ShellCheck + actionlint) is
-  # still the single owner of the lint definition and still runs locally and
-  # in the no-mistakes pre-push gate; only its hosted CI invocation here is
-  # excluded. Test coverage guard and Repo invariants below are unaffected.
-
   # Deterministic proof that portable parallel shards + portable serial + the
   # explicit legacy-adapter lane equal the complete tests/*.test.sh inventory
-  # with no missing or duplicates,
-  # and that the portable serial CI shards partition that serial lane exactly.
-  # This guard is static (it inspects bin/fm-test-run.sh's own lane
-  # definitions) and does not depend on the excluded hosted runner jobs below.
+  # with no missing or duplicates, and that the portable serial CI shards
+  # partition that serial lane exactly. This guard is static (it inspects
+  # bin/fm-test-run.sh's own lane definitions) and does not depend on the
+  # excluded hosted runner jobs above.
   test-coverage:
     name: Test coverage guard
     runs-on: ubuntu-latest
@@ -35,17 +34,40 @@ jobs:
       - name: Prove complete regression partition
         run: bin/fm-test-run.sh --check-coverage
 
-  # Excluded per current captain instruction (recorded in this Firstmate
-  # home's private data/captain.md, Firstmate-repository-only): the hosted
-  # portable-parallel shards, the four-way portable-serial matrix, and their
-  # dependent timing aggregate are excluded because the behavior jobs have
-  # pre-existing hosted ubuntu-latest runner/Herdr-availability failures.
-  # These jobs are not claimed as passing; their owners remain available
-  # for deliberate local use:
-  # bin/fm-test-run.sh's portable-parallel-1, portable-parallel-2, and
-  # portable-serial-<N>of4 lanes, and its --aggregate-json flag
-  # (docs/fm-test-portable-shards.md). Test coverage guard and Repo
-  # invariants above/below are unaffected and remain required.
+  # Retain timing aggregation and its existing no-artifacts path while hosted
+  # behavior producers are excluded.
+  tests-timing-aggregate:
+    name: Behavior timing aggregate
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download lane timing artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: fm-test-timing-*
+          path: ${{ runner.temp }}/fm-test-aggregate
+          merge-multiple: true
+      - name: Build aggregate timing summary
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/fm-test"
+          shopt -s nullglob
+          inputs=("$RUNNER_TEMP"/fm-test-aggregate/fm-test-timing-*.json)
+          if [ "${#inputs[@]}" -eq 0 ]; then
+            echo "::warning::no per-lane timing JSON found to aggregate"
+            exit 0
+          fi
+          bin/fm-test-run.sh --aggregate-json \
+            "$RUNNER_TEMP/fm-test/fm-test-timing-aggregate.json" \
+            "${inputs[@]}"
+      - name: Upload aggregate timing artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fm-test-timing-aggregate
+          path: ${{ runner.temp }}/fm-test/fm-test-timing-aggregate.json
+          if-no-files-found: warn
 
   invariants:
     name: Repo invariants

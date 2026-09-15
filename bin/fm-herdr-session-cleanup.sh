@@ -32,7 +32,15 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
-fm_backend_source herdr
+# Source the herdr adapter directly (not through fm_backend_source, which
+# would also run its native capability probe here) so this script's own
+# journal-suffix constant and helper functions are defined for the
+# candidate-detection guards below. The capability probe itself is deferred
+# to fm_herdr_session_cleanup, which runs it only once those guards confirm
+# cleanup actually has a candidate to act on.
+# shellcheck source=bin/backends/herdr.sh
+. "$FM_BACKEND_LIB_DIR/backends/herdr.sh"
+_FM_BACKEND_HERDR_SOURCED=1
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 
@@ -304,6 +312,12 @@ fm_herdr_session_cleanup() {
   [ "$found" -eq 1 ] || return 0
   command -v herdr >/dev/null 2>&1 \
     && command -v jq >/dev/null 2>&1 || return 0
+  # Only probe Herdr's native capability once a candidate journal and both
+  # required tools are confirmed present, so an undeclared or unhealthy
+  # Herdr backend never leaks a premature capability refusal into session
+  # start ahead of the real backend-identity refusal when there is nothing
+  # here to clean up.
+  fm_backend_herdr_capability_check 'session-start herdr projection cleanup' || return 0
   home_real=$(fm_herdr_cleanup_home_identity) || {
     fm_herdr_cleanup_warn 'home identity is unreadable; preserving every candidate'
     return 0

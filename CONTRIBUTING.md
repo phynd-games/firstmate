@@ -9,10 +9,9 @@ We require this to reduce the maintainer's burden of reviewing and merging contr
 `no-mistakes` puts a local git proxy in front of your real remote.
 Pushing through it runs an AI-driven review/test/lint pipeline in an isolated worktree, forwards the push upstream only after every check passes, and opens a clean PR automatically.
 
-Contributor PRs require both the deterministic signature and a parseable structured attestation from no-mistakes v1.46.0 or newer.
-The attestation must bind to the current PR head commit and report the review, test, and document steps as completed.
-The hosted check's execution policy and exclusion rationale are owned by [`.github/workflows/no-mistakes-required.yml`](.github/workflows/no-mistakes-required.yml).
-GitHub Actions and Dependabot are exempt so their automation keeps working, but other contributor PRs that do not satisfy the attestation contract will not be reviewed or merged.
+A local `no-mistakes` push is what actually produces a compliant PR: it runs the review/test/document pipeline before forwarding to the parent repo, and its attestation records that step completion.
+The parent repo does not currently run an automated GitHub Actions check enforcing this on every PR; treat the requirement above as the contribution expectation rather than something CI blocks on for you.
+`tests/fm-no-mistakes-required.test.sh` exercises the pinned shared verifier action directly for anyone who wants to reuse it elsewhere.
 
 ## Workflow
 
@@ -102,7 +101,7 @@ bin/fm-instruction-sources-check.sh
 tmp=$(mktemp -d) && printf 'done: smoke\n' > "$tmp/smoke.status" && FM_STATE_OVERRIDE="$tmp" FM_SIGNAL_GRACE=1 FM_POLL=1 FM_HEARTBEAT=999999 bin/fm-watch-arm.sh  # watcher re-arm smoke test (prints arm status, then an actionable signal)
 ```
 
-`bin/fm-test-run.sh` is the single owner of behavior-suite selection, portable CI lane composition, bounded concurrency admission, per-script timing markers, family totals, the coverage guard, and the optional JSON timing artifact.
+`bin/fm-test-run.sh` is the single owner of behavior-suite selection, portable lane composition, bounded concurrency admission, per-script timing markers, family totals, the coverage guard, and the optional JSON timing artifact.
 Its header and `--help` own the flags, family labels, lanes, and changed-file map; this section only documents the entry points.
 `bin/fm-test-isolation-proof.sh` remains the single owner of the portable candidate proof and reusable family proof harness; see `docs/fm-test-isolation-proof.md`.
 Portable shard balance evidence lives in `docs/fm-test-portable-shards.md`.

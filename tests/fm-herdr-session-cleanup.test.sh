@@ -25,6 +25,45 @@ export FM_HERDR_SESSION_CLEANUP_SOURCE_ONLY=1
 . "$ROOT/bin/fm-herdr-session-cleanup.sh"
 unset FM_HERDR_SESSION_CLEANUP_SOURCE_ONLY
 
+# Regression for the capability-probe ordering fix: the fake herdr binary
+# above exits 0 with no output, so it fails the deep protocol capability
+# check (fm_backend_herdr_capability_check) whenever that check actually
+# runs. Exercise the script's real, unmodified entry point - a fresh
+# subprocess, the same invocation session-start.sh uses - because the
+# ordering bug leaked its probe failure at source time, before any function
+# call, so only a fresh process reproduces it. With no candidate journal
+# present, the real entry point must return cleanly without ever reaching -
+# and therefore without ever failing - that probe.
+real_run_err=$("$ROOT/bin/fm-herdr-session-cleanup.sh" 2>&1 >/dev/null)
+real_run_status=$?
+[ "$real_run_status" -eq 0 ] \
+  || fail "the real cleanup entry point with no candidate journal did not exit 0: status=$real_run_status"
+[ -z "$real_run_err" ] \
+  || fail "the real cleanup entry point with no candidate journal leaked probe output with nothing to clean up: $real_run_err"
+pass "the real cleanup entry point with no candidate journal skips the native capability probe entirely"
+
+# With a genuine candidate journal present, the capability check must still
+# run and gate cleanup - the fix defers the probe, it does not remove it.
+CANDIDATE_JOURNAL="$FM_STATE_OVERRIDE/probe-candidate.herdr-presentation"
+printf 'v=1\n' > "$CANDIDATE_JOURNAL"
+cleanup_err=$(fm_herdr_session_cleanup 2>&1 >/dev/null)
+cleanup_status=$?
+[ "$cleanup_status" -eq 0 ] \
+  || fail "cleanup with a candidate journal and an unhealthy herdr did not return conservatively: status=$cleanup_status"
+case "$cleanup_err" in
+  *"capability check failed"*) ;;
+  *) fail "cleanup with a candidate journal and an unhealthy herdr did not report the native capability check: $cleanup_err" ;;
+esac
+rm -f "$CANDIDATE_JOURNAL"
+pass "cleanup with a candidate journal still runs the native capability probe and preserves the journal on failure"
+
+# The topology cases below need a healthy native client and named session.
+# Keep exercising the real capability gate instead of stubbing it away.
+cat > "$FAKEBIN/herdr" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{"client":{"version":"0.8.2","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}'
+SH
+
 # The idle-shell proof now lives in the backend as
 # fm_backend_herdr_pane_idle_shell_pid; prove it still reads Linux argv
 # arrays (no argv0 field) and rejects malformed executable identities.
@@ -43,7 +82,7 @@ argv_pid=$(
   # shellcheck disable=SC2329 # invoked indirectly by the idle-shell proof.
   fm_backend_herdr_cli() {
     if [ "${2:-}" = pane ] && [ "${3:-}" = get ]; then
-      printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p1","workspace_id":"w2","tab_id":"w2:t1"}}}'
+      printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p1","workspace_id":"w2","tab_id":"w2:t1","terminal_id":"terminal-67"}}}'
     else
       printf '%s\n' "$LINUX_PROCESS_INFO"
     fi
@@ -55,7 +94,7 @@ if (
   # shellcheck disable=SC2329 # invoked indirectly by the idle-shell proof.
   fm_backend_herdr_cli() {
     if [ "${2:-}" = pane ] && [ "${3:-}" = get ]; then
-      printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p1","workspace_id":"w2","tab_id":"w2:t1"}}}'
+      printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p1","workspace_id":"w2","tab_id":"w2:t1","terminal_id":"terminal-67"}}}'
     else
       printf '%s\n' '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p1","workspace_id":"w2","tab_id":"w2:t1","shell_pid":67,"foreground_process_group_id":67,"foreground_processes":[{"argv":[67],"name":"sh","pid":67}]}}}'
     fi
@@ -159,6 +198,9 @@ fm_backend_herdr_cli() {
   tabs=$(cat "$FIXTURE_DIR/tabs")
   panes=$(cat "$FIXTURE_DIR/panes")
   case "$first $second" in
+    "status --json")
+      "$FAKEBIN/herdr" "$@"
+      ;;
     "workspace list")
       printf '{"result":{"workspaces":'; fixture_workspaces; printf '}}\n'
       ;;
@@ -172,7 +214,7 @@ fm_backend_herdr_cli() {
       printf '{"result":{"panes":'; fixture_panes; printf '}}\n'
       ;;
     "pane get")
-      printf '{"result":{"pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s"}}}\n' "$PANE" "$TAB" "$WS"
+      printf '{"result":{"pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s","terminal_id":"terminal-67"}}}\n' "$PANE" "$TAB" "$WS"
       ;;
     "agent get")
       case "$(cat "$FIXTURE_DIR/agent")" in

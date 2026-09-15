@@ -31,7 +31,8 @@ Never infer not-applicable from a missing artifact, a small diff, a file path, o
 
 The artifact must state the product goal, intended users, use cases, scope, non-goals, constraints, visual or product references, key choices and options, acceptance criteria, and open questions.
 The artifact must make choices visible, distinguish selected from queued state, and provide one explicit submit control that queues one keyed answer.
-Existing accepted answers may prefill fields, but the captain must review and submit the current intake again.
+When a new intake is required, existing accepted answers may prefill fields, but the captain must review and submit the current intake again.
+For an already-covered exact follow-up, use the carry-forward policy below.
 
 Before authoring the first HTML revision, read current `lavish-axi --help`, `lavish-axi design`, and every matching playbook, including `input`, `plan`, and `comparison` for this gate.
 Inspect the subject project first and match its current visual system when the artifact represents its UI or product.
@@ -54,6 +55,13 @@ The Lavish poll has a source-side loss window after feedback is cleared, so neve
 The current interactive fleet-board integration is `bin/fm-bearings-board.sh build`.
 Use it as a live ordering example because it builds the stable fleet-board surface, opens Lavish, binds `captain-hold`, and arms `fm-procevent-lavish` without creating another answer or polling system.
 Do not modify fleet-board product code to satisfy this gate.
+
+## Exact follow-up carry-forward
+
+Use carry-forward only when MAIN has reviewed the child as an exact follow-up under the classification rule above and explicitly declares its accepted scope and approval.
+MAIN owns that semantic judgment; a successful fingerprint check cannot establish scope inclusion.
+This reuses the existing captain answer and must never be presented as a new one.
+[`bin/fm-lavish-intake.sh --help`](../../../bin/fm-lavish-intake.sh) owns command syntax, parent eligibility, declaration-file requirements, retry behavior, evidence retention, and verification mechanics.
 
 ## Enforcement and compatibility
 
