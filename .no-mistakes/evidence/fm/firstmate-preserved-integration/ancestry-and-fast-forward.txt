@@ -1,0 +1,25 @@
+preserved primary: 86d3b236f5f43eb13c33a21925e4d70dac08835b is an ancestor of a8b3556ac2a7b6f214388ffde4ec989b5a3f624e
+origin/main base: c6f2a4d61467071c7668d427c9a63e7935dc5ca9 is an ancestor of a8b3556ac2a7b6f214388ffde4ec989b5a3f624e
+PR16: b631eca95f906ab1a9493ff373364eba8f44c676 is an ancestor of a8b3556ac2a7b6f214388ffde4ec989b5a3f624e
+PR10: 3e319d2659f313f4434a28fb742b3c9f0fa0169e is an ancestor of a8b3556ac2a7b6f214388ffde4ec989b5a3f624e
+PR12: b615ae39403428728c4a69b92b34cd21ba779196 is an ancestor of a8b3556ac2a7b6f214388ffde4ec989b5a3f624e
+PR8: f89f5d62f34f219fbfca8aa2381f2a0db543e44d is an ancestor of a8b3556ac2a7b6f214388ffde4ec989b5a3f624e
+PR9: 2bd7d5da304ff903feb764492da989fc20036b93 is an ancestor of a8b3556ac2a7b6f214388ffde4ec989b5a3f624e
+
+Disposable primary checkout: git merge --ff-only --no-stat a8b3556ac2a7b6f214388ffde4ec989b5a3f624e
+Updating 86d3b23..a8b3556
+Fast-forward
+HEAD=a8b3556ac2a7b6f214388ffde4ec989b5a3f624e
+All preserved primary commits remain reachable.
+
+Parsed CI jobs: Test coverage guard, Behavior timing aggregate, Repo invariants
+Hosted Lint and behavior-shard jobs are absent. Timing aggregation has no dependency on retired jobs.
+
+Verified ordinary two-parent merges (no squash/rebase):
+a7bc8bf0add2c912019d2d4b137c02b76ad35643 f774bb2096ec6188c03837c25de093a6bdd1f11e 86d3b236f5f43eb13c33a21925e4d70dac08835b Merge primary's preserved local integration (86d3b236) into origin/main
+0c475869e49edef8b27aaaba71e7b8b0ffb244c0 a7bc8bf0add2c912019d2d4b137c02b76ad35643 c6f2a4d61467071c7668d427c9a63e7935dc5ca9 Merge commit 'c6f2a4d61467071c7668d427c9a63e7935dc5ca9' into fm/firstmate-preserved-integration
+5a7fd752f5046cc21accf5ce477481a0bb6ba5f0 7dc619ee9a9409dfb844c4a0d4fac008d40e5ea8 b631eca95f906ab1a9493ff373364eba8f44c676 Merge PR16 published head (no-mistakes: apply CI fixes)
+e86b655708b4f8d5ad932c0dc0c2a993884ca6ed 5a7fd752f5046cc21accf5ce477481a0bb6ba5f0 3e319d2659f313f4434a28fb742b3c9f0fa0169e Merge PR10 published head (fix: carry approved intake forward to exact follow-up tasks)
+5baa2ad9b06d172381bb472e7523ef9fe0f323c1 e86b655708b4f8d5ad932c0dc0c2a993884ca6ed b615ae39403428728c4a69b92b34cd21ba779196 Merge PR12 published head (fix: correct Herdr lab allocation identity, cancellation, and deadlines)
+c61da9807012e4c2ef172d85bc127490c3cc4e00 5baa2ad9b06d172381bb472e7523ef9fe0f323c1 f89f5d62f34f219fbfca8aa2381f2a0db543e44d Merge PR8 published head (feat: remove the local dashboard)
+77de4e10f6b5e302e4c4b245154e87c804245e5f c61da9807012e4c2ef172d85bc127490c3cc4e00 2bd7d5da304ff903feb764492da989fc20036b93 Merge PR9 published head (feat: local Markdown document reader)

@@ -1,0 +1,37 @@
+FM_TEST_BEGIN 2026-09-15T21:20:29Z tests/fm-session-start.test.sh family=session-bootstrap expected_gate_skip=none
+ok - context digest distinguishes ABSENT, empty-but-present, and populated files
+ok - session start omits the removed dashboard and preserves supervision
+ok - session start reports the document reader honestly and never guesses a URL
+ok - a lock refusal prints a loud read-only banner, skips every mutating step, and still completes the digest
+ok - session start stays read-only when lock ownership cannot be published
+ok - locked session start freezes trace context and lock refusal leaves it unchanged
+ok - concurrent session-lock acquisition admits exactly one live harness
+not ok - MISSING diagnostic did not appear at all
+FM_TEST_END 2026-09-15T21:21:29Z tests/fm-session-start.test.sh exit=1 duration_ms=60483 gate_skip=false
+FM_TEST_BEGIN 2026-09-15T21:21:29Z tests/fm-docs-reader.test.sh family=unclassified expected_gate_skip=none
+ok - url helper maps nested pages, index, anchors, and in-tree dotted paths
+ok - url helper refuses traversal outside data/
+ok - url helper refuses a symlink that escapes data/
+ok - url helper refuses a non-markdown file
+ok - url helper refuses outside-home, hidden, and missing paths
+ok - active content from report text is inert while headings, tables, and code render
+ok - active rendering references no external host
+ok - active page assets (theme CSS, JS, highlight stylesheet) are served locally
+ok - the site serves only Markdown pages inside data/ and rewrites relative .md links
+ok - live create, edit, rename, and delete update pages and navigation without a restart
+ok - the reader binds loopback only
+ok - two homes get distinct ports and isolation of their documents
+ok - ensure is idempotent and status reports the live reader
+ok - ensure restarts a dead reader on the same URL
+ok - stop and ensure leave an unidentified pid untouched and recover
+ok - serving leaves data/ byte-identical and keeps generated files under state/
+ok - off switch, harness guard, and missing runtime print a reason and never a URL
+ok - navigation renders a 150-section inventory as one collapsible tree, current branch expanded, others closed
+ok - ensure converges a changed theme override into the running reader without a restart
+skip: set FM_DOCS_READER_INSTALL_TEST=1 to exercise the network-dependent pinned install
+FM_TEST_END 2026-09-15T21:23:14Z tests/fm-docs-reader.test.sh exit=0 duration_ms=104180 gate_skip=false
+FM_TEST_SUMMARY total=2 failed=1 skipped_gate=0 duration_ms=164821
+FM_TEST_SUMMARY_FAMILY family=session-bootstrap count=1 duration_ms=60483 failed=1
+FM_TEST_SUMMARY_FAMILY family=unclassified count=1 duration_ms=104180 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-docs-reader.test.sh duration_ms=104180
+FM_TEST_SLOWEST rank=2 script=tests/fm-session-start.test.sh duration_ms=60483

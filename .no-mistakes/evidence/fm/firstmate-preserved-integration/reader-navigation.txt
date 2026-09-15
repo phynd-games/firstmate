@@ -1,0 +1,2 @@
+{"url":"http://127.0.0.1:8639/integration/check/","title":"Integration check - Firstmate documents (docs-home)","heading":"Integration check¶"}
+{"url":"http://127.0.0.1:8639/","title":"Firstmate documents (docs-home)","heading":"Preserved integration¶"}

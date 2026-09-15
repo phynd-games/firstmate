@@ -1,0 +1,392 @@
++ set -u
+++ dirname tests/fm-herdr-session-cleanup.test.sh
++ . tests/lib.sh
+++ '[' -n '' ']'
+++ FM_TEST_LIB_SOURCED=1
+++ export FM_GATE_REFUSE_BYPASS=1
+++ FM_GATE_REFUSE_BYPASS=1
+++ export FM_BACKEND_TEST_HARNESS=1
+++ FM_BACKEND_TEST_HARNESS=1
+++++ dirname tests/lib.sh
++++ cd tests/..
++++ pwd
+++ ROOT=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5
+++ FM_TEST_CLEANUP_DIRS=()
++++ mktemp /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/.fm-test-cleanup.3432.XXXXXX
+++ FM_TEST_CLEANUP_REGISTRY=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/.fm-test-cleanup.3432.AxQDKf
++++ fm_test_pid_identity 3432
++++ local pid=3432
++++ FM_STATE_OVERRIDE=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp
++++ bash -c '. "$1"; fm_pid_identity "$2"' _ /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-wake-lib.sh 3432
+++ FM_TEST_OWNER_IDENTITY='Tue Sep 15 17:27:47 2026     bash -x tests/fm-herdr-session-cleanup.test.sh'
+++ trap fm_test_cleanup EXIT
+++ trap 'fm_test_cleanup; exit 130' INT
+++ trap 'fm_test_cleanup; exit 143' TERM
+++ FM_TEST_ORPHAN_MAX_AGE_SECONDS=3600
+++ '[' 0 '!=' 1 ']'
+++ fm_test_reap_orphans
+++ local marker dir mtime now owner_pid owner_identity current_identity
++++ date +%s
+++ now=1789507667
+++ for marker in "${TMPDIR:-/tmp}"/fm-*/.fm-test-fixture
+++ '[' -e /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-lab.AZiseU/.fm-test-fixture ']'
++++ sed -n 1p /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-lab.AZiseU/.fm-test-fixture
+++ owner_pid=48267
++++ sed -n '2,$p' /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-lab.AZiseU/.fm-test-fixture
+++ owner_identity='Tue Sep 15 17:26:42 2026     bash tests/fm-herdr-lab.test.sh'
+++ case "$owner_pid" in
++++ fm_test_pid_identity 48267
+++ current_identity='Tue Sep 15 17:26:42 2026     bash tests/fm-herdr-lab.test.sh'
+++ '[' -n 'Tue Sep 15 17:26:42 2026     bash tests/fm-herdr-lab.test.sh' ']'
+++ '[' 'Tue Sep 15 17:26:42 2026     bash tests/fm-herdr-lab.test.sh' = 'Tue Sep 15 17:26:42 2026     bash tests/fm-herdr-lab.test.sh' ']'
+++ continue
+++ fm_test_tmproot fm-herdr-session-cleanup
+++ local prefix=fm-herdr-session-cleanup root created
++++ mktemp -d /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.XXXXXX
+++ created=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq
++++ cd -P -- /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq
++++ pwd -P
+++ root=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq
+++ printf '%s\n%s\n' 3432 'Tue Sep 15 17:27:47 2026     bash -x tests/fm-herdr-session-cleanup.test.sh'
+++ printf '%s\n' /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq
+++ printf '%s\n' /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq
++ TMP_ROOT=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq
++ FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT")
++ trap fm_test_cleanup EXIT
++ export FM_HOME=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home
++ FM_HOME=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home
++ export FM_STATE_OVERRIDE=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/state
++ FM_STATE_OVERRIDE=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/state
++ export FM_CONFIG_OVERRIDE=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/config
++ FM_CONFIG_OVERRIDE=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/config
++ mkdir -p /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/state /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/config
++ touch /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/config/herdr-presentation-spaces
++ printf '%s\n' herdr
+++ fm_fakebin /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq
+++ local dir=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq fakebin=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/fakebin
+++ mkdir -p /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/fakebin
+++ printf '%s\n' /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/fakebin
++ FAKEBIN=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/fakebin
++ fm_fake_exit0 /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/fakebin herdr
++ local fakebin=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/fakebin tool
++ shift
++ for tool in "$@"
++ cat
++ chmod +x /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/fakebin/herdr
++ export PATH=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/fakebin:/Users/criz/.codex/packages/standalone/releases/0.153.0-aarch64-apple-darwin/codex-path:/Users/criz/.bun/bin:/opt/homebrew/bin:/Users/criz/.local/bin:/opt/homebrew/sbin:/Users/criz/.codex/tmp/arg0/codex-arg0PC4DNx:/Users/criz/.codex/packages/standalone/releases/0.153.0-aarch64-apple-darwin/codex-path:/opt/homebrew/Caskroom/miniconda/base/bin:/opt/homebrew/Caskroom/miniconda/base/condabin:/Users/criz/.cargo/bin:/Users/criz/.local/share/phynd-dev/npm/bin:/Users/criz/.nix-profile/bin:/etc/profiles/per-user/criz/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/criz/go/bin:/Users/criz/bin:/usr/local/sbin
++ PATH=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/fakebin:/Users/criz/.codex/packages/standalone/releases/0.153.0-aarch64-apple-darwin/codex-path:/Users/criz/.bun/bin:/opt/homebrew/bin:/Users/criz/.local/bin:/opt/homebrew/sbin:/Users/criz/.codex/tmp/arg0/codex-arg0PC4DNx:/Users/criz/.codex/packages/standalone/releases/0.153.0-aarch64-apple-darwin/codex-path:/opt/homebrew/Caskroom/miniconda/base/bin:/opt/homebrew/Caskroom/miniconda/base/condabin:/Users/criz/.cargo/bin:/Users/criz/.local/share/phynd-dev/npm/bin:/Users/criz/.nix-profile/bin:/etc/profiles/per-user/criz/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/criz/go/bin:/Users/criz/bin:/usr/local/sbin
++ export FM_HERDR_SESSION_CLEANUP_SOURCE_ONLY=1
++ FM_HERDR_SESSION_CLEANUP_SOURCE_ONLY=1
++ . /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-herdr-session-cleanup.sh
+++ set -u
+++++ dirname /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-herdr-session-cleanup.sh
++++ cd /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin
++++ pwd
+++ SCRIPT_DIR=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin
++++ cd /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/..
++++ pwd
+++ FM_ROOT=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5
+++ FM_HOME=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home
+++ STATE=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/state
+++ . /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-wake-lib.sh
++++++ dirname /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-wake-lib.sh
+++++ cd /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin
+++++ pwd
++++ FM_WAKE_LIB_DIR=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin
+++++ cd /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/..
+++++ pwd
++++ FM_WAKE_DEFAULT_ROOT=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5
++++ FM_ROOT=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5
++++ FM_HOME=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home
++++ STATE=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/state
++++ FM_WAKE_QUEUE=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/state/.wake-queue
++++ FM_WAKE_QUEUE_LOCK=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/state/.wake-queue.lock
++++ FM_LOCK_STALE_AFTER=2
++++ . /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-session-lock-lib.sh
++++++ dirname -- /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-session-lock-lib.sh
+++++ . /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-cursor-lib.sh
++++++ FM_CURSOR_PROBE_TIMEOUT=10
+++++ FM_HARNESS_RE='claude|codex|opencode|grok|kimi|^pi$|^pi-signed$'
+++++ FM_HARNESS_NAMES=(claude codex opencode grok kimi pi-signed pi)
+++++ FM_HARNESS_IS_CLAUDE=0
+++++ uname
++++ _FM_UNAME=Darwin
++++ case "${FM_WAKE_LIB_NO_STATE_MKDIR:-0}" in
++++ mkdir -p /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/state
++++ FM_WATCHER_MATCHED_IDENTITY=
++++ FM_WATCHER_HEALTHY_PID=
++++ FM_WATCHER_HEALTHY_IDENTITY=
++++ FM_WATCHER_VERDICT_OK=false
++++ FM_WATCHER_VERDICT_REASON=stale-beacon
++++ FM_RECOVERY_MARKER_TOKEN=
++++ FM_RECOVERY_MARKER_ACTION=none
++++ FM_WAKE_STATUS_KEY=
++++ FM_WAKE_STATUS_HISTORICAL=false
++++ FM_WAKE_EVENT_LINE=
++++ FM_WAKE_UNREAD_LINES=
+++ . /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-backend.sh
++++ FM_BACKEND_SCRIPT=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-backend.sh
++++++ dirname /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-backend.sh
+++++ cd /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin
+++++ pwd
++++ FM_BACKEND_LIB_DIR=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin
++++ unset FM_BACKEND_SCRIPT
+++++ cd /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/..
+++++ pwd
++++ FM_BACKEND_DEFAULT_ROOT=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5
++++ FM_ROOT=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5
++++ FM_HOME=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home
++++ FM_BACKEND_CONFIG_DIR=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/config
++++ . /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-backend-policy-lib.sh
+++++ '[' -n '' ']'
+++++ _FM_BACKEND_POLICY_LIB_SOURCED=1
+++++ FM_BACKEND_ACTIVE=herdr
+++++ FM_BACKEND_RETAINED_LEGACY='tmux zellij orca cmux'
++++ FM_BACKEND_KNOWN=herdr
++++ FM_BACKEND_SPAWN=herdr
++++ FM_BACKEND_CMUX_BUNDLE_ID=com.cmuxterm.app
+++ . /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/backends/herdr.sh
++++++ dirname /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/backends/herdr.sh
+++++ cd /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/backends/../..
+++++ pwd
++++ FM_BACKEND_HERDR_ROOT=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5
++++ FM_ROOT=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5
++++ FM_HOME=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home
++++ . /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-composer-lib.sh
+++++ FM_COMPOSER_UNICODE_SPACES=()
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0302\0205'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0302\0240'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0341\0232\0200'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0200'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0201'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0202'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0203'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0204'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0205'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0206'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0207'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0210'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0211'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0212'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0250'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0251'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0257'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0201\0237'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0343\0200\0200'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ unset -v _fm_composer_space_octal _fm_composer_space_utf8
+++++ FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel|ctrl\+c to stop'
+++++ FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[smh]'
+++++ FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
+++++ FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
+++++ FM_DELIVERY_PI_BUSY_REGEX_DEFAULT='Working\.\.\.'
+++++ FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT='Ctrl\+c:cancel'
+++++ FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT='ctrl\+c to stop'
+++++ FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT='^[[:space:]]*(🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘)[[:space:]]+·[[:space:]]+'
++++++ printf '%s\n' ❯ › ⟩ →
+++++ FM_COMPOSER_AGENT_PROMPT_GLYPHS=$'❯\n›\n⟩\n→'
++++++ printf '%s\n' '>' '$' % '#'
+++++ FM_COMPOSER_SHELL_PROMPT_GLYPHS=$'>\n$\n%\n#'
+++++ FM_COMPOSER_IDLE_RE_DEFAULT='^Type a message\.\.\.$|^Ask anything\.\.\.|^Plan, search, build anything$|^Add a follow-up$'
+++++ FM_COMPOSER_LEFTBAR_FOOTER_RE_DEFAULT='^(Build|Plan)[[:space:]]+·[[:space:]]+'
+++++ FM_COMPOSER_CAPTURE_LINES=20
+++++ FM_COMPOSER_PI_MAX_LINES=8
++++ . /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-transition-lib.sh
+++++ FM_TRANSITION_FIELD_SEP=$'\t'
++++ FM_BACKEND_HERDR_MIN_PROTOCOL=14
++++ FM_BACKEND_HERDR_MIN_EVENTS_PROTOCOL=16
++++ FM_BACKEND_HERDR_MIN_WORKSPACE_MOVE_PROTOCOL=16
++++ FM_BACKEND_HERDR_MIN_PRESENTATION_PROTOCOL=19
++++ FM_BACKEND_HERDR_MIN_PRESENTATION_VERSION=0.8.0
++++ FM_BACKEND_HERDR_PRESENTATION_FLOOR_MARKER_PREFIX=.herdr-presentation-floor-
++++ FM_BACKEND_HERDR_ESCALATED_PREFIX=.herdr-escalated-
++++ FM_BACKEND_HERDR_SECONDMATE_MARKER=.fm-secondmate-home
++++ FM_BACKEND_HERDR_PRESENTATION_JOURNAL_SUFFIX=.herdr-presentation
++++ FM_BACKEND_HERDR_PRESENTATION_CONFIG=herdr-presentation-spaces
++++ FM_BACKEND_HERDR_SUBMIT_POLLS=6
++++ FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0.6
+++ _FM_BACKEND_HERDR_SOURCED=1
+++ . /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-pr-lib.sh
++++ FM_PR_PROVIDER=
++++ FM_PR_URL=
++++ FM_PR_HOST=
++++ FM_PR_PATH=
++++ FM_PR_OWNER=
++++ FM_PR_REPO=
++++ FM_PR_NUMBER=
++++ FM_PR_REMOTE_PROVIDER=
++++ FM_PR_REMOTE_HOST=
++++ FM_PR_REMOTE_PATH=
++++ FM_PR_DATA_PROVIDER=
++++ FM_PR_DATA_URL=
++++ FM_PR_DATA_HOST=
++++ FM_PR_DATA_PATH=
++++ FM_PR_DATA_NUMBER=
++++ FM_PR_META_PROVIDER=
++++ FM_PR_META_URL=
++++ FM_PR_META_HOST=
++++ FM_PR_META_PATH=
++++ FM_PR_META_NUMBER=
++++ FM_PR_REG_ID=
++++ FM_PR_REG_PROVIDER=
++++ FM_PR_REG_URL=
++++ FM_PR_REG_HOST=
++++ FM_PR_REG_PATH=
++++ FM_PR_REG_NUMBER=
++++ FM_PR_REG_DATA_HASH=
++++ FM_PR_REG_TEMPLATE_HASH=
++++ FM_PR_REG_DATA_IDENTITY=
++++ FM_PR_REG_CHECK_IDENTITY=
++++ FM_PR_POLL_DATA_TMP=
++++ FM_PR_POLL_CHECK_TMP=
++++ FM_PR_POLL_REG_TMP=
++++ FM_PR_POLL_DATA_DEST=
++++ FM_PR_POLL_CHECK_DEST=
++++ FM_PR_POLL_REG_DEST=
++++ FM_PR_POLL_EXPECT_ID=
++++ FM_PR_POLL_EXPECT_PROVIDER=
++++ FM_PR_POLL_EXPECT_URL=
++++ FM_PR_POLL_EXPECT_HOST=
++++ FM_PR_POLL_EXPECT_PATH=
++++ FM_PR_POLL_EXPECT_NUMBER=
++++ FM_PR_POLL_EXPECT_DATA_HASH=
++++ FM_PR_POLL_EXPECT_TEMPLATE_HASH=
++++ FM_PR_POLL_EXPECT_DATA_IDENTITY=
++++ FM_PR_POLL_EXPECT_CHECK_IDENTITY=
++++ FM_PR_POLL_TEMPLATE=
++++ FM_PR_POLL_STATE_DEVICE=
++++ FM_PR_POLL_SNAPSHOT_ID=
++++ FM_PR_POLL_SNAPSHOT_PROVIDER=
++++ FM_PR_POLL_SNAPSHOT_URL=
++++ FM_PR_POLL_SNAPSHOT_HOST=
++++ FM_PR_POLL_SNAPSHOT_PATH=
++++ FM_PR_POLL_SNAPSHOT_NUMBER=
++++ FM_PR_POLL_SNAPSHOT_DATA_HASH=
++++ FM_PR_POLL_SNAPSHOT_TEMPLATE_HASH=
++++ FM_PR_POLL_SNAPSHOT_DATA_IDENTITY=
++++ FM_PR_POLL_SNAPSHOT_CHECK_IDENTITY=
++++ FM_PR_POLL_SNAPSHOT_REG_HASH=
++++ FM_PR_POLL_SNAPSHOT_REG_IDENTITY=
++++ FM_PR_RETIRE_ID=
++++ FM_PR_RETIRE_PROVIDER=
++++ FM_PR_RETIRE_URL=
++++ FM_PR_RETIRE_HOST=
++++ FM_PR_RETIRE_PATH=
++++ FM_PR_RETIRE_NUMBER=
++++ FM_PR_RETIRE_DATA_HASH=
++++ FM_PR_RETIRE_TEMPLATE_HASH=
++++ FM_PR_RETIRE_DATA_IDENTITY=
++++ FM_PR_RETIRE_CHECK_IDENTITY=
++++ FM_PR_RETIRE_REG_HASH=
++++ FM_PR_RETIRE_REG_IDENTITY=
++++ FM_PR_RETIRE_RECEIPT_HASH=
++++ FM_PR_RETIRE_RECEIPT_IDENTITY=
++++ FM_PR_POLL_RETIREMENT_REJECTED=
+++ '[' 1 '!=' 1 ']'
++ unset FM_HERDR_SESSION_CLEANUP_SOURCE_ONLY
+++ /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-herdr-session-cleanup.sh
++ real_run_err=
++ real_run_status=0
++ '[' 0 -eq 0 ']'
++ '[' -z '' ']'
++ pass 'the real cleanup entry point with no candidate journal skips the native capability probe entirely'
++ printf 'ok - %s\n' 'the real cleanup entry point with no candidate journal skips the native capability probe entirely'
+ok - the real cleanup entry point with no candidate journal skips the native capability probe entirely
++ CANDIDATE_JOURNAL=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/state/probe-candidate.herdr-presentation
++ printf 'v=1\n'
+++ fm_herdr_session_cleanup
++ cleanup_err=$'++ local session home_real list candidates workspace title journal found=0\n++ \'[\' -d /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/state \']\'\n++ \'[\' \'!\' -L /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/state \']\'\n++ for journal in "$STATE"/*"$FM_BACKEND_HERDR_PRESENTATION_JOURNAL_SUFFIX"\n++ \'[\' -f /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/state/probe-candidate.herdr-presentation \']\'\n++ \'[\' \'!\' -L /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/state/probe-candidate.herdr-presentation \']\'\n++ found=1\n++ break\n++ \'[\' 1 -eq 1 \']\'\n++ command -v herdr\n++ command -v jq\n++ fm_backend_herdr_capability_check \'session-start herdr projection cleanup\'\n++ local \'origin=session-start herdr projection cleanup\' detail\n+++ fm_backend_herdr_version_check\n++ detail=$\'+++ fm_backend_herdr_tool_check\\n+++ command -v herdr\\n+++ command -v jq\\n+++ return 0\\n+++ local status protocol version\\n++++ fm_backend_herdr_native status --json\\n+++ status=\\n++++ printf %s \\\'\\\'\\n++++ jq -r \\\'.client.protocol // empty\\\'\\n+++ protocol=\\n++++ printf %s \\\'\\\'\\n++++ jq -r \\\'.client.version // empty\\\'\\n+++ version=\\n+++ case "$protocol" in\\n+++ echo \\\'error: could not read herdr client protocol from \\\'\\\\\\\'\\\'herdr status --json\\\'\\\\\\\'\\\'; refusing to use an unverified herdr build\\\'\\nerror: could not read herdr client protocol from \\\'herdr status --json\\\'; refusing to use an unverified herdr build\\n+++ return 1\'\n+++ printf \'%s\\n\' $\'+++ fm_backend_herdr_tool_check\\n+++ command -v herdr\\n+++ command -v jq\\n+++ return 0\\n+++ local status protocol version\\n++++ fm_backend_herdr_native status --json\\n+++ status=\\n++++ printf %s \\\'\\\'\\n++++ jq -r \\\'.client.protocol // empty\\\'\\n+++ protocol=\\n++++ printf %s \\\'\\\'\\n++++ jq -r \\\'.client.version // empty\\\'\\n+++ version=\\n+++ case "$protocol" in\\n+++ echo \\\'error: could not read herdr client protocol from \\\'\\\\\\\'\\\'herdr status --json\\\'\\\\\\\'\\\'; refusing to use an unverified herdr build\\\'\\nerror: could not read herdr client protocol from \\\'herdr status --json\\\'; refusing to use an unverified herdr build\\n+++ return 1\'\n+++ sed -n 1p\n++ detail=\'+++ fm_backend_herdr_tool_check\'\n++ fm_backend_policy_refuse \'session-start herdr projection cleanup\' herdr \'The native Herdr capability check failed: +++ fm_backend_herdr_tool_check Upgrade or repair Herdr, then verify with \'\\\'\'herdr status --json\'\\\'\'.\'\n++ local \'origin=session-start herdr projection cleanup\' value=herdr \'remediation=The native Herdr capability check failed: +++ fm_backend_herdr_tool_check Upgrade or repair Herdr, then verify with \'\\\'\'herdr status --json\'\\\'\'.\' verdict safe_origin safe_value safe_remediation\n+++ printf %s \'session-start herdr projection cleanup\'\n+++ LC_ALL=C\n+++ tr \'\\001-\\037\\177\' \' \'\n++ safe_origin=\'session-start herdr projection cleanup\'\n+++ printf %s herdr\n+++ LC_ALL=C\n+++ tr \'\\001-\\037\\177\' \' \'\n++ safe_value=herdr\n+++ printf %s \'The native Herdr capability check failed: +++ fm_backend_herdr_tool_check Upgrade or repair Herdr, then verify with \'\\\'\'herdr status --json\'\\\'\'.\'\n+++ LC_ALL=C\n+++ tr \'\\001-\\037\\177\' \' \'\n++ safe_remediation=\'The native Herdr capability check failed: +++ fm_backend_herdr_tool_check Upgrade or repair Herdr, then verify with \'\\\'\'herdr status --json\'\\\'\'.\'\n++ \'[\' -n herdr \']\'\n++ verdict=\'resolves \'\\\'\'herdr\'\\\'\'\'\n++ printf \'REFUSED: %s %s, but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. %s\\n\' \'session-start herdr projection cleanup\' \'resolves \'\\\'\'herdr\'\\\'\'\' \'The native Herdr capability check failed: +++ fm_backend_herdr_tool_check Upgrade or repair Herdr, then verify with \'\\\'\'herdr status --json\'\\\'\'.\'\nREFUSED: session-start herdr projection cleanup resolves \'herdr\', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr capability check failed: +++ fm_backend_herdr_tool_check Upgrade or repair Herdr, then verify with \'herdr status --json\'.\n++ return 1\n++ return 2\n++ return 0'
++ cleanup_status=0
++ '[' 0 -eq 0 ']'
++ case "$cleanup_err" in
++ rm -f /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/home/state/probe-candidate.herdr-presentation
++ pass 'cleanup with a candidate journal still runs the native capability probe and preserves the journal on failure'
++ printf 'ok - %s\n' 'cleanup with a candidate journal still runs the native capability probe and preserves the journal on failure'
+ok - cleanup with a candidate journal still runs the native capability probe and preserves the journal on failure
++ FAKE_PS=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/fake-ps
++ cat
++ chmod +x /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/fake-ps
++ LINUX_PROCESS_INFO='{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p1","workspace_id":"w2","tab_id":"w2:t1","shell_pid":67,"foreground_process_group_id":67,"foreground_processes":[{"argv":["/bin/sh"],"name":"sh","pid":67}]}}}'
+++ FM_HERDR_PS_BIN=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq/fake-ps
+++ fm_backend_herdr_pane_idle_shell_pid test w2:p1 w2 w2:t1
+++ local attempt=0 max_attempts=50 sample_rc=0 sample_output
+++ '[' -n w2 ']'
+++ '[' -n w2:t1 ']'
+++ :
+++ sample_output=
+++ sample_rc=0
++++ fm_backend_herdr_pane_idle_shell_sample test w2:p1 w2 w2:t1
++++ local session=test pane=w2:p1 expected_workspace=w2 expected_tab=w2:t1 info shell_pid foreground_pgid count
++++ local process_pid name argv0 shell_name rows stat ps_bin
++++ '[' -n w2 ']'
++++ '[' -n w2:t1 ']'
++++ fm_backend_herdr_pane_get_checked test w2 w2:t1 w2:p1 0 ''
++++ local session=test expected_workspace=w2 expected_tab=w2:t1 expected_pane=w2:p1 allow_not_found=0 expected_terminal=
++++ local out code cli_rc=0
+++++ fm_backend_herdr_cli test pane get w2:p1
++++ out=$'++++ \'[\' pane = pane \']\'\n++++ \'[\' get = get \']\'\n++++ printf \'%s\\n\' \'{"result":{"pane":{"pane_id":"w2:p1","workspace_id":"w2","tab_id":"w2:t1"}}}\'\n{"result":{"pane":{"pane_id":"w2:p1","workspace_id":"w2","tab_id":"w2:t1"}}}'
++++ cli_rc=0
++++ printf %s $'++++ \'[\' pane = pane \']\'\n++++ \'[\' get = get \']\'\n++++ printf \'%s\\n\' \'{"result":{"pane":{"pane_id":"w2:p1","workspace_id":"w2","tab_id":"w2:t1"}}}\'\n{"result":{"pane":{"pane_id":"w2:p1","workspace_id":"w2","tab_id":"w2:t1"}}}'
++++ jq -e 'type == "object"'
++++ return 2
++++ return 2
+++ sample_output=
+++ sample_rc=2
+++ '[' 2 -eq 0 ']'
+++ '[' 2 -eq 2 ']'
+++ return 2
++ argv_pid=
++ fail 'Linux Herdr process argv array was not accepted'
++ printf 'not ok - %s\n' 'Linux Herdr process argv array was not accepted'
+not ok - Linux Herdr process argv array was not accepted
++ exit 1
++ fm_test_cleanup
++ local d
++ for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"
++ '[' -n /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq ']'
++ rm -rf /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq
++ '[' -f /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/.fm-test-cleanup.3432.AxQDKf ']'
++ IFS=
++ read -r d
++ '[' -n /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq ']'
++ rm -rf /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-session-cleanup.kw5goq
++ IFS=
++ read -r d
++ rm -f /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/.fm-test-cleanup.3432.AxQDKf

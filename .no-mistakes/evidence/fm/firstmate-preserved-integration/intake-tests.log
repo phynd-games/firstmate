@@ -1,0 +1,28 @@
+not-autohandled: lavish-27ad9a2df12ef66b (left for the handler; still unacknowledged)
+ok - Lavish intake: exact follow-up carry-forward produces a verifiable child brief
+not-autohandled: lavish-e7b4774ac1ca1fce (left for the handler; still unacknowledged)
+ok - Lavish intake: carry-forward refuses a child equal to its parent
+not-autohandled: lavish-daf1b20f9ddbad50 (left for the handler; still unacknowledged)
+ok - Lavish intake: carry-forward refuses an unsafe child task id
+ok - Lavish intake: carry-forward requires a significant parent receipt
+ok - Lavish intake: carry-forward refuses a parent with no intake evidence
+not-autohandled: lavish-06a2060086219679 (left for the handler; still unacknowledged)
+ok - Lavish intake: carry-forward rejects changed and missing artifact, result, and acknowledgement
+not-autohandled: lavish-104c3c77eebe17b9 (left for the handler; still unacknowledged)
+ok - Lavish intake: carry-forward refuses both unsafe declaration roles before filesystem mutation
+not-autohandled: lavish-da2407823962ef6f (left for the handler; still unacknowledged)
+ok - Lavish intake: issuance and reverification require distinct canonical declaration files
+not-autohandled: lavish-d3db9d99db50214d (left for the handler; still unacknowledged)
+ok - Lavish intake: issuance requires every ordinary parent provenance check
+not-autohandled: lavish-062d7dfe906042d1 (left for the handler; still unacknowledged)
+ok - Lavish intake: state and receipt paths are checked before lock writes
+not-autohandled: lavish-6df61cfbbb9dd6ae (left for the handler; still unacknowledged)
+ok - Lavish intake: carry-forward refuses a conflicting repeat and never grandfathers a changed proposal
+not-autohandled: lavish-16df414986e1c1a1 (left for the handler; still unacknowledged)
+ok - Lavish intake: a carried-forward receipt with duplicate keys fails verification
+ok - Lavish intake: retained payload parsing requires one exact captured parent answer
+not-autohandled: lavish-32df57738761ed05 (left for the handler; still unacknowledged)
+ok - Lavish intake: carried-forward lineage survives public parent teardown with isolated external operations
+not-autohandled: lavish-a2bf7f8baca3fbcf (left for the handler; still unacknowledged)
+ok - Lavish intake: carry-forward requires parent and every declaration argument without receipt mutation
+# carry-forward proof group: all cases passed

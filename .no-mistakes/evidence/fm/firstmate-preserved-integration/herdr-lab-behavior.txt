@@ -1,0 +1,24 @@
+Executable fm-herdr-lab.sh tests with a stateful fake Herdr client and real, identity-tracked fixture processes.
+These are observed receipts, exits, timing, and process states; no live worker was started.
+Nonzero statuses below are intentionally exercised refusal and cancellation paths.
+
+evidence: case=unknown-state status=1 elapsed=2s alive=yes
+evidence: case=provision receipt={"name":"fm-lab-behavior-48267","pid":58523,"birth":"Tue-Sep-15-17:26:54-2026","ppid":48267,"pgid":58523,"own_group":true,"allocated_epoch":1789507614,"deadline_epoch":1789507634,"command_description":"herdr server --session fm-lab-behavior-48267","native":{"socket_path":"/tmp/fm-lab-behavior-48267.sock","running":true,"bound_epoch":1789507616}}
+evidence: case=late-launch-delay pid=95675 state=absent
+evidence: case=late-launch status=1 elapsed=5s polls=30 launched_pid=95389 launched_state=absent
+evidence: case=exec-transition pid=99694 recorded_birth=Tue-Sep-15-17:27:43-2026 live_birth=Tue-Sep-15-17:27:43-2026 live_command=/bin/sleep 300 described=herdr server --session fm-lab-exec-identity-48267
+evidence: case=reused-pid status=1 alive=yes output=fm-herdr-lab: pid 2360 is now a different process; retaining allocation receipt|fm-herdr-lab: session stop failed for 'fm-lab-reused-pid-48267'; not attempting delete
+evidence: case=signal-recheck status=1 ps_queries=2 alive=yes
+evidence: case=descendants server=18356 child=18494 detached=18502 unrelated=18212 child_pgid=18356 detached_pgid=18502
+evidence: case=server-exit status=1 output=fm-herdr-lab: lab session 'fm-lab-server-exit-48267' reported running but could not be verified as a non-default owned lab; cancellation attempted
+evidence: case=preflight-hang status=1 elapsed=4s
+evidence: case=poll-hang status=1 elapsed=15s polls=7 polls_started_inside_reserve=0 launched_pid=27684 launched_state=absent
+evidence: case=stop-hang status=1 elapsed=4s
+evidence: case=generation before=16777234:257785147 after=16777234:257785214
+evidence: case=run-bound status=124 elapsed=1s
+evidence: case=stock-bash mode=ordinary version=3.2.57(1)-release parent=50478 outer=50478
+evidence: case=stock-bash mode=nested version=3.2.57(1)-release parent=55048 outer=55036
+evidence: case=rejected-launch mode=1 pid=59696 teardown_status=1 rejected_probes=       1 later_probes=       1 state=absent
+evidence: case=rejected-launch mode=parent pid=60548 teardown_status=1 rejected_probes=       1 later_probes=       1 state=absent
+evidence: case=publication-failure pid=61119 status=1 state=absent
+evidence: case=large-targets pid=61859 status=1 elapsed=19s targets=10000

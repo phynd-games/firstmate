@@ -1,0 +1,20 @@
+FM_TEST_BEGIN 2026-09-15T21:32:27Z tests/fm-handoff-confirm.test.sh family=watcher-wake-lock expected_gate_skip=none
+ok - the emitted branch prompt carries the confirmed-handoff rule and the repeat rule
+ok - a queued, unread record is refused as delivery
+ok - an acknowledgement with no work is refused as a handoff
+ok - a record with the right name and the wrong bytes is refused
+ok - a decision aimed at the wrong gate, findings, or head is refused before it is owed
+ok - a worker that is already gone fails the handoff immediately
+ok - validation evidence that stays unreadable through the whole window is unconfirmed - never death, never a false start
+ok - capture, capability, failed, and empty reads preserve the observation window
+ok - validation evidence that starts unreadable but later shows a real observed state confirms once proven
+ok - unknown-to-concrete handoff preserves ordinary steer and required state-change modes
+ok - a late acknowledgement inside the re-ring window still confirms
+ok - an acknowledged and started instruction confirms and closes its obligation
+ok - a failed handoff queues recovery work and stays open
+ok - an identical outcome coalesces with a rising count while the store keeps every row
+ok - the send boundary registers the obligation and prints the confirm command it owes
+FM_TEST_END 2026-09-15T21:33:17Z tests/fm-handoff-confirm.test.sh exit=0 duration_ms=50413 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=50496
+FM_TEST_SUMMARY_FAMILY family=watcher-wake-lock count=1 duration_ms=50413 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-handoff-confirm.test.sh duration_ms=50413

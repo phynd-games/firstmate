@@ -1,0 +1,26 @@
+
+[before fix] fm-herdr-supervisor.sh ensure (stopped server)
+exit=1
+herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+herdr-supervisor: FAILED - Herdr identity could not be established: herdr backend adapter could not be loaded: REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+Supervisor record: absent; arm invocations: 0
+
+[before fix] fm-herdr-session-cleanup.sh (no candidate)
+exit=0
+REFUSED: Herdr runtime operation resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+
+[after fix] fm-herdr-supervisor.sh ensure (stopped server)
+exit=1
+herdr session 'default' has no running server, so there is no pane to host watcher continuity in; start it and rerun
+herdr-supervisor: FAILED - Herdr identity could not be established: herdr session 'default' has no running server, so there is no pane to host watcher continuity in; start it and rerun
+Persisted alarm:
+at=2026-09-15T21:21:25Z
+home=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-supervisor-tests.G6UaPM/evidence-after
+generation=none
+priority=20
+reason=Herdr identity could not be established: herdr session 'default' has no running server, so there is no pane to host watcher continuity in; start it and rerun
+Supervisor record: absent; arm invocations: 0
+
+[after fix] fm-herdr-session-cleanup.sh (no candidate)
+exit=0
+<no output>

@@ -1,0 +1,18 @@
+FM_TEST_BEGIN 2026-09-15T21:21:51Z tests/fm-session-start.test.sh family=session-bootstrap expected_gate_skip=none
+ok - context digest distinguishes ABSENT, empty-but-present, and populated files
+ok - session start omits the removed dashboard and preserves supervision
+ok - session start reports the document reader honestly and never guesses a URL
+ok - a lock refusal prints a loud read-only banner, skips every mutating step, and still completes the digest
+ok - session start stays read-only when lock ownership cannot be published
+ok - locked session start freezes trace context and lock refusal leaves it unchanged
+ok - concurrent session-lock acquisition admits exactly one live harness
+ok - digest sections are ordered safety-preamble first, live fleet state before curated memory
+ok - the read-once contract is stated once, ahead of the sources it governs
+ok - session start: a declared Herdr home starts silently, and a locked start materializes an undeclared home's backend rather than refusing it; neither ever requires tmux
+not ok - the deferred stage did not relaunch the missing Pi secondmate (missing: 'new-window')
+--- output ---
+
+FM_TEST_END 2026-09-15T21:23:23Z tests/fm-session-start.test.sh exit=1 duration_ms=91303 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=1 skipped_gate=0 duration_ms=91362
+FM_TEST_SUMMARY_FAMILY family=session-bootstrap count=1 duration_ms=91303 failed=1
+FM_TEST_SLOWEST rank=1 script=tests/fm-session-start.test.sh duration_ms=91303

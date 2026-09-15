@@ -1,0 +1,4 @@
+ok - session start: an existing ambiguous Pi process prevents duplicate recovery
+ok - session start: transient tmux unreadability never licenses a relaunch
+ok - session start: the proven bare-shell recovery path remains intact
+ok - session start: a declared Herdr home starts silently, and a locked start materializes an undeclared home's backend rather than refusing it; neither ever requires tmux

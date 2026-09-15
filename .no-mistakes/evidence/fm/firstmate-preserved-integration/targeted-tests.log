@@ -1,0 +1,404 @@
+FM_TEST_BEGIN 2026-09-15T21:18:40Z tests/fm-herdr-supervisor.test.sh family=watcher-wake-lock expected_gate_skip=none
+ok - failed claim alarm delivery retries until persisted, then suppresses repeats
+herdr-supervisor: deferred - another continuity owner is completing its ownership claim
+rc=0
+ok - a live, identity-verified other owner defers cmd_ensure without a false alarm
+rc1=1
+rc2=1
+1789507151	1	check	herdr-supervisor	check: herdr-supervisor - the continuity ownership claim could not be acquired within its bounded retry window
+ok - an unknown claim record alarms once, and the same unresolved episode does not alarm twice
+herdr-supervisor: not needed - this home has no in-flight work, event source, or relay poll
+rc3=1
+1789507151	1	check	herdr-supervisor	check: herdr-supervisor - the continuity ownership claim could not be acquired within its bounded retry window
+1789507153	2	check	herdr-supervisor	check: herdr-supervisor - the continuity ownership claim could not be acquired within its bounded retry window
+ok - successful claim acquisition lets a later failure episode alarm again
+loop owner-arrival: wake queue absent; emergency alarm absent
+ok - the arm path rechecks a live owner arriving during claim acquisition
+ok - concurrent ensure calls publish one alarm for an unresolved episode
+ok - the shared loop episode alarms again after a healthy owner comes and goes
+ok - the recovery loop episode alarms again after a healthy owner comes and goes
+ok - monitor handoff resets claim alarms while status remains read-only
+ok - contended recovery retries when the recovered owner remains
+ok - contended recovery retries when the recovered owner disappears
+ok - ensure-exit preserves the recovered episode after process exit
+ok - ensure-substitution preserves the recovered episode after process exit
+ok - contended recovery retries when the recovered owner stale-retry
+ok - contended recovery retries when the recovered owner identity-arrival
+ok - contended recovery retries when the recovered owner identity-replaced
+ok - contended recovery retries when the recovered owner observation-blocked
+ok - a non-herdr home is not eligible and creates nothing
+ok - zero Herdr timeout is rejected before ownership
+ok - a stale away marker does not masquerade as a live owner
+ok - away mode defers only to a live identity-matched daemon
+ok - away mode treats a live daemon with unknown identity as occupied
+ok - a loaded Pi extension is a provable owner and the supervisor stands down
+ok - the individually loaded Pi watcher extension defers takeover
+ok - the turn-end marker alone does not suppress Herdr takeover
+ok - Pi ownership rejects a live non-harness pid despite matching markers
+ok - a home with nothing in flight establishes no supervisor
+ok - one establish keeps re-arming the watcher across many actionable closes
+ok - identical rapid cycles back off and emit one non-self-triggering alarm
+ok - rapid alarms clear only after three stable non-rapid cycles
+ok - the Herdr runtime loop completes cycles without AI agents or model calls
+ok - a repeated ensure is idempotent and creates no second supervisor
+ok - the public run path requires its recorded Herdr pane and process
+ok - a stale watcher beacon uses the plain arm singleton path
+ok - a recycled pid is never reported healthy
+ok - a stale supervisor heartbeat is unhealthy and re-establishes a new generation
+ok - replacement retires the prior exact workspace before establishing a new generation
+ok - an unknown or contradictory Herdr pane is never healthy
+ok - a Herdr server restart is detected as a lost supervisor, not as healthy
+ok - server replacement quarantines old ownership before fresh establishment
+ok - a live record from a superseded generation is never read as healthy
+ok - a live but wedged supervisor is unhealthy on its heartbeat alone
+ok - a Herdr pane tracking a different process is never read as healthy
+ok - health revalidates supervisor identity after the pane query
+ok - a repeatedly failing arm is bounded, alarms, escalates, and keeps its owner alive
+ok - a superseded generation refuses to arm, so a duplicate arm cannot start
+ok - an incomplete Herdr response fails loudly and closes nothing it cannot identify
+ok - verified absence of an incomplete create does not permanently block recovery
+ok - a partial Herdr create response is quarantined without label adoption or cleanup
+ok - a Herdr session with no running server is refused loudly and starts no server
+ok - an incompatible Herdr server is refused without establishing continuity
+ok - a hanging Herdr CLI is bounded and can never wedge the caller
+ok - hang-version-status has no remaining trigger: no unscoped native probe runs, so establish proceeds normally
+ok - hang-session-status refuses within the native deadline after a completed status preflight
+ok - hang-session-list refuses within the native deadline after a completed status preflight
+ok - session-list-fails refuses within the native deadline after a completed status preflight
+ok - the Herdr pane consumer executes a short launcher with caller tuning
+ok - foreground arm heartbeat and exact-child cleanup remain bounded
+ok - retire releases the record and closes exactly the workspace it owns
+ok - the supervisor never touches the watcher's liveness beacon
+ok - a non-extension harness needs an explicit opt-in before Herdr hosts continuity
+ok - config/herdr-supervisor=off is honored
+ok - config/herdr-supervisor=off retires a running owner on the next loop pass
+ok - handoff retains a standby owner and resumes after foreign ownership ends
+ok - cleanup failures quarantine exact ownership before replacement
+ok - each failed arm leaves durable evidence after a later success
+ok - unknown arm children are abandoned without stopping supervisor recovery
+ok - an actionable close is followed by one ready handling successor with an unchanged generation
+ok - the exact acknowledgement retires the delivered episode while the same watcher keeps the lock
+ok - a genuine watcher gap announces once and settles into one handling successor
+ok - an exact workspace already absent on the verified server is reconciled as completed cleanup
+ok - an unreadable workspace list keeps the receipt and quarantine until the server can be read
+ok - a receipt naming a different Herdr server is retained without touching the replacement server
+ok - ambiguous inventories and a present target preserve receipt, quarantine, and generation
+ok - a valid nonempty target-absent inventory reconciles cleanup and permits replacement
+ok - a loop asleep in its rapid-cycle floor answers TERM at once and terminates its floor-sleep child
+ok - a loop asleep in its rapid-cycle floor answers HUP at once and terminates its floor-sleep child
+ok - the monitor starts and publishes a live, identity-bound record
+ok - a repeated monitor start is idempotent and keeps one owner
+ok - a monitor pid whose identity no longer matches is never accepted as live
+ok - the monitor exits when its home session ends, so it cannot orphan
+ok - a captured monitor start returns promptly and holds no caller descriptor
+ok - the monitor runs with zero AI agents and zero model calls
+ok - the latest highest-priority alarm wins and superseded ones stay in the history
+all fm-herdr-supervisor tests passed
+FM_TEST_END 2026-09-15T21:26:20Z tests/fm-herdr-supervisor.test.sh exit=0 duration_ms=459882 gate_skip=false
+FM_TEST_BEGIN 2026-09-15T21:26:20Z tests/fm-herdr-session-cleanup.test.sh family=backend-dispatch expected_gate_skip=none
+ok - the real cleanup entry point with no candidate journal skips the native capability probe entirely
+ok - cleanup with a candidate journal still runs the native capability probe and preserves the journal on failure
+not ok - Linux Herdr process argv array was not accepted
+FM_TEST_END 2026-09-15T21:26:21Z tests/fm-herdr-session-cleanup.test.sh exit=1 duration_ms=1078 gate_skip=false
+FM_TEST_BEGIN 2026-09-15T21:26:21Z tests/fm-recovery-owner.test.sh family=unclassified expected_gate_skip=none
+ok - concurrent run and start retain one owning generation
+ok - a stale stop preserves the replacement generation
+ok - launchd plist round-trips special paths and supplies the supervisor PATH
+ok - launchd names isolate formerly colliding homes and canonicalize aliases
+ok - both service environments preserve Pi eligibility and the named Herdr session
+ok - unload failures retain service definitions and permit retries on both platforms
+ok - systemd units escape paths and isolate canonical homes
+ok - explicit supervision models and default session selection survive installation
+FM_TEST_END 2026-09-15T21:26:42Z tests/fm-recovery-owner.test.sh exit=0 duration_ms=20786 gate_skip=false
+FM_TEST_BEGIN 2026-09-15T21:26:42Z tests/fm-herdr-lab.test.sh family=pure-contract-unit expected_gate_skip=none
+ok - fm-herdr-lab: names fail closed and require the lab prefix
+evidence: case=unknown-state status=1 elapsed=2s alive=yes
+ok - fm-herdr-lab: an unreadable process table is unknown, never absent
+evidence: case=provision receipt={"name":"fm-lab-behavior-48267","pid":58523,"birth":"Tue-Sep-15-17:26:54-2026","ppid":48267,"pgid":58523,"own_group":true,"allocated_epoch":1789507614,"deadline_epoch":1789507634,"command_description":"herdr server --session fm-lab-behavior-48267","native":{"socket_path":"/tmp/fm-lab-behavior-48267.sock","running":true,"bound_epoch":1789507616}}
+ok - fm-herdr-lab: provisioning, scoped calls, guarded teardown, and fleet tripwire are deterministic
+ok - fm-herdr-lab: state is private and a real socket identity is required
+ok - fm-herdr-lab: missing tripwire refuses teardown before any Herdr call
+ok - fm-herdr-lab: changed default fleet state is a hard failure
+ok - fm-herdr-lab: an owned stopped lab can re-provision safely
+ok - fm-herdr-lab: failed deletion retains ownership until absence is confirmed
+evidence: case=late-launch-delay pid=95675 state=absent
+evidence: case=late-launch status=1 elapsed=5s polls=30 launched_pid=95389 launched_state=absent
+ok - fm-herdr-lab: timed-out provisioning cancels the launch before teardown
+evidence: case=exec-transition pid=99694 recorded_birth=Tue-Sep-15-17:27:43-2026 live_birth=Tue-Sep-15-17:27:43-2026 live_command=/bin/sleep 300 described=herdr server --session fm-lab-exec-identity-48267
+ok - fm-herdr-lab: identity survives the exec transition and cleanup terminates the exact server
+evidence: case=reused-pid status=1 alive=yes output=fm-herdr-lab: pid 2360 is now a different process; retaining allocation receipt|fm-herdr-lab: session stop failed for 'fm-lab-reused-pid-48267'; not attempting delete
+ok - fm-herdr-lab: a same-number new-birth pid is refused, retains its receipt, and blocks re-provision
+evidence: case=signal-recheck status=1 ps_queries=2 alive=yes
+ok - fm-herdr-lab: every signal is preceded by its own identity recheck
+ok - fm-herdr-lab: delete independently rechecks custody after stop
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-herdr-lab.sh: line 424: 11503 Killed: 9                  ( umask 077; exec python3 -c 'import os, sys, time
+marker, startup_end, end = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+if time.time() >= startup_end:
+    sys.exit(1)
+os.setsid()
+with open(marker + ".tmp", "x") as handle:
+    handle.write(str(os.getpid()))
+os.replace(marker + ".tmp", marker)
+while time.time() < end:
+    try:
+        with open(marker + ".accepted") as handle:
+            if handle.read() == str(os.getpid()):
+                os.execvp(sys.argv[4], sys.argv[4:])
+    except FileNotFoundError:
+        pass
+    time.sleep(0.01)
+sys.exit(1)' "$marker" "$marker_end" "$acceptance_end" env HERDR_SESSION="$name" herdr server --session "$name" ) > /dev/null 2>&1
+ok - fm-herdr-lab: escalation and descendant signals independently recheck identity
+evidence: case=descendants server=18356 child=18494 detached=18502 unrelated=18212 child_pgid=18356 detached_pgid=18502
+tests/fm-herdr-lab.test.sh: line 1: 18212 Killed: 9                  python3 -c 'import os, sys
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])' "$REAL_SLEEP" 300
+ok - fm-herdr-lab: only proven group members are cleaned; detached and unrelated processes are preserved
+evidence: case=server-exit status=1 output=fm-herdr-lab: lab session 'fm-lab-server-exit-48267' reported running but could not be verified as a non-default owned lab; cancellation attempted
+ok - fm-herdr-lab: a server that exits at start is positively absent and leaves nothing to clean
+evidence: case=preflight-hang status=1 elapsed=4s
+ok - fm-herdr-lab: a hanging preflight call is bounded and launches nothing
+evidence: case=poll-hang status=1 elapsed=15s polls=7 polls_started_inside_reserve=0 launched_pid=27684 launched_state=absent
+ok - fm-herdr-lab: hanging polls are clipped to the budget and cleanup fits inside the reserve
+evidence: case=stop-hang status=1 elapsed=4s
+ok - fm-herdr-lab: a hanging stop is bounded and never becomes a delete
+evidence: case=generation before=16777234:257785147 after=16777234:257785214
+ok - fm-herdr-lab: a re-bound default socket trips even when every CLI field is unchanged, and stays primary
+evidence: case=run-bound status=124 elapsed=1s
+ok - fm-herdr-lab: run keeps its per-call bound and rejects bounds outside 1..3
+evidence: case=stock-bash mode=ordinary version=3.2.57(1)-release parent=50478 outer=50478
+evidence: case=stock-bash mode=nested version=3.2.57(1)-release parent=55048 outer=55036
+ok - fm-herdr-lab: stock bash binds the actual parent in ordinary and nested shells
+evidence: case=rejected-launch mode=1 pid=59696 teardown_status=1 rejected_probes=       1 later_probes=       1 state=absent
+ok - fm-herdr-lab: rejected launch observations never authorize publication or later cleanup
+evidence: case=rejected-launch mode=parent pid=60548 teardown_status=1 rejected_probes=       1 later_probes=       1 state=absent
+ok - fm-herdr-lab: rejected launch observations never authorize publication or later cleanup
+evidence: case=publication-failure pid=61119 status=1 state=absent
+ok - fm-herdr-lab: authenticated publication failure cancels the launcher before server exec
+evidence: case=large-targets pid=61859 status=1 elapsed=19s targets=10000
+ok - fm-herdr-lab: large retained target lists stop at the original deadline with custody intact
+ok - fm-herdr-lab: the CLI entrypoint keeps the public command contract
+cleanup: fixture 49369 positively absent
+cleanup: fixture 49369 observed absent
+cleanup: fixture 58523 positively absent
+cleanup: fixture 58523 observed absent
+cleanup: fixture 63955 positively absent
+cleanup: fixture 63955 observed absent
+cleanup: fixture 71167 positively absent
+cleanup: fixture 71167 observed absent
+cleanup: fixture 77812 positively absent
+cleanup: fixture 77812 observed absent
+cleanup: fixture 83587 positively absent
+cleanup: fixture 83587 observed absent
+cleanup: fixture 78584 positively absent
+cleanup: fixture 78584 observed absent
+cleanup: fixture 78621 positively absent
+cleanup: fixture 78621 observed absent
+cleanup: fixture 88355 positively absent
+cleanup: fixture 88355 observed absent
+cleanup: fixture 95389 positively absent
+cleanup: fixture 95389 observed absent
+cleanup: fixture 95675 positively absent
+cleanup: fixture 95675 observed absent
+cleanup: fixture 99694 positively absent
+cleanup: fixture 99694 observed absent
+cleanup: fixture 2360 positively absent
+cleanup: fixture 2360 observed absent
+cleanup: fixture 5899 positively absent
+cleanup: fixture 5899 observed absent
+cleanup: fixture 8642 positively absent
+cleanup: fixture 8642 observed absent
+cleanup: fixture 11503 positively absent
+cleanup: fixture 11503 observed absent
+cleanup: fixture 15661 positively absent
+cleanup: fixture 15661 observed absent
+cleanup: fixture 16064 positively absent
+cleanup: fixture 16064 observed absent
+cleanup: fixture 16088 positively absent
+cleanup: fixture 16088 observed absent
+cleanup: fixture 18356 positively absent
+cleanup: fixture 18356 observed absent
+cleanup: fixture 18494 positively absent
+cleanup: fixture 18494 observed absent
+cleanup: fixture 18502 positively absent
+cleanup: fixture 18502 observed absent
+cleanup: fixture 21388 positively absent
+cleanup: fixture 21388 observed absent
+cleanup: fixture 27684 positively absent
+cleanup: fixture 27684 observed absent
+cleanup: fixture 38020 positively absent
+cleanup: fixture 38020 observed absent
+cleanup: fixture 45686 positively absent
+cleanup: fixture 45686 observed absent
+cleanup: fixture 50799 positively absent
+cleanup: fixture 50799 observed absent
+cleanup: fixture 55265 positively absent
+cleanup: fixture 55265 observed absent
+cleanup: fixture 59696 positively absent
+cleanup: fixture 59696 observed absent
+cleanup: fixture 60548 positively absent
+cleanup: fixture 60548 observed absent
+cleanup: fixture 61119 positively absent
+cleanup: fixture 61119 observed absent
+cleanup: fixture 61859 positively absent
+cleanup: fixture 61859 observed absent
+cleanup: fixture 77394 positively absent
+cleanup: fixture 77394 observed absent
+evidence: failed lifecycle records preserved in /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-herdr-lab.AZiseU
+FM_TEST_END 2026-09-15T21:29:21Z tests/fm-herdr-lab.test.sh exit=0 duration_ms=158477 gate_skip=false
+FM_TEST_BEGIN 2026-09-15T21:29:21Z tests/fm-handoff-confirm.test.sh family=watcher-wake-lock expected_gate_skip=none
+ok - the emitted branch prompt carries the confirmed-handoff rule and the repeat rule
+ok - a queued, unread record is refused as delivery
+ok - an acknowledgement with no work is refused as a handoff
+ok - a record with the right name and the wrong bytes is refused
+ok - a decision aimed at the wrong gate, findings, or head is refused before it is owed
+ok - a worker that is already gone fails the handoff immediately
+ok - validation evidence that stays unreadable through the whole window is unconfirmed - never death, never a false start
+ok - capture, capability, failed, and empty reads preserve the observation window
+ok - validation evidence that starts unreadable but later shows a real observed state confirms once proven
+ok - unknown-to-concrete handoff preserves ordinary steer and required state-change modes
+not ok - a worker that acknowledged after one re-ring was failed: REFUSED: task record /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-handoff-confirm.AClLqG/delayed-ack/home/state/foxtrot.meta (backend=tmux) resolves 'tmux', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. This pre-invariant task record is read-only here: Firstmate will not operate, relaunch, steer, or clean up its endpoint. Retire it through the captain-authorized path in docs/configuration.md "Legacy task records".: expected exit 0, got 1
+FM_TEST_END 2026-09-15T21:30:02Z tests/fm-handoff-confirm.test.sh exit=1 duration_ms=41620 gate_skip=false
+FM_TEST_BEGIN 2026-09-15T21:30:02Z tests/fm-crew-state.test.sh family=pure-contract-unit expected_gate_skip=none
+outcome=passed; findings=4 info
+state: done · source: run-step · run passed: PR merged/closed
+outcome=passed; findings=1 error, 2 warning, 3 info
+state: done · source: run-step · run passed: PR merged/closed
+outcome=failed; findings=4 info
+state: failed · source: run-step · run failed
+outcome=failed; findings=1 error, 2 warning, 3 info
+state: failed · source: run-step · run failed
+malformed findings=1 unknown
+state: unknown · source: none · unreadable validation run evidence (not proof of death)
+malformed findings=1 info, 1 warning
+state: unknown · source: none · unreadable validation run evidence (not proof of death)
+malformed findings=4 info
+  findings: 4 info
+state: unknown · source: none · unreadable validation run evidence (not proof of death)
+ok - crew-state preserves terminal severity summaries and refuses malformed evidence
+ok - active run-step is authoritative
+ok - stale needs-decision over active run is superseded
+ok - stale blocked over active run is superseded
+ok - genuine parked run is not flagged superseded
+ok - scalar gate parked run is not flagged superseded
+ok - gate block parked run is not flagged superseded
+ok - ci-ready status log beats monitoring run
+ok - ci-monitoring run with checks already green surfaces done
+ok - top-level ci status uses ci log green marker
+ok - terminal no-checks ci-monitor marker surfaces done
+ok - base-advance rearm after green stays working
+ok - pending no-checks ci-monitor marker stays working
+ok - ci-monitoring run with checks not yet green stays working
+ok - a fresh issue after an earlier green reading is not masked
+ok - stale checks-green status log does not mask CI relapse
+ok - ci fixing is not overridden by an earlier green marker
+ok - top-level fixing is not overridden by a stale ci running row
+ok - top-level fixing is not overridden by a stale done log
+ok - terminal passed run is authoritative
+ok - terminal failed run is authoritative
+ok - cross-branch run is attributed via the real runs list
+ok - cross-branch attribution picks the branch's most recent row
+ok - coarse run does not probe another branch's ci log
+ok - another branch's run is ignored, falls back
+ok - no run + a busy semantic record reads working, attributed to its source
+ok - a converted adapter never reads working from rendered footer text
+ok - grok still reads working through its isolated rendered-tail fallback
+ok - herdr's native busy verdict reads working with no record present
+ok - a mid-tool-call crew stays working because its record outranks herdr's generation state
+ok - an idle record with idle agent_status stays not-busy (no regression for a human-blocked agent)
+ok - no run + idle pane uses the status-log verb
+ok - no run + idle pane parses keyed status syntax
+ok - no run + idle pane on a paused: status reports state: paused with its reason
+ok - no run + idle pane honors the configured paused verb
+ok - a trailing resolved: event does not corrupt state render (idle stays idle)
+ok - unreadable pane ignores stale status log
+ok - failed capability preflight emits inconclusive evidence
+ok - unreadable pane still reports a terminal run-step
+ok - unreadable pane still reports an active run-step
+ok - no timeout command uses perl bound
+ok - scout skips the run lookup
+ok - torn-down worktree is handled gracefully
+ok - unreadable validation run evidence is worded as inconclusive, never as established death
+ok - fm-crew-state remote: alive endpoint falls through to the routed status log
+ok - fm-crew-state remote: an idle alive endpoint reads alive, never gone or dead
+ok - fm-crew-state remote: an unreachable host reads unknown-remote, never gone or dead
+ok - fm-crew-state remote: the remote host's own dead verdict is reported truthfully
+ok - missing meta is handled gracefully
+ok - crew_is_provably_working absorbs a validating crew found only via the runs-list fallback
+ok - crew_is_provably_working still surfaces a genuinely stopped crew (safety property preserved)
+ok - usage error exits 2
+ok - historical same-branch rewritten head is not attributed as current
+ok - active run with valid descendant fix head remains current
+ok - local work advanced past run head invalidates attribution
+ok - pipeline-owned active run binds without head equality and beats the failed row
+ok - a genuinely failed run with no later run is not hidden
+ok - coarse scan stops on an unresolvable active row instead of binding an older one
+ok - the exemption requires branch_sync.state=pipeline_owned
+ok - the exemption never applies to a terminal run
+ok - missing run head is refused as unreadable evidence
+all fm-crew-state tests passed
+FM_TEST_END 2026-09-15T21:31:11Z tests/fm-crew-state.test.sh exit=0 duration_ms=68163 gate_skip=false
+FM_TEST_BEGIN 2026-09-15T21:31:11Z tests/fm-spawn-pool-base-freshen.test.sh family=legacy-adapter expected_gate_skip=legacy-adapter-optin
+ok - a stale pooled worktree refreshes to current origin/main before a crew branch is created
+ok - a stale pooled worktree resolves and refreshes a non-main default branch
+fm-lavish-intake: intake evidence already exists for task pool-local-sha
+fm-lavish-intake: intake evidence already exists for task pool-local-tag
+fm-lavish-intake: intake evidence already exists for task pool-local-branch
+ok - local SHA, tag, and branch approvals work without origin
+ok - cached remote approvals survive upstream advancement and offline launch
+ok - direct-PR ships and scouts both refresh stale pooled worktrees before launch
+ok - a dirty pooled worktree is refused without discarding its local work
+ok - a ship spawn refuses to launch without an approved target base
+ok - full approved branch refs normalize to private remote-tracking state
+ok - an unreachable origin refuses a potentially stale pooled worktree
+ok - two consecutive spawns across a moved submodule pin end in a refusal naming both pins and no remedy
+ok - an unpushed submodule commit keeps the uncommitted-work refusal and survives it
+ok - work inside a submodule is still refused as uncommitted work, not called stale
+ok - a stale pin carrying real work is refused conservatively, never called stale
+ok - a stale pin beside other dirt yields the conservative refusal alone, with no stale-pin line
+# all fm-spawn-pool-base-freshen tests passed
+FM_TEST_END 2026-09-15T21:33:09Z tests/fm-spawn-pool-base-freshen.test.sh exit=0 duration_ms=118639 gate_skip=false
+FM_TEST_BEGIN 2026-09-15T21:33:09Z tests/fm-validation-loop.test.sh family=unclassified expected_gate_skip=none
+ok - near-complete continuation: fresh advancing evidence keeps continue/working at every observation
+ok - repeated-finding stop: the identical theme past its bound stops; distinct themes continue
+ok - unknown-state stop: unknown, unreadable, and dead verdicts are never absorbed
+ok - malformed evidence stop: incomplete run evidence fails closed at the absorb boundary
+ok - findings grammar: historical daemon output is accepted, malformed shapes are rejected
+ok - malformed journal stop: incomplete and unrecognized loop state fails closed
+ok - terminal transition: a completed run cannot reactivate under the same run id
+ok - journal state matrix: only coherent phase, status, and active combinations continue
+ok - journal write failure: time-based stop propagation fails closed
+ok - stale pipeline evidence: an active run unreadable past the bound stops; fresh or terminal evidence does not
+ok - recovery handoff: a stop preserves run custody, and a new run on the same copy resets the bounds
+ok - fix-round bound: the default bound is routine; the first round past it stops with counts
+ok - stall: frozen evidence stops, recovery resumes, ci waits are exempt
+ok - coarse evidence: fallback status never enforces the running/fixing stall bound
+ok - head change set: an overlarge transition stops instead of refreshing progress
+ok - initial scope: the first base-to-head diff must match the authenticated manifest
+ok - head change set: an authenticated new file remains eligible
+ok - head transition: repeated or regressed run heads stop instead of refreshing progress
+ok - findings scalar: quoted and unquoted mixed awaiting/auto-fix accepted, malformed and foreign-run evidence still rejected
+ok - unresolvable pipeline-owned head: unproven ancestry stops immediately and stays stopped, never credited as progress, distinct from a demonstrated incoherent transition, with the anchor pinned at the last verified head
+ok - scope-bearing unpublished head retains anchor, history, scope and progress until ancestry is proven
+ok - resolvable non-ancestor head transition: still a demonstrated incoherent transition, anchor pinned - the unresolvable-ancestry fix does not weaken this
+ok - threshold overrides: zero or malformed values fall back to the defaults, never disable a bound
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-wake-lib.sh: line 1809: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-validation-loop-tests.Wlkg3c/vloop-watcher/queue-failure: Is a directory
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/bin/fm-watch.sh: line 1000: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-validation-loop-tests.Wlkg3c/vloop-watcher/state/.stale-limit-test_fm-loopy: Is a directory
+ok - watcher: a limit-stopped crew surfaces once with the recorded breach in the durable wake reason
+ok - watcher: a validation limit surfaces after the same hash was generically stale
+ok - watcher: a no-verb signal carries the validation-loop breach reason
+FM_TEST_END 2026-09-15T21:35:23Z tests/fm-validation-loop.test.sh exit=0 duration_ms=133983 gate_skip=false
+FM_TEST_SUMMARY total=8 failed=2 skipped_gate=0 duration_ms=1003437
+FM_TEST_SUMMARY_FAMILY family=backend-dispatch count=1 duration_ms=1078 failed=1
+FM_TEST_SUMMARY_FAMILY family=legacy-adapter count=1 duration_ms=118639 failed=0
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=226640 failed=0
+FM_TEST_SUMMARY_FAMILY family=unclassified count=2 duration_ms=154769 failed=0
+FM_TEST_SUMMARY_FAMILY family=watcher-wake-lock count=2 duration_ms=501502 failed=1
+FM_TEST_SLOWEST rank=1 script=tests/fm-herdr-supervisor.test.sh duration_ms=459882
+FM_TEST_SLOWEST rank=2 script=tests/fm-herdr-lab.test.sh duration_ms=158477
+FM_TEST_SLOWEST rank=3 script=tests/fm-validation-loop.test.sh duration_ms=133983
+FM_TEST_SLOWEST rank=4 script=tests/fm-spawn-pool-base-freshen.test.sh duration_ms=118639
+FM_TEST_SLOWEST rank=5 script=tests/fm-crew-state.test.sh duration_ms=68163
+FM_TEST_SLOWEST rank=6 script=tests/fm-handoff-confirm.test.sh duration_ms=41620
+FM_TEST_SLOWEST rank=7 script=tests/fm-recovery-owner.test.sh duration_ms=20786
+FM_TEST_SLOWEST rank=8 script=tests/fm-herdr-session-cleanup.test.sh duration_ms=1078

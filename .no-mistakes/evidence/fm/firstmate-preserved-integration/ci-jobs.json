@@ -1,0 +1,65 @@
+{
+  "test-coverage": {
+    "name": "Test coverage guard",
+    "runs-on": "ubuntu-latest",
+    "steps": [
+      {
+        "uses": "actions/checkout@v6"
+      },
+      {
+        "name": "Prove complete regression partition",
+        "run": "bin/fm-test-run.sh --check-coverage"
+      }
+    ]
+  },
+  "tests-timing-aggregate": {
+    "name": "Behavior timing aggregate",
+    "runs-on": "ubuntu-latest",
+    "if": "always()",
+    "steps": [
+      {
+        "uses": "actions/checkout@v6"
+      },
+      {
+        "name": "Download lane timing artifacts",
+        "uses": "actions/download-artifact@v4",
+        "with": {
+          "pattern": "fm-test-timing-*",
+          "path": "${{ runner.temp }}/fm-test-aggregate",
+          "merge-multiple": true
+        }
+      },
+      {
+        "name": "Build aggregate timing summary",
+        "run": "set -eu\nmkdir -p \"$RUNNER_TEMP/fm-test\"\nshopt -s nullglob\ninputs=(\"$RUNNER_TEMP\"/fm-test-aggregate/fm-test-timing-*.json)\nif [ \"${#inputs[@]}\" -eq 0 ]; then\n  echo \"::warning::no per-lane timing JSON found to aggregate\"\n  exit 0\nfi\nbin/fm-test-run.sh --aggregate-json \\\n  \"$RUNNER_TEMP/fm-test/fm-test-timing-aggregate.json\" \\\n  \"${inputs[@]}\"\n"
+      },
+      {
+        "name": "Upload aggregate timing artifact",
+        "if": "always()",
+        "uses": "actions/upload-artifact@v4",
+        "with": {
+          "name": "fm-test-timing-aggregate",
+          "path": "${{ runner.temp }}/fm-test/fm-test-timing-aggregate.json",
+          "if-no-files-found": "warn"
+        }
+      }
+    ]
+  },
+  "invariants": {
+    "name": "Repo invariants",
+    "runs-on": "ubuntu-latest",
+    "steps": [
+      {
+        "uses": "actions/checkout@v6"
+      },
+      {
+        "name": "Canonical instruction sources",
+        "run": "bin/fm-instruction-sources-check.sh"
+      },
+      {
+        "name": "Personal fleet paths must not be tracked",
+        "run": "set -eu\ntracked=$(git ls-files -- data state projects .no-mistakes)\nif [ -n \"$tracked\" ]; then\n  echo \"::error::Personal fleet data paths are tracked in git:\"\n  printf '%s\\n' \"$tracked\"\n  exit 1\nfi\nunexpected_config=$(git ls-files -- config | grep -Ev '^(config/backend|config/crew-dispatch\\.json|config/fresh/config\\.json|config/herdr-presentation-spaces|config/starship\\.toml)$' || true)\nif [ -n \"$unexpected_config\" ]; then\n  echo \"::error::Unapproved local config paths are tracked in git:\"\n  printf '%s\\n' \"$unexpected_config\"\n  exit 1\nfi\n"
+      }
+    ]
+  }
+}

@@ -1,0 +1,53 @@
+FM_TEST_BEGIN 2026-09-15T21:32:49Z tests/fm-backend-herdr-only.test.sh family=backend-dispatch expected_gate_skip=none
+ok - public backend selection accepts Herdr and refuses retained adapters
+ok - retained-adapter activation requires a test-world override
+ok - retained-adapter conformance is reachable only in the selected test world
+ok - fm_backend_name refuses an undeclared home instead of defaulting (no tmux default)
+ok - fm_backend_name refuses every retained, blocked, and unknown config/backend value
+ok - fm_backend_name refuses every non-herdr FM_BACKEND even when config/backend declares herdr (no fall-through)
+ok - fm_backend_name accepts a declared herdr from config/backend or FM_BACKEND
+ok - runtime markers (TMUX, HERDR_ENV, cmux), nested or alone, never select a backend and detection is inert
+ok - every dispatcher refuses tmux/zellij/orca/cmux by name and never executes their CLIs
+ok - selector resolution: bare names refuse without a tmux inventory search, explicit targets are herdr
+ok - post-preflight Herdr native failures surface one policy-owned refusal
+ok - ambiguous Herdr close planning refuses before selecting a close strategy
+ok - failed Herdr workspace listing refuses before workspace creation
+ok - schema-invalid Herdr workspace listings refuse before creation
+ok - mismatched native Herdr workspace or tab identity refuses before operation
+ok - Herdr kill refuses planner and focus failures before any close
+ok - Herdr endpoint confirmation propagates presence-read failures
+ok - Herdr pane presence requires a complete matching workspace and tab identity
+ok - shared Herdr pane identity boundary preserves typed failures and explicit absence
+ok - stable Herdr operations refuse a failed identity precheck
+ok - stable Herdr operations use the documented pane command
+ok - Herdr focus restoration refuses a rebound tab identity
+ok - Herdr idle-shell proof refuses process info without exact endpoint identity
+ok - malformed Herdr targets fail closed across agent, composer, and submit paths
+ok - task creation refuses malformed Herdr tab inventory before mutation
+ok - task creation refuses a create response without exact parent identity
+ok - projection parent inventory failures preserve the Herdr blocker
+ok - projection recovery refuses native inventory failure before flat fallback
+ok - Herdr send preserves an empty typed native failure
+ok - explicit Herdr pane absence remains idempotently dead
+ok - Herdr agent reads atomically enforce exact identity and native status
+ok - seeded-tab pruning refuses failed inventory before mutation
+ok - workspace presence refuses malformed Herdr identities
+ok - workspace presence refuses duplicate Herdr identities
+ok - Herdr live-task discovery refuses duplicate workspace labels
+ok - Herdr live-task discovery preserves native inventory failures
+ok - Herdr native read failures refuse without parsing schema-shaped response bodies
+ok - Herdr target readiness rechecks the recorded workspace and tab identity
+ok - Herdr quarantine recovery surfaces server failures as one typed refusal
+ok - Herdr recovery refuses agent-read failures before replacement or fallback
+ok - fm-spawn refuses --backend, FM_BACKEND, config/backend, and undeclared/auto-detect selection before any side effect
+ok - fm-spawn refuses a missing or below-floor Herdr as a terminal blocker and never touches tmux
+ok - invalid backend state helpers refuse instead of returning neutral values
+ok - refusal diagnostics remain single-line when backend inputs contain controls
+ok - remote task identity is validated before capture, send, or state operations
+ok - remote state preserves typed transport output and surfaces native Herdr refusal
+cat: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2KC5KRP89F2TMQNEXSZEMN5/.test-phase-tmp/fm-backend-herdr-only.nr9phD/inherit-sm/config/backend: No such file or directory
+not ok - inherited config/backend should be the primary's literal bytes
+FM_TEST_END 2026-09-15T21:33:09Z tests/fm-backend-herdr-only.test.sh exit=1 duration_ms=19691 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=1 skipped_gate=0 duration_ms=19775
+FM_TEST_SUMMARY_FAMILY family=backend-dispatch count=1 duration_ms=19691 failed=1
+FM_TEST_SLOWEST rank=1 script=tests/fm-backend-herdr-only.test.sh duration_ms=19691
