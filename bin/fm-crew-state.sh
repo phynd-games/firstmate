@@ -188,21 +188,17 @@ if [ -n "$REMOTE_HOST" ]; then
   case "$REMOTE_BACKEND" in
     absent|tmux|zellij|orca|cmux)
       emit unknown legacy-backend "legacy-record: remote backend=${REMOTE_BACKEND:-absent} is not herdr, the sole supported runtime backend; record is read-only (docs/configuration.md \"Legacy task records\")"
-      exit 0
       ;;
     ambiguous|'')
       emit unknown backend-identity "remote backend identity is ambiguous or missing; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\""
-      exit 0
       ;;
     herdr) ;;
     *)
       emit unknown backend-identity "remote backend=${REMOTE_BACKEND} is not herdr; declare Herdr and verify with herdr status --json"
-      exit 0
       ;;
   esac
   if ! fm_backend_validate_remote_task_endpoint "$META" "$ID" fm-remote >/dev/null 2>&1; then
     emit unknown backend-identity "remote Herdr metadata is invalid; repair or explicitly migrate the record through docs/configuration.md \"Legacy task records\""
-    exit 0
   fi
   if ! REMOTE_STATE=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-on.sh" "$ID" \
     fm-remote-secondmate-control.sh state "$ID" --typed < /dev/null); then

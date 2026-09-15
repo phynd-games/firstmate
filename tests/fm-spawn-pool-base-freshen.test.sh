@@ -468,7 +468,7 @@ test_local_approved_refs_need_no_remote() {
     case "$kind" in
       sha) ref=$INITIAL_SHA ;;
       tag)
-        ref=approved-tag
+        ref='approved-tag'
         git -C "$PROJECT_DIR" tag "$ref" "$INITIAL_SHA"
         ;;
       branch) ref=main ;;
