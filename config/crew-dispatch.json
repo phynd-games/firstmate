@@ -32,7 +32,7 @@
             "effort": "high"
           }
       ],
-      "why": "The captain prefers Open AI Astra at xhigh effort for the most critical-path or ambiguous design and architecture work. If this Astra route is concretely unavailable, use the separate Fable fallback rule."
+      "why": "This rule supplies Astra and Fable at high effort as candidates for quota-informed selection for the most critical-path or materially ambiguous design and architecture work; it does not impose fallback-only ordering."
     },
     {
       "when": "The task produces a critical design or architecture plan, unless the more specific most-critical-path or materially-ambiguous rule applies.",
@@ -94,7 +94,7 @@
           "effort": "high"
         }
       ],
-      "why": "Use Sol for hard coding, with Claude Code at xhigh as the stronger alternative."
+      "why": "This rule supplies Fable, Astra, Opus 5, and Sol at high effort as candidates for quota-informed selection for ambiguous, high-risk, or difficult implementation work."
     }
   ],
   "default": {
