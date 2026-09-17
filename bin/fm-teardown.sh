@@ -155,6 +155,16 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# fm_teardown_wake_lib: the ONE source site for bin/fm-wake-lib.sh in this
+# script. Every former inline source calls it, so the library is re-executed at
+# exactly the same points with the same scoping, and static analysis follows a
+# single edge into that graph (see bin/fm-pending-reply-lib.sh for the same
+# seam and the reason).
+fm_teardown_wake_lib() {
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$SCRIPT_DIR/fm-wake-lib.sh"
+}
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
@@ -187,8 +197,7 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 # shellcheck source=bin/fm-secondmate-parent-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
-# shellcheck source=bin/fm-wake-lib.sh
-. "$SCRIPT_DIR/fm-wake-lib.sh"
+fm_teardown_wake_lib
 # shellcheck source=bin/fm-procevent-lib.sh
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 # shellcheck source=bin/fm-pending-reply-lib.sh
@@ -205,8 +214,7 @@ fm_backlog_directory_present "$STATE" "state directory" || {
   echo "error: teardown refused: $FM_BACKLOG_TRANSITION_ERROR" >&2
   exit 1
 }
-# shellcheck source=bin/fm-wake-lib.sh
-. "$SCRIPT_DIR/fm-wake-lib.sh"
+fm_teardown_wake_lib
 # Supervision lease guard: post-landing cleanup is overlap territory between
 # the two Pi supervision actors; refuse while the OTHER actor holds this
 # task's live lease (contract: bin/fm-lease-lib.sh; no-op in homes without
@@ -2404,8 +2412,7 @@ teardown_herdr_require_prerequisites() {  # <task-id>
     fi
   done
   if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
-    # shellcheck source=bin/fm-wake-lib.sh
-    . "$SCRIPT_DIR/fm-wake-lib.sh"
+    fm_teardown_wake_lib
   fi
   if ! declare -F fm_lock_try_acquire >/dev/null 2>&1 \
     || ! declare -F fm_lock_release >/dev/null 2>&1; then
@@ -2894,6 +2901,7 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
     # Swallowing them left a wrong active workspace with no operator-visible
     # signal at all. The close stays non-fatal exactly as before: the presence
     # gate below is what decides whether any durable record may be removed.
+    # shellcheck disable=SC2034 # read by the sourced herdr adapter (fm_backend_herdr_kill and the focus-preserving projected close) as prior_lock_held
     FM_BACKEND_HERDR_OPERATION_LOCK_HELD=1
     fm_backend_herdr_projection_close_pane_focus_preserving \
       "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE" || true
@@ -2903,6 +2911,7 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   fi
 elif [ "$BACKEND" = herdr ]; then
   if teardown_herdr_session_lock_held "$TEARDOWN_HERDR_SESSION"; then
+    # shellcheck disable=SC2034 # read by the sourced herdr adapter (fm_backend_herdr_kill and the focus-preserving projected close) as prior_lock_held
     FM_BACKEND_HERDR_OPERATION_LOCK_HELD=1
     if fm_backend_herdr_kill_serialized "$TEARDOWN_HERDR_SESSION" "$TEARDOWN_HERDR_PANE" 2>/dev/null; then
       kill_rc=0
@@ -3004,7 +3013,7 @@ if [ -e "$INTAKE_SESSION" ] || [ -L "$INTAKE_SESSION" ]; then
     || { echo "error: Lavish intake source identity is invalid for $ID; preserving task records" >&2; exit 1; }
   INTAKE_REGISTRATION="$STATE/procevent/$INTAKE_SOURCE.source"
   INTAKE_MARKER="$STATE/procevent/$INTAKE_SOURCE.intake"
-  INTAKE_BOUND=$($FM_ROOT/bin/fm-captain-hold.sh binding "$INTAKE_SOURCE" 2>/dev/null || true)
+  INTAKE_BOUND=$("$FM_ROOT/bin/fm-captain-hold.sh" binding "$INTAKE_SOURCE" 2>/dev/null || true)
   if [ -e "$INTAKE_REGISTRATION" ] || [ -L "$INTAKE_REGISTRATION" ] \
     || [ -e "$INTAKE_MARKER" ] || [ -L "$INTAKE_MARKER" ] \
     || [ -n "$INTAKE_BOUND" ]; then
