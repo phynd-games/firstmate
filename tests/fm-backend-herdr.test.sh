@@ -106,6 +106,39 @@ SH
   printf '%s\n' "$fb"
 }
 
+# make_herdr_server_env_fakebin: a stateful server stub that records only the
+# long-lived server launch environment, then reports a healthy running server in
+# the shape fm_backend_herdr_server_status_healthy requires.
+make_herdr_server_env_fakebin() {  # <dir> -> echoes fakebin dir
+  local dir=$1 fb="$1/fakebin"
+  mkdir -p "$fb"
+  cat > "$fb/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  status)
+    if [ -e "$FM_HERDR_SERVER_MARKER" ]; then
+      printf '{"client":{"version":"0.8.2","protocol":16},"server":{"running":true,"status":"running","compatible":true,"protocol":16}}\n'
+    else
+      printf '{"client":{"version":"0.8.2","protocol":16},"server":{"running":false,"status":"stopped","compatible":true,"protocol":16}}\n'
+    fi
+    ;;
+  server)
+    {
+      for name in FM_HOME FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE CURSOR_AGENT CURSOR_INVOKED_AS CLAUDECODE PI_CODING_AGENT FM_PI_HARNESS GROK_AGENT FM_SUPERVISION_MODEL FM_HERDR_SENTINEL HERDR_SESSION; do
+        eval 'value=${'"$name"'-<unset>}'
+        printf '%s=%s\n' "$name" "$value"
+      done
+      printf 'args=%s\n' "$*"
+    } > "$FM_HERDR_SERVER_ENV_LOG"
+    : > "$FM_HERDR_SERVER_MARKER"
+    ;;
+esac
+SH
+  chmod +x "$fb/herdr"
+  printf '%s\n' "$fb"
+}
+
 # make_herdr_statefake: a STATEFUL `herdr` stub that models the parts of herdr's
 # real container behavior the workspace-leak fix (and the default-tab-prune
 # safety fix) depend on, so a full spawn->teardown cycle can be replayed
@@ -400,7 +433,7 @@ test_launcher_identity_resolves_the_exact_pane_tab_and_workspace() {
   local dir log resp fb out
   dir="$TMP_ROOT/launcher-ok"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fm-herdr-unit/fmtest.sock"}]}\n' > "$resp/1.out"
-  printf '{"result":{"pane":{"pane_id":"w7:p3","tab_id":"w7:t3","workspace_id":"w7"}}}\n' > "$resp/2.out"
+  printf '{"result":{"pane":{"pane_id":"w7:p3","tab_id":"w7:t3","workspace_id":"w7","terminal_id":"term_w7p3"}}}\n' > "$resp/2.out"
   printf '{"result":{"tab":{"tab_id":"w7:t3","workspace_id":"w7"}}}\n' > "$resp/3.out"
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w7","label":"firstmate"}]}}\n' > "$resp/4.out"
   fb=$(make_herdr_fakebin "$dir")
@@ -479,7 +512,7 @@ test_launcher_identity_refuses_a_pane_and_tab_that_disagree() {
   local dir log resp fb out status
   dir="$TMP_ROOT/launcher-contradictory"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fm-herdr-unit/fmtest.sock"}]}\n' > "$resp/1.out"
-  printf '{"result":{"pane":{"pane_id":"w7:p3","tab_id":"w7:t3","workspace_id":"w7"}}}\n' > "$resp/2.out"
+  printf '{"result":{"pane":{"pane_id":"w7:p3","tab_id":"w7:t3","workspace_id":"w7","terminal_id":"term_w7p3"}}}\n' > "$resp/2.out"
   # The tab claims a DIFFERENT owning workspace than the pane just did.
   printf '{"result":{"tab":{"tab_id":"w7:t3","workspace_id":"w9"}}}\n' > "$resp/3.out"
   fb=$(make_herdr_fakebin "$dir")
@@ -497,7 +530,7 @@ test_launcher_identity_refuses_a_workspace_missing_from_the_session() {
   local dir log resp fb out status
   dir="$TMP_ROOT/launcher-gone"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fm-herdr-unit/fmtest.sock"}]}\n' > "$resp/1.out"
-  printf '{"result":{"pane":{"pane_id":"w7:p3","tab_id":"w7:t3","workspace_id":"w7"}}}\n' > "$resp/2.out"
+  printf '{"result":{"pane":{"pane_id":"w7:p3","tab_id":"w7:t3","workspace_id":"w7","terminal_id":"term_w7p3"}}}\n' > "$resp/2.out"
   printf '{"result":{"tab":{"tab_id":"w7:t3","workspace_id":"w7"}}}\n' > "$resp/3.out"
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"}]}}\n' > "$resp/4.out"
   fb=$(make_herdr_fakebin "$dir")
@@ -517,7 +550,7 @@ test_workspace_ensure_prefers_the_launcher_over_the_first_label_match() {
   local dir log resp fb out
   dir="$TMP_ROOT/ensure-launcher"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fm-herdr-unit/fmtest.sock"}]}\n' > "$resp/1.out"
-  printf '{"result":{"pane":{"pane_id":"w7:p3","tab_id":"w7:t3","workspace_id":"w7"}}}\n' > "$resp/2.out"
+  printf '{"result":{"pane":{"pane_id":"w7:p3","tab_id":"w7:t3","workspace_id":"w7","terminal_id":"term_w7p3"}}}\n' > "$resp/2.out"
   printf '{"result":{"tab":{"tab_id":"w7:t3","workspace_id":"w7"}}}\n' > "$resp/3.out"
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w7","label":"firstmate"}]}}\n' > "$resp/4.out"
   fb=$(make_herdr_fakebin "$dir")
@@ -602,6 +635,27 @@ test_container_ensure_starts_server_and_workspace() {
   assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp'$'\x1f''--label'$'\x1f''firstmate' \
     "container_ensure did not create the firstmate workspace with the given cwd"
   pass "fm_backend_herdr_container_ensure: version-gates, starts the server, ensures the firstmate workspace, echoes session:workspace_id + the seeded default tab id"
+}
+
+test_server_ensure_scrubs_home_and_harness_identity() {
+  local dir log marker fb output name
+  dir="$TMP_ROOT/server-env"; mkdir -p "$dir"; log="$dir/env"; marker="$dir/running"
+  fb=$(make_herdr_server_env_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_SERVER_ENV_LOG="$log" FM_HERDR_SERVER_MARKER="$marker" FM_HERDR_SENTINEL=kept \
+    FM_HOME=/tmp/wrong-home FM_ROOT_OVERRIDE=/tmp/wrong-root FM_STATE_OVERRIDE=/tmp/wrong-state \
+    FM_DATA_OVERRIDE=/tmp/wrong-data FM_PROJECTS_OVERRIDE=/tmp/wrong-projects FM_CONFIG_OVERRIDE=/tmp/wrong-config \
+    CURSOR_AGENT=1 CURSOR_INVOKED_AS=cursor-agent CLAUDECODE=1 PI_CODING_AGENT=true FM_PI_HARNESS=pi-signed GROK_AGENT=1 FM_SUPERVISION_MODEL=autoarm \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_server_ensure fmtest' "$ROOT"
+  expect_code 0 $? "server_ensure should start under a polluted launcher environment"
+  output=$(cat "$log")
+  for name in FM_HOME FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE \
+    CURSOR_AGENT CURSOR_INVOKED_AS CLAUDECODE PI_CODING_AGENT FM_PI_HARNESS GROK_AGENT FM_SUPERVISION_MODEL; do
+    assert_contains "$output" "$name=<unset>" "server_ensure leaked $name into the long-lived Herdr server"
+  done
+  assert_contains "$output" "FM_HERDR_SENTINEL=kept" "server_ensure removed an unrelated environment variable"
+  assert_contains "$output" "HERDR_SESSION=fmtest" "server_ensure lost explicit Herdr session routing"
+  assert_contains "$output" "args=server --session fmtest" "server_ensure lost the trailing Herdr session flag"
+  pass "fm_backend_herdr_server_ensure: scrubs home and harness identity without disturbing unrelated environment or session routing"
 }
 
 test_server_ensure_does_not_wait_for_a_long_lived_server_in_command_substitution() {
@@ -4742,7 +4796,10 @@ test_wait_transition_clean_timeout_returns_1() {
 # shellcheck source=bin/fm-backend.sh
 . "$ROOT/bin/fm-backend.sh"
 
-test_version_check_accepts_current_protocol
+t# The server launch-environment scrub runs first: it depends on no other case and
+# must be proved even when a later pre-existing case in this suite fails.
+test_server_ensure_scrubs_home_and_harness_identity
+est_version_check_accepts_current_protocol
 test_version_check_refuses_old_protocol
 test_version_check_refuses_missing_herdr
 test_workspace_label_primary_home_no_marker
