@@ -610,6 +610,7 @@ monitor_requires_intent_test() (
   pass "a monitor started without its recorded launch intent is refused and ledgered"
 )
 
+# shellcheck disable=SC2016 # Probe scripts expand variables in the child bash.
 claim_alarm_contended_recovery_test() (
   mode=$1
   home=$(new_home "claim-alarm-contention-$mode")
@@ -1047,6 +1048,7 @@ claim_alarm_loop_arrival_test() (
   pass "the arm path rechecks a live owner arriving during claim acquisition"
 )
 
+# shellcheck disable=SC2016 # Probe scripts expand variables in the child bash.
 server_restart_test() (
   HOME10=$(new_home server-restart)
   trap 'stop_loop "$HOME10"' EXIT

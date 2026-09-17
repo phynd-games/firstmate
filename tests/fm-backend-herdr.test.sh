@@ -4796,10 +4796,10 @@ test_wait_transition_clean_timeout_returns_1() {
 # shellcheck source=bin/fm-backend.sh
 . "$ROOT/bin/fm-backend.sh"
 
-t# The server launch-environment scrub runs first: it depends on no other case and
+# The server launch-environment scrub runs first: it depends on no other case and
 # must be proved even when a later pre-existing case in this suite fails.
 test_server_ensure_scrubs_home_and_harness_identity
-est_version_check_accepts_current_protocol
+test_version_check_accepts_current_protocol
 test_version_check_refuses_old_protocol
 test_version_check_refuses_missing_herdr
 test_workspace_label_primary_home_no_marker
