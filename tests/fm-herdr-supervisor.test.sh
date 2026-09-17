@@ -140,11 +140,19 @@ case "${1:-}" in
     case "${2:-}" in
       get)
         pane=${3:-}
+        [ ! -f "$S/pane-hang" ] || exec sleep 300
+        if [ -f "$S/pane-response" ]; then
+          cat "$S/pane-response"
+          exit "$(cat "$S/pane-status" 2>/dev/null || echo 0)"
+        fi
         # server-restarted-empty: a replacement server that restored nothing
         # answers pane_not_found for every pane until a new create.
-        [ ! -f "$S/server-restarted-empty" ] || exit 1
+        if [ -f "$S/server-restarted-empty" ]; then
+          printf '{"error":{"code":"pane_not_found","message":"pane not found"}}\n'
+          exit 1
+        fi
         [ "$pane" = "$(cat "$S/pane" 2>/dev/null || echo wZ:p1)" ] || exit 1
-        printf '{"result":{"pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s"}}}\n' \
+        printf '{"result":{"pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s","terminal_id":"termZ"}}}\n' \
           "$pane" \
           "$(cat "$S/pane-tab" 2>/dev/null || echo wZ:t1)" \
           "$(cat "$S/pane-workspace" 2>/dev/null || echo wZ)"
@@ -1110,6 +1118,42 @@ SH
   assert_grep 'still answers for the recorded pane wZ:p1' "$HOME10/state/.herdr-supervisor.log" \
     "the refusal does not name the reused pane"
   pass "a recorded pane id on the replacement server blocks replacement"
+  old_generation=$(record_field "$HOME10" generation)
+  cp "$HOME10/state/.launch-herdr-supervisor" "$HOME10/launch-before-pane-probes" || fail 'could not snapshot the old launch obligation'
+  creates_before=$(grep -c $'^workspace\x1fcreate\x1f' "$HOME10/fakestate/calls.log")
+  runs_before=$(grep -c $'^pane\x1frun\x1f' "$HOME10/fakestate/calls.log")
+  for response in different-binding malformed empty transport timeout unconfirmed-absence; do
+    case "$response" in
+      different-binding)
+        printf '%s\n' '{"result":{"pane":{"pane_id":"wZ:p1","tab_id":"wOTHER:t9","workspace_id":"wOTHER","terminal_id":"termOTHER"}}}' > "$HOME10/fakestate/pane-response"
+        ;;
+      malformed) printf '{broken\n' > "$HOME10/fakestate/pane-response" ;;
+      empty) : > "$HOME10/fakestate/pane-response" ;;
+      transport)
+        printf 'connection reset\n' > "$HOME10/fakestate/pane-response"
+        printf '3\n' > "$HOME10/fakestate/pane-status"
+        ;;
+      timeout) : > "$HOME10/fakestate/pane-hang" ;;
+      unconfirmed-absence)
+        printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$HOME10/fakestate/pane-response"
+        ;;
+    esac
+    out=$(FM_HERDR_SUPERVISOR_HERDR_TIMEOUT=1 run_supervisor "$HOME10" "$FAKEBIN" ensure 2>&1) \
+      && fail "$response pane response permitted replacement: $out"
+    [ "$(record_field "$HOME10" generation)" = "$old_generation" ] || fail "$response changed the prior generation"
+    [ "$(record_field "$HOME10" mode)" = quarantine ] || fail "$response did not quarantine the prior binding"
+    [ "$(record_field "$HOME10" cleanup_state)" != closed ] || fail "$response falsely settled cleanup"
+    cmp -s "$HOME10/launch-before-pane-probes" "$HOME10/state/.launch-herdr-supervisor" || fail "$response changed the old launch obligation"
+    [ "$(grep -c $'^workspace\x1fcreate\x1f' "$HOME10/fakestate/calls.log")" = "$creates_before" ] || fail "$response created a replacement workspace"
+    [ "$(grep -c $'^pane\x1frun\x1f' "$HOME10/fakestate/calls.log")" = "$runs_before" ] || fail "$response launched a replacement loop"
+    if [ "$response" = different-binding ]; then
+      assert_grep 'still answers for the recorded pane wZ:p1' "$HOME10/state/.herdr-supervisor-alarm" 'a reused pane under another binding was not identified'
+    else
+      assert_grep 'does not prove native absence' "$HOME10/state/.herdr-supervisor-alarm" "$response refusal omitted the missing native absence proof"
+    fi
+    rm -f "$HOME10/fakestate/pane-response" "$HOME10/fakestate/pane-status" "$HOME10/fakestate/pane-hang"
+    pass "$response pane response retains quarantine and the old obligation without replacement"
+  done
   rm -f "$HOME10/fakestate/list-response"
   [ "$(grep -c . "$HOME10/fakestate/closed-workspaces" 2>/dev/null || true)" = "$closed_before" ] \
     || fail "an ambiguous server replacement closed a workspace through the new server"

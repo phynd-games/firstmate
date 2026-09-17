@@ -1764,13 +1764,12 @@ retire_binding_locked() {  # <reason> [signal-owner]
 HS_SERVER_GONE_REASON=
 HS_SERVER_GONE_FACTS=
 recorded_server_instance_gone() {
-  local socket socket_identity workspace tab pane loop_pid loop_identity current present_identity loop_fact
+  local socket socket_identity workspace pane loop_pid loop_identity current present_identity loop_fact pane_rc=0
   HS_SERVER_GONE_REASON=
   HS_SERVER_GONE_FACTS=
   socket=$(record_get herdr_socket || printf '')
   socket_identity=$(record_get herdr_socket_identity || printf '')
   workspace=$(record_get workspace || printf '')
-  tab=$(record_get tab || printf '')
   pane=$(record_get pane || printf '')
   [ -n "$HS_SESSION" ] && [ -n "$HS_SOCKET" ] && [ -n "$HS_SOCKET_IDENTITY" ] || {
     HS_SERVER_GONE_REASON="the current Herdr server identity could not be read"
@@ -1778,6 +1777,10 @@ recorded_server_instance_gone() {
   }
   [ -n "$socket" ] && [ -n "$socket_identity" ] && [ -n "$workspace" ] || {
     HS_SERVER_GONE_REASON="the prior binding records no complete server and workspace identity"
+    return 1
+  }
+  [ -n "$pane" ] || {
+    HS_SERVER_GONE_REASON="the prior binding records no pane identity, so native pane absence cannot be proved"
     return 1
   }
   # The live record is written only by the loop and cleared on its own
@@ -1817,10 +1820,19 @@ recorded_server_instance_gone() {
     HS_SERVER_GONE_REASON="the replacement Herdr server's inventory is unreadable or still lists the recorded workspace $workspace"
     return 1
   fi
-  if [ -n "$tab" ] && [ -n "$pane" ] && pane_binding_intact "$HS_SESSION" "$workspace" "$tab" "$pane"; then
-    HS_SERVER_GONE_REASON="the replacement Herdr server still answers for the recorded pane $pane, so the endpoint id was reused or restored"
-    return 1
-  fi
+  FM_BACKEND_HERDR_CALL_TIMEOUT="$HERDR_CALL_TIMEOUT" \
+    fm_backend_herdr_pane_get_checked "$HS_SESSION" '' '' "$pane" 1 >/dev/null 2>&1 || pane_rc=$?
+  case "$pane_rc" in
+    1) ;;
+    0)
+      HS_SERVER_GONE_REASON="the replacement Herdr server still answers for the recorded pane $pane, so the endpoint id was reused or restored"
+      return 1
+      ;;
+    *)
+      HS_SERVER_GONE_REASON="the replacement Herdr server's response for the recorded pane $pane is unreadable or does not prove native absence"
+      return 1
+      ;;
+  esac
   HS_SERVER_GONE_FACTS="$loop_fact; recorded socket inode $socket_identity gone from $socket; replacement server $HS_SOCKET lacks workspace $workspace and pane ${pane:-none}"
   return 0
 }
