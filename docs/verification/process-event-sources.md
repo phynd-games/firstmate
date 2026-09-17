@@ -185,6 +185,8 @@ Signalling that group is safe precisely because only an absent leader reaches th
 This was found by four orphaned runners, elapsed 6-13 minutes, left by a suite whose fixture source never completed.
 `tests/fm-procevent.test.sh` now covers both paths, and three consecutive suite runs leave zero runners, zero fixture children, and zero stray claims.
 
+Runner launch accounting is owned by [`../launch-records.md`](../launch-records.md#local-forks-are-launches-too) and exercised through the real runner by `tests/fm-launch-helpers.test.sh`.
+
 ## Portability finding
 
 `setsid` is **not present on macOS**, so it cannot establish the runner's process group.

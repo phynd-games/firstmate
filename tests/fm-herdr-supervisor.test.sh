@@ -118,12 +118,14 @@ case "${1:-}" in
         if [ -f "$S/create-fails" ]; then exit 1; fi
         printf 'wZ\n' > "$S/workspace"
         # A freshly created workspace is live again even if an earlier
-        # generation's exact workspace of the same fake id was closed.
-        rm -f "$S/workspace-closed"
+        # generation's exact workspace of the same fake id was closed, and a
+        # restarted server that had nothing (server-restarted-empty) has
+        # inventory again from this create on.
+        rm -f "$S/workspace-closed" "$S/server-restarted-empty"
         for i in $(seq 1 $#); do
           if [ "${!i}" = --label ]; then j=$((i + 1)); printf '%s\n' "${!j}" > "$S/workspace-label"; fi
         done
-        printf '{"result":{"workspace":{"workspace_id":"wZ"},"tab":{"tab_id":"wZ:t1"},"root_pane":{"pane_id":"wZ:p1"}}}\n'
+        printf '{"result":{"workspace":{"workspace_id":"wZ"},"tab":{"tab_id":"wZ:t1"},"root_pane":{"pane_id":"wZ:p1"},"terminal":{"terminal_id":"termZ"}}}\n'
         exit 0
         ;;
       close)
@@ -138,8 +140,19 @@ case "${1:-}" in
     case "${2:-}" in
       get)
         pane=${3:-}
+        [ ! -f "$S/pane-hang" ] || exec sleep 300
+        if [ -f "$S/pane-response" ]; then
+          cat "$S/pane-response"
+          exit "$(cat "$S/pane-status" 2>/dev/null || echo 0)"
+        fi
+        # server-restarted-empty: a replacement server that restored nothing
+        # answers pane_not_found for every pane until a new create.
+        if [ -f "$S/server-restarted-empty" ]; then
+          printf '{"error":{"code":"pane_not_found","message":"pane not found"}}\n'
+          exit 1
+        fi
         [ "$pane" = "$(cat "$S/pane" 2>/dev/null || echo wZ:p1)" ] || exit 1
-        printf '{"result":{"pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s"}}}\n' \
+        printf '{"result":{"pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s","terminal_id":"termZ"}}}\n' \
           "$pane" \
           "$(cat "$S/pane-tab" 2>/dev/null || echo wZ:t1)" \
           "$(cat "$S/pane-workspace" 2>/dev/null || echo wZ)"
@@ -205,6 +218,10 @@ case "$operation" in
     [ ! -f "$S/list-fails" ] || exit 3
     if [ -f "$S/list-response" ]; then
       cat "$S/list-response"
+      exit 0
+    fi
+    if [ -f "$S/server-restarted-empty" ]; then
+      printf '{"id":"fm-workspace-control","result":{"workspaces":[]}}\n'
       exit 0
     fi
     live=$(cat "$S/workspace" 2>/dev/null || true)
@@ -288,6 +305,7 @@ run_supervisor() {  # <home> <fakebin> <args...>
   if [ ! -e "$supervisor_root/.installed" ]; then
     mkdir -p "$supervisor_root/bin"
     cp "$ROOT"/bin/*.sh "$supervisor_root/bin/"
+    cp "$ROOT/bin/fm-launch-record.py" "$supervisor_root/bin/"
     cp -R "$ROOT/bin/backends" "$supervisor_root/bin/"
     cp "$home/arm.sh" "$supervisor_root/bin/fm-watch-arm.sh"
     chmod +x "$supervisor_root/bin"/*.sh
@@ -524,6 +542,7 @@ claim_alarm_monitor_test() (
         sleep 0.05
       done
     }
+    hs_monitor_launch_intend || { echo "fixture: monitor intent could not be recorded" >&2; exit 97; }
     cmd_monitor_run "$(session_owner_identity)"
   ' > "$home/monitor.out" 2>&1 &
   monitor_pid=$!
@@ -574,6 +593,29 @@ claim_alarm_monitor_test() (
   count=$(grep -c 'herdr-supervisor' "$home/state/.wake-queue")
   [ "$count" = 2 ] || fail "monitor handoff suppressed the later failure ($count alarms)"
   pass "monitor handoff resets claim alarms while status remains read-only"
+)
+
+# shellcheck disable=SC2016 # Probe scripts expand variables in the child bash.
+# The monitor's launch record is required before it detaches (bin/fm-launch-record.py
+# contract): a start that skipped the intent step is refused rather than run, and
+# the refusal is visible in the bounded ledger instead of a silent exit.
+# shellcheck disable=SC2016 # Probe scripts expand variables in the child bash.
+monitor_requires_intent_test() (
+  home=$(new_home monitor-intent-required)
+  printf '%s\n' "${BASHPID:-$$}" > "$home/state/.lock"
+  touch "$home/state/task.meta"
+  (claim_probe "$home" -c '
+    set --
+    . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+    cmd_monitor_run "$(session_owner_identity)"
+  ') > "$home/monitor-no-intent.out" 2>&1 && fail "a monitor started without a recorded launch intent"
+  assert_absent "$home/state/.herdr-supervisor-monitor" "a refused monitor left a monitor record"
+  assert_absent "$home/state/.herdr-supervisor-monitor.lock" "a refused monitor kept the monitor singleton lock"
+  assert_grep 'monitor-refused' "$home/state/.herdr-supervisor.log" \
+    "the refused monitor start left no ledger diagnostic"
+  assert_grep 'no recorded launch intent' "$home/state/.herdr-supervisor.log" \
+    "the ledger diagnostic does not name the missing intent"
+  pass "a monitor started without its recorded launch intent is refused and ledgered"
 )
 
 # shellcheck disable=SC2016 # Probe scripts expand variables in the child bash.
@@ -633,6 +675,7 @@ claim_alarm_contended_recovery_test() (
         sleep 0.05
       done
     }
+    hs_monitor_launch_intend || { echo "fixture: monitor intent could not be recorded" >&2; exit 97; }
     cmd_monitor_run "$(session_owner_identity)" || exit 1
     touch "$STATE/monitor-finished"
   ' _ "$mode" > "$home/monitor.out" 2>&1 &
@@ -1013,6 +1056,7 @@ claim_alarm_loop_arrival_test() (
   pass "the arm path rechecks a live owner arriving during claim acquisition"
 )
 
+# shellcheck disable=SC2016 # Probe scripts expand variables in the child bash.
 server_restart_test() (
   HOME10=$(new_home server-restart)
   trap 'stop_loop "$HOME10"' EXIT
@@ -1025,6 +1069,8 @@ SH
   fm_write_meta "$HOME10/state/socket-task.meta" "window=firstmate:fm-socket-task"
   run_supervisor "$HOME10" "$FAKEBIN" ensure >/dev/null 2>&1 || fail "establish failed for the socket case"
   wait_for 10 test -e "$HOME10/arm-entered" || fail "the old loop never armed"
+  old_socket=$(sed -n 's/^herdr_socket=//p' "$HOME10/state/.herdr-supervisor" | head -n 1)
+  [ -n "$old_socket" ] && [ -e "$old_socket" ] || fail "the binding does not name a present recorded socket"
   # The loop stays alive on purpose: this must prove the SERVER identity check
   # fails on its own, not that a dead process was noticed first.
   printf '%s\n' "$HOME10/fakestate/restarted.sock" > "$HOME10/fakestate/socket"
@@ -1032,28 +1078,131 @@ SH
   assert_contains "$out" "supervisor: unhealthy" "a replaced Herdr server is unhealthy"
   assert_contains "$out" "socket changed" "the unhealthy reason names the lost server"
   pass "a Herdr server restart is detected as a lost supervisor, not as healthy"
-  # A real server restart also ends its pane processes. Keep the old loop alive
-  # only for the read-only identity assertion above, then model that lifecycle
-  # before asking ensure to replace it. Otherwise its valid claim correctly
-  # defers replacement, depending on when its arm cycle releases the claim.
+  closed_before=$(grep -c . "$HOME10/fakestate/closed-workspaces" 2>/dev/null || true)
+  # Ambiguous 1: the prior loop process is still alive under its recorded
+  # identity. A changed server identity alone proves nothing about it.
+  out=$(run_supervisor "$HOME10" "$FAKEBIN" ensure 2>&1) || true
+  case "$out" in
+    *started*) fail "a changed server identity with the prior loop alive permitted replacement: $out" ;;
+  esac
+  assert_contains "$out" "deferred" "the live prior loop's own claim did not defer replacement"
+  assert_present "$HOME10/state/.herdr-supervisor" "the unresolved prior binding remains authoritative (loop alive)"
+  pass "a live prior loop holding its claim defers replacement after a server identity change"
+  # A real server restart also ends its pane processes; model that lifecycle.
   stop_loop "$HOME10"
   wait_for 10 test ! -e "$HOME10/state/.supervision-claim.lock" \
     || fail "the restarted server's old loop did not release its claim"
-  old_socket_workspace_count=$(grep -c . "$HOME10/fakestate/closed-workspaces" 2>/dev/null || true)
+  # Ambiguous 2: the loop is dead, but the recorded socket is still present
+  # with its recorded inode, so the prior server instance may still serve it.
+  run_supervisor "$HOME10" "$FAKEBIN" ensure >/dev/null 2>&1 \
+    && fail "a still-present recorded socket permitted replacement"
+  assert_present "$HOME10/state/.herdr-supervisor" "the unresolved prior binding remains authoritative (socket present)"
+  assert_grep 'still present with its recorded identity' "$HOME10/state/.herdr-supervisor.log" \
+    "the refusal does not name the present recorded socket"
+  pass "a reachable recorded socket blocks replacement even after the loop died"
+  # Ambiguous 3: the recorded socket inode is gone, but the replacement server
+  # still lists the recorded workspace id (a restored or reused id).
+  rm -f "$old_socket"
+  run_supervisor "$HOME10" "$FAKEBIN" ensure >/dev/null 2>&1 \
+    && fail "a recorded workspace id listed by the replacement server permitted replacement"
+  assert_present "$HOME10/state/.herdr-supervisor" "the unresolved prior binding remains authoritative (workspace reused)"
+  assert_grep 'still lists the recorded workspace wZ' "$HOME10/state/.herdr-supervisor.log" \
+    "the refusal does not name the reused workspace"
+  pass "a recorded workspace id on the replacement server blocks replacement"
+  # Ambiguous 4: the workspace is absent from the inventory, but the recorded
+  # pane id still answers on the replacement server.
+  printf '%s\n' '{"id":"fm-workspace-control","result":{"workspaces":[]}}' > "$HOME10/fakestate/list-response"
+  run_supervisor "$HOME10" "$FAKEBIN" ensure >/dev/null 2>&1 \
+    && fail "a recorded pane id answering on the replacement server permitted replacement"
+  assert_present "$HOME10/state/.herdr-supervisor" "the unresolved prior binding remains authoritative (pane reused)"
+  assert_grep 'still answers for the recorded pane wZ:p1' "$HOME10/state/.herdr-supervisor.log" \
+    "the refusal does not name the reused pane"
+  pass "a recorded pane id on the replacement server blocks replacement"
+  old_generation=$(record_field "$HOME10" generation)
+  cp "$HOME10/state/.launch-herdr-supervisor" "$HOME10/launch-before-pane-probes" || fail 'could not snapshot the old launch obligation'
+  creates_before=$(grep -c $'^workspace\x1fcreate\x1f' "$HOME10/fakestate/calls.log")
+  runs_before=$(grep -c $'^pane\x1frun\x1f' "$HOME10/fakestate/calls.log")
+  for response in different-binding malformed empty transport timeout unconfirmed-absence; do
+    case "$response" in
+      different-binding)
+        printf '%s\n' '{"result":{"pane":{"pane_id":"wZ:p1","tab_id":"wOTHER:t9","workspace_id":"wOTHER","terminal_id":"termOTHER"}}}' > "$HOME10/fakestate/pane-response"
+        ;;
+      malformed) printf '{broken\n' > "$HOME10/fakestate/pane-response" ;;
+      empty) : > "$HOME10/fakestate/pane-response" ;;
+      transport)
+        printf 'connection reset\n' > "$HOME10/fakestate/pane-response"
+        printf '3\n' > "$HOME10/fakestate/pane-status"
+        ;;
+      timeout) : > "$HOME10/fakestate/pane-hang" ;;
+      unconfirmed-absence)
+        printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$HOME10/fakestate/pane-response"
+        ;;
+    esac
+    out=$(FM_HERDR_SUPERVISOR_HERDR_TIMEOUT=1 run_supervisor "$HOME10" "$FAKEBIN" ensure 2>&1) \
+      && fail "$response pane response permitted replacement: $out"
+    [ "$(record_field "$HOME10" generation)" = "$old_generation" ] || fail "$response changed the prior generation"
+    [ "$(record_field "$HOME10" mode)" = quarantine ] || fail "$response did not quarantine the prior binding"
+    [ "$(record_field "$HOME10" cleanup_state)" != closed ] || fail "$response falsely settled cleanup"
+    cmp -s "$HOME10/launch-before-pane-probes" "$HOME10/state/.launch-herdr-supervisor" || fail "$response changed the old launch obligation"
+    [ "$(grep -c $'^workspace\x1fcreate\x1f' "$HOME10/fakestate/calls.log")" = "$creates_before" ] || fail "$response created a replacement workspace"
+    [ "$(grep -c $'^pane\x1frun\x1f' "$HOME10/fakestate/calls.log")" = "$runs_before" ] || fail "$response launched a replacement loop"
+    if [ "$response" = different-binding ]; then
+      assert_grep 'still answers for the recorded pane wZ:p1' "$HOME10/state/.herdr-supervisor-alarm" 'a reused pane under another binding was not identified'
+    else
+      assert_grep 'does not prove native absence' "$HOME10/state/.herdr-supervisor-alarm" "$response refusal omitted the missing native absence proof"
+    fi
+    rm -f "$HOME10/fakestate/pane-response" "$HOME10/fakestate/pane-status" "$HOME10/fakestate/pane-hang"
+    pass "$response pane response retains quarantine and the old obligation without replacement"
+  done
+  rm -f "$HOME10/fakestate/list-response"
+  [ "$(grep -c . "$HOME10/fakestate/closed-workspaces" 2>/dev/null || true)" = "$closed_before" ] \
+    || fail "an ambiguous server replacement closed a workspace through the new server"
+  # Ambiguous 5: every server-side fact says gone, but the recorded loop process
+  # is alive under its recorded identity while holding no claim (a wedged loop
+  # cannot be assumed finished). Modeled with a real process recorded as the loop.
+  : > "$HOME10/fakestate/server-restarted-empty"
+  sleep 300 &
+  stray_loop=$!
+  stray_identity=$(claim_probe "$HOME10" -c '
+    stray=$1
+    set --
+    . "$FM_SUP_SCRIPT" >/dev/null 2>&1 || true
+    fm_pid_identity "$stray"
+  ' _ "$stray_loop")
+  [ -n "$stray_identity" ] || { kill "$stray_loop" 2>/dev/null; fail "could not compute the stray loop identity"; }
+  printf 'generation=%s\nloop_pid=%s\nloop_identity=%s\n' \
+    "$(sed -n 's/^generation=//p' "$HOME10/state/.herdr-supervisor" | head -n 1)" "$stray_loop" "$stray_identity" \
+    > "$HOME10/state/.herdr-supervisor-live"
+  run_supervisor "$HOME10" "$FAKEBIN" ensure >/dev/null 2>&1 \
+    && { kill "$stray_loop" 2>/dev/null; fail "a live recorded loop process permitted replacement"; }
+  assert_present "$HOME10/state/.herdr-supervisor" "the unresolved prior binding remains authoritative (loop process alive)"
+  assert_grep "loop process $stray_loop is still alive under its recorded identity" "$HOME10/state/.herdr-supervisor.log" \
+    "the refusal does not name the live recorded loop process"
+  pass "a live recorded loop process blocks replacement even when the server facts say gone"
+  kill "$stray_loop" 2>/dev/null || true
+  wait "$stray_loop" 2>/dev/null || true
+  # The recycled-pid counterpart: the pid is dead now, so the same record must
+  # no longer block. Positive control: the loop is dead, the recorded socket
+  # inode is gone, and the replacement server readably has neither the
+  # workspace nor the pane.
   out=$(run_supervisor "$HOME10" "$FAKEBIN" ensure 2>&1)
-  assert_contains "$out" "started" "a changed Herdr server permits a fresh supervisor generation"
-  quarantine_record=
+  assert_contains "$out" "started" "a proved-gone Herdr server permits a fresh supervisor generation"
+  retired_record=
   for candidate in "$HOME10"/state/.herdr-supervisor-quarantine.*; do
     if [ -e "$candidate" ]; then
-      quarantine_record=$candidate
+      retired_record=$candidate
       break
     fi
   done
-  [ -n "$quarantine_record" ] || fail "the replaced server left no quarantine evidence"
-  new_socket_workspace_count=$(grep -c . "$HOME10/fakestate/closed-workspaces" 2>/dev/null || true)
-  [ "$new_socket_workspace_count" = "$old_socket_workspace_count" ] \
-    || fail "server replacement closed a workspace through the new server"
-  pass "server replacement quarantines old ownership before fresh establishment"
+  [ -n "$retired_record" ] || fail "the proved-gone server left no retained binding evidence"
+  assert_grep 'mode=retired' "$retired_record" "the retained evidence does not record the retirement"
+  assert_grep 'retired_reason=server gone' "$retired_record" "the retained evidence does not name the server-gone facts"
+  assert_grep 'server-gone' "$HOME10/state/.herdr-supervisor.log" "the ledger does not record the proved-gone retirement"
+  assert_grep "loop pid $stray_loop dead" "$HOME10/state/.herdr-supervisor.log" \
+    "the ledger does not name the dead recorded loop pid"
+  [ "$(grep -c . "$HOME10/fakestate/closed-workspaces" 2>/dev/null || true)" = "$closed_before" ] \
+    || fail "a proved-gone server replacement closed a workspace through the new server"
+  pass "a proved-gone server permits a fresh generation with retained evidence and no close through the new server"
   stop_loop "$HOME10"
 )
 
@@ -1096,6 +1245,7 @@ case "${1:-}" in
     exit $?
     ;;
   --claim-monitor-only) claim_alarm_monitor_test; exit $? ;;
+  --monitor-intent-only) monitor_requires_intent_test; exit $? ;;
   --claim-owner-only) claim_alarm_owner_tests; exit $? ;;
   --claim-concurrent-only) claim_alarm_concurrent_test; exit $? ;;
   --claim-shared-only) claim_alarm_loop_test shared; exit $? ;;
@@ -1112,6 +1262,7 @@ claim_alarm_concurrent_test || exit 1
 claim_alarm_loop_test shared || exit 1
 claim_alarm_loop_test recovery || exit 1
 claim_alarm_monitor_test || exit 1
+monitor_requires_intent_test || exit 1
 claim_alarm_contended_recovery_test remains || exit 1
 claim_alarm_contended_recovery_test disappears || exit 1
 claim_alarm_contended_recovery_test ensure-exit || exit 1
@@ -1693,15 +1844,14 @@ assert_absent "$HOME13/state/.herdr-supervisor" "a failed establish leaves no li
 assert_present "$HOME13/state/.herdr-supervisor-alarm" "a failed establish leaves a durable alarm"
 pass "an incomplete Herdr response fails loudly and closes nothing it cannot identify"
 rm -f "$HOME13/fakestate/create-incomplete"
+out=$(run_supervisor "$HOME13" "$FAKEBIN" ensure 2>&1) && fail "an incomplete create permitted blind replacement"
+assert_present "$HOME13/state/.herdr-supervisor-pending-cleanup" "incomplete creation keeps the pending obligation"
+python3 "$ROOT/bin/fm-launch-record.py" --state "$HOME13/state" reconcile --helper herdr-supervisor --current \
+  --verdict manual --evidence "fixture inspection confirmed no retained effect" >/dev/null || fail "manual settlement failed"
 out=$(run_supervisor "$HOME13" "$FAKEBIN" ensure 2>&1)
-assert_contains "$out" "herdr-supervisor: started" "a verified absent incomplete create can be retried"
-find "$HOME13/state" -maxdepth 1 -name '.herdr-supervisor-quarantine.pending.*' -print -quit | grep -q . \
-  || fail "invisible incomplete create was not retained as quarantine evidence"
-assert_grep 'incomplete or ambiguous Herdr create was quarantined' "$HOME13/state/.herdr-supervisor-alarm" \
-  "the quarantined incomplete create leaves an actionable alarm"
-assert_absent "$HOME13/state/.herdr-supervisor-pending-cleanup" "quarantining the incomplete create releases the active pending slot"
+assert_contains "$out" "herdr-supervisor: started" "inspected manual settlement permits recovery"
 stop_loop "$HOME13"
-pass "verified absence of an incomplete create does not permanently block recovery"
+pass "incomplete creation blocks replacement until explicit inspected settlement"
 
 # =============================================================================
 # 13b. A PARTIAL Herdr create response is refused, closes nothing, and names the
@@ -1727,15 +1877,12 @@ assert_grep "tab=wPART:t1" "$HOME13B/state/.herdr-supervisor-pending-cleanup" \
 [ "$(cat "$HOME13B/arm.count" 2>/dev/null || echo 0)" = 0 ] \
   || fail "a partial establish armed the watcher anyway"
 rm -f "$HOME13B/fakestate/create-partial"
-out=$(run_supervisor "$HOME13B" "$FAKEBIN" ensure 2>&1)
-assert_contains "$out" "herdr-supervisor: started" "a quarantined partial create permits a fresh establish"
-PARTIAL_QUARANTINE=$(find "$HOME13B/state" -maxdepth 1 -name '.herdr-supervisor-quarantine.pending.*' -print -quit)
-[ -n "$PARTIAL_QUARANTINE" ] || fail "partial create quarantine evidence was not retained"
-assert_grep "workspace=wPART" "$PARTIAL_QUARANTINE" \
-  "the quarantine preserves the partial workspace id without adopting it"
+out=$(run_supervisor "$HOME13B" "$FAKEBIN" ensure 2>&1) && fail "a partial create permitted replacement"
+assert_grep "workspace=wPART" "$HOME13B/state/.herdr-supervisor-pending-cleanup" \
+  "the pending owner preserves the partial workspace"
 assert_absent "$HOME13B/fakestate/closed-workspaces" \
   "reconciling a partial response never closes its ambiguous workspace"
-pass "a partial Herdr create response is quarantined without label adoption or cleanup"
+pass "a partial Herdr create remains an active obligation without label adoption"
 stop_loop "$HOME13B"
 
 # =============================================================================

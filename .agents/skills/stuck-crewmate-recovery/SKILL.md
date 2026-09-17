@@ -34,6 +34,7 @@ A no-mistakes run matched to the crew's branch and current code remains authorit
 
 When no authoritative run accounts for the task, inspect only its recorded backend and worktree inventory.
 Use the Herdr-owned endpoint and worktree checks through `bin/fm-crew-state.sh` and the exact task metadata.
+Read the task's launch record and follow the [launch settlement boundary](../../../docs/launch-records.md#what-the-obligation-does) before selecting relaunch or teardown.
 Herdr is the sole supported runtime; legacy tmux, zellij, cmux, and Orca records are read-only and must not be operated or probed through their retained adapters.
 Do not sweep another home's endpoints or infer ownership from a matching window label.
 

@@ -30,7 +30,8 @@
 #              every uncommitted change. Interrupts first when the task reads
 #              busy, then submits the harness's exit command. Postcondition:
 #              the backend's recovery-grade classifier reports the agent gone.
-#              Already-stopped is success (idempotent).
+#              Already-stopped success follows the settlement boundary in
+#              docs/launch-records.md ("What the obligation does").
 #   relaunch   Transactionally replace the running agent with a new one, in the
 #              SAME endpoint and SAME worktree, on the same or a newly chosen
 #              harness/model/effort - so switching harness is one ordinary use
@@ -126,6 +127,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-launch-record-lib.sh
+. "$SCRIPT_DIR/fm-launch-record-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
@@ -468,6 +471,35 @@ verify_interrupt_running() {
   printf '%s' "$proof"
 }
 
+control_open_launch() {
+  local out rc launch key recorded expected
+  out=$(fm_launch_record check --task "$ID" 2>&1)
+  rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    3) ;;
+    *) die "task $ID's launch record cannot be inspected before stopping (${out:-no detail})" ;;
+  esac
+  launch=$(printf '%s\n' "$out" | sed -n 's/^launch=//p')
+  [ -n "$launch" ] || die "task $ID's open launch has no attempt identity"
+  if [ "$BACKEND" = herdr ]; then
+    for key in session workspace_id tab_id pane_id terminal_id; do
+      recorded=$(printf '%s\n' "$out" | sed -n "s/^identity\.$key=//p")
+      expected=$(fm_meta_get "$META" "herdr_$key")
+      [ -n "$recorded" ] && [ "$recorded" = "$expected" ] \
+        || die "task $ID's open launch is not bound to its recorded $key; refusing settlement"
+    done
+  fi
+  printf '%s' "$launch"
+}
+
+control_record_stop() {
+  local launch=$1 out
+  [ -n "$launch" ] || return 0
+  out=$(fm_launch_record stop --task "$ID" --launch "$launch" --reason "fm-control $VERB stopped the previous agent ($2)" 2>&1) \
+    || die "task $ID's proven stop could not settle launch $launch (${out:-no detail}); refusing replacement"
+}
+
 do_interrupt() {
   local proof cancel
   cancel=$(deliver_interrupt) || return $?
@@ -484,11 +516,13 @@ retire_busy_incarnation() {
 # do_exit: stop the running agent, preserving endpoint and worktree. Prints
 # `already-stopped` or `stopped`.
 do_exit() {
-  local state cmd verdict cancel interrupt_result=not-needed
+  local state cmd verdict cancel launch interrupt_result=not-needed
   require_state_verified_backend exit
+  launch=$(control_open_launch) || return 1
   state=$(agent_state)
   case "$state" in
     dead)
+      [ -z "$launch" ] || die "task $ID has an open launch on a present endpoint but no registered agent; no attempt-bound stop is proven"
       printf 'already-stopped'
       return 0
       ;;
@@ -503,6 +537,7 @@ do_exit() {
       state=$(agent_state)
       case "$state" in
         dead)
+          control_record_stop "$launch" "interrupt delivered" || return 1
           retire_busy_incarnation
           printf 'stopped'
           return 0
@@ -534,6 +569,7 @@ do_exit() {
   }
   # The incarnation is over: retire its busy wiring so no stale record or
   # orphaned generation survives the agent that produced it.
+  control_record_stop "$launch" "exit command delivered" || return 1
   retire_busy_incarnation
   printf 'stopped'
 }

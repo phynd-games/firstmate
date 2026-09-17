@@ -122,6 +122,9 @@ state/               runtime records and signals; gitignored
   <id>.lavish-intake  hash-bound Lavish intake receipt; removed by teardown after landing
   <id>.lavish-intake-session <id>.lavish-intake-classification  active intake binding or explicit exemption marker; removed by teardown
   <id>.herdr-presentation  quarantinable attempt and restart-binding journal for Herdr's optional visual projection; never task or endpoint authority; see docs/herdr-backend.md "Presentation spaces"
+  <id>.launch        task launch accounting; bin/fm-launch-record.py owns the contract and docs/launch-records.md the operator view; removed by teardown
+  .launch-<helper>   helper launch accounting; docs/launch-records.md owns coverage and docs/herdr-supervisor.md the supervisor projection exception
+  .herdr-supervisor-cleaned.<generation>  supervisor-owned confirmed cleanup receipt retained until its terminal launch projection recovers; see docs/herdr-supervisor.md
   <id>.check.sh      authenticated slow poll; the watcher dispatches validated PR data and the byte-identified Relay shim through trusted repository scripts, runs registered custom checks from hash-validated private snapshots, and rejects every other state check without execution
   <id>.check-trust   private content binding created by fm-check-register.sh for an intentional custom check
   <id>.pr-poll       private validated data sidecar for the byte-static PR merge poll
@@ -586,7 +589,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `phynd-design` - load after `phynd-governance` before designing a Phynd feature, service, Lambda route, data pipeline, or cross-app change.
 - `phynd-engineering` - load after `phynd-governance` before implementing, testing, auditing, or reviewing Phynd changes.
 - `communication-discipline` - load before composing captain-facing output, worker instructions, progress updates, or review results.
-- `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH: invalid`, `FLEET_SYNC:`, `NETWORK_CHECKS:`, `PR_CHECK_MIGRATION:`, `HOME_SUMMARY:`, `BACKLOG_RECONCILE:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, `HERDR_SUPERVISOR:`, `DOCS_READER: unavailable`, or `FMX:`), or when `BOOTSTRAP_INFO:` says an interrupted backlog cleanup may have left an endpoint or local copy; silence and other `BOOTSTRAP_INFO:` facts need no load.
+- `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH: invalid`, `FLEET_SYNC:`, `NETWORK_CHECKS:`, `PR_CHECK_MIGRATION:`, `HOME_SUMMARY:`, `BACKLOG_RECONCILE:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, `HERDR_SUPERVISOR:`, `LAUNCH_RECONCILE:`, `DOCS_READER: unavailable`, or `FMX:`), or when `BOOTSTRAP_INFO:` says an interrupted backlog cleanup may have left an endpoint or local copy; silence and other `BOOTSTRAP_INFO:` facts need no load.
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
 - `lavish-feature-intake` - load before planning, designing, implementing, or dispatching potentially significant work; uncertainty requires its interactive intake gate.
 - `ask-user-authority` - load before deciding any ask-user finding and before approving a validation review step.

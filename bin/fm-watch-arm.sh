@@ -63,6 +63,8 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-launch-record-lib.sh
+. "$SCRIPT_DIR/fm-launch-record-lib.sh"
 
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 WATCH_LOCK="$STATE/.watch.lock"
@@ -84,6 +86,117 @@ CYCLE_LOG_LOCK="$STATE/.watch-cycle-exits.lock"
 CYCLE_LOG_MAX_BYTES=${FM_WATCH_CYCLE_LOG_MAX_BYTES:-262144}
 CYCLE_LOG_KEEP_LINES=${FM_WATCH_CYCLE_LOG_KEEP_LINES:-1000}
 ARM_PID=${BASHPID:-$$}
+
+# --- launch record: durable attempt accounting for every forked cycle ------
+# The singleton lock and the cycle ledger stay the watcher's authority for
+# duplicates and outcomes; the launch record (state/.launch-watcher,
+# docs/launch-records.md) adds the one thing they cannot: an account written
+# BEFORE the fork, so an arm interrupted before its child claims the lock still
+# leaves evidence of the attempt. The successor chain is kept as it is: a
+# successor supersedes the running predecessor's launch instead of being
+# refused as a duplicate, and the predecessor's real exit is annotated later.
+# The intent is required before a NEW child is forked: when it cannot be
+# persisted (owner unavailable, record unreadable, a running predecessor that
+# cannot be superseded, or the write itself failing) the arm refuses to fork,
+# publishes the refusal through its ordinary failure path, and exits non-zero.
+# A healthy predecessor is never touched by that refusal: the arm attaches to
+# a live watcher before this point and only reaches the fork when none exists
+# or a handoff asked for a successor, and a refused successor leaves the
+# predecessor running its own cycle.
+WA_LAUNCH_ID=
+WA_LAUNCH_REFUSAL=
+WA_LAUNCH_LOCK="$STATE/.watch-arm-launch.lock"
+WA_LAUNCH_LOCK_HELD=0
+wa_launch() {  # <command> [args...]
+  local command=$1
+  shift
+  fm_launch_record "$command" --helper watcher "$@" 2>/dev/null
+}
+wa_launch_note() {
+  printf 'watcher: launch record: %s\n' "$1" >&2
+}
+wa_identity_digest() {  # <pid> -> sha256 of fm_pid_identity, or empty
+  local identity
+  identity=$(fm_pid_identity "$1" 2>/dev/null || true)
+  [ -n "$identity" ] || return 0
+  printf '%s' "$identity" | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())' 2>/dev/null || true
+}
+wa_launch_intend() {  # non-zero = refuse to fork; WA_LAUNCH_REFUSAL says why
+  local out rc line pid digest current_digest predecessor predecessor_digest launch origin=cycle
+  local launcher_pid=${BASHPID:-$$}
+  local -a launcher_args=() successor_args=()
+  fm_launch_record_available >/dev/null 2>&1 || { WA_LAUNCH_REFUSAL="launch record owner unavailable (python3 or bin/fm-launch-record.py missing)"; return 1; }
+  out=$(fm_launch_record check --helper watcher 2>/dev/null)
+  rc=$?
+  case "$rc" in
+    0) ;;
+    3)
+      pid=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid=//p' | head -n 1)
+      digest=$(printf '%s\n' "$out" | sed -n 's/^identity\.pid_identity_sha256=//p' | head -n 1)
+      launch=$(printf '%s\n' "$out" | sed -n 's/^launch=//p')
+      if [ -n "$pid" ] && [ -n "$digest" ]; then
+        current_digest=$(wa_identity_digest "$pid")
+        if fm_pid_alive "$pid" && [ -z "$current_digest" ]; then
+          WA_LAUNCH_REFUSAL="recorded watcher process identity is unavailable"
+          return 1
+        fi
+        if fm_pid_alive "$pid" && [ "$current_digest" = "$digest" ]; then
+          predecessor=$(wa_launch get launch.launcher.pid) || return 1
+          predecessor_digest=$(wa_launch get launch.launcher.pid_identity_sha256) || return 1
+          if [ -z "${FM_WATCH_PREDECESSOR_ARM_PID:-}" ] || [ "$FM_WATCH_PREDECESSOR_ARM_PID" != "$predecessor" ] \
+            || [ -z "$predecessor_digest" ] || [ "$(wa_identity_digest "$predecessor")" != "$predecessor_digest" ]; then
+            WA_LAUNCH_REFUSAL="a live recorded watcher has no matching predecessor handoff"
+            return 1
+          fi
+          successor_args=(--supersede "$launch" --reason "successor cycle armed by arm $ARM_PID while watcher pid $pid still runs")
+        else
+          wa_launch exit --launch "$launch" --reason "recorded watcher process identity gone at next arm" >/dev/null \
+            || { WA_LAUNCH_REFUSAL="the previous cycle's exit could not be recorded"; return 1; }
+        fi
+      else
+        WA_LAUNCH_REFUSAL="previous watcher attempt has no confirmed child identity; native inspection is required"
+        return 1
+      fi
+      ;;
+    *) WA_LAUNCH_REFUSAL="launch record unreadable (rc $rc)"; return 1 ;;
+  esac
+  [ -z "${FM_WATCH_PREDECESSOR_ARM_PID:-}" ] || origin=successor
+  while IFS= read -r line; do
+    launcher_args+=("$line")
+  done < <(fm_launch_record_launcher_args "$launcher_pid")
+  out=$(fm_launch_record intend --helper watcher --owner fm-watch-arm.sh --origin "$origin" "${launcher_args[@]}" ${successor_args[@]+"${successor_args[@]}"} \
+    ${FM_WATCH_PREDECESSOR_ARM_PID:+--field "predecessor=$FM_WATCH_PREDECESSOR_ARM_PID"} 2>&1) \
+    || { WA_LAUNCH_REFUSAL="launch intent could not be persisted (${out:-no detail})"; return 1; }
+  WA_LAUNCH_ID=${out##*launch=}
+  WA_LAUNCH_ID=${WA_LAUNCH_ID%%[[:space:]]*}
+  [ -n "$WA_LAUNCH_ID" ] || { WA_LAUNCH_REFUSAL="launch intent returned no launch id"; return 1; }
+}
+wa_launch_created() {  # <child-pid> <child-identity>
+  local digest=''
+  [ -n "$WA_LAUNCH_ID" ] || return 0
+  [ -z "$2" ] || digest=$(printf '%s' "$2" | "$(fm_launch_record_python)" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())' 2>/dev/null || true)
+  wa_launch created --launch "$WA_LAUNCH_ID" --identity-source process --identity "pid=$1" ${digest:+--identity "pid_identity_sha256=$digest"} >/dev/null \
+    || { wa_launch_note "created not recorded for launch $WA_LAUNCH_ID"; return 1; }
+}
+wa_launch_ready() {
+  [ -n "$WA_LAUNCH_ID" ] || return 0
+  wa_launch ready --launch "$WA_LAUNCH_ID" --source watcher-beacon >/dev/null \
+    || wa_launch_note "ready not recorded for launch $WA_LAUNCH_ID"
+}
+wa_launch_outcome() {  # <exit-code> <reason>
+  [ -n "$WA_LAUNCH_ID" ] || return 0
+  case "$2" in
+    *unconfirmed*|*abandon*)
+      wa_launch fail --launch "$WA_LAUNCH_ID" --reason "$2" --effect unknown >/dev/null \
+        || wa_launch_note "uncertain outcome not recorded for launch $WA_LAUNCH_ID"
+      ;;
+    *)
+      wa_launch exit --launch "$WA_LAUNCH_ID" --reason "$2" --code "$1" >/dev/null \
+        || wa_launch_note "exit not recorded for launch $WA_LAUNCH_ID"
+      ;;
+  esac
+  WA_LAUNCH_ID=
+}
 case "$CYCLE_LOG_MAX_BYTES" in ''|*[!0-9]*|0) CYCLE_LOG_MAX_BYTES=262144 ;; esac
 case "$CYCLE_LOG_KEEP_LINES" in ''|*[!0-9]*|0) CYCLE_LOG_KEEP_LINES=1000 ;; esac
 
@@ -115,6 +228,10 @@ fi
 # shellcheck disable=SC2329
 # Invoked indirectly by the EXIT trap after the arm cycle completes.
 arm_release_claim() {
+  if [ "$WA_LAUNCH_LOCK_HELD" -eq 1 ]; then
+    fm_lock_release "$WA_LAUNCH_LOCK" || true
+    WA_LAUNCH_LOCK_HELD=0
+  fi
   if [ "$ARM_CLAIM_HELD" -eq 1 ]; then
     fm_lock_release "$STATE/.supervision-claim.lock" || true
     ARM_CLAIM_HELD=0
@@ -198,6 +315,7 @@ cycle_log_append() {
       ;;
   esac
   fm_lock_release "$CYCLE_LOG_LOCK"
+  [ "$cycle_origin" = attached ] || wa_launch_outcome "$exit_code" "$reason"
   cycle_active=0
 }
 
@@ -703,6 +821,18 @@ child_out=$(mktemp "$STATE/.watch-arm-output.XXXXXX") || {
   echo "watcher: FAILED - no live watcher with a fresh beacon"
   exit 1
 }
+if fm_lock_acquire_bounded "$WA_LAUNCH_LOCK" "${FM_WATCH_ARM_LAUNCH_TRIES:-100}"; then
+  WA_LAUNCH_LOCK_HELD=1
+else
+  WA_LAUNCH_REFUSAL="another arm owns launch preparation"
+fi
+if [ "$WA_LAUNCH_LOCK_HELD" -ne 1 ] || ! wa_launch_intend; then
+  rm -f "$child_out" 2>/dev/null || true
+  arm_publish_failure "watcher arm refused to fork a new watcher: $WA_LAUNCH_REFUSAL" \
+    || printf 'watcher: emergency diagnostic persistence failed\n' >&2
+  echo "watcher: FAILED - no new watcher forked: $WA_LAUNCH_REFUSAL (the launch record must hold the attempt before a child exists; a running predecessor, if any, is untouched)"
+  exit 1
+fi
 if [ -n "${FM_WATCH_PREDECESSOR_ARM_PID:-}" ]; then
   FM_WATCH_HANDLING_SUCCESSOR=1 "$WATCH" >"$child_out" &
 else
@@ -773,7 +903,15 @@ owned_child_finished() {
 # collapsing when startup begins just before the next second boundary.
 deadline=$(( $(date +%s) + CONFIRM_TIMEOUT + 1 ))
 while :; do
-  if healthy_watcher; then
+  if [ "$WA_LAUNCH_LOCK_HELD" -eq 1 ] && [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null)" = "$child" ] \
+    && fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$child" "$FM_HOME"; then
+    child_identity=$FM_WATCHER_MATCHED_IDENTITY
+    if wa_launch_created "$child" "$child_identity"; then
+      fm_lock_release "$WA_LAUNCH_LOCK"
+      WA_LAUNCH_LOCK_HELD=0
+    fi
+  fi
+  if [ "$WA_LAUNCH_LOCK_HELD" -eq 0 ] && healthy_watcher; then
     if [ "$HEALTHY_PID" = "$child" ]; then
       cycle_refresh_lock_before
       if ! handling_generation=$(handling_successor_generation); then
@@ -790,6 +928,7 @@ while :; do
         exit 1
       fi
       cycle_mark_predecessor_successor "started:$child"
+      wa_launch_ready
       if [ -n "$handling_generation" ]; then
         echo "watcher: started pid=$child (beacon fresh) recovery-generation=$handling_generation"
       else

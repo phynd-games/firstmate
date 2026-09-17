@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap, network-checks, or docs-reader section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, FLEET_SYNC, NETWORK_CHECKS, PR_CHECK_MIGRATION, HOME_SUMMARY, BACKLOG_RECONCILE, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, HERDR_SUPERVISOR, DOCS_READER unavailable, or FMX - or reports that an interrupted backlog cleanup may have left an endpoint or local copy, or when a standalone bin/fm-bootstrap.sh, bin/fm-startup-network.sh, or bin/fm-docs-reader.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap, network-checks, or docs-reader section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, FLEET_SYNC, NETWORK_CHECKS, PR_CHECK_MIGRATION, HOME_SUMMARY, BACKLOG_RECONCILE, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, HERDR_SUPERVISOR, LAUNCH_RECONCILE, DOCS_READER unavailable, or FMX - or reports that an interrupted backlog cleanup may have left an endpoint or local copy, or when a standalone bin/fm-bootstrap.sh, bin/fm-startup-network.sh, or bin/fm-docs-reader.sh run prints one of those lines.
   A silent bootstrap section, or any other BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -72,6 +72,13 @@ When any diagnostic needs captain attention, report the plain consequence and re
   `docs/herdr-supervisor.md` owns the contract, including the boundary it deliberately does not promise to recover across.
 - `FMX: X mode on ...` / `FMX: X mode off ...` - bootstrap confirmed or removed the local Relay poll artifacts (`docs/configuration.md` "Relay (.env)"); the emitted line still carries Relay's former `X mode` wording.
   Only when a running watcher needs the cadence transition applied immediately, restart the home-scoped watcher through the emitted harness supervision protocol; bootstrap deliberately never restarts the watcher itself.
+- `LAUNCH_RECONCILE: <kind>:<subject> launch=<id> phase=<phase> ... ` - a launch needs inspection; its worker endpoint or helper process may still exist.
+  Do not launch that subject again by hand and do not delete the record; read it first with `bin/fm-launch-record.py --home <home> show --task <id>` (or `--helper <name>`), which prints the recorded identity, the hint, and the history.
+  Follow the settlement boundary in [`docs/launch-records.md`](../../../docs/launch-records.md#what-the-obligation-does), using the named launch or cleanup owner; never infer ownership or absence from a label.
+  A live registered worker can be stopped or relaunched through control; an already agent-free pane with an open attempt requires preservation-safe teardown or explicit native inspection and settlement, because control has no stop to prove.
+  Run a helper's ordinary `ensure` or `start` to reconcile only what its evidence permits; use the emitted supervision protocol for a watcher and the source's start or reconciliation owner for a process-event runner.
+  If the owner still refuses, retain the record and inspect the exact native effects before using its printed manual-settlement command; record only the short evidence actually verified.
+  A line with `error=` instead of a launch summary means the record could not be read; inspect that error before any launch or settlement.
 - `DOCS_READER: unavailable - <reason>` - the local Markdown document reader could not be brought up and verified, so captain-facing document pointers fall back to file paths until it is.
   Nothing about fleet supervision depends on it, so it is never a reason to stop or repeat session start.
   A reason naming the runtime means `bin/fm-docs-reader.sh install` has not been run on this home (or no Python 3.10+ is available); a port or readiness reason points at `state/docs-reader/serve.log`.

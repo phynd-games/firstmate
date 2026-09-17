@@ -155,6 +155,16 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# fm_teardown_wake_lib: the ONE source site for bin/fm-wake-lib.sh in this
+# script. Every former inline source calls it, so the library is re-executed at
+# exactly the same points with the same scoping, and static analysis follows a
+# single edge into that graph (see bin/fm-pending-reply-lib.sh for the same
+# seam and the reason).
+fm_teardown_wake_lib() {
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$SCRIPT_DIR/fm-wake-lib.sh"
+}
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
@@ -169,6 +179,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-launch-record-lib.sh
+. "$SCRIPT_DIR/fm-launch-record-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-lock-lib.sh
@@ -185,8 +197,7 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 # shellcheck source=bin/fm-secondmate-parent-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
-# shellcheck source=bin/fm-wake-lib.sh
-. "$SCRIPT_DIR/fm-wake-lib.sh"
+fm_teardown_wake_lib
 # shellcheck source=bin/fm-procevent-lib.sh
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 # shellcheck source=bin/fm-pending-reply-lib.sh
@@ -203,8 +214,7 @@ fm_backlog_directory_present "$STATE" "state directory" || {
   echo "error: teardown refused: $FM_BACKLOG_TRANSITION_ERROR" >&2
   exit 1
 }
-# shellcheck source=bin/fm-wake-lib.sh
-. "$SCRIPT_DIR/fm-wake-lib.sh"
+fm_teardown_wake_lib
 # Supervision lease guard: post-landing cleanup is overlap territory between
 # the two Pi supervision actors; refuse while the OTHER actor holds this
 # task's live lease (contract: bin/fm-lease-lib.sh; no-op in homes without
@@ -692,11 +702,29 @@ remote_secondmate_teardown() {
   grep -vE "^- $ID( |$)" "$SECONDMATE_REG" > "$tmp" || true
   mv -f -- "$tmp" "$SECONDMATE_REG"
   status_retire_presentation_task "$STATE" "$ID" || return 1
+  teardown_retire_launch_record || return 1
   fm_backlog_atomic_transition remove "$STATE/$ID.meta" "task record" "$STATE" || return 1
   rm -f -- "$STATE/$ID.turn-ended" "$STATE/$ID.validation-loop" \
     "$STATE/.branch-note-sig-$ID"
   printf 'teardown %s complete (remote %s:%s)\n' "$ID" "$remote_host" "$remote_home"
   return 0
+}
+
+# teardown_retire_launch_record: the task's launch record (bin/fm-launch-record.py
+# owns the contract) gets its retired outcome before the record leaves with the
+# other volatile task state below. Teardown has already proven the endpoint gone
+# or refused, so the record is evidence, never the cleanup authority; a task
+# launched before the contract simply has none.
+teardown_retire_launch_record() {
+  local launch
+  [ -e "$STATE/$ID.launch" ] || return 0
+  launch=$(fm_launch_record get --task "$ID" launch.id) || return 1
+  local -a evidence=()
+  if [ "$BACKEND" = herdr ]; then
+    fm_launch_record_effects_gone "$ID" "$launch" || return 1
+    evidence+=(--effects-digest "$FM_LAUNCH_EFFECTS_DIGEST")
+  fi
+  fm_launch_record retire --task "$ID" --launch "$launch" --reason teardown --remove "${evidence[@]}"
 }
 
 remote_secondmate_herdr_preflight() {
@@ -2384,8 +2412,7 @@ teardown_herdr_require_prerequisites() {  # <task-id>
     fi
   done
   if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
-    # shellcheck source=bin/fm-wake-lib.sh
-    . "$SCRIPT_DIR/fm-wake-lib.sh"
+    fm_teardown_wake_lib
   fi
   if ! declare -F fm_lock_try_acquire >/dev/null 2>&1 \
     || ! declare -F fm_lock_release >/dev/null 2>&1; then
@@ -2754,6 +2781,10 @@ if [ "$BACKEND" = herdr ]; then
   fm_backend_herdr_parse_target "$T" || exit 1
   TEARDOWN_HERDR_SESSION=$FM_BACKEND_HERDR_SESSION
   TEARDOWN_HERDR_PANE=$FM_BACKEND_HERDR_PANE
+  if [ -e "$STATE/$ID.launch" ]; then
+    teardown_launch=$(fm_launch_record get --task "$ID" launch.id) || exit 1
+    fm_launch_record_effects_gone "$ID" "$teardown_launch" "$META" || exit 1
+  fi
 fi
 
 BACKLOG_CLOSED=0
@@ -2870,6 +2901,7 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
     # Swallowing them left a wrong active workspace with no operator-visible
     # signal at all. The close stays non-fatal exactly as before: the presence
     # gate below is what decides whether any durable record may be removed.
+    # shellcheck disable=SC2034 # read by the sourced herdr adapter (fm_backend_herdr_kill and the focus-preserving projected close) as prior_lock_held
     FM_BACKEND_HERDR_OPERATION_LOCK_HELD=1
     fm_backend_herdr_projection_close_pane_focus_preserving \
       "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE" || true
@@ -2879,6 +2911,7 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   fi
 elif [ "$BACKEND" = herdr ]; then
   if teardown_herdr_session_lock_held "$TEARDOWN_HERDR_SESSION"; then
+    # shellcheck disable=SC2034 # read by the sourced herdr adapter (fm_backend_herdr_kill and the focus-preserving projected close) as prior_lock_held
     FM_BACKEND_HERDR_OPERATION_LOCK_HELD=1
     if fm_backend_herdr_kill_serialized "$TEARDOWN_HERDR_SESSION" "$TEARDOWN_HERDR_PANE" 2>/dev/null; then
       kill_rc=0
@@ -2980,7 +3013,7 @@ if [ -e "$INTAKE_SESSION" ] || [ -L "$INTAKE_SESSION" ]; then
     || { echo "error: Lavish intake source identity is invalid for $ID; preserving task records" >&2; exit 1; }
   INTAKE_REGISTRATION="$STATE/procevent/$INTAKE_SOURCE.source"
   INTAKE_MARKER="$STATE/procevent/$INTAKE_SOURCE.intake"
-  INTAKE_BOUND=$($FM_ROOT/bin/fm-captain-hold.sh binding "$INTAKE_SOURCE" 2>/dev/null || true)
+  INTAKE_BOUND=$("$FM_ROOT/bin/fm-captain-hold.sh" binding "$INTAKE_SOURCE" 2>/dev/null || true)
   if [ -e "$INTAKE_REGISTRATION" ] || [ -L "$INTAKE_REGISTRATION" ] \
     || [ -e "$INTAKE_MARKER" ] || [ -L "$INTAKE_MARKER" ] \
     || [ -n "$INTAKE_BOUND" ]; then
@@ -3006,6 +3039,7 @@ fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 status_retire_presentation_task "$STATE" "$ID" || exit 1
+teardown_retire_launch_record || exit 1
 rm -f "$STATE/$ID.turn-ended" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
