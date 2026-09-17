@@ -870,7 +870,58 @@ test_kimi_banner_requires_native_registration() {
   pass "spawn: Kimi banner requires exact native agent registration"
 }
 
+test_secondmate_journal_stays_in_parent_home() {
+  local mode child child_digest out rc log workspace
+  for mode in success lost; do
+    new_case "secondmate-$mode" "secondmate-$mode"
+    child="$CASE_DIR/secondmate"
+    mkdir -p "$child/bin" "$child/data" "$child/state" "$CASE_DIR/code"
+    ln -s "$ROOT/bin" "$CASE_DIR/code/bin"
+    printf '# Firstmate\n' > "$child/AGENTS.md"
+    printf '%s\n' "$CASE_ID" > "$child/.fm-secondmate-home"
+    printf 'secondmate charter\n' > "$child/data/charter.md"
+    python3 "$OWNER" --state "$child/state" intend --task "$CASE_ID" --owner tester --origin fresh >/dev/null || fail 'child tripwire intent failed'
+    child_digest=$(cksum < "$child/state/$CASE_ID.launch")
+    if [ "$mode" = lost ]; then
+      : > "$CASE_DIR/fail/tab-create"
+      : > "$CASE_DIR/fail/tab-create.lost"
+    fi
+    if out=$(in_case env -u FM_STATE_OVERRIDE -u FM_DATA_OVERRIDE -u FM_CONFIG_OVERRIDE -u FM_PROJECTS_OVERRIDE \
+      FM_ROOT_OVERRIDE="$CASE_DIR/code" "$ROOT/bin/fm-spawn.sh" "$CASE_ID" "$child" --secondmate 'sh -c true' 2>&1); then
+      rc=0
+    else
+      rc=$?
+    fi
+    [ "$(cksum < "$child/state/$CASE_ID.launch")" = "$child_digest" ] || fail 'secondmate spawn changed the child launch record'
+    [ ! -e "$child/state/.$CASE_ID.create-issued" ] || fail 'secondmate spawn wrote the journal in the child home'
+    log=$(fake_log)
+    [ "$(printf '%s\n' "$log" | grep -c '^workspace create')" -eq 1 ] || fail "secondmate workspace creation was not issued exactly once: $out"
+    [ "$(printf '%s\n' "$log" | grep -c '^tab create')" -eq 1 ] || fail "secondmate tab creation was not issued exactly once: $out"
+    printf '%s\n' "$log" | grep -E '^(workspace|tab) create' | grep -q 'record=absent' && fail 'secondmate creation preceded parent launch intent'
+    if [ "$mode" = success ]; then
+      expect_code 0 "$rc" "secondmate spawn without directory overrides failed: $out"
+      [ "$(record launch.phase)" = created ] || fail 'parent launch did not record the secondmate endpoint'
+      workspace=$(record launch.identity.workspace_id)
+      jq -e --arg ws "$workspace" --arg child "$child" '.tabs[] | select(.workspace_id == $ws and .cwd == $child)' "$CASE_DIR/fake/state.json" >/dev/null || fail 'secondmate endpoint was not created in the child home'
+      [ ! -e "$CASE_DIR/home/state/.$CASE_ID.create-issued" ] || fail 'successful secondmate spawn retained its transient journal'
+    else
+      expect_code 1 "$rc" "lost secondmate tab response should fail: $out"
+      [ "$(record launch.phase)" = uncertain ] || fail 'lost secondmate tab response lost the parent obligation'
+      grep -q '^created-workspace kind=home ' "$CASE_DIR/home/state/.$CASE_ID.create-issued" || fail 'parent journal lost the workspace receipt'
+      grep -q '^issued task-tab$' "$CASE_DIR/home/state/.$CASE_ID.create-issued" || fail 'parent journal lost the tab issuance'
+      grep -q '^lost task-tab$' "$CASE_DIR/home/state/.$CASE_ID.create-issued" || fail 'parent journal lost the uncertain tab response'
+    fi
+    assert_other_home_untouched "secondmate $mode"
+  done
+  pass 'spawn: secondmate creation and uncertain outcomes retain parent journal ownership without directory overrides'
+}
+
 if [ "${1:-}" = fixture-library ]; then return 0; fi
+
+if [ "${1:-}" = secondmate-journal ]; then
+  test_secondmate_journal_stays_in_parent_home
+  exit 0
+fi
 
 if [ "${1:-}" = launch-interruption ]; then
   test_launcher_killed_before_creation
@@ -883,6 +934,7 @@ if [ "${1:-}" = launch-retirement ]; then
   exit 0
 fi
 
+test_secondmate_journal_stays_in_parent_home
 test_parent_only_interruption_revokes_old_issuance
 test_projected_partial_identity_and_protected_cleanup
 test_reclaim_lost_response_blocks_fallback

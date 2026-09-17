@@ -440,7 +440,8 @@ fm_backend_herdr_cli() {  # <session> <herdr-subcommand-and-args...>
 fm_backend_herdr_create_note() {  # <line>
   [ -n "${FM_BACKEND_HERDR_CREATE_ISSUED_FILE:-}" ] || return 0
   if [ -n "${FM_BACKEND_HERDR_CREATE_LAUNCH_ID:-}" ]; then
-    fm_launch_record journal --task "$FM_BACKEND_HERDR_CREATE_TASK_ID" --launch "$FM_BACKEND_HERDR_CREATE_LAUNCH_ID" --line "$1"
+    FM_STATE_OVERRIDE="$(dirname "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE")" \
+      fm_launch_record journal --task "$FM_BACKEND_HERDR_CREATE_TASK_ID" --launch "$FM_BACKEND_HERDR_CREATE_LAUNCH_ID" --line "$1"
   else
     { printf '%s\n' "$1" >> "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE"; } 2>/dev/null
   fi
