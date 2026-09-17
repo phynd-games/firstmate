@@ -1,0 +1,14 @@
+ok - R15: native terminal identity survives establish and projection
+ok - R3/R15: incomplete creation blocks ensure and retire until inspected settlement
+ok - R3: unsuccessful prior cleanup preserves the binding and launch obligation
+ok - R29: transient terminal projection failure preserves native continuity and cleanup proof
+ok - R29: persistent terminal projection failure preserves native continuity and cleanup proof
+ok - R29: unresolved native cleanup remains blocking without settled evidence
+ok - R29: rollback retains cleanup authority with available receipt storage
+ok - R29: rollback retains cleanup authority with unavailable receipt storage
+ok - R7: missing-python monitor attempt refuses detachment
+ok - R7: persistence monitor attempt refuses detachment
+ok - R7: ambiguous monitor attempt refuses detachment
+ok - R7: live monitor attempt refuses detachment
+ok - R7: monitor child publishes its own identity and settles only its attempt
+all supervisor launch review tests passed

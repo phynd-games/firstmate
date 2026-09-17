@@ -1,0 +1,31 @@
+Actual Firstmate CLI against the repository stateful fake Herdr; no real harness is launched.
+
+$ bin/fm-spawn.sh evidence <fixture-project> --scout "sh -c true"
+REFUSED: Herdr task tab creation in workspace w1 resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr tab creation failed for 'fm-evidence'. Repair Herdr, then verify the named session with 'herdr status --json'.
+exit=1
+
+$ bin/fm-launch-record.py --home <fixture-home> show --task evidence
+subject=task:evidence
+launch=l1789682583.81063.03ed4acb
+phase=uncertain
+origin=fresh
+owner=fm-spawn.sh
+launcher=gone
+reconcile=yes
+intended_at=2026-09-17T22:03:03.750831Z
+reason=spawn aborted with exit 1
+hint=a Herdr create request for fm-evidence was issued and did not answer with ids (issued home-workspace;created-workspace kind=home workspace=w1 tab=w1:t2 pane=w1:p2 terminal=term_w1:p2;issued task-tab;lost task-tab;); a refusal or an empty inventory is not proof of no effect - inspect Herdr natively and settle the record with fm-launch-record.py reconcile --verdict manual
+field.harness=sh
+field.hint=a Herdr create request for fm-evidence was issued and did not answer with ids (issued home-workspace;created-workspace kind=home workspace=w1 tab=w1:t2 pane=w1:p2 terminal=term_w1:p2;issued task-tab;lost task-tab;); a refusal or an empty inventory is not proof of no effect - inspect Herdr natively and settle the record with fm-launch-record.py reconcile --verdict manual
+field.kind=scout
+history 2026-09-17T22:03:03.750964Z intended origin=fresh owner=fm-spawn.sh
+history 2026-09-17T22:03:04.285191Z uncertain effect=unknown reason=spawn aborted with exit 1
+$ bin/fm-spawn.sh evidence <fixture-project> --scout "sh -c true"
+error: task evidence has an open launch record (phase uncertain) with no recorded native identity; hint: a Herdr create request for fm-evidence was issued and did not answer with ids (issued home-workspace;created-workspace kind=home workspace=w1 tab=w1:t2 pane=w1:p2 terminal=term_w1:p2;issued task-tab;lost task-tab;); a refusal or an empty inventory is not proof of no effect - inspect Herdr natively and settle the record with fm-launch-record.py reconcile --verdict manual; a tab labeled fm-evidence exists at default:w1:p3 (native agent state: dead); a label is a hint, not ownership. Inspect Herdr natively, stop or close a leftover endpoint through its ordinary owner, then settle the record with: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2R4K08KD8X8TW7NAJNRHF42/bin/fm-launch-record.py --home /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2R4K08KD8X8TW7NAJNRHF42/.test-phase/tmp/launch-cli-evidence.ugr4ZS/scenario/home reconcile --task evidence --current --verdict manual --evidence '<what was verified natively>'
+exit=1
+
+Observed native fixture tab count: before retry=2 after retry=2
+
+Create requests and the launch-record presence observed by the fake runtime:
+workspace create --cwd /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2R4K08KD8X8TW7NAJNRHF42/.test-phase/tmp/launch-cli-evidence.ugr4ZS/scenario/proj --label firstmate --no-focus 	record=present	launch=l1789682583.81063.03ed4acb
+tab create --workspace w1 --cwd /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2R4K08KD8X8TW7NAJNRHF42/.test-phase/tmp/launch-cli-evidence.ugr4ZS/scenario/proj --label fm-evidence --no-focus 	record=present	launch=l1789682583.81063.03ed4acb

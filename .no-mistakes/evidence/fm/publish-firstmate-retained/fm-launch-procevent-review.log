@@ -1,0 +1,3 @@
+ok - live runner identity read and digest failures preserve its launch and claim
+ok - a recorded PID without its start digest remains an unresolved predecessor
+ok - missing digest or refused identity publication releases only the new claim and prevents polling

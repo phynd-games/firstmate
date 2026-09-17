@@ -1,0 +1,10 @@
+{"test": "fm-backend-herdr", "base": "5c6f9e08", "exit": 1}
+ok - fm_backend_herdr_launcher_identity: refuses when the launcher's pane and tab disagree about their workspace
+ok - fm_backend_herdr_launcher_identity: refuses when the launcher's workspace is gone from its own session
+ok - fm_backend_herdr_workspace_ensure: places a worker in the launcher's exact workspace, not the first same-labeled one
+not ok - two same-labeled home workspaces with no launcher identity must refuse: expected exit 3, got 2
+{"test": "fm-pending-reply", "base": "5c6f9e08", "exit": 1}
+ok - unrelated events and stale correlation ids cannot resolve
+ok - restart preserves expectation and exact parent destination
+ok - wrong-home reports are detected but do not silently acknowledge
+not ok - unmarked crewmate send should succeed: expected exit 0, got 1

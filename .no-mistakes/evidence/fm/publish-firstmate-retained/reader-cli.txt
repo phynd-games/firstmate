@@ -1,0 +1,22 @@
+$ bin/fm-docs-reader.sh ensure
+DOCS_READER: http://127.0.0.1:8600/
+
+
+exit=0
+$ bin/fm-docs-reader.sh ensure
+DOCS_READER: http://127.0.0.1:8600/
+
+
+exit=0
+$ bin/fm-docs-reader.sh url /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2R4K08KD8X8TW7NAJNRHF42/.test-phase/reader/data/report.md
+http://127.0.0.1:8600/report/
+
+
+exit=0
+$ bin/fm-docs-reader.sh status
+DOCS_READER: http://127.0.0.1:8600/
+
+
+exit=0
+HTTP GET http://127.0.0.1:8600/report/ -> 200; 12762 bytes
+DOCS_READER: stopped pid 89226

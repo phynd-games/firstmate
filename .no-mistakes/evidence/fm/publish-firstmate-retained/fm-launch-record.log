@@ -1,0 +1,19 @@
+ok - launch record: retains exactly 64 current events and the last 8 previous launches
+ok - launch record: successor publication is atomic, retains history, and rejects stale concurrent writers
+launch=l1789681940.60373.62599ed0 phase=reconciled verdict=absent
+ok - attempt-bound journal serializes issuance with no-effect settlement
+ok - launch record: retirement preserves prior outcomes and removes only its exact launch
+ok - launch record: phases advance only in order and close exactly once
+ok - launch record: every phase change is bound to the launch id the intent minted
+ok - launch record: duplicates refused while open, prior outcomes retained after
+ok - launch record: concurrent intents for one subject serialize to one winner
+ok - launch record: an empty held lock excludes writers and owner death releases it without replacement
+ok - launch record: the shell seam captures the live caller before process substitution
+ok - launch record: unknown or retained effects keep an obligation; none or cleaned close the launch
+ok - launch record: a retained endpoint stays open with its exact identity
+ok - launch record: launcher liveness is pid plus start identity, never pid alone
+ok - launch record: unknown unfinished launchers remain visible and unchanged while live launchers stay excluded
+ok - launch record: pid-identity matches fm_pid_identity for a live process
+ok - launch record: only allowlisted keys and benign, bounded values are stored
+ok - launch record: unsafe record paths and unreadable records exit 1
+ok - launch record: helpers and tasks share one contract and one listing

@@ -1,0 +1,72 @@
+[
+  {
+    "test": "fm-launch-record",
+    "exit": 0,
+    "seconds": 21.0
+  },
+  {
+    "test": "fm-launch-spawn",
+    "exit": 0,
+    "seconds": 139.8
+  },
+  {
+    "test": "fm-launch-helpers",
+    "exit": 0,
+    "seconds": 40.1
+  },
+  {
+    "test": "fm-herdr-supervisor",
+    "exit": 0,
+    "seconds": 362.7
+  },
+  {
+    "test": "fm-backend-herdr",
+    "exit": 1,
+    "seconds": 2.8
+  },
+  {
+    "test": "fm-pending-reply",
+    "exit": 1,
+    "seconds": 19.5
+  },
+  {
+    "test": "fm-docs-reader",
+    "exit": 0,
+    "seconds": 0.2
+  },
+  {
+    "test": "fm-launch-control-review",
+    "exit": 0,
+    "seconds": 22.6
+  },
+  {
+    "test": "fm-launch-effects-review",
+    "exit": 0,
+    "seconds": 19.9
+  },
+  {
+    "test": "fm-launch-procevent-review",
+    "exit": 0,
+    "seconds": 8.6
+  },
+  {
+    "test": "fm-launch-relaunch-review",
+    "exit": 0,
+    "seconds": 32.2
+  },
+  {
+    "test": "fm-launch-response-review",
+    "exit": 0,
+    "seconds": 4.8
+  },
+  {
+    "test": "fm-launch-supervisor-review",
+    "exit": 0,
+    "seconds": 14.7
+  },
+  {
+    "test": "fm-launch-record-herdr-cleanup",
+    "exit": 0,
+    "seconds": 0.1
+  }
+]

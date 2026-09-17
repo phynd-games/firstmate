@@ -1,0 +1,20 @@
+Production adapter with a fake Herdr server recording its received environment.
+$ fm_backend_herdr_server_ensure fm-lab-evidence
+FM_HOME=<unset>
+FM_ROOT_OVERRIDE=<unset>
+FM_STATE_OVERRIDE=<unset>
+FM_DATA_OVERRIDE=<unset>
+FM_PROJECTS_OVERRIDE=<unset>
+FM_CONFIG_OVERRIDE=<unset>
+CURSOR_AGENT=<unset>
+CURSOR_INVOKED_AS=<unset>
+CLAUDECODE=<unset>
+PI_CODING_AGENT=<unset>
+FM_PI_HARNESS=<unset>
+GROK_AGENT=<unset>
+FM_SUPERVISION_MODEL=<unset>
+HERDR_SESSION=fm-lab-evidence
+FM_HERDR_SENTINEL=kept
+
+$ fm_backend_herdr_server_ensure fm-lab-evidence  # already running
+Observed server launches after two ensure calls: 1; running server environment unchanged.

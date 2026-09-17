@@ -1,0 +1,2 @@
+ok - real Perl fallback and available external timeout tools preserve success, failure, SIGKILL, and deadlines
+ok - an unfinished root is named UNPERFORMED, its shard finishes, the run fails, and its process does not outlive the bound

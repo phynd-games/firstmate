@@ -1,0 +1,5 @@
+ok - reader binds its post-exec listening process and stops it by that identity
+ok - reader identity precedes readiness and survives launcher interruption for adoption and stop
+ok - the reader records intent before its process, binds pid plus start identity, and records stop and observed exit
+ok - reader adopts its interrupted matching launch and restores identity-bound stop
+ok - legacy adoption requires exact socket ownership and preserves unrelated processes

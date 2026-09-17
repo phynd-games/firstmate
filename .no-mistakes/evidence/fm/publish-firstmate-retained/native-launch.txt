@@ -1,0 +1,17 @@
+ok - launch-owner fixture prepares and verifies through the intake owner
+ok - lab wrapper delegates once, preserves refusals, and rejects self-resolution and recursion
+herdr: herdr 0.8.2
+created: workspace=w1 tab=w1:t2 pane=w1:p2 terminal=term_65bb4f354d8902
+ok - creation responses carry exact workspace, tab, pane, and terminal ids
+ok - a pane with no agent reads agent_not_found (an acknowledged launch is not ready)
+ok - a reported agent reads a live status on the exact pane (readiness positive control)
+ok - the adapter classifies the exact recorded pane alive with an agent and dead without one
+observed: foreground state while sleep runs -> busy
+ok - process-info separates an idle shell from a running foreground command on an agent-free pane
+observed: attached background child -> strict proof rc 1 (refused)
+observed: pending unsubmitted input -> strict proof rc 0 (an idle shell; replacement closes the pane before anything runs)
+observed: detached (reparented) background process -> strict proof rc 0 (the documented boundary: not detectable natively)
+ok - the spawn owner refuses a present agent-free pane, retains its obligation, and issues no replacement create
+ok - the strict quiescence proof refuses a delayed start and an attached child, passes a detached process, and is therefore diagnostic only - never permission to replace
+observed: agent-state classifier on a closed pane -> <empty>
+ok - a closed pane reads pane_not_found and the presence classifier reads it dead

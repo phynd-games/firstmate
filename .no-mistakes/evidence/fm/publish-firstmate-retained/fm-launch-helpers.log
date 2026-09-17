@@ -1,0 +1,12 @@
+ok - supervisor: intent precedes workspace create, identity matches the binding record, readiness is the process proof, retire records a stop
+ok - supervisor: a refused create mirrors the owner's retained pending intent as an uncertain launch
+ok - away-mode launcher: intent precedes workspace create, identity matches the terminal record, readiness is the daemon lock, stop records a stop
+ok - away-mode launcher: unknown and partial creations survive retry and stop until inspected settlement
+ok - watcher: the arm records intent before the fork, the child's pid and identity, beacon readiness, and the cycle's exit
+ok - watcher: ambiguous and pending forks block replacement while matching successors preserve the chain
+ok - procevent: intent precedes the fork, the claimed runner is the identity, the started wait is readiness, and the exit and retirement are recorded
+ok - procevent: refused claims are accounted and unidentified attempts prevent duplicates
+ok - procevent: a start crossing retirement cannot publish or fork
+ok - procevent: an invalid claim root refuses start instead of waiting forever
+ok - watcher: the arm refuses to fork a new watcher when its pre-fork intent cannot be persisted, and publishes the refusal
+ok - procevent: a start refuses to fork when its intent cannot be persisted, and a live recorded runner is left alone

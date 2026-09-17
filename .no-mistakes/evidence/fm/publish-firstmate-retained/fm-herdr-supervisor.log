@@ -1,0 +1,107 @@
+ok - failed claim alarm delivery retries until persisted, then suppresses repeats
+herdr-supervisor: deferred - another continuity owner is completing its ownership claim
+rc=0
+ok - a live, identity-verified other owner defers cmd_ensure without a false alarm
+rc1=1
+rc2=1
+1789682152	1	check	herdr-supervisor	check: herdr-supervisor - the continuity ownership claim could not be acquired within its bounded retry window
+ok - an unknown claim record alarms once, and the same unresolved episode does not alarm twice
+herdr-supervisor: not needed - this home has no in-flight work, event source, or relay poll
+rc3=1
+1789682152	1	check	herdr-supervisor	check: herdr-supervisor - the continuity ownership claim could not be acquired within its bounded retry window
+1789682154	2	check	herdr-supervisor	check: herdr-supervisor - the continuity ownership claim could not be acquired within its bounded retry window
+ok - successful claim acquisition lets a later failure episode alarm again
+loop owner-arrival: wake queue absent; emergency alarm absent
+ok - the arm path rechecks a live owner arriving during claim acquisition
+ok - concurrent ensure calls publish one alarm for an unresolved episode
+ok - the shared loop episode alarms again after a healthy owner comes and goes
+ok - the recovery loop episode alarms again after a healthy owner comes and goes
+ok - monitor handoff resets claim alarms while status remains read-only
+ok - a monitor started without its recorded launch intent is refused and ledgered
+ok - contended recovery retries when the recovered owner remains
+ok - contended recovery retries when the recovered owner disappears
+ok - ensure-exit preserves the recovered episode after process exit
+ok - ensure-substitution preserves the recovered episode after process exit
+ok - contended recovery retries when the recovered owner stale-retry
+ok - contended recovery retries when the recovered owner identity-arrival
+ok - contended recovery retries when the recovered owner identity-replaced
+ok - contended recovery retries when the recovered owner observation-blocked
+ok - a non-herdr home is not eligible and creates nothing
+ok - zero Herdr timeout is rejected before ownership
+ok - a stale away marker does not masquerade as a live owner
+ok - away mode defers only to a live identity-matched daemon
+ok - away mode treats a live daemon with unknown identity as occupied
+ok - a loaded Pi extension is a provable owner and the supervisor stands down
+ok - the individually loaded Pi watcher extension defers takeover
+ok - the turn-end marker alone does not suppress Herdr takeover
+ok - Pi ownership rejects a live non-harness pid despite matching markers
+ok - a home with nothing in flight establishes no supervisor
+ok - one establish keeps re-arming the watcher across many actionable closes
+ok - identical rapid cycles back off and emit one non-self-triggering alarm
+ok - rapid alarms clear only after three stable non-rapid cycles
+ok - the Herdr runtime loop completes cycles without AI agents or model calls
+ok - a repeated ensure is idempotent and creates no second supervisor
+ok - the public run path requires its recorded Herdr pane and process
+ok - a stale watcher beacon uses the plain arm singleton path
+ok - a recycled pid is never reported healthy
+ok - a stale supervisor heartbeat is unhealthy and re-establishes a new generation
+ok - replacement retires the prior exact workspace before establishing a new generation
+ok - an unknown or contradictory Herdr pane is never healthy
+ok - a Herdr server restart is detected as a lost supervisor, not as healthy
+ok - a live prior loop holding its claim defers replacement after a server identity change
+ok - a reachable recorded socket blocks replacement even after the loop died
+ok - a recorded workspace id on the replacement server blocks replacement
+ok - a recorded pane id on the replacement server blocks replacement
+ok - different-binding pane response retains quarantine and the old obligation without replacement
+ok - malformed pane response retains quarantine and the old obligation without replacement
+ok - empty pane response retains quarantine and the old obligation without replacement
+ok - transport pane response retains quarantine and the old obligation without replacement
+ok - timeout pane response retains quarantine and the old obligation without replacement
+ok - unconfirmed-absence pane response retains quarantine and the old obligation without replacement
+ok - a live recorded loop process blocks replacement even when the server facts say gone
+ok - a proved-gone server permits a fresh generation with retained evidence and no close through the new server
+ok - a live record from a superseded generation is never read as healthy
+ok - a live but wedged supervisor is unhealthy on its heartbeat alone
+ok - a Herdr pane tracking a different process is never read as healthy
+ok - health revalidates supervisor identity after the pane query
+ok - a repeatedly failing arm is bounded, alarms, escalates, and keeps its owner alive
+ok - a superseded generation refuses to arm, so a duplicate arm cannot start
+ok - an incomplete Herdr response fails loudly and closes nothing it cannot identify
+ok - incomplete creation blocks replacement until explicit inspected settlement
+ok - a partial Herdr create remains an active obligation without label adoption
+ok - a Herdr session with no running server is refused loudly and starts no server
+ok - an incompatible Herdr server is refused without establishing continuity
+ok - a hanging Herdr CLI is bounded and can never wedge the caller
+ok - hang-version-status has no remaining trigger: no unscoped native probe runs, so establish proceeds normally
+ok - hang-session-status refuses within the native deadline after a completed status preflight
+ok - hang-session-list refuses within the native deadline after a completed status preflight
+ok - session-list-fails refuses within the native deadline after a completed status preflight
+ok - the Herdr pane consumer executes a short launcher with caller tuning
+ok - foreground arm heartbeat and exact-child cleanup remain bounded
+ok - retire releases the record and closes exactly the workspace it owns
+ok - the supervisor never touches the watcher's liveness beacon
+ok - a non-extension harness needs an explicit opt-in before Herdr hosts continuity
+ok - config/herdr-supervisor=off is honored
+ok - config/herdr-supervisor=off retires a running owner on the next loop pass
+ok - handoff retains a standby owner and resumes after foreign ownership ends
+ok - cleanup failures quarantine exact ownership before replacement
+ok - each failed arm leaves durable evidence after a later success
+ok - unknown arm children are abandoned without stopping supervisor recovery
+ok - an actionable close is followed by one ready handling successor with an unchanged generation
+ok - the exact acknowledgement retires the delivered episode while the same watcher keeps the lock
+ok - a genuine watcher gap announces once and settles into one handling successor
+ok - an exact workspace already absent on the verified server is reconciled as completed cleanup
+ok - an unreadable workspace list keeps the receipt and quarantine until the server can be read
+ok - a receipt naming a different Herdr server is retained without touching the replacement server
+ok - ambiguous inventories and a present target preserve receipt, quarantine, and generation
+ok - a valid nonempty target-absent inventory reconciles cleanup and permits replacement
+ok - a loop asleep in its rapid-cycle floor answers TERM at once and terminates its floor-sleep child
+ok - a loop asleep in its rapid-cycle floor answers HUP at once and terminates its floor-sleep child
+ok - the monitor starts and publishes a live, identity-bound record
+ok - a repeated monitor start is idempotent and keeps one owner
+ok - a monitor pid whose identity no longer matches is never accepted as live
+ok - the monitor exits when its home session ends, so it cannot orphan
+ok - a captured monitor start returns promptly and holds no caller descriptor
+ok - the monitor runs with zero AI agents and zero model calls
+ok - the latest highest-priority alarm wins and superseded ones stay in the history
+all fm-herdr-supervisor tests passed

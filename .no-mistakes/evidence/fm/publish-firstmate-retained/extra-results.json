@@ -1,0 +1,58 @@
+[
+  {
+    "name": "baseline",
+    "command": [
+      "python3",
+      "/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M2R4K08KD8X8TW7NAJNRHF42/baseline-check.py"
+    ],
+    "exit": 0,
+    "seconds": 14.1
+  },
+  {
+    "name": "reader-recovery",
+    "command": [
+      "bash",
+      "tests/fm-docs-reader.test.sh",
+      "launch-recovery"
+    ],
+    "exit": 0,
+    "seconds": 19.8
+  },
+  {
+    "name": "cli-lost-response",
+    "command": [
+      "bash",
+      "/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M2R4K08KD8X8TW7NAJNRHF42/cli-evidence.sh"
+    ],
+    "exit": 0,
+    "seconds": 2.5
+  },
+  {
+    "name": "timeout-contract",
+    "command": [
+      "bash",
+      "tests/fm-lint.test.sh",
+      "timeout-status"
+    ],
+    "exit": 0,
+    "seconds": 7.1
+  },
+  {
+    "name": "native-launch",
+    "command": [
+      "bash",
+      "tests/fm-launch-record-herdr-live-e2e.test.sh"
+    ],
+    "exit": 0,
+    "seconds": 29.1
+  },
+  {
+    "name": "reader-surface",
+    "command": [
+      "python3",
+      "/var/folders/8p/1k00gwfd1831jgf0f5f58g780000gn/T/no-mistakes-evidence/01M2R4K08KD8X8TW7NAJNRHF42/reader-evidence.py"
+    ],
+    "exit": 0,
+    "seconds": 1.8
+  }
+]

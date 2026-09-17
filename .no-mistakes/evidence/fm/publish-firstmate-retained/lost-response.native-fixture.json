@@ -1,0 +1,30 @@
+{
+  "next": 4,
+  "workspaces": [
+    {
+      "workspace_id": "w1",
+      "label": "firstmate",
+      "focused": true,
+      "active_tab_id": "w1:t2"
+    }
+  ],
+  "tabs": [
+    {
+      "tab_id": "w1:t2",
+      "label": "1",
+      "workspace_id": "w1",
+      "pane_id": "w1:p2",
+      "focused": true,
+      "cwd": "/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2R4K08KD8X8TW7NAJNRHF42/.test-phase/tmp/launch-cli-evidence.ugr4ZS/scenario/proj"
+    },
+    {
+      "tab_id": "w1:t3",
+      "label": "fm-evidence",
+      "workspace_id": "w1",
+      "pane_id": "w1:p3",
+      "focused": false,
+      "cwd": "/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M2R4K08KD8X8TW7NAJNRHF42/.test-phase/tmp/launch-cli-evidence.ugr4ZS/scenario/proj"
+    }
+  ],
+  "agent_status": {}
+}
