@@ -35,7 +35,7 @@
 # Inside a shard every root is analyzed by its own ShellCheck process, with the
 # same flags, bounded through bin/fm-timeout-lib.sh by FM_LINT_ROOT_TIMEOUT_SECS
 # (default 900, a positive integer). A root whose process hits that bound or is
-# terminated by a signal (the OS refusing it memory) is reported in the
+# terminated by a signal is reported in the
 # diagnostics stream as UNPERFORMED, the shard's remaining roots are still
 # analyzed, and the run fails: an unperformed root is neither a pass nor a skip,
 # and its name is repeated in a final summary so the unproved analysis is

@@ -1741,26 +1741,13 @@ retire_binding_locked() {  # <reason> [signal-owner]
   return 0
 }
 
-# recorded_server_instance_gone: the ONE case in which a changed Herdr server
-# identity may be settled automatically. Every fact below is a native or
-# kernel fact the current contract can actually distinguish; anything short of
-# all four keeps the prior binding and refuses replacement, naming the missing
-# fact in HS_SERVER_GONE_REASON. A different live socket alone, an unreadable
-# inventory, a reused workspace or pane id, or an unknown loop process never
-# proves the old generation cannot still perform its work.
-#   1. The current session's server identity is readable and differs from the
-#      recorded one (the caller established this).
-#   2. The recorded supervisor loop process is provably dead: its pid is known
-#      from the live record and is either not alive or no longer carries its
-#      recorded process identity (a recycled pid is not the old loop).
-#   3. The recorded socket inode is gone: the path is absent, or the path now
-#      carries a different inode, so no client can reach the recorded server
-#      instance. A present socket with the recorded inode is not proof; the
-#      old server may still be serving it.
-#   4. The replacement server's inventory is READABLE and lacks both the
-#      recorded workspace id and the recorded pane binding, so nothing on it
-#      can be the old endpoint under a reused or restored id.
-# On success HS_SERVER_GONE_FACTS names the facts that justify retirement.
+# recorded_server_instance_gone: docs/herdr-supervisor.md "Recovery" owns
+# the changed-server settlement boundary. The caller first establishes a
+# readable replacement identity; this proof must exclude an old loop and
+# reachable old socket as well as reused endpoint ids on the replacement.
+# Socket absence includes a path now carrying a different inode.
+# HS_SERVER_GONE_REASON names a missing fact; HS_SERVER_GONE_FACTS retains the
+# complete proof for retirement without closing through the replacement server.
 HS_SERVER_GONE_REASON=
 HS_SERVER_GONE_FACTS=
 recorded_server_instance_gone() {

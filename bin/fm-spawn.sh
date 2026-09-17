@@ -69,9 +69,9 @@
 #   parent, and label bindings. On a same-identity restart, that complete binding
 #   plus authoritative metadata may replace one exact agent-free husk in place.
 #   The journal, visible token, and labels alone are never endpoint or ownership
-#   authority, and every ambiguous recovery stays on the flat fallback after
-#   duplicate-agent risk is independently absent. Treehouse allocation and task
-#   metadata are unchanged.
+#   authority. Recovery and flat fallback remain subject to the launch
+#   settlement boundary in docs/launch-records.md; an unresolved issued create
+#   refuses fallback. Treehouse allocation and task metadata are unchanged.
 #   A clean projected create or exact resume makes one bounded attempt to hold
 #   the one session-scoped presentation-order lock (keyed by named session plus
 #   canonical socket, outside any home's state/) through launch handoff. Lock
@@ -817,29 +817,10 @@ spawn_launch_field() {  # <check-output> <key>
   printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1
 }
 
-# spawn_launch_reconcile_open: an open launch record for this task id means an
-# earlier launcher intended or created something and never settled it. A
-# launcher that is still alive (pid AND start identity) is a concurrent spawn
-# and refuses. A recorded native endpoint is classified natively: presence
-# first (a gone pane reconciles as absent - the one native fact that settles
-# an open record by itself), then agent state (a live agent refuses the
-# duplicate). A present pane with no registered agent is never settled here:
-# agent_not_found is not proof that nothing is starting, and the adapter's
-# strict idle-shell proof cannot exclude a process that already detached from
-# the pane (observed on the 0.8.2 lab), so its result is reported as a
-# diagnostic and the obligation is retained until the owning control path
-# records a stop or exit, the endpoint is gone, or an operator settles the
-# record after inspection. A partial container (a task workspace without its
-# tab, a tab created while Herdr answered an error) is likewise retained.
-# No recorded identity is settled automatically in exactly one case, from this
-# spawn's own pre-create journal (state/.<id>.create-issued, left behind only
-# by a killed launcher): no request of the launch can have had an effect
-# (nothing issued, or only the per-home container created with exact ids).
-# Every other identity-less open record refuses until the operator settles it
-# explicitly with `fm-launch-record.py reconcile --verdict manual` after
-# native inspection: a refused or lost answer, and the absence of a tab
-# carrying the task's label, do not prove a create had no effect, and a tab
-# that does carry it is reported as a hint, never adopted as ours.
+# spawn_launch_reconcile_open: docs/launch-records.md "What the obligation
+# does" owns the settlement boundary. Inspect presence before agent state:
+# the agent classifier requires a present pane. Even a gone pane must pass
+# the attempt's retained-effect checks before settlement.
 spawn_launch_reconcile_open() {  # <check-output>
   local out=$1 phase launcher pane workspace tab session window verdict='' state='' evidence='' target='' presence='' foreground='' journal hint='' observation='' settle container='' quiescent=''
   local -a settlement_args=(--launch "$(spawn_launch_field "$out" launch)")
