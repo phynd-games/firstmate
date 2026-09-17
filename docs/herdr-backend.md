@@ -16,7 +16,7 @@ Prerequisites:
 - Herdr protocol 14 or newer, installed from [herdr.dev](https://herdr.dev).
 - `jq` for JSON responses.
 - The universal harness and toolchain requirements in [`configuration.md`](configuration.md#toolchain).
-- `python3` only for optional protocol-16 presentation-space ordering and native event subscription.
+- The common [Python requirement](../README.md#requirements) also supplies protocol-16 presentation-space ordering and native event subscription.
 
 Herdr is dual-licensed AGPL-3.0-or-later or commercial.
 Firstmate invokes its CLI as a separate process.
@@ -135,12 +135,13 @@ Missing or malformed endpoint identity and missing confirmation machinery are am
 If lock, snapshot, pane identity, or restoration is ambiguous, cleanup warns and preserves the journal for manual inspection.
 
 Recovery is deliberately conservative and presentation-only.
+The [launch reconciliation gate](launch-records.md#what-the-obligation-does) runs before presentation reclaim and can refuse recovery even when the presentation binding passes its checks.
 An existing journal suppresses another projected create.
 Before any recovery mutation, Firstmate holds both the task spawn lock and the named-session presentation lock.
 A same-identity version 2 binding may replace one exact agent-free restart husk in place only when the physical home, session, metadata endpoint, unique token match, workspace shape and labels, parent identity and placement, and non-target focus snapshot all agree.
 The replacement tab and pane are created and verified before the old pane is rechecked and closed, then the journal advances atomically to the replacement endpoint before metadata publication.
 The reclaim path never moves, closes, deletes, or renames a workspace and never touches a parent, sibling, captain, or foreign pane.
-A failed replacement rolls back only the exact response-derived new pane when focus-safe verification permits it.
+A failed replacement rolls back only the exact response-derived new pane when focus-safe verification permits it; an issued create with an unresolved response stops the spawn instead of falling back flat.
 Version 1 journals, dead or missing panes, duplicate or absent tokens, renamed or detached spaces, cross-home mismatches, inconsistent endpoint bindings, active target tabs, and ambiguous identity or focus fall back flat without mutating the old projection when duplicate-agent risk is positively absent.
 A live or unknown recorded or token-matched endpoint refuses duplicate launch.
 
@@ -203,6 +204,7 @@ herdr_pane_id=<pane-id>
 A Herdr pane id contains a colon, so the adapter splits `window=` on the first colon only.
 The recorded pane is the operational fast path.
 Workspace and tab ids support verification and cleanup but are not inferred from mutable labels during normal operation.
+[`launch-records.md`](launch-records.md) owns launch accounting; the adapter's `fm_backend_herdr_create_note` reports create requests and response-derived identities to that owner.
 
 ## Current transport behavior
 
@@ -325,6 +327,7 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - Ghost and placeholder recognition uses ANSI de-emphasis when available; an unstyled glyph row carrying trailing non-idle text fails safely to `unknown`.
 - Mid-session secondmate agent-process liveness is not implemented.
 - Only a Herdr pane can host the away-mode supervisor terminal.
+- A create request carries no client id, so a lost `tab create` or `workspace create` response can leave a created container; the launch record keeps that as an uncertain outcome and the next launch refuses replacement until exact native settlement or explicit inspected disposition; labels supply hints only ([`launch-records.md`](launch-records.md)).
 
 ## Regression entry points
 

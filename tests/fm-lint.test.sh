@@ -926,6 +926,88 @@ SH
   pass "jobs=1 and jobs=2 stop complete worker trees with and without telemetry"
 }
 
+test_unfinished_root_is_unperformed_not_skipped() {
+  local tmp fakebin hang bad good out1 out2 rc1 rc2 rc_bad_bound pid_file hung_pid i
+  tmp=$(fm_test_tmproot fm-lint-unperformed)
+  mkdir -p "$tmp"
+  fakebin=$(fm_fakebin "$tmp")
+  pid_file="$tmp/hung.pid"
+  # A stand-in ShellCheck: one root never finishes, one has a finding, one is clean.
+  cat > "$fakebin/shellcheck" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then
+  printf 'ShellCheck - shell script analysis tool\nversion: 0.11.0\n'
+  exit 0
+fi
+for arg in "$@"; do :; done
+case "$arg" in
+  *hang.sh)
+    printf '%s\n' "$$" > "$FM_TEST_HUNG_PID"
+    while :; do sleep 1; done
+    ;;
+  *bad.sh)
+    printf 'In %s line 2:\n  rm $1\n     ^-- SC2086 (info): Double quote to prevent globbing.\n' "$arg"
+    exit 1
+    ;;
+  *) exit 0 ;;
+esac
+SH
+  chmod +x "$fakebin/shellcheck"
+  hang="$tmp/hang.sh"
+  bad="$tmp/bad.sh"
+  good="$tmp/good.sh"
+  # Largest-first assignment gives the largest root (good) its own shard and
+  # pairs the unfinished root (hang) with the smaller failing root (bad) in the
+  # other, in argument order, so that shard must keep analyzing after its
+  # unfinished root for the SC2086 finding to appear.
+  printf '#!/usr/bin/env bash\n# %s\n' "$(printf 'x%.0s' $(seq 1 300))" > "$good"
+  printf '#!/usr/bin/env bash\n# %s\n' "$(printf 'x%.0s' $(seq 1 200))" > "$hang"
+  cat > "$bad" <<'SH'
+#!/usr/bin/env bash
+rm $1
+SH
+
+  rc1=0
+  out1=$(PATH="$fakebin:$PATH" FM_LINT_JOBS=1 FM_LINT_ROOT_TIMEOUT_SECS=1 FM_TEST_HUNG_PID="$pid_file" \
+    "$LINT" "$good" "$hang" "$bad" 2>&1) || rc1=$?
+  [ "$rc1" -eq 124 ] || fail "an unfinished root must fail the run with the bound status, got $rc1"$'\n'"$out1"
+  assert_contains "$out1" "UNPERFORMED $hang" "the unfinished root was not named UNPERFORMED"
+  assert_contains "$out1" "hit the 1s per-root bound" "the UNPERFORMED line did not say why"
+  assert_contains "$out1" "SC2086" "the shard stopped analyzing after its unfinished root"
+  assert_contains "$out1" "1 root(s) UNPERFORMED" "the final summary did not count the unperformed root"
+  assert_not_contains "$out1" "UNPERFORMED $bad" "a finished root was reported as unperformed"
+  assert_not_contains "$out1" "UNPERFORMED $good" "a clean finished root was reported as unperformed"
+  hung_pid=$(cat "$pid_file" 2>/dev/null || true)
+  [ -n "$hung_pid" ] || fail "the stand-in ShellCheck never started on the unfinished root"
+  i=0
+  while [ "$i" -lt 100 ] && kill -0 "$hung_pid" 2>/dev/null; do
+    sleep 0.01
+    i=$((i + 1))
+  done
+  if kill -0 "$hung_pid" 2>/dev/null; then
+    kill -KILL "$hung_pid" 2>/dev/null || true
+    fail "the bounded root's ShellCheck outlived its bound"
+  fi
+
+  rc2=0
+  out2=$(PATH="$fakebin:$PATH" FM_LINT_JOBS=2 FM_LINT_ROOT_TIMEOUT_SECS=1 FM_TEST_HUNG_PID="$pid_file" \
+    "$LINT" "$good" "$hang" "$bad" 2>&1) || rc2=$?
+  [ "$rc2" -eq "$rc1" ] || fail "jobs=1/jobs=2 disagree on the unperformed exit: $rc1/$rc2"
+  [ "$out1" = "$out2" ] || fail "jobs=1/jobs=2 unperformed diagnostics differ"
+  hung_pid=$(cat "$pid_file" 2>/dev/null || true)
+  i=0
+  while [ "$i" -lt 100 ] && kill -0 "$hung_pid" 2>/dev/null; do
+    sleep 0.01
+    i=$((i + 1))
+  done
+  kill -0 "$hung_pid" 2>/dev/null && { kill -KILL "$hung_pid" 2>/dev/null || true; fail "jobs=2 left the bounded root's ShellCheck running"; }
+
+  rc_bad_bound=0
+  PATH="$fakebin:$PATH" FM_LINT_ROOT_TIMEOUT_SECS=0 "$LINT" "$good" >/dev/null 2>&1 || rc_bad_bound=$?
+  [ "$rc_bad_bound" -eq 2 ] || fail "a zero per-root bound must be rejected, got $rc_bad_bound"
+  pass "an unfinished root is named UNPERFORMED, its shard finishes, the run fails, and its process does not outlive the bound"
+}
+
 test_seeded_module_boundary_parity() {
   if ! pinned_ready; then
     pass "SKIP (ShellCheck $REQUIRED not resolved): seeded source-boundary parity check"
@@ -997,6 +1079,66 @@ SH
   pass "seeded dispatcher, adapter, production-owner, and test-local diagnostics preserve parity"
 }
 
+test_timeout_fallback_preserves_child_status() {
+  local tmp bash_path perl_path runner runner_path isolated command_name expected rc mechanism child i
+  tmp=$(fm_test_tmproot fm-lint-timeout-status)
+  bash_path=$(command -v bash)
+  perl_path=$(command -v perl) || fail "Perl is required to verify the timeout fallback"
+  for runner in perl timeout gtimeout; do
+    if [ "$runner" != perl ]; then
+      runner_path=$(command -v "$runner") || continue
+    fi
+    isolated="$tmp/$runner"
+    mkdir -p "$isolated"
+    for command_name in bash perl mktemp cat rm; do
+      ln -s "$(command -v "$command_name")" "$isolated/$command_name"
+    done
+    if [ "$runner" != perl ]; then
+      ln -s "$runner_path" "$isolated/$runner"
+    fi
+    # shellcheck disable=SC2016 # Expand positional parameters in the child shell.
+    mechanism=$(PATH="$isolated" FM_TIMEOUT_MECHANISM_OVERRIDE='' "$bash_path" -c '
+      . "$1"
+      fm_timeout_mechanism
+    ' _ "$ROOT/bin/fm-timeout-lib.sh")
+    [ "$mechanism" = "$runner" ] || fail "expected real $runner selection, got $mechanism"
+    for expected in 0 7 137; do
+      rc=0
+      # shellcheck disable=SC2016 # Expand positional parameters and PID in the child shell.
+      PATH="$isolated" FM_TIMEOUT_MECHANISM_OVERRIDE='' "$bash_path" -c '
+        . "$1"
+        fm_run_timed 5 "$2" -c "$3" _ "$4"
+      ' _ "$ROOT/bin/fm-timeout-lib.sh" "$bash_path" 'if [ "$1" = 137 ]; then kill -KILL "$$"; else exit "$1"; fi' "$expected" > "$tmp/output" 2>&1 || rc=$?
+      expect_code "$expected" "$rc" "$runner must preserve the child status"
+    done
+    rc=0
+    # shellcheck disable=SC2016 # Let the child shell and Perl expand their own variables.
+    PATH="$isolated" FM_TIMEOUT_MECHANISM_OVERRIDE='' "$bash_path" -c '
+      . "$1"
+      fm_run_timed 1 "$2" -e "$3" "$4"
+    ' _ "$ROOT/bin/fm-timeout-lib.sh" "$perl_path" '$SIG{TERM} = "IGNORE"; open my $file, ">", $ARGV[0] or die $!; print $file $$; close $file; sleep 30' "$tmp/child" > "$tmp/output" 2>&1 || rc=$?
+    expect_code 124 "$rc" "$runner must retain the timeout status"
+    child=$(cat "$tmp/child")
+    i=0
+    while [ "$i" -lt 100 ] && kill -0 "$child" 2>/dev/null; do
+      sleep 0.01
+      i=$((i + 1))
+    done
+    if kill -0 "$child" 2>/dev/null; then
+      kill -KILL "$child" 2>/dev/null || true
+      fail "$runner left its TERM-resistant child alive after the bound"
+    fi
+  done
+  pass "real Perl fallback and available external timeout tools preserve success, failure, SIGKILL, and deadlines"
+}
+
+if [ "${1:-}" = timeout-status ]; then
+  test_timeout_fallback_preserves_child_status
+  test_unfinished_root_is_unperformed_not_skipped
+  exit 0
+fi
+
+test_timeout_fallback_preserves_child_status
 test_help_reports_the_complete_interface
 test_list_files_reports_the_shell_inventory
 test_fast_mode_disables_extended_analysis
@@ -1017,6 +1159,7 @@ test_ignores_ambient_shellcheck_opts
 test_clean_fixture_passes
 test_jobs_are_deterministic_and_complete
 test_worker_trees_stop_on_signal
+test_unfinished_root_is_unperformed_not_skipped
 test_seeded_module_boundary_parity
 test_changed_mode_lints_only_the_changed_file
 test_ci_forces_full_lint_even_with_empty_diff

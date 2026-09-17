@@ -32,6 +32,14 @@
 # Each shard writes separate diagnostics, and the parent replays those outputs in
 # deterministic shard and root order after every worker finishes. FM_LINT_JOBS=1
 # runs the same shards serially with byte-identical diagnostics and exit selection.
+# Inside a shard every root is analyzed by its own ShellCheck process, with the
+# same flags, bounded through bin/fm-timeout-lib.sh by FM_LINT_ROOT_TIMEOUT_SECS
+# (default 900, a positive integer). A root whose process hits that bound or is
+# terminated by a signal (the OS refusing it memory) is reported in the
+# diagnostics stream as UNPERFORMED, the shard's remaining roots are still
+# analyzed, and the run fails: an unperformed root is neither a pass nor a skip,
+# and its name is repeated in a final summary so the unproved analysis is
+# attributable to one file rather than to a whole shard.
 #
 # Optional quiet telemetry writes one bounded TSV snapshot of content and source
 # graph identity, wall/CPU/RSS, shard load, and competing ShellCheck processes.
@@ -45,6 +53,11 @@
 #   fm-lint.sh --required-version      print the ShellCheck pin
 #   fm-lint.sh --list-files            print the file set that would be linted
 #   fm-lint.sh --help                  print this usage
+#
+# Environment:
+#   FM_LINT_JOBS=<1|2>                 bounded worker count (default 2)
+#   FM_LINT_ROOT_TIMEOUT_SECS=<n>      per-root ShellCheck bound in seconds (default 900)
+#   FM_LINT_TELEMETRY=<path>           quiet metrics snapshot
 set -u
 
 REQUIRED_SHELLCHECK=0.11.0
@@ -53,17 +66,60 @@ SELF="$SELF_DIR/fm-lint.sh"
 ROOT="$(cd "$SELF_DIR/.." && pwd)"
 cd "$ROOT" || exit 1
 
-FM_LINT_WORKER_SHELLCHECK_PID=
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SELF_DIR/fm-timeout-lib.sh"
+
+FM_LINT_ROOT_TIMEOUT_DEFAULT=900
+
+# The timeout owner gives each bounded ShellCheck its own process group
+# (bin/fm-timeout-lib.sh), so a signal to a worker's group never reaches it.
+# fm_lint_descendant_groups walks exact parent links from one process and
+# prints every other process group led beneath it, so cleanup can stop those
+# groups by ancestry rather than by name.
+# shellcheck disable=SC2329 # Reached through the signal-trap cleanup functions.
+fm_lint_descendant_groups() {  # <pid>
+  ps -axo pid=,ppid=,pgid= 2>/dev/null | awk -v root="$1" '
+    { pid[NR] = $1; ppid[NR] = $2; pgid[NR] = $3; if ($1 == root) own = $3 }
+    END {
+      seen[root] = 1
+      changed = 1
+      while (changed) {
+        changed = 0
+        for (i = 1; i <= NR; i++) {
+          if (!(pid[i] in seen) && (ppid[i] in seen)) { seen[pid[i]] = 1; changed = 1 }
+        }
+      }
+      for (i = 1; i <= NR; i++) {
+        if ((pid[i] in seen) && pid[i] != root && pgid[i] != own && !(pgid[i] in out)) {
+          out[pgid[i]] = 1
+          print pgid[i]
+        }
+      }
+    }'
+}
+
+# shellcheck disable=SC2329 # Reached through the signal-trap cleanup functions.
+fm_lint_signal_tree() {  # <pid> <signal>: the groups beneath a process, then the process
+  local group
+  for group in $(fm_lint_descendant_groups "$1"); do
+    kill "-$2" -- "-$group" 2>/dev/null || true
+  done
+  kill "-$2" "$1" 2>/dev/null || true
+}
+
+FM_LINT_WORKER_CHILD_PID=
 # shellcheck disable=SC2329 # Registered by the private worker's signal traps.
 fm_lint_worker_stop() {
-  [ -n "$FM_LINT_WORKER_SHELLCHECK_PID" ] || return 0
-  kill "$FM_LINT_WORKER_SHELLCHECK_PID" 2>/dev/null || true
-  wait "$FM_LINT_WORKER_SHELLCHECK_PID" 2>/dev/null || true
-  FM_LINT_WORKER_SHELLCHECK_PID=
+  [ -n "$FM_LINT_WORKER_CHILD_PID" ] || return 0
+  fm_lint_signal_tree "$FM_LINT_WORKER_CHILD_PID" TERM
+  wait "$FM_LINT_WORKER_CHILD_PID" 2>/dev/null || true
+  fm_lint_signal_tree "$FM_LINT_WORKER_CHILD_PID" KILL
+  FM_LINT_WORKER_CHILD_PID=
 }
 
 fm_lint_worker() {  # <manifest> <output-dir> <shard-index>
   local manifest=$1 output_dir=$2 shard_index=$3 tab index path output rc=0
+  local root_timeout root_rc reason
   local -a roots shellcheck_args
   roots=()
   tab=$(printf '\t')
@@ -72,6 +128,9 @@ fm_lint_worker() {  # <manifest> <output-dir> <shard-index>
     roots+=("$path")
   done < "$manifest"
   output="$output_dir/shard.$shard_index"
+  root_timeout=${FM_LINT_ROOT_TIMEOUT_SECS:-$FM_LINT_ROOT_TIMEOUT_DEFAULT}
+  : > "$output.out"
+  : > "$output.unperformed"
   if [ "${#roots[@]}" -gt 0 ]; then
     trap 'fm_lint_worker_stop; exit 129' HUP
     trap 'fm_lint_worker_stop; exit 130' INT
@@ -80,13 +139,31 @@ fm_lint_worker() {  # <manifest> <output-dir> <shard-index>
     if [ "${FM_LINT_INTERNAL_FAST:-0}" -eq 1 ]; then
       shellcheck_args+=(--extended-analysis=false)
     fi
-    "$FM_LINT_SHELLCHECK" "${shellcheck_args[@]}" -- "${roots[@]}" > "$output.out" 2>&1 &
-    FM_LINT_WORKER_SHELLCHECK_PID=$!
-    wait "$FM_LINT_WORKER_SHELLCHECK_PID" || rc=$?
-    FM_LINT_WORKER_SHELLCHECK_PID=
+    # One bounded ShellCheck process per root, in manifest order, so a root
+    # that cannot finish is named, the rest of the shard is still analyzed,
+    # and the first nonzero root status is the shard's status.
+    for path in "${roots[@]}"; do
+      root_rc=0
+      fm_run_timed "$root_timeout" "$FM_LINT_SHELLCHECK" "${shellcheck_args[@]}" -- "$path" >> "$output.out" 2>&1 &
+      FM_LINT_WORKER_CHILD_PID=$!
+      wait "$FM_LINT_WORKER_CHILD_PID" || root_rc=$?
+      FM_LINT_WORKER_CHILD_PID=
+      reason=
+      if [ "$root_rc" -eq 124 ]; then
+        reason="hit the ${root_timeout}s per-root bound"
+      elif [ "$root_rc" -gt 128 ]; then
+        reason="was terminated by signal $((root_rc - 128))"
+      fi
+      if [ -n "$reason" ]; then
+        printf 'fm-lint.sh: UNPERFORMED %s: ShellCheck %s before finishing; this root is not proved and the run fails.\n' \
+          "$path" "$reason" >> "$output.out"
+        printf '%s\n' "$path" >> "$output.unperformed"
+      fi
+      if [ "$rc" -eq 0 ] && [ "$root_rc" -ne 0 ]; then
+        rc=$root_rc
+      fi
+    done
     trap - HUP INT TERM
-  else
-    : > "$output.out"
   fi
   printf '%s\n' "$rc" > "$output.rc"
   return "$rc"
@@ -172,6 +249,10 @@ done
 case "$JOBS" in
   1|2) ;;
   *) printf 'fm-lint.sh: jobs must be 1 or 2, got %s.\n' "$JOBS" >&2; exit 2 ;;
+esac
+ROOT_TIMEOUT=${FM_LINT_ROOT_TIMEOUT_SECS:-$FM_LINT_ROOT_TIMEOUT_DEFAULT}
+case "$ROOT_TIMEOUT" in
+  ''|*[!0-9]*|0*) printf 'fm-lint.sh: FM_LINT_ROOT_TIMEOUT_SECS must be a positive integer, got %s.\n' "$ROOT_TIMEOUT" >&2; exit 2 ;;
 esac
 
 if [ "$FAST" -eq 1 ] && { [ "${GITHUB_ACTIONS:-}" = true ] || [ "${CI:-}" = true ]; }; then
@@ -300,13 +381,13 @@ fm_lint_cleanup() {
   local pid
   for pid in "${ACTIVE_PIDS[@]:-}"; do
     [ -n "$pid" ] || continue
+    fm_lint_signal_tree "$pid" TERM
     kill -TERM -- "-$pid" 2>/dev/null || true
-    kill -TERM "$pid" 2>/dev/null || true
   done
   for pid in "${ACTIVE_PIDS[@]:-}"; do
     [ -n "$pid" ] || continue
+    fm_lint_signal_tree "$pid" KILL
     kill -KILL -- "-$pid" 2>/dev/null || true
-    kill -KILL "$pid" 2>/dev/null || true
   done
   for pid in "${ACTIVE_PIDS[@]:-}"; do
     [ -n "$pid" ] && wait "$pid" 2>/dev/null || true
@@ -410,17 +491,20 @@ fm_lint_run_worker() {  # <worker-index>
       exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
         /usr/bin/time -lp -o "$timing" \
         env FM_LINT_INTERNAL=1 FM_LINT_INTERNAL_FAST="$FAST" FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
+        FM_LINT_ROOT_TIMEOUT_SECS="$ROOT_TIMEOUT" \
         "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"
     else
       exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
         /usr/bin/time -f 'wall_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S\nmax_rss_kib=%M' -o "$timing" \
         env FM_LINT_INTERNAL=1 FM_LINT_INTERNAL_FAST="$FAST" FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
+        FM_LINT_ROOT_TIMEOUT_SECS="$ROOT_TIMEOUT" \
         "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"
     fi
   else
     [ -z "$TELEMETRY" ] || printf 'timing_unavailable=1\n' > "$timing"
     exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
       env FM_LINT_INTERNAL=1 FM_LINT_INTERNAL_FAST="$FAST" FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
+        FM_LINT_ROOT_TIMEOUT_SECS="$ROOT_TIMEOUT" \
       "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"
   fi
 }
@@ -456,9 +540,11 @@ else
 fi
 
 # Replay both stable shards in deterministic order and select the first nonzero
-# shard status. ShellCheck processes every root in a shard after earlier findings.
+# shard status. Each worker analyzes every root of its shard after earlier
+# findings, and names the roots it could not finish; those stay failures.
 overall_rc=0
 worker=0
+UNPERFORMED_ROOTS=()
 while [ "$worker" -lt "$SHARD_COUNT" ]; do
   output="$OUTPUT_DIR/shard.$worker"
   [ ! -f "$output.out" ] || cat "$output.out"
@@ -469,11 +555,21 @@ while [ "$worker" -lt "$SHARD_COUNT" ]; do
     printf 'fm-lint.sh: worker produced no result for shard %s.\n' "$worker" >&2
     rc=2
   fi
+  if [ -s "$output.unperformed" ]; then
+    while IFS= read -r path; do
+      [ -n "$path" ] && UNPERFORMED_ROOTS+=("$path")
+    done < "$output.unperformed"
+  fi
   if [ "$overall_rc" -eq 0 ] && [ "$rc" -ne 0 ]; then
     overall_rc=$rc
   fi
   worker=$((worker + 1))
 done
+if [ "${#UNPERFORMED_ROOTS[@]}" -gt 0 ]; then
+  printf 'fm-lint.sh: %s root(s) UNPERFORMED (full analysis did not complete, not a pass, not skipped): %s\n' \
+    "${#UNPERFORMED_ROOTS[@]}" "${UNPERFORMED_ROOTS[*]}" >&2
+  [ "$overall_rc" -ne 0 ] || overall_rc=124
+fi
 
 if [ -n "$TELEMETRY" ]; then
   TELEMETRY_END_EPOCH=$(date +%s)
@@ -553,6 +649,8 @@ EOF
     printf 'shellcheck_version\t%s\n' "$resolved"
     printf 'analysis_mode\t%s\n' "$ANALYSIS_MODE"
     printf 'jobs\t%s\n' "$JOBS"
+    printf 'root_timeout_secs\t%s\n' "$ROOT_TIMEOUT"
+    printf 'unperformed_root_count\t%s\n' "${#UNPERFORMED_ROOTS[@]}"
     printf 'root_count\t%s\n' "$ROOT_COUNT"
     printf 'direct_lines\t%s\n' "$direct_lines"
     printf 'direct_bytes\t%s\n' "$direct_bytes"

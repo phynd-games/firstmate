@@ -169,6 +169,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-launch-record-lib.sh
+. "$SCRIPT_DIR/fm-launch-record-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-lock-lib.sh
@@ -692,11 +694,29 @@ remote_secondmate_teardown() {
   grep -vE "^- $ID( |$)" "$SECONDMATE_REG" > "$tmp" || true
   mv -f -- "$tmp" "$SECONDMATE_REG"
   status_retire_presentation_task "$STATE" "$ID" || return 1
+  teardown_retire_launch_record || return 1
   fm_backlog_atomic_transition remove "$STATE/$ID.meta" "task record" "$STATE" || return 1
   rm -f -- "$STATE/$ID.turn-ended" "$STATE/$ID.validation-loop" \
     "$STATE/.branch-note-sig-$ID"
   printf 'teardown %s complete (remote %s:%s)\n' "$ID" "$remote_host" "$remote_home"
   return 0
+}
+
+# teardown_retire_launch_record: the task's launch record (bin/fm-launch-record.py
+# owns the contract) gets its retired outcome before the record leaves with the
+# other volatile task state below. Teardown has already proven the endpoint gone
+# or refused, so the record is evidence, never the cleanup authority; a task
+# launched before the contract simply has none.
+teardown_retire_launch_record() {
+  local launch
+  [ -e "$STATE/$ID.launch" ] || return 0
+  launch=$(fm_launch_record get --task "$ID" launch.id) || return 1
+  local -a evidence=()
+  if [ "$BACKEND" = herdr ]; then
+    fm_launch_record_effects_gone "$ID" "$launch" || return 1
+    evidence+=(--effects-digest "$FM_LAUNCH_EFFECTS_DIGEST")
+  fi
+  fm_launch_record retire --task "$ID" --launch "$launch" --reason teardown --remove "${evidence[@]}"
 }
 
 remote_secondmate_herdr_preflight() {
@@ -2754,6 +2774,10 @@ if [ "$BACKEND" = herdr ]; then
   fm_backend_herdr_parse_target "$T" || exit 1
   TEARDOWN_HERDR_SESSION=$FM_BACKEND_HERDR_SESSION
   TEARDOWN_HERDR_PANE=$FM_BACKEND_HERDR_PANE
+  if [ -e "$STATE/$ID.launch" ]; then
+    teardown_launch=$(fm_launch_record get --task "$ID" launch.id) || exit 1
+    fm_launch_record_effects_gone "$ID" "$teardown_launch" "$META" || exit 1
+  fi
 fi
 
 BACKLOG_CLOSED=0
@@ -3006,6 +3030,7 @@ fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 status_retire_presentation_task "$STATE" "$ID" || exit 1
+teardown_retire_launch_record || exit 1
 rm -f "$STATE/$ID.turn-ended" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
