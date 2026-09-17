@@ -1741,14 +1741,135 @@ retire_binding_locked() {  # <reason> [signal-owner]
   return 0
 }
 
+# recorded_server_instance_gone: the ONE case in which a changed Herdr server
+# identity may be settled automatically. Every fact below is a native or
+# kernel fact the current contract can actually distinguish; anything short of
+# all four keeps the prior binding and refuses replacement, naming the missing
+# fact in HS_SERVER_GONE_REASON. A different live socket alone, an unreadable
+# inventory, a reused workspace or pane id, or an unknown loop process never
+# proves the old generation cannot still perform its work.
+#   1. The current session's server identity is readable and differs from the
+#      recorded one (the caller established this).
+#   2. The recorded supervisor loop process is provably dead: its pid is known
+#      from the live record and is either not alive or no longer carries its
+#      recorded process identity (a recycled pid is not the old loop).
+#   3. The recorded socket inode is gone: the path is absent, or the path now
+#      carries a different inode, so no client can reach the recorded server
+#      instance. A present socket with the recorded inode is not proof; the
+#      old server may still be serving it.
+#   4. The replacement server's inventory is READABLE and lacks both the
+#      recorded workspace id and the recorded pane binding, so nothing on it
+#      can be the old endpoint under a reused or restored id.
+# On success HS_SERVER_GONE_FACTS names the facts that justify retirement.
+HS_SERVER_GONE_REASON=
+HS_SERVER_GONE_FACTS=
+recorded_server_instance_gone() {
+  local socket socket_identity workspace tab pane loop_pid loop_identity current present_identity loop_fact
+  HS_SERVER_GONE_REASON=
+  HS_SERVER_GONE_FACTS=
+  socket=$(record_get herdr_socket || printf '')
+  socket_identity=$(record_get herdr_socket_identity || printf '')
+  workspace=$(record_get workspace || printf '')
+  tab=$(record_get tab || printf '')
+  pane=$(record_get pane || printf '')
+  [ -n "$HS_SESSION" ] && [ -n "$HS_SOCKET" ] && [ -n "$HS_SOCKET_IDENTITY" ] || {
+    HS_SERVER_GONE_REASON="the current Herdr server identity could not be read"
+    return 1
+  }
+  [ -n "$socket" ] && [ -n "$socket_identity" ] && [ -n "$workspace" ] || {
+    HS_SERVER_GONE_REASON="the prior binding records no complete server and workspace identity"
+    return 1
+  }
+  # The live record is written only by the loop and cleared on its own
+  # termination path, so its absence is the loop's recorded exit; a present
+  # record must name a pid that is dead or recycled.
+  loop_fact=
+  if [ -e "$LIVE" ]; then
+    loop_pid=$(live_get loop_pid || printf '')
+    loop_identity=$(live_get loop_identity || printf '')
+    case "$loop_pid" in
+      ''|*[!0-9]*)
+        HS_SERVER_GONE_REASON="the prior supervisor live record names no readable loop pid, so its liveness cannot be proved"
+        return 1
+        ;;
+    esac
+    if fm_pid_alive "$loop_pid"; then
+      current=$(fm_pid_identity "$loop_pid" 2>/dev/null || printf '')
+      if [ -z "$loop_identity" ] || [ -z "$current" ] || [ "$current" = "$loop_identity" ]; then
+        HS_SERVER_GONE_REASON="the prior supervisor loop process $loop_pid is still alive under its recorded identity"
+        return 1
+      fi
+      loop_fact="loop pid $loop_pid recycled by another process"
+    else
+      loop_fact="loop pid $loop_pid dead"
+    fi
+  else
+    loop_fact="loop cleared its own live record"
+  fi
+  if [ -e "$socket" ]; then
+    present_identity=$(herdr_socket_identity "$socket" 2>/dev/null || printf '')
+    if [ -z "$present_identity" ] || [ "$present_identity" = "$socket_identity" ]; then
+      HS_SERVER_GONE_REASON="the recorded Herdr socket $socket is still present with its recorded identity, so the prior server instance may still be serving it"
+      return 1
+    fi
+  fi
+  if ! workspace_absent_on_verified_server "$HS_SOCKET" "$HS_SOCKET_IDENTITY" "$workspace"; then
+    HS_SERVER_GONE_REASON="the replacement Herdr server's inventory is unreadable or still lists the recorded workspace $workspace"
+    return 1
+  fi
+  if [ -n "$tab" ] && [ -n "$pane" ] && pane_binding_intact "$HS_SESSION" "$workspace" "$tab" "$pane"; then
+    HS_SERVER_GONE_REASON="the replacement Herdr server still answers for the recorded pane $pane, so the endpoint id was reused or restored"
+    return 1
+  fi
+  HS_SERVER_GONE_FACTS="$loop_fact; recorded socket inode $socket_identity gone from $socket; replacement server $HS_SOCKET lacks workspace $workspace and pane ${pane:-none}"
+  return 0
+}
+
+# retire_gone_generation_locked: retain the prior binding as historical evidence
+# under the quarantine prefix, record its cleanup as complete (nothing is left to
+# close on a server nobody can reach), and clear the live binding so establish
+# may start a fresh generation. Only recorded_server_instance_gone authorizes it.
+retire_gone_generation_locked() {  # <facts>
+  local generation target tmp
+  generation=$(record_get generation || printf unknown)
+  case "$generation" in
+    ''|*[!A-Za-z0-9._-]*) generation=unknown-${BASHPID:-$$} ;;
+  esac
+  target="$QUARANTINE_PREFIX.$generation"
+  tmp="$target.tmp.${BASHPID:-$$}"
+  if ! {
+    awk '!/^mode=/' "$RECORD"
+    printf 'mode=retired\n'
+    printf 'retired_reason=%s\n' "$(ledger_clean_field "server gone: $1")"
+  } > "$tmp" 2>/dev/null || ! chmod 600 "$tmp" 2>/dev/null \
+    || ! mv -f "$tmp" "$target" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  record_set_cleanup_state closed || return 1
+  cleanup_receipt_put "$RECORD" exit || return 1
+  record_clear || return 1
+  launcher_clear
+  rm -f "$HEARTBEAT" 2>/dev/null || true
+  ledger_append server-gone "retired generation=$generation: $1 resource=$target"
+}
+
 reconcile_previous_locked() {
   local old_generation rc
   [ -f "$RECORD" ] || return 0
   old_generation=$(record_get generation || printf unknown)
   ledger_append replace-required "retiring unhealthy generation=$old_generation before replacement"
   if ! recorded_herdr_identity_matches; then
+    if recorded_server_instance_gone; then
+      if retire_gone_generation_locked "$HS_SERVER_GONE_FACTS"; then
+        return 0
+      fi
+      record_set_mode quarantine || true
+      escalate "the prior Herdr server is proved gone but its binding could not be retired; replacement is blocked"
+      return 1
+    fi
     record_set_mode quarantine || true
-    escalate "the prior Herdr server identity remains unresolved; replacement is blocked"
+    escalate "the prior Herdr server identity remains unresolved (${HS_SERVER_GONE_REASON:-unknown}); replacement is blocked"
     return 1
   fi
   if ! recorded_workspace_matches; then
@@ -2890,6 +3011,7 @@ cmd_monitor_run() {  # <owner-pid TAB owner-identity>
   identity=$(fm_pid_identity "$self" 2>/dev/null || printf '')
   [ -n "$identity" ] || { fm_lock_release "$MONITOR_LOCK"; return 1; }
   hs_monitor_launch_created "$self" "$identity" || {
+    ledger_append monitor-refused "monitor start refused: no recorded launch intent (launch=${HS_MONITOR_LAUNCH_ID:-none}); start it through ensure/monitor, which records the intent first"
     fm_lock_release "$MONITOR_LOCK"
     return 1
   }
