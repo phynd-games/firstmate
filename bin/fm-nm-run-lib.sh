@@ -56,9 +56,9 @@ fm_nm_field() {  # <toon-output> <key>
   printf '%s\n' "$1" | sed -n "s/^[[:space:]]*$2:[[:space:]]*\(.*\)/\1/p" | head -1
 }
 
-# 0 when native `no-mistakes axi status` proves that this repository has no
-# validation runs yet. The CLI emits exactly one zero-run line followed by one
-# help line; every other shape remains unreadable evidence for the caller.
+# Recognize the native zero-run output shape from `no-mistakes axi status`:
+# exactly one zero-run line followed by one help line. The caller must also
+# verify successful command completion; output shape alone proves no absence.
 fm_nm_axi_status_no_runs() {  # <axi-status-output>
   local content=${1-}
   printf '%s\n' "$content" | awk '

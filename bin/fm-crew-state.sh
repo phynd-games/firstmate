@@ -43,6 +43,9 @@
 #      recorded backend's pane busy state, then the status log's last line only
 #      when its verb maps to a recognized run-state. Decision-only events such as
 #      `resolved` never become current state or detail.
+#      A successful native zero-run response, recognized by
+#      fm_nm_axi_status_no_runs, permits this fallback. Empty, malformed,
+#      partial, failed, or timed-out axi status replies do not prove no run.
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log.
@@ -492,10 +495,7 @@ COARSE_STATUS=""
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
   RUN_QUERY_STATUS=1
   RUN_OUT=$(nm_run_checked axi status) && RUN_QUERY_STATUS=0
-  # A successful native zero-run answer is the one supported no-validation
-  # result and may continue to the ordinary pane/status-log sources below.
-  # Empty, malformed, partial, and failed CLI answers are unreadable evidence,
-  # not alternate spellings of "no run".
+  # Preserve the no-run versus unreadable-evidence distinction in step 4 above.
   if [ "$RUN_QUERY_STATUS" -ne 0 ] || [ -z "$RUN_OUT" ]; then
     emit unknown none "unreadable validation run evidence (not proof of death)"
   elif fm_nm_axi_status_no_runs "$RUN_OUT"; then
