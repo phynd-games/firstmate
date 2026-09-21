@@ -43,6 +43,9 @@
 #      recorded backend's pane busy state, then the status log's last line only
 #      when its verb maps to a recognized run-state. Decision-only events such as
 #      `resolved` never become current state or detail.
+#      A successful native zero-run response, recognized by
+#      fm_nm_axi_status_no_runs, permits this fallback. Empty, malformed,
+#      partial, failed, or timed-out axi status replies do not prove no run.
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log.
@@ -270,6 +273,9 @@ strip_quotes() { fm_nm_strip_quotes "$@"; }
 nm_run() {  # <args...>
   fm_nm_run "$WT" "$NM_TIMEOUT" "$@"
 }
+nm_run_checked() {  # <args...>
+  fm_nm_run_checked "$WT" "$NM_TIMEOUT" "$@"
+}
 
 # Scalar value of a TOON key in the captured run output ($RUN_OUT).
 RUN_OUT=""
@@ -487,8 +493,14 @@ COARSE_STATUS=""
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
-  RUN_OUT=$(nm_run axi status)
-  if [ -n "$RUN_OUT" ]; then
+  RUN_QUERY_STATUS=1
+  RUN_OUT=$(nm_run_checked axi status) && RUN_QUERY_STATUS=0
+  # Preserve the no-run versus unreadable-evidence distinction in step 4 above.
+  if [ "$RUN_QUERY_STATUS" -ne 0 ] || [ -z "$RUN_OUT" ]; then
+    emit unknown none "unreadable validation run evidence (not proof of death)"
+  elif fm_nm_axi_status_no_runs "$RUN_OUT"; then
+    :
+  else
     fm_vloop_evidence_valid "$RUN_OUT" || emit unknown none "unreadable validation run evidence (not proof of death)"
     run_branch=$(strip_quotes "$(nm_field branch)")
     # Head equality, or the pipeline-owned-active exemption: while the
@@ -502,10 +514,6 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
       # The active-or-most-recent run is for another branch, or its same-branch
       # attribution failed (the CLI is alive and answered) - try the coarse
       # fallback.
-      # Deliberately nested inside `[ -n "$RUN_OUT" ]`: an empty/timed-out
-      # primary call means the CLI itself did not respond, so retrying it
-      # immediately with a second bounded call would just double the wait
-      # for no better answer.
       COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH")
       if [ -n "$COARSE_STATUS" ]; then
         HAVE_RUN=1

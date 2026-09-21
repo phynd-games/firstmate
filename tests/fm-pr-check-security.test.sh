@@ -354,12 +354,28 @@ surface_review_single_record() {
     "$label" "$surface" "$file" "$file" "$digest" "$change_digest" "$line_hex" "$line_hex" "$file" "$file" "$digest" "$line_hex" "$behavior" "$behavior_digest" "$file" "$digest" "$change_digest" "$line_hex" "$line_hex" "$file" "$line_hex" "$behavior" "$behavior_digest" "$binding" "$file" "$digest" "$change_digest" "$line_hex" "$line_hex" "$file" "$file" "$digest" "$line_hex" "$behavior" "$action" "$behavior_digest" "$binding"
 }
 
+surface_unaffected_record_for_file() {
+  local label=$1 surface=$2 file=$3 changed_digest=$4 binding behavior action
+  case "$surface" in
+    authority) behavior=non-authorizing; action=retain-owner ;;
+    security) behavior=provenance-bound; action=retain-boundary ;;
+    path) behavior='path-safe'; action=retain-validation ;;
+    failure) behavior=fail-closed; action=retain-refusal ;;
+    tests) behavior=behavioral; action=retain-regression ;;
+    documentation) behavior=contract-aligned; action=retain-contract ;;
+    delivery) behavior=no-mistakes-owned; action=retain-no-mistakes ;;
+  esac
+  binding=$(printf '%s\n' "$surface|unaffected|$file|$changed_digest|$behavior|$action" | fm_pr_sha256_stream) || return 1
+  printf '%s: reviewed; surface=%s; scope=unaffected; files=%s; rationale=no applicable changed %s surface; binding=%s\n' \
+    "$label" "$surface" "$file" "$surface" "$binding"
+}
+
 surface_review_single_record_at_line() {
   local label=$1 surface=$2 file=$3 line=$4 digest=$5 line_hex=$6 change_digest=$7 side=${8:-new} binding reference behavior action behavior_digest
   case "$surface" in
     authority) behavior=non-authorizing; action=retain-owner ;;
     security) behavior=provenance-bound; action=retain-boundary ;;
-    path) behavior=path-safe; action=retain-validation ;;
+    path) behavior='path-safe'; action=retain-validation ;;
     failure) behavior=fail-closed; action=retain-refusal ;;
     tests) behavior=behavioral; action=retain-regression ;;
     documentation) behavior=contract-aligned; action=retain-contract ;;
@@ -1113,6 +1129,181 @@ PY
     || fail "PR-ready path treated production changes as unrelated to every surface"
   [ -e "$dir/home/state/task-a.check.sh" ] || fail "production surface ownership did not publish a runnable poll"
   pass "PR-ready path derives applicability from production surface ownership"
+}
+
+write_one_new_file_surface_report() {
+  local dir=$1 documentation_file=${2:-AGENTS.md} review_files=${3:-AGENTS.md}
+  local report changed_digest authority_record delivery_record
+  local security_record path_record failure_record tests_record documentation_record
+  write_task_meta "$dir"
+  report="$dir/home/data/task-a/pr-self-review.md"
+  changed_digest=$(sed -n 's/^Changed files: //p' "$report")
+  authority_record=$(surface_review_single_record_at_line Authority authority AGENTS.md 2 \
+    "$(self_review_line_digest "$dir" AGENTS.md)" "$(self_review_line_hex "$dir" AGENTS.md)" \
+    "$(surface_change_digest_for_file "$dir" AGENTS.md)")
+  delivery_record=$(surface_review_single_record_at_line Delivery delivery AGENTS.md 2 \
+    "$(self_review_line_digest "$dir" AGENTS.md)" "$(self_review_line_hex "$dir" AGENTS.md)" \
+    "$(surface_change_digest_for_file "$dir" AGENTS.md)")
+  security_record=$(surface_unaffected_record_for_file Security security AGENTS.md "$changed_digest")
+  path_record=$(surface_unaffected_record_for_file Path path AGENTS.md "$changed_digest")
+  failure_record=$(surface_unaffected_record_for_file Failure failure AGENTS.md "$changed_digest")
+  tests_record=$(surface_unaffected_record_for_file Tests tests AGENTS.md "$changed_digest")
+  documentation_record=$(surface_review_single_record_at_line Documentation documentation "$documentation_file" 2 \
+    "$(self_review_line_digest "$dir" "$documentation_file")" "$(self_review_line_hex "$dir" "$documentation_file")" \
+    "$(surface_change_digest_for_file "$dir" "$documentation_file")")
+  python3 - "$report" "$authority_record" "$security_record" "$path_record" "$failure_record" "$tests_record" "$documentation_record" "$delivery_record" "$review_files" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+records = dict(zip(
+    ("Authority", "Security", "Path", "Failure", "Tests", "Documentation", "Delivery"),
+    sys.argv[2:9],
+))
+text = report.read_text(encoding="utf-8")
+for surface, record in records.items():
+    if "; scope=unaffected;" not in record:
+        record = re.sub(r"; files=[^;]*;", "; files=" + sys.argv[9] + ";", record)
+    text = re.sub(rf"(?m)^{surface}: .*", record, text, count=1)
+report.write_text(text, encoding="utf-8")
+PY
+  chmod 0600 "$report"
+}
+
+test_pr_ready_allows_one_new_file_multiple_surface_coverage() {
+  local dir
+  dir=$(make_case one-new-file-multiple-surfaces)
+  git -C "$dir/wt" reset --hard -q main
+  printf '%s\n' 'fixture' '# shared authority and delivery instructions' > "$dir/wt/AGENTS.md"
+  git -C "$dir/wt" add AGENTS.md
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm one-new-file
+  write_one_new_file_surface_report "$dir"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/119 >/dev/null \
+    || fail "PR-ready path rejected one new AGENTS.md hunk serving authority and delivery"
+  pass "PR-ready path accepts one genuine new-file hunk for multiple applicable surfaces"
+}
+
+test_pr_ready_overlapping_owner_coverage() {
+  local dir report documentation_file variant bad_record
+  dir=$(make_case overlapping-owner-coverage)
+  git -C "$dir/wt" reset --hard -q main
+  mkdir -p "$dir/wt/docs"
+  for documentation_file in AGENTS.md README.md docs/setup.md; do
+    printf '%s\n' 'fixture' "new $documentation_file contract" > "$dir/wt/$documentation_file"
+  done
+  git -C "$dir/wt" add AGENTS.md README.md docs/setup.md
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm overlapping-owners
+  report="$dir/home/data/task-a/pr-self-review.md"
+  for documentation_file in README.md docs/setup.md; do
+    write_one_new_file_surface_report "$dir" "$documentation_file" AGENTS.md,README.md,docs/setup.md
+    FM_HOME="$dir/home" "$SELF_REVIEW_CHECK" task-a no-mistakes > "$dir/valid.out" 2> "$dir/valid.err" \
+      || fail "overlapping AGENTS.md owners rejected documentation evidence from $documentation_file: $(cat "$dir/valid.err")"
+  done
+  write_one_new_file_surface_report "$dir" README.md AGENTS.md,README.md,docs/setup.md
+  cp "$report" "$dir/valid-report.md"
+  for variant in collapsed borrowed missing-file fake-bytes generic-claim missing-claim stale-head; do
+    cp "$dir/valid-report.md" "$report"
+    bad_record=
+    case "$variant" in
+      collapsed)
+        bad_record=$(surface_review_single_record_at_line Documentation documentation AGENTS.md 2 \
+          "$(self_review_line_digest "$dir" AGENTS.md)" "$(self_review_line_hex "$dir" AGENTS.md)" \
+          "$(surface_change_digest_for_file "$dir" AGENTS.md)") ;;
+      borrowed)
+        bad_record=$(surface_review_single_record_at_line Authority authority README.md 2 \
+          "$(self_review_line_digest "$dir" README.md)" "$(self_review_line_hex "$dir" README.md)" \
+          "$(surface_change_digest_for_file "$dir" README.md)") ;;
+      fake-bytes)
+        bad_record=$(surface_review_single_record_at_line Authority authority AGENTS.md 2 \
+          "$(printf 'invented\n' | fm_pr_sha256_stream)" 696e76656e746564 \
+          "$(surface_change_digest_for_file "$dir" AGENTS.md)") ;;
+    esac
+    python3 - "$report" "$variant" "$bad_record" <<'PYCASE'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+variant, record = sys.argv[2:]
+text = report.read_text(encoding="utf-8")
+if record:
+    record = re.sub(r"; files=[^;]*;", "; files=AGENTS.md,README.md,docs/setup.md;", record)
+    surface = record.split(":", 1)[0]
+    text = re.sub(rf"(?m)^{surface}: .*", record, text, count=1)
+elif variant == "missing-file":
+    text = text.replace(",docs/setup.md", "")
+elif variant in ("generic-claim", "missing-claim"):
+    claim = "claim=reviewed" if variant == "generic-claim" else ""
+    text = re.sub(r"claim=observed:[^ ]+", claim, text, count=1)
+elif variant == "stale-head":
+    text = re.sub(r"(?m)^Head SHA: .*", "Head SHA: " + "0" * 40, text)
+report.write_text(text, encoding="utf-8")
+PYCASE
+    if FM_HOME="$dir/home" "$SELF_REVIEW_CHECK" task-a no-mistakes > "$dir/$variant.out" 2> "$dir/$variant.err"; then
+      fail "overlapping-owner report accepted $variant evidence"
+    fi
+    grep -qF 'durable findings-first self-review report is unavailable or invalid' "$dir/$variant.err" \
+      || fail "$variant failed outside the report validator"
+  done
+  cp "$dir/valid-report.md" "$report"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/121 >/dev/null \
+    || fail "PR-ready path rejected overlapping owners with complete three-file coverage"
+  pass "overlapping owners retain maximum feasible file coverage, exact subject, inventory, and surface proofs"
+}
+
+test_pr_ready_rejects_irrelevant_surface_evidence_and_proves_owner_mutation() {
+  local dir report bad_security mutant mutant_rc rc
+  dir=$(make_case irrelevant-one-file-surface)
+  git -C "$dir/wt" reset --hard -q main
+  printf '%s\n' 'fixture' '# shared authority and delivery instructions' > "$dir/wt/AGENTS.md"
+  git -C "$dir/wt" add AGENTS.md
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm one-new-file
+  write_one_new_file_surface_report "$dir"
+  report="$dir/home/data/task-a/pr-self-review.md"
+  bad_security=$(surface_review_single_record_at_line Security security AGENTS.md 2 \
+    "$(self_review_line_digest "$dir" AGENTS.md)" "$(self_review_line_hex "$dir" AGENTS.md)" \
+    "$(surface_change_digest_for_file "$dir" AGENTS.md)")
+  python3 - "$report" "$bad_security" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+record = sys.argv[2]
+report.write_text(re.sub(r"(?m)^Security: .*", record, report.read_text(encoding="utf-8"), count=1), encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/120 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "PR-ready path accepted borrowed evidence from an irrelevant owner surface"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "irrelevant owner evidence left a runnable poll"
+
+  mutant="$dir/mutant-root"
+  mkdir -p "$mutant/bin"
+  cp "$ROOT/bin/fm-pr-self-review-check.sh" "$mutant/bin/fm-pr-self-review-check.sh"
+  cp "$ROOT/bin/fm-pr-lib.sh" "$mutant/bin/fm-pr-lib.sh"
+  python3 - "$mutant/bin/fm-pr-lib.sh" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+needle = '    fm_pr_review_surface_path_valid "$surface_name" "$evidence_file" || return 1\n'
+replacement = '    : # mutation: omit surface-owner validation\n'
+if needle not in text:
+    raise SystemExit("owner-validation seam not found")
+path.write_text(text.replace(needle, replacement, 1), encoding="utf-8")
+PY
+  set +e
+  FM_ROOT_OVERRIDE="$mutant" FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/home/state" FM_DATA_OVERRIDE="$dir/home/data" \
+    "$mutant/bin/fm-pr-self-review-check.sh" task-a no-mistakes >/dev/null 2> "$dir/mutant.err"
+  mutant_rc=$?
+  set -e
+  [ "$mutant_rc" -eq 0 ] || fail "owner-validation mutation did not expose the borrowed-evidence negative fixture: $(cat "$dir/mutant.err")"
+  pass "irrelevant owner evidence is rejected, and a source mutation demonstrates that the negative guard is load-bearing"
 }
 
 test_pr_ready_rejects_unrelated_small_diff_surface_evidence() {
@@ -3378,9 +3569,29 @@ test_gitlab_merged_poll_retires() {
   pass "GitHub and GitLab exact merged results share one retirement path"
 }
 
+if [ "${1:-}" = --overlapping-owners-only ]; then
+  test_pr_ready_overlapping_owner_coverage
+  exit 0
+fi
+
+if [ "${1:-}" = --self-review-only ]; then
+  test_pr_ready_requires_durable_self_review
+  test_pr_ready_tracks_production_surface_ownership
+  test_pr_ready_allows_one_new_file_multiple_surface_coverage
+  test_pr_ready_overlapping_owner_coverage
+  test_pr_ready_rejects_irrelevant_surface_evidence_and_proves_owner_mutation
+  test_pr_ready_rejects_unrelated_small_diff_surface_evidence
+  test_pr_ready_rejects_multiple_lines_from_one_hunk
+  test_pr_ready_requires_unaffected_scope_for_unrelated_surface_evidence
+  exit 0
+fi
+
 test_parser_matrix
 test_pr_ready_requires_durable_self_review
 test_pr_ready_tracks_production_surface_ownership
+test_pr_ready_allows_one_new_file_multiple_surface_coverage
+test_pr_ready_overlapping_owner_coverage
+test_pr_ready_rejects_irrelevant_surface_evidence_and_proves_owner_mutation
 test_pr_ready_rejects_unrelated_small_diff_surface_evidence
 test_pr_ready_rejects_multiple_lines_from_one_hunk
 test_pr_ready_requires_unaffected_scope_for_unrelated_surface_evidence
