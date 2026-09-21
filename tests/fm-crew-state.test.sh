@@ -1045,17 +1045,50 @@ test_unreadable_pane_ignores_stale_status_log() {
   local d; d=$(new_case dead-window)
   make_repo_on_branch "$d/wt" fm/feat-dead
   make_fakebin "$d" >/dev/null
-  write_crew_meta "$d/state/feat-dead.meta" "$d/wt" "kind=ship"
+  write_crew_meta "$d/state/feat-dead.meta" "$d/wt" "kind=ship" "harness=claude"
   printf 'done: old completion event\n' > "$d/state/feat-dead.status"
-  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_AXI_STATUS="$(zero_run_status)"
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_HERDR_UNREADABLE=1
+  arm_idle_record "$d/state" feat-dead
   local out; out=$(run_crew_state "$d" feat-dead)
+  assert_contains "$out" "backend target unreadable:" "zero-run evidence reaches the pane guard"
   assert_contains "$out" "state: unknown" "unreadable pane -> unknown"
   assert_contains "$out" "source: none" "unreadable pane -> none source"
   assert_not_contains "$out" "source: status-log" "unreadable pane does not reuse stale log"
   assert_contains "$out" "not proof of death" "capture failure must not prove departure"
+  FM_FAKE_HERDR_UNREADABLE=0
+  out=$(run_crew_state "$d" feat-dead)
+  assert_contains "$out" "state: done" "readable idle pane permits the status log"
+  assert_contains "$out" "source: status-log" "readable control reaches the log fallback"
   pass "unreadable pane ignores stale status log"
+}
+
+test_unreadable_pane_guard_mutation() {
+  local d
+  d=$(new_case unreadable-pane-mutation)
+  cp -R "$ROOT/bin" "$d/bin"
+  python3 - "$d/bin/fm-crew-state.sh" <<'PYMUTATION'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+needle = 'pane_readable "$BACKEND_TARGET" || emit unknown none "backend target unreadable: $BACKEND_TARGET (not proof of death)"'
+if text.count(needle) != 1:
+    raise SystemExit("pane readability mutation seam not found")
+path.write_text(text.replace(needle, ":", 1), encoding="utf-8")
+PYMUTATION
+  if (
+    TMP_ROOT="$d/cases"
+    CREW_STATE="$d/bin/fm-crew-state.sh"
+    test_unreadable_pane_ignores_stale_status_log
+  ) > "$d/mutation.out" 2> "$d/mutation.err"; then
+    fail "unreadable-pane regression survived removal of its guard"
+  fi
+  grep -qF 'zero-run evidence reaches the pane guard' "$d/mutation.err" \
+    || fail "pane mutation failed outside the named regression: $(cat "$d/mutation.err")"
+  pass "unreadable-pane regression detects removal of the pane guard"
 }
 
 # Failed capture must not mask an authoritative run-step after the endpoint's
@@ -1694,6 +1727,18 @@ outcome: passed"
   pass "crew-state preserves terminal severity summaries and refuses malformed evidence"
 }
 
+if [ "${1:-}" = --zero-run-only ]; then
+  test_no_run_busy_pane
+  test_no_run_idle_pane_uses_log
+  test_unreadable_pane_ignores_stale_status_log
+  test_unreadable_pane_guard_mutation
+  test_unreadable_pane_still_reports_terminal_run_step
+  test_unreadable_pane_still_reports_active_run_step
+  test_unreadable_validation_evidence_is_not_worded_as_death
+  test_zero_run_status_requires_exact_successful_native_shape
+  exit 0
+fi
+
 if [ "${1:-}" = --terminal-severity-only ]; then
   test_terminal_severity_summaries
   exit 0
@@ -1736,6 +1781,7 @@ test_no_run_idle_pane_paused
 test_no_run_idle_pane_custom_paused_verb
 test_no_run_idle_secondmate_resolved_event_not_state
 test_unreadable_pane_ignores_stale_status_log
+test_unreadable_pane_guard_mutation
 test_capability_failure_is_not_departure
 test_unreadable_pane_still_reports_terminal_run_step
 test_unreadable_pane_still_reports_active_run_step

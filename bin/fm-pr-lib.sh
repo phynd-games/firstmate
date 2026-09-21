@@ -671,7 +671,7 @@ EOF
   case "$base_ref" in
     ''|[-.]*|*..*|*@\{*|*[!A-Za-z0-9._/-]*) return 1 ;;
   esac
-  local actual_repository actual_head resolved_base actual_merge_base actual_changed_files actual_changed_paths actual_changed_path_count
+  local actual_repository actual_head resolved_base actual_merge_base actual_changed_files actual_changed_paths
   actual_repository=$(cd "$worktree" && pwd -P) || return 1
   actual_head=$(git -C "$worktree" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1
   [ "$target_repository" = "$actual_repository" ] || return 1
@@ -692,7 +692,6 @@ EOF
       done
   ) || return 1
   [ -n "$actual_changed_paths" ] || return 1
-  actual_changed_path_count=$(printf '%s\n' "$actual_changed_paths" | awk 'NF { count++ } END { print count + 0 }') || return 1
   [ -z "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] || return 1
   [ -z "$(git -C "$substrate_root" status --porcelain 2>/dev/null)" ] || return 1
   fm_pr_review_path_syntax_valid() {
@@ -1214,19 +1213,41 @@ EOF
     [ "$actual_change_hash" = "$evidence_change_hash" ] || return 1
     [ "$actual_line_hex" = "$evidence_line_hex" ] || return 1
   done < <(awk '/^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): / { print }' "$report")
-  local unique_surface_evidence_count required_surface_evidence_count applicable_surface_count
+  local unique_surface_evidence_count required_surface_evidence_count
   unique_surface_evidence_count=$(printf '%s\n' "$surface_evidence_files" | LC_ALL=C sort -u | awk 'NF { count++ } END { print count + 0 }') || return 1
-  applicable_surface_count=$(printf '%s\n' authority security path failure tests documentation delivery | while IFS= read -r surface_name; do
-    fm_pr_review_surface_has_relevant_changed_path "$surface_name" && printf '%s\n' 1
-  done | awk '{ count += $1 } END { print count + 0 }') || return 1
-  required_surface_evidence_count=$applicable_surface_count
-  [ "$required_surface_evidence_count" -le "$actual_changed_path_count" ] || required_surface_evidence_count=$actual_changed_path_count
-  # Each applicable surface has already supplied independently bound line,
-  # hunk, owner, transition, and behavior evidence above. A single real diff
-  # hunk may truthfully serve multiple applicable owner surfaces, especially
-  # for a genuinely new file, so coverage is bounded by changed paths rather
-  # than requiring physically distinct hunks.
-  [ "$required_surface_evidence_count" -le 7 ] || required_surface_evidence_count=7
+  required_surface_evidence_count=$(
+    set -o pipefail
+    while IFS= read -r changed_path || [ -n "$changed_path" ]; do
+      fm_pr_review_path_syntax_valid "$changed_path" || exit 1
+      for surface_name in authority security path failure tests documentation delivery; do
+        if fm_pr_review_surface_owner_path_valid "$surface_name" "$FM_PR_REVIEW_PATH"; then
+          printf '%s %s\n' "$surface_name" "$changed_path"
+        fi
+      done
+    done <<EOF |
+$actual_changed_paths
+EOF
+      awk '
+        function assign(surface, i, path) {
+          for (i = 1; i <= count[surface]; i++) {
+            path = candidates[surface, i]
+            if (seen[path] == round) continue
+            seen[path] = round
+            if (!(path in owner) || assign(owner[path])) {
+              owner[path] = surface
+              return 1
+            }
+          }
+          return 0
+        }
+        { candidates[$1, ++count[$1]] = $2 }
+        END {
+          n = split("authority security path failure tests documentation delivery", surfaces, " ")
+          for (round = 1; round <= n; round++) matched += assign(surfaces[round])
+          print matched + 0
+        }
+      '
+  ) || return 1
   [ "$unique_surface_evidence_count" -ge "$required_surface_evidence_count" ] || return 1
   local actual_substrate_head actual_substrate_changed empty_digest
   actual_substrate_head=$(git -C "$substrate_root" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1
