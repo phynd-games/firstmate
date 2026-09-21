@@ -137,6 +137,39 @@ hold_source_lock_then_handle() {  # <home> <source-id> <sequence> <ready-file> <
   HOLDER_PID=$!
 }
 
+test_concurrent_stale_claim_replacement() {
+HR="$TMP_ROOT/hr"; new_home "$HR"
+RACE_TRIGGER="$TMP_ROOT/race-trigger"
+RACE_LOG="$TMP_ROOT/race-executions"
+RACE_BLOCKER="$TMP_ROOT/race-blocker.sh"
+cat > "$RACE_BLOCKER" <<'SH'
+#!/usr/bin/env bash
+printf 'started\n' >> "$1"
+while [ ! -e "$2" ]; do sleep 0.05; done
+printf 'race result\n'
+SH
+chmod +x "$RACE_BLOCKER"
+pe_register "$HR" lavish race-src -- "$RACE_BLOCKER" "$RACE_LOG" "$RACE_TRIGGER" >/dev/null
+printf '%s\n%s\nold-token\nold-identity\n' "$TMP_ROOT/gone-home" 999999 > "$FM_PROCEVENT_CLAIM_ROOT/race-src.claim"
+chmod 0600 "$FM_PROCEVENT_CLAIM_ROOT/race-src.claim"
+race_pids=()
+for _ in $(seq 1 24); do
+  pe "$HR" start race-src >/dev/null &
+  race_pids+=("$!")
+done
+wait_for "$RACE_LOG" || fail "no contender acquired the stale claim"
+sleep 0.5
+[ "$(wc -l < "$RACE_LOG" | tr -d ' ')" = 1 ] || fail "stale-claim race started more than one runner"
+: > "$RACE_TRIGGER"
+for race_pid in "${race_pids[@]}"; do wait "$race_pid" 2>/dev/null || true; done
+pass "concurrent stale-claim replacement starts exactly one runner"
+}
+
+if [ "${1:-}" = launch-concurrency ]; then
+  test_concurrent_stale_claim_replacement
+  exit 0
+fi
+
 # --- inert with nothing configured ------------------------------------------
 IDLE="$TMP_ROOT/idle"; new_home "$IDLE"
 out=$(pe "$IDLE" list)
@@ -1013,7 +1046,7 @@ TRIG4="$TMP_ROOT/trigger-four"
 HZ="$TMP_ROOT/hz"; new_home "$HZ"
 pe_register "$HZ" lavish orphan-src -- "$BLOCKER" "$TRIG4" "orphan" >/dev/null
 pe "$HZ" reconcile >/dev/null
-sleep 0.5
+wait_for "$FM_PROCEVENT_CLAIM_ROOT/orphan-src.claim" || fail "orphan fixture runner did not claim its source"
 orphan_pid=$(sed -n '2p' "$FM_PROCEVENT_CLAIM_ROOT/orphan-src.claim" 2>/dev/null)
 if [ -z "$orphan_pid" ] || ! kill -0 "$orphan_pid" 2>/dev/null; then
   fail "orphan fixture runner did not start"
@@ -1055,31 +1088,7 @@ assert_contains "$out" "captured:" "a second home can replace a stale source own
 assert_absent "$HC_OLD_STATE/procevent/.cross-home-src.cross-home-token.output" "cross-home reclaim removes the old generation's recorded staging file"
 pass "cross-home stale recovery removes abandoned output from the old state directory"
 
-HR="$TMP_ROOT/hr"; new_home "$HR"
-RACE_TRIGGER="$TMP_ROOT/race-trigger"
-RACE_LOG="$TMP_ROOT/race-executions"
-RACE_BLOCKER="$TMP_ROOT/race-blocker.sh"
-cat > "$RACE_BLOCKER" <<'SH'
-#!/usr/bin/env bash
-printf 'started\n' >> "$1"
-while [ ! -e "$2" ]; do sleep 0.05; done
-printf 'race result\n'
-SH
-chmod +x "$RACE_BLOCKER"
-pe_register "$HR" lavish race-src -- "$RACE_BLOCKER" "$RACE_LOG" "$RACE_TRIGGER" >/dev/null
-printf '%s\n%s\nold-token\nold-identity\n' "$TMP_ROOT/gone-home" 999999 > "$FM_PROCEVENT_CLAIM_ROOT/race-src.claim"
-chmod 0600 "$FM_PROCEVENT_CLAIM_ROOT/race-src.claim"
-race_pids=()
-for _ in $(seq 1 24); do
-  pe "$HR" start race-src >/dev/null &
-  race_pids+=("$!")
-done
-wait_for "$RACE_LOG" || fail "no contender acquired the stale claim"
-sleep 0.5
-[ "$(wc -l < "$RACE_LOG" | tr -d ' ')" = 1 ] || fail "stale-claim race started more than one runner"
-: > "$RACE_TRIGGER"
-for race_pid in "${race_pids[@]}"; do wait "$race_pid" 2>/dev/null || true; done
-pass "concurrent stale-claim replacement starts exactly one runner"
+test_concurrent_stale_claim_replacement
 
 # --- a crashed runner leader must not make its live child group look stale ---
 # The runner is its own process group leader, so SIGKILL on the leader alone

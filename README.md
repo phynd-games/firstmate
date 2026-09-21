@@ -27,6 +27,7 @@ Read that repository's root `AGENTS.md` and the most specific app guidance befor
 - macOS or Linux.
 - Git and authenticated GitHub CLI access.
 - Node.js and npm.
+- `python3` on `PATH` for controlled launches ([launch records](docs/launch-records.md)).
 - Docker or another supported Sandcastle sandbox provider.
 
 ### Install and launch

@@ -15,14 +15,31 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=bin/fm-wake-lib.sh disable=SC1091
+FM_WAKE_LIB_NO_STATE_MKDIR=1 . "$ROOT/bin/fm-wake-lib.sh"
 
 READER="$ROOT/bin/fm-docs-reader.sh"
 TMP_ROOT=$(fm_test_tmproot fm-docs-reader)
 
 # new_home runs inside $(...), so it cannot append to an array in this shell;
 # cleanup instead stops every reader whose record lives under TMP_ROOT.
+RECOVERY_PID=
+RECOVERY_IDENTITY=
+BOOTSTRAP_RELEASE=
+BYSTANDER_PID=
+BYSTANDER_IDENTITY=
 cleanup() {
   local record home
+  if [ -n "$BYSTANDER_PID" ] && [ -n "$BYSTANDER_IDENTITY" ] \
+    && [ "$(fm_pid_identity "$BYSTANDER_PID" 2>/dev/null)" = "$BYSTANDER_IDENTITY" ]; then
+    kill "$BYSTANDER_PID" 2>/dev/null || true
+    wait "$BYSTANDER_PID" 2>/dev/null || true
+  fi
+  [ -z "$BOOTSTRAP_RELEASE" ] || : > "$BOOTSTRAP_RELEASE"
+  if [ -n "$RECOVERY_PID" ] && [ -n "$RECOVERY_IDENTITY" ] \
+    && [ "$(fm_pid_identity "$RECOVERY_PID" 2>/dev/null)" = "$RECOVERY_IDENTITY" ]; then
+    kill "$RECOVERY_PID" 2>/dev/null || true
+  fi
   for record in "$TMP_ROOT"/*/state/.docs-reader; do
     [ -f "$record" ] || continue
     home=${record%/state/.docs-reader}
@@ -598,6 +615,280 @@ test_ensure_converges_theme_on_live_reader() {
   pass "ensure converges a changed theme override into the running reader without a restart"
 }
 
+# The reader's launch record (bin/fm-launch-record.py) and identity binding:
+# intent is on disk before the server process exists, the owner record carries
+# the process's start identity and the launch record its digest, readiness is
+# the token probe, stop and an observed death are recorded, a legacy record
+# without identity is upgraded from the token probe rather than trusted, and a
+# recycled pid carrying another identity is never signaled.
+test_launch_record_and_identity_binding() {
+  local home base pid identity recorded wrap="$TMP_ROOT/wrap-observe" real_python first sleeper line
+  home=$(new_home launch-record)
+  real_python=$(command -v python3)
+  mkdir -p "$wrap"
+  cat > "$wrap/python3" <<'SH'
+#!/usr/bin/env bash
+# Observe, at every launch-record call, whether this home's mkdocs already runs.
+running=no
+pgrep -f "fm-docs-reader-serve.py.*${FM_TEST_OBSERVE_CONFIG:?}" >/dev/null 2>&1 && running=yes
+for a in "$@"; do
+  case "$a" in intend|created|ready|stop|exit) printf '%s mkdocs_running=%s\n' "$a" "$running" >> "${FM_TEST_OBSERVE_LOG:?}"; break ;; esac
+done
+exec "${FM_TEST_REAL_PYTHON:?}" "$@"
+SH
+  chmod +x "$wrap/python3"
+  : > "$home/observe.log"
+  base=$(FM_TEST_OBSERVE_CONFIG="$home/state/docs-reader/mkdocs.yml" FM_TEST_OBSERVE_LOG="$home/observe.log" \
+    FM_TEST_REAL_PYTHON="$real_python" FM_LAUNCH_RECORD_PYTHON="$wrap/python3" ensure_url "$home")
+  grep -q '^intend mkdocs_running=no$' "$home/observe.log" || fail "the intent must be recorded before the reader process exists: $(cat "$home/observe.log")"
+  grep -q '^ready mkdocs_running=yes$' "$home/observe.log" || fail "readiness must be recorded while the reader runs (positive control): $(cat "$home/observe.log")"
+  pid=$(awk -F= '$1 == "pid" {print $2}' "$home/state/.docs-reader")
+  recorded=$(awk -F= '$1 == "pid_identity" {sub(/^[^=]*=/, ""); print}' "$home/state/.docs-reader")
+  identity=$(fm_pid_identity "$pid")
+  [ -n "$recorded" ] || fail "the owner record must carry the reader's start identity"
+  [ "$recorded" = "$identity" ] || fail "the recorded identity must equal fm_pid_identity of the reader pid"
+  launch() { python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" get --helper docs-reader "$1" 2>/dev/null; }
+  [ "$(launch launch.phase)" = ready ] || fail "the launch record must read ready, got '$(launch launch.phase)'"
+  [ "$(launch launch.identity.pid)" = "$pid" ] || fail "the launch record must bind the reader pid"
+  [ "$(launch launch.readiness.source)" = loopback-token-probe ] || fail "readiness must come from the token probe"
+  grep -q "$(printf '%s' "$identity" | cut -c1-24)" "$home/state/.launch-docs-reader" && fail "the launch record must hold only a digest of the identity"
+  [ "$(launch launch.identity.pid_identity_sha256)" = "$(printf '%s' "$identity" | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode()).hexdigest())')" ] \
+    || fail "the launch record digest must be the sha256 of the recorded identity"
+  first=$(launch launch.id)
+  # A deliberate stop.
+  reader "$home" stop >/dev/null || fail "stop failed"
+  [ "$(launch launch.phase)" = stopped ] || fail "stop must record stopped, got '$(launch launch.phase)'"
+  kill -0 "$pid" 2>/dev/null && fail "stop must end the reader"
+  # A reader that died: the next ensure records the observed exit and a new launch.
+  base=$(ensure_url "$home")
+  pid=$(awk -F= '$1 == "pid" {print $2}' "$home/state/.docs-reader")
+  kill "$pid"
+  wait_until 10 sh -c "! kill -0 $pid 2>/dev/null" || fail "could not end the reader for the exit case"
+  base=$(ensure_url "$home")
+  python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" show --helper docs-reader | grep -q 'previous launch=.* phase=exited' \
+    || fail "a dead reader must be recorded as an observed exit before its replacement"
+  [ "$(launch launch.phase)" = ready ] || fail "the replacement must read ready"
+  # A legacy owner record without identity, naming the live reader: ensure
+  # upgrades it from the token probe instead of starting a second server.
+  pid=$(awk -F= '$1 == "pid" {print $2}' "$home/state/.docs-reader")
+  sed -i.bak '/^pid_identity=/d' "$home/state/.docs-reader" && rm -f "$home/state/.docs-reader.bak"
+  [ "$(ensure_url "$home")" = "$base" ] || fail "a legacy record for the live reader must keep the URL"
+  [ "$(awk -F= '$1 == "pid" {print $2}' "$home/state/.docs-reader")" = "$pid" ] || fail "a legacy record must be adopted, not replaced by a second server"
+  [ "$(awk -F= '$1 == "pid_identity" {sub(/^[^=]*=/, ""); print}' "$home/state/.docs-reader")" = "$(fm_pid_identity "$pid")" ] || fail "the adopted record must gain the live reader's identity"
+  # A recycled pid: a live process with the recorded pid but another start
+  # identity is never signaled, and the record is forgotten.
+  reader "$home" stop >/dev/null || fail "stop failed"
+  sleep 300 &
+  sleeper=$!
+  printf 'pid=%s\npid_identity=%s\nport=1\nurl=http://127.0.0.1:1/\nhome=%s\nconfig=%s\npython=%s\nstarted=0\n' \
+    "$sleeper" "some other process identity" "$(cd -P "$home" && pwd -P)" "$home/state/docs-reader/mkdocs.yml" "$FM_DOCS_READER_PYTHON" \
+    > "$home/state/.docs-reader"
+  line=$(reader "$home" stop)
+  kill -0 "$sleeper" 2>/dev/null || fail "stop signaled a recycled pid whose identity does not match: $line"
+  assert_contains "$line" "process untouched" "stop must leave a non-matching identity alone: $line"
+  [ ! -e "$home/state/.docs-reader" ] || fail "the non-matching record must be dropped"
+  kill "$sleeper" 2>/dev/null || true
+  pass "the reader records intent before its process, binds pid plus start identity, and records stop and observed exit"
+}
+
+test_delayed_exec_records_serving_identity() {
+  local home wrapper reader_job pid before current recorded digest base out real_nohup real_lsof
+  home=$(new_home delayed-exec)
+  wrapper="$home/wrapper"
+  mkdir -p "$wrapper"
+  cat > "$wrapper/nohup" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$$" > "$FM_TEST_READER_STARTED"
+while [ ! -e "$FM_TEST_READER_RELEASE" ]; do sleep 0.05; done
+exec "$FM_TEST_REAL_NOHUP" "$@"
+SH
+  cat > "$wrapper/lsof" <<'SH'
+#!/usr/bin/env bash
+[ ! -e "$FM_TEST_READER_STARTED" ] || : > "$FM_TEST_READER_PROBED"
+exec "$FM_TEST_REAL_LSOF" "$@"
+SH
+  chmod +x "$wrapper/nohup" "$wrapper/lsof"
+  real_nohup=$(command -v nohup)
+  real_lsof=$(command -v lsof)
+  PATH="$wrapper:$PATH" FM_TEST_REAL_NOHUP="$real_nohup" FM_TEST_REAL_LSOF="$real_lsof" \
+    FM_TEST_READER_STARTED="$home/started" FM_TEST_READER_RELEASE="$home/release" FM_TEST_READER_PROBED="$home/probed" \
+    reader "$home" ensure > "$home/ensure.out" 2>&1 &
+  reader_job=$!
+  wait_until 15 test -s "$home/started" || fail "the delayed reader did not fork"
+  pid=$(cat "$home/started")
+  before=$(fm_pid_identity "$pid")
+  RECOVERY_PID=$pid
+  RECOVERY_IDENTITY=$before
+  wait_until 15 test -e "$home/probed" || fail "ensure never probed the delayed reader"
+  [ ! -e "$home/state/.docs-reader" ] || fail "ownership was published before the server executed"
+  : > "$home/release"
+  wait "$reader_job" || fail "ensure failed after exec: $(cat "$home/ensure.out")"
+  current=$(fm_pid_identity "$pid")
+  RECOVERY_IDENTITY=$current
+  [ "$current" != "$before" ] || fail "the fixture did not change process identity at exec"
+  recorded=$(awk -F= '$1 == "pid_identity" {sub(/^[^=]*=/, ""); print}' "$home/state/.docs-reader")
+  [ "$recorded" = "$current" ] || fail "ownership retained the pre-exec identity"
+  digest=$(printf '%s' "$current" | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())')
+  [ "$(python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" get --helper docs-reader launch.identity.pid_identity_sha256)" = "$digest" ] \
+    || fail "the launch record retained the pre-exec identity"
+  base=$(ensure_url "$home")
+  assert_contains "$(cat "$home/ensure.out")" "$base" "ensure must reuse the serving reader"
+  reader "$home" status >/dev/null || fail "the new reader is not verifiably owned"
+  out=$(reader "$home" stop) || fail "stop failed"
+  assert_contains "$out" "stopped pid $pid" "stop did not recognize the serving identity"
+  fm_pid_alive "$pid" && fail "stop left the serving reader alive"
+  pass "reader binds its post-exec listening process and stops it by that identity"
+}
+
+test_interruption_before_reader_ready() {
+  local mode home wrapper reader_job pid parent port first out rc
+  for mode in adopt stop; do
+    home=$(new_home "bootstrap-$mode")
+    wrapper="$home/record-wrapper"
+    cat > "$wrapper" <<'SH'
+#!/usr/bin/env bash
+"$FM_TEST_REAL_PYTHON" "$@" || exit "$?"
+for arg in "$@"; do
+  if [ "$arg" = created ]; then
+    : > "$FM_TEST_CREATED"
+    while [ ! -e "$FM_TEST_RELEASE" ]; do sleep 0.05; done
+    : > "$FM_TEST_FINISHED"
+  fi
+done
+SH
+    chmod +x "$wrapper"
+    BOOTSTRAP_RELEASE="$home/release"
+    FM_TEST_REAL_PYTHON="$(command -v python3)" FM_TEST_CREATED="$home/created" \
+      FM_TEST_RELEASE="$home/release" FM_TEST_FINISHED="$home/finished" FM_LAUNCH_RECORD_PYTHON="$wrapper" \
+      reader "$home" ensure > "$home/ensure.out" 2>&1 &
+    reader_job=$!
+    wait_until 15 test -e "$home/created" || fail "the server did not publish identity before startup"
+    bootstrap_record() { python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" get --helper docs-reader "$1"; }
+    [ "$(bootstrap_record launch.phase)" = created ] || fail "the pre-readiness launch lacks identity"
+    pid=$(bootstrap_record launch.identity.pid)
+    port=$(bootstrap_record launch.identity.port)
+    first=$(bootstrap_record launch.id)
+    RECOVERY_PID=$pid
+    RECOVERY_IDENTITY=$(fm_pid_identity "$pid")
+    parent=$(ps -o ppid= -p "$pid" | tr -d '[:space:]')
+    [ -n "$parent" ] && [ "$parent" != 1 ] || fail "the reader has no waiting launcher"
+    kill -KILL "$parent"
+    wait "$reader_job" 2>/dev/null || true
+    [ ! -e "$home/state/.docs-reader" ] || fail "the interrupted wait published ownership"
+    if [ "$mode" = adopt ]; then
+      reader "$home" ensure > "$home/retry.out" 2>&1 && fail "an unready live reader allowed another start"
+      [ "$(bootstrap_record launch.id)" = "$first" ] || fail "retry replaced the startup launch"
+      : > "$home/release"
+      wait_until 30 body_has "http://127.0.0.1:$port/" 'name="fm-docs-home"' || fail "the reader did not finish startup"
+      [ "$(ensure_url "$home")" = "http://127.0.0.1:$port/" ] || fail "the healthy reader could not be recovered"
+      [ "$(bootstrap_record launch.id)" = "$first" ] || fail "adoption replaced the launch"
+      [ "$(bootstrap_record launch.phase)" = ready ] || fail "recovery did not record readiness"
+    fi
+    out=$(reader "$home" stop)
+    rc=$?
+    : > "$home/release"
+    [ "$rc" -eq 0 ] || fail "the interrupted reader could not be stopped"
+    assert_contains "$out" "stopped pid $pid" "stop did not recover the exact launch identity"
+    fm_pid_alive "$pid" && fail "stop left the interrupted reader alive"
+    wait_until 10 test -e "$home/finished" || fail "the fixture record writer did not finish"
+    BOOTSTRAP_RELEASE=
+  done
+  pass "reader identity precedes readiness and survives launcher interruption for adoption and stop"
+}
+
+test_adopt_interrupted_launch() {
+  local home out rc pid port id original identity digest
+  home=$(new_home interrupted-launch)
+  original=$(ensure_url "$home")
+  recovery_record() { python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" get --helper docs-reader "$1"; }
+  pid=$(recovery_record launch.identity.pid)
+  port=$(recovery_record launch.identity.port)
+  identity=$(fm_pid_identity "$pid")
+  RECOVERY_PID=$pid
+  RECOVERY_IDENTITY=$identity
+  digest=$(printf '%s' "$identity" | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8","surrogateescape")).hexdigest())')
+  python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" reconcile --helper docs-reader --current \
+    --verdict manual --evidence "fixture listener pid $pid verified on port $port" >/dev/null || fail "could not prepare the recovery fixture"
+  python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" intend --helper docs-reader \
+    --owner fm-docs-reader.sh --origin adopt --field port="$port" >/dev/null || fail "could not seed the interrupted intent"
+  id=$(recovery_record launch.id)
+  python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" created --helper docs-reader --launch "$id" \
+    --identity-source process --identity pid="$pid" --identity port="$port" \
+    --identity pid_identity_sha256="$digest" >/dev/null || fail "could not bind the verified listener"
+  rm "$home/state/.docs-reader"
+  [ "$(recovery_record launch.phase)" = created ] || fail "the fixture must retain a created launch"
+  cp "$home/state/.launch-docs-reader" "$home/launch-before"
+  python3 - "$home/state/.launch-docs-reader" <<'PYTEST'
+import json, sys
+path = sys.argv[1]
+with open(path) as stream:
+    record = json.load(stream)
+record['launch']['identity']['pid_identity_sha256'] = '0' * 64
+with open(path, 'w') as stream:
+    json.dump(record, stream)
+PYTEST
+  out=$(reader "$home" ensure 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "a different process identity was adopted"
+  assert_contains "$out" "verified listener does not match the open launch" "adoption must refuse an identity mismatch"
+  [ ! -e "$home/state/.docs-reader" ] || fail "a mismatched listener gained an owner record"
+  fm_pid_alive "$pid" || fail "the mismatched listener was stopped"
+  mv "$home/launch-before" "$home/state/.launch-docs-reader"
+  [ "$(ensure_url "$home")" = "$original" ] || fail "ensure did not adopt the interrupted reader"
+  [ "$(recovery_record launch.id)" = "$id" ] || fail "adoption minted another launch"
+  [ "$(recovery_record launch.phase)" = ready ] || fail "adoption did not record readiness"
+  [ "$(recovery_record launch.readiness.source)" = loopback-token-probe ] || fail "adoption readiness lacks its native source"
+  [ "$(awk -F= '$1 == "pid" {print $2}' "$home/state/.docs-reader")" = "$pid" ] || fail "adoption changed the reader pid"
+  [ "$(awk -F= '$1 == "pid_identity" {sub(/^[^=]*=/, ""); print}' "$home/state/.docs-reader")" = "$identity" ] || fail "adoption did not restore the operational identity"
+  rm "$home/state/.docs-reader"
+  [ "$(ensure_url "$home")" = "$original" ] || fail "a ready launch could not recover its lost owner record"
+  [ "$(recovery_record launch.id)" = "$id" ] || fail "ready adoption minted another launch"
+  reader "$home" stop >/dev/null || fail "the recovered reader could not be stopped"
+  [ "$(recovery_record launch.phase)" = stopped ] || fail "stop did not settle the recovered launch"
+  fm_pid_alive "$pid" && fail "the recovered reader is still alive after stop"
+  pass "reader adopts its interrupted matching launch and restores identity-bound stop"
+}
+
+test_legacy_adoption_requires_the_listening_pid() {
+  local home base pid first out fakebin
+  home=$(new_home legacy-listener)
+  base=$(ensure_url "$home")
+  pid=$(awk -F= '$1 == "pid" {print $2}' "$home/state/.docs-reader")
+  first=$(python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" get --helper docs-reader launch.id)
+  sleep 300 &
+  BYSTANDER_PID=$!
+  BYSTANDER_IDENTITY=$(fm_pid_identity "$BYSTANDER_PID")
+  awk -F= -v pid="$BYSTANDER_PID" '$1 == "pid_identity" {next} $1 == "pid" {print "pid=" pid; next} {print}' \
+    "$home/state/.docs-reader" > "$home/state/legacy-owner"
+  mv "$home/state/legacy-owner" "$home/state/.docs-reader"
+  fakebin="$home/no-listener-proof"
+  mkdir "$fakebin"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$fakebin/lsof"
+  chmod +x "$fakebin/lsof"
+  PATH="$fakebin:$PATH" reader "$home" ensure > "$home/unproved.out" 2>&1 && fail "adoption succeeded without socket ownership proof"
+  [ "$(python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" get --helper docs-reader launch.id)" = "$first" ] || fail "unproved adoption replaced the open launch"
+  [ "$(python3 "$ROOT/bin/fm-launch-record.py" --state "$home/state" get --helper docs-reader launch.phase)" = ready ] || fail "a stale legacy PID settled the live reader"
+  [ "$(ensure_url "$home")" = "$base" ] || fail "the verified listener was not recovered"
+  [ "$(awk -F= '$1 == "pid" {print $2}' "$home/state/.docs-reader")" = "$pid" ] || fail "legacy adoption bound the bystander PID"
+  out=$(reader "$home" stop) || fail "the recovered listener did not stop"
+  assert_contains "$out" "stopped pid $pid" "stop must target the verified reader"
+  [ "$(fm_pid_identity "$BYSTANDER_PID")" = "$BYSTANDER_IDENTITY" ] || fail "reader ownership signaled the bystander"
+  kill "$BYSTANDER_PID"
+  wait "$BYSTANDER_PID" 2>/dev/null || true
+  BYSTANDER_PID=
+  BYSTANDER_IDENTITY=
+  pass "legacy adoption requires exact socket ownership and preserves unrelated processes"
+}
+
+if [ "${1:-}" = launch-recovery ]; then
+  test_delayed_exec_records_serving_identity
+  test_interruption_before_reader_ready
+  test_launch_record_and_identity_binding
+  test_adopt_interrupted_launch
+  test_legacy_adoption_requires_the_listening_pid
+  exit 0
+fi
+
 test_url_helper_path_safety
 test_active_content_is_inert
 test_serves_only_markdown_and_images
@@ -608,4 +899,9 @@ test_no_writes_into_data_and_source_unchanged
 test_disabled_paths_print_no_url
 test_navigation_scales_with_inventory
 test_ensure_converges_theme_on_live_reader
+test_launch_record_and_identity_binding
+test_delayed_exec_records_serving_identity
+test_interruption_before_reader_ready
+test_adopt_interrupted_launch
+test_legacy_adoption_requires_the_listening_pid
 test_install_from_pinned_requirements

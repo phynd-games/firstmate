@@ -208,7 +208,8 @@ Do not hand off `local-only` items.
 
 ## Recovery
 
-For local `kind=secondmate` meta with no window, treat the secondmate as a dead persistent direct report and respawn it with:
+Before recovering a local secondmate, inspect its launch record under the [launch settlement boundary](../../../docs/launch-records.md#what-the-obligation-does).
+For local `kind=secondmate` meta with no window, use the ordinary spawn owner to reconcile the prior attempt before respawning:
 
 ```sh
 bin/fm-spawn.sh <id> --secondmate

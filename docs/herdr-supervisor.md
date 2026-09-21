@@ -104,7 +104,8 @@ Recovery is bounded, idempotent, and generation-safe.
 | Supervisor wedged but alive | Its heartbeat goes stale and it reads unhealthy, even though the process and pane still check out |
 | Herdr pane closed or moved | The pane binding stops matching and it reads unhealthy |
 | Primary harness session replaced | Nothing happens; the supervisor is not bound to that process |
-| Herdr server or session replaced | The old binding is retained as generation-named quarantine evidence without closing through the new server; once the named server is available again, `ensure` can establish a fresh generation |
+| Herdr server or session replaced | The old binding is retired automatically only when four facts all hold: the recorded loop process is dead, its pid was recycled, or the loop cleared its own live record; the recorded socket inode is gone from its path; the replacement server's readable workspace inventory excludes the recorded workspace; and its native pane lookup proves the recorded pane absent; the retired binding is kept as `.herdr-supervisor-quarantine.<generation>` evidence and nothing is closed through the new server; any missing fact keeps the binding quarantined in place and refuses replacement with that fact named |
+| Incomplete create response | The pending generation retains every returned identity and blocks replacement until explicit manual settlement for that same generation after native inspection |
 | Duplicate arm | Only the generation the binding record names may arm; every other generation stands down |
 | Rapid repeated cycles | Identical rapid cycles receive the floor delay before re-arming and create at most one durable alarm per episode, never a stop |
 | Retire or replacement signal while the loop sleeps | The loop's idle, floor, and backoff sleeps run in a child it waits on, allowing the termination trap to end that child without waiting for the sleep to finish; verified arm retirement still gates the loop's exit |
@@ -138,8 +139,8 @@ Not guaranteed, and deliberately not promised:
 
 - **Recovery across a dead Herdr server or host.**
   The supervisor's host pane dies with them, and so does the monitor's ability to rebuild one until a server is running again.
-  The gap is detected at the next `ensure`, which finds the socket changed or the pane gone, reports unhealthy, and establishes a new generation.
-  The external prerequisite is therefore a live Herdr server; everything above that line is now covered by the monitor rather than by session start.
+  The gap is detected at the next `ensure`; a generation is settled automatically only from the four facts in the recovery table above, and a changed or unprovable server identity otherwise retains the prior binding and blocks replacement.
+  A running server alone is insufficient to authorize replacing an unresolved generation.
 - **Notification latency into a harness session this process does not own.**
   The supervisor restores continuity and durability, not delivery.
   It never calls `--handling-delivered`, because it cannot deliver a wake to the model.
@@ -193,7 +194,7 @@ Tuning environment variables, all optional, are named in the script header: hear
 
 All under `state/`, all private to the home.
 
-- `.herdr-supervisor` - the binding: generation, home, Herdr session, canonical socket and socket-instance identity, workspace, tab, pane, and active or quarantine mode.
+- `.herdr-supervisor` - the binding: generation, home, Herdr session, canonical socket and socket-instance identity, workspace, tab, pane, terminal, and active or quarantine mode.
   Written only by `ensure` and `retire`.
 - `.herdr-supervisor-live` - the loop's own generation, pid, and process identity.
   Written only by the loop.
@@ -203,10 +204,11 @@ All under `state/`, all private to the home.
 - `.herdr-supervisor-heartbeat` - the supervisor's liveness beacon, refreshed every pass and while the arm child is waiting.
 - `.herdr-supervisor-monitor`, `.herdr-supervisor-monitor.lock`, `.herdr-supervisor-monitor-heartbeat` - the monitor's own record, singleton lock, and beacon.
   The record carries its pid, its `fm_pid_identity`, and the home session it is bound to, so a recycled pid can never read as a live monitor.
-- `.herdr-supervisor-pending-cleanup` - an exact session, socket, workspace, tab, and pane receipt retained across uncertain establish or retirement cleanup.
+- `.herdr-supervisor-pending-cleanup` - the required intent written before workspace creation, then augmented with the returned workspace, tab, pane, and terminal identity for cleanup on the recorded session and socket.
   It is written before the native close on purpose: when the loop retires itself from inside the pane it hosts, closing that workspace ends the loop before the `closed` record lands, and the receipt is what lets the next `retire` or `ensure` finish the bookkeeping against the same verified server.
-- `.herdr-supervisor-quarantine.<generation>` - an exact old binding retained when the recorded Herdr server or pane identity can no longer be proven safe to close.
-- `.herdr-supervisor-quarantine.pending.<generation>` - an incomplete create receipt retained when bounded visibility reconciliation cannot prove that Herdr created nothing.
+- `.herdr-supervisor-cleaned.<generation>` - confirmed native cleanup evidence retained until the matching launch projection records its terminal outcome.
+  A projection failure does not block native continuity or authorize cleanup of an unresolved endpoint; ensure retries the projection using this receipt, without repeating native cleanup.
+- `.herdr-supervisor-quarantine.<generation>` and `.herdr-supervisor-quarantine.pending.<generation>` - retained historical evidence, including a binding retired as `mode=retired` after the proved-gone server facts; current unresolved bindings and incomplete creates stay in the binding or pending-cleanup record and block replacement.
 - `.herdr-supervisor-alarm` - the latest durable actionable diagnostic, retained until three consecutive successful non-rapid cycles prove stability.
 - `.herdr-supervisor-rapid-episode` - the durable marker preventing repeated rapid-cycle alarms in one episode.
 - `.herdr-supervisor-claim-alarm`, `.herdr-supervisor-claim-episode`, `.herdr-supervisor-claim-episode.*`, `.herdr-supervisor-claim-alarm.lock`, `.herdr-supervisor-claim-observation.lock` - private claim-episode bookkeeping for the recovery policy above.
@@ -217,6 +219,12 @@ All under `state/`, all private to the home.
 - An arm whose process identity cannot be confirmed remains a tracked blocked child after bounded termination attempts, with durable escalation until that child exits safely.
 - `.herdr-supervisor.log` - a bounded lifecycle ledger.
   Diagnostic evidence only, written best-effort, and never read as authority for any decision, so an observability failure cannot stall supervision.
+- `.launch-herdr-supervisor` - a projection into the fleet-wide [launch record](launch-records.md) view of the loop's pending-cleanup and binding records, which remain its authority.
+  The required native intent precedes creation, the binding captures response-derived identity, and readiness comes from the exact pane's process proof.
+  A projection write failure is ledgered rather than treated as a second refusal; confirmed cleanup receipts retain terminal evidence for a later projection retry.
+  Manual settlement of an incomplete create must name the launch whose generation matches the pending receipt before `ensure` can clear it.
+- `.launch-herdr-supervisor-monitor` - the monitor's required launch record, with intent before detach, stable process identity published by the child, readiness from its record and heartbeat, and observed exit on stand-down.
+  The monitor has no independent pre-create receipt: failure to persist its intent, or a live or unidentified predecessor, refuses another detach.
 - `.lock-pid-identity` - the process-instance identity paired with the Pi session lock.
 
 ## Regression coverage

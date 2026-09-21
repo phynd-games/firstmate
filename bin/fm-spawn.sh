@@ -69,9 +69,9 @@
 #   parent, and label bindings. On a same-identity restart, that complete binding
 #   plus authoritative metadata may replace one exact agent-free husk in place.
 #   The journal, visible token, and labels alone are never endpoint or ownership
-#   authority, and every ambiguous recovery stays on the flat fallback after
-#   duplicate-agent risk is independently absent. Treehouse allocation and task
-#   metadata are unchanged.
+#   authority. Recovery and flat fallback remain subject to the launch
+#   settlement boundary in docs/launch-records.md; an unresolved issued create
+#   refuses fallback. Treehouse allocation and task metadata are unchanged.
 #   A clean projected create or exact resume makes one bounded attempt to hold
 #   the one session-scoped presentation-order lock (keyed by named session plus
 #   canonical socket, outside any home's state/) through launch handoff. Lock
@@ -281,6 +281,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-launch-record-lib.sh
+. "$SCRIPT_DIR/fm-launch-record-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-gate-refuse-lib.sh
@@ -786,6 +788,448 @@ RELAUNCH_REPLACEMENT_WT=
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
 
+# --- launch record ------------------------------------------------------------
+# bin/fm-launch-record.py owns the contract; this script only calls it at its
+# own side-effect boundaries: the intent is recorded BEFORE the first Herdr
+# creation call, `created` once Herdr returned exact ids, a readiness verdict
+# after the harness command was submitted, and a failed or uncertain outcome
+# from the abort trap. An open record left by an earlier launcher is settled
+# from native evidence before a new intent, never from the record's own words.
+SPAWN_LAUNCH_ID=
+SPAWN_LAUNCH_ORIGIN=fresh
+SPAWN_LAUNCH_CREATE_ATTEMPTED=0
+SPAWN_LAUNCH_CREATED=0
+SPAWN_LAUNCH_ADOPTED=0
+SPAWN_LAUNCH_CONTAINER=
+
+SPAWN_LAUNCH_SUCCESS=0
+SPAWN_LAUNCH_CLEANUP_RESULT=
+SPAWN_LAUNCH_FAIL_HINT=
+SPAWN_LAUNCH_READINESS=unconfirmed
+
+spawn_launch_record() {  # <command> [args...]
+  local command=$1
+  shift
+  fm_launch_record "$command" --task "$ID" "$@"
+}
+
+spawn_launch_field() {  # <check-output> <key>
+  printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1
+}
+
+# spawn_launch_reconcile_open: docs/launch-records.md "What the obligation
+# does" owns the settlement boundary. Inspect presence before agent state:
+# the agent classifier requires a present pane. Even a gone pane must pass
+# the attempt's retained-effect checks before settlement.
+spawn_launch_reconcile_open() {  # <check-output>
+  local out=$1 phase launcher pane workspace tab session window verdict='' state='' evidence='' target='' presence='' foreground='' journal hint='' observation='' settle container='' quiescent=''
+  local -a settlement_args=(--launch "$(spawn_launch_field "$out" launch)")
+  phase=$(spawn_launch_field "$out" phase)
+  launcher=$(spawn_launch_field "$out" launcher)
+  pane=$(spawn_launch_field "$out" 'identity\.pane_id')
+  workspace=$(spawn_launch_field "$out" 'identity\.workspace_id')
+  tab=$(spawn_launch_field "$out" 'identity\.tab_id')
+  session=$(spawn_launch_field "$out" 'identity\.session')
+  window=$(spawn_launch_field "$out" 'identity\.window')
+  hint=$(spawn_launch_field "$out" hint)
+  container=$(spawn_launch_field "$out" 'field\.container')
+  settle="$FM_ROOT/bin/fm-launch-record.py --home $FM_HOME reconcile --task $ID --current --verdict manual --evidence '<what was verified natively>'"
+  if [ "$launcher" = alive ]; then
+    echo "error: task $ID has an open launch record (phase $phase) whose launcher process is still running; refusing a concurrent second launch" >&2
+    return 1
+  fi
+  if [ "$BACKEND" = herdr ] && [ -n "$container" ] && [ "$container" != task-tab ]; then
+    # A known partial container (a task workspace with no task tab, or a tab
+    # Herdr created while answering an error) is never a husk to replace: it
+    # is retained for the projection owner or the operator to close.
+    echo "error: task $ID has an open launch record (phase $phase) bound to a partial container ($container: workspace=${workspace:-?} tab=${tab:-?} pane=${pane:-?})${hint:+; hint: $hint}. Close it through its owner after inspecting it natively, then settle the record with: $settle" >&2
+    return 1
+  fi
+  if [ "$BACKEND" = herdr ] && [ -n "$pane" ] && [ -n "$session" ]; then
+    target="$session:$pane"
+    fm_backend_herdr_server_ensure "$session" >/dev/null 2>&1 || true
+    FM_BACKEND_HERDR_EXPECTED_TARGET=$target
+    FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID=$workspace
+    FM_BACKEND_HERDR_EXPECTED_TAB_ID=$tab
+  elif [ "$BACKEND" != herdr ] && [ -n "$window" ]; then
+    target=$window
+  elif [ "$BACKEND" = herdr ]; then
+    journal="$STATE/.$ID.create-issued"
+    if [ "$phase" = intended ] && [ -f "$journal" ] && [ ! -L "$journal" ] && ! grep -q '^issued ' "$journal" 2>/dev/null; then
+      # Firstmate's own before-the-fact journal: the killed launcher never
+      # issued any create request, so nothing of this launch's can exist.
+      settlement_args+=(--pre-create-journal)
+      verdict=absent
+      evidence="launcher gone before any create request; its pre-create journal records none"
+    elif [ "$phase" = intended ] && spawn_launch_journal_no_effect "$journal"; then
+      # Only the shared per-home container was created, each with exact ids
+      # the placement owner adopts; nothing of this launch's can exist.
+      settlement_args+=(--pre-create-journal)
+      verdict=absent
+      evidence="launcher gone; its journal shows only the per-home container created with exact ids and no other request issued"
+    else
+      # A create may have happened and nobody holds its identity. The label
+      # inventory is reported as a hint only - it neither proves absence nor
+      # confers ownership - and the record stays open until settled explicitly.
+      if target=$(fm_backend_herdr_resolve_bare_selector "$W" 2>/dev/null) && [ -n "$target" ]; then
+        # shellcheck disable=SC2034 # read by the adapter's target-ready gate.
+        FM_BACKEND_HERDR_EXPECTED_TARGET=
+        state=$(fm_backend_agent_state herdr "$target" 2>/dev/null) || state=unreadable
+        observation="a tab labeled $W exists at $target (native agent state: $state); a label is a hint, not ownership"
+      else
+        observation="no tab labeled $W in any running session, which does not prove the create had no effect"
+      fi
+      echo "error: task $ID has an open launch record (phase $phase) with no recorded native identity${hint:+; hint: $hint}; $observation. Inspect Herdr natively, stop or close a leftover endpoint through its ordinary owner, then settle the record with: $settle" >&2
+      return 1
+    fi
+  fi
+  if [ -n "$target" ]; then
+    set +e
+    if [ "$BACKEND" = herdr ] && [ -n "$workspace" ] && [ -n "$tab" ] && [ -n "$pane" ]; then
+      # Presence first: the agent-state classifier needs a present pane, so a
+      # pane Herdr no longer knows (verified on 0.8.2: pane_not_found) must be
+      # classified gone here rather than read as an unreadable refusal.
+      presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane" "$workspace" "$tab" '' 2>/dev/null) || presence=unknown
+    else
+      presence=present
+    fi
+    if [ "$presence" = dead ]; then
+      state=missing
+    elif [ "$presence" = present ]; then
+      if ! state=$(fm_backend_agent_state "$BACKEND" "$target" 2>/dev/null); then
+        state=unreadable
+      fi
+    else
+      state=unreadable
+    fi
+    if [ "$state" = dead ]; then
+      if [ "$BACKEND" = herdr ] && [ -n "$workspace" ] && [ -n "$tab" ] && [ -n "$pane" ]; then
+        foreground=$(fm_backend_herdr_pane_foreground_state "$session" "$pane" "$workspace" "$tab" 2>/dev/null) || foreground=unknown
+        if [ "$foreground" = idle ]; then
+          # This diagnostic also checks attached children and shell state,
+          # but cannot see a process that detached from the shell. Even a
+          # successful proof leaves this open launch unresolved.
+          if fm_backend_herdr_pane_idle_shell_pid "$session" "$pane" "$workspace" "$tab" >/dev/null 2>&1; then
+            quiescent=proven
+          else
+            case $? in
+              2) quiescent=unprovable ;;
+              *) quiescent=no ;;
+            esac
+          fi
+        fi
+      else
+        foreground=idle
+        quiescent=proven
+      fi
+    fi
+    set -e
+    case "$state" in
+      alive)
+        echo "error: task $ID already has a live agent on its recorded endpoint $target (launch record phase $phase); refusing a duplicate launch - stop it with bin/fm-control.sh $ID exit or relaunch it with bin/fm-control.sh $ID relaunch" >&2
+        return 1
+        ;;
+      dead)
+        # No registered agent on a present pane is never completion evidence:
+        # a launch may still be starting, or may have left a process the
+        # supported native checks cannot see (verified on the 0.8.2 lab: a
+        # detached, reparented process passes the strict idle-shell proof).
+        # The foreground and quiescence classification is reported as a
+        # diagnostic, and the obligation is retained until the owning control
+        # path records a stop or exit, the endpoint is natively gone, or an
+        # operator settles it after inspection.
+        case "$foreground:$quiescent" in
+          busy:*) observation="no registered agent, and a foreground process is running (a launch may still be in progress)" ;;
+          idle:proven) observation="no registered agent; the shell is idle, child-free and sleeping, which cannot exclude a process that already detached from it" ;;
+          idle:no) observation="no registered agent; the shell is idle but not provably quiescent (a child or background process, or a non-sleeping shell)" ;;
+          idle:*) observation="no registered agent; the shell is idle and quiescence cannot be assessed for this session (no local process table)" ;;
+          *) observation="no registered agent; the foreground state is unreadable" ;;
+        esac
+        echo "error: task $ID's recorded endpoint $target is present with an open launch record (phase $phase): $observation. Refusing a duplicate launch: stop it with bin/fm-control.sh $ID exit or relaunch it with bin/fm-control.sh $ID relaunch, tear it down, or after native inspection settle the record with: $settle" >&2
+        return 1
+        ;;
+      missing)
+        verdict=absent
+        evidence="native endpoint presence missing for $target"
+        ;;
+      *)
+        echo "error: task $ID has an open launch record for endpoint $target whose native state reads '$state'; refusing to launch until that endpoint is proven agent-free" >&2
+        return 1
+        ;;
+    esac
+  fi
+  if [ -z "$verdict" ]; then
+    echo "error: task $ID has an open launch record (phase $phase) this launcher cannot settle; settle it with: $settle" >&2
+    return 1
+  fi
+  if [ "$BACKEND" = herdr ] && [ -n "$pane" ]; then
+    fm_launch_record_effects_gone "$ID" "$(spawn_launch_field "$out" launch)" || return 1
+    settlement_args+=(--effects-digest "$FM_LAUNCH_EFFECTS_DIGEST")
+  fi
+  if ! spawn_launch_record reconcile "${settlement_args[@]}" --verdict "$verdict" --evidence "$evidence" >/dev/null; then
+    echo "error: task $ID's open launch record could not be reconciled ($verdict); refusing to launch" >&2
+    return 1
+  fi
+  echo "notice: reconciled task $ID's earlier launch record ($verdict: $evidence)" >&2
+}
+
+spawn_launch_intend() {  # <origin>
+  local out rc line predecessor
+  local launcher_pid=${BASHPID:-$$}
+  local -a launcher_args=()
+  SPAWN_LAUNCH_ORIGIN=$1
+  fm_launch_record_available || return 1
+  set +e
+  out=$(spawn_launch_record check 2>&1)
+  rc=$?
+  set -e
+  case "$rc" in
+    0) ;;
+    3) spawn_launch_reconcile_open "$out" || return 1 ;;
+    *)
+      echo "error: task $ID's launch record could not be read (${out:-no detail}); refusing to launch without a durable launch record" >&2
+      return 1
+      ;;
+  esac
+  if [ "$SPAWN_LAUNCH_ORIGIN" = relaunch ] && [ "$BACKEND" = herdr ] && [ -f "$STATE/$ID.launch" ]; then
+    predecessor=$(spawn_launch_record get launch.id) || return 1
+    if [ -n "$predecessor" ]; then
+      fm_launch_record_effects_gone "$ID" "$predecessor" "$RELAUNCH_META" || return 1
+      spawn_launch_record journal --launch "$predecessor" --settle \
+        --effects-digest "$FM_LAUNCH_EFFECTS_DIGEST" \
+        --identity "session=$HERDR_SES" --identity "workspace_id=$HERDR_WORKSPACE_ID" \
+        --identity "tab_id=$HERDR_TAB_ID" --identity "pane_id=$HERDR_PANE_ID" \
+        --identity "terminal_id=$HERDR_TERMINAL_ID" || return 1
+    fi
+  fi
+  while IFS= read -r line; do
+    launcher_args+=("$line")
+  done < <(fm_launch_record_launcher_args "$launcher_pid")
+  set +e
+  out=$(spawn_launch_record intend --owner fm-spawn.sh --origin "$SPAWN_LAUNCH_ORIGIN" \
+    "${launcher_args[@]}" --field "kind=$KIND" --field "harness=${HARNESS:-unknown}" 2>&1)
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    echo "error: task $ID's launch intent could not be recorded before creation (${out:-no detail}); refusing to launch" >&2
+    return 1
+  fi
+  SPAWN_LAUNCH_ID=${out##*launch=}
+  SPAWN_LAUNCH_ID=${SPAWN_LAUNCH_ID%%[[:space:]]*}
+  [ -n "$SPAWN_LAUNCH_ID" ] || {
+    echo "error: task $ID's launch intent returned no launch id; refusing to launch" >&2
+    return 1
+  }
+  if [ "$SPAWN_LAUNCH_ORIGIN" = relaunch ] && [ "$BACKEND" = herdr ]; then
+    FM_BACKEND_HERDR_CREATE_ISSUED_FILE="$STATE/.$ID.create-issued"
+    spawn_launch_record journal --launch "$SPAWN_LAUNCH_ID" --init || return 1
+  fi
+}
+
+spawn_launch_created() {  # <identity-source> <identity K=V>...
+  local source=$1 out rc pair
+  local -a args=()
+  shift
+  for pair in "$@"; do
+    args+=(--identity "$pair")
+  done
+  [ -z "${SPAWN_LAUNCH_CONTAINER:-}" ] || args+=(--field "container=$SPAWN_LAUNCH_CONTAINER")
+  set +e
+  out=$(spawn_launch_record created --launch "$SPAWN_LAUNCH_ID" --identity-source "$source" "${args[@]}" 2>&1)
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    SPAWN_LAUNCH_FAIL_HINT="native identity $* could not be recorded (${out:-no detail})"
+    echo "error: task $ID's endpoint exists but its launch record could not bind the native identity (${out:-no detail}); aborting" >&2
+    return 1
+  fi
+  SPAWN_LAUNCH_CREATED=1
+}
+
+# spawn_launch_partial_create: a Herdr create call failed AFTER returning exact
+# ids (prune or husk close failed). Bind what exists so the abort outcome names
+# the real endpoint instead of a label guess.
+spawn_launch_partial_create() {
+  local line workspace='' tab='' pane='' terminal='' word container=''
+  [ -n "${FM_BACKEND_HERDR_CREATE_ISSUED_FILE:-}" ] && [ -f "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" ] || return 0
+  if line=$(grep -E '^(created |partial kind=task-tab )' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tail -n 1) && [ -n "$line" ]; then
+    container='task-tab'
+  elif line=$(grep -E '^(created-workspace kind=task |partial kind=(task|home)-workspace )' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tail -n 1) && [ -n "$line" ]; then
+    container='task-workspace'
+  else
+    return 0
+  fi
+  for word in $line; do
+    case "$word" in
+      kind=home-workspace) container='home-workspace' ;;
+      workspace=*) workspace=${word#workspace=} ;;
+      tab=*) tab=${word#tab=} ;;
+      pane=*) pane=${word#pane=} ;;
+      terminal=*) terminal=${word#terminal=} ;;
+    esac
+  done
+  [ -n "$pane" ] || [ -n "$tab" ] || [ -n "$workspace" ] || [ -n "$terminal" ] || return 0
+  local -a ids=("backend=herdr" "session=${HERDR_SES:-}")
+  [ -z "$workspace" ] || ids+=("workspace_id=$workspace")
+  [ -z "$tab" ] || ids+=("tab_id=$tab")
+  [ -z "$pane" ] || ids+=("pane_id=$pane")
+  [ -z "$terminal" ] || ids+=("terminal_id=$terminal")
+  SPAWN_LAUNCH_CONTAINER=$container
+  spawn_launch_created native-response "${ids[@]}" >/dev/null 2>&1 || true
+}
+
+# spawn_launch_create_issued: did any create request (the per-home container
+# workspace included - a lost answer there can leave a duplicate container the
+# placement rules then refuse to adopt) leave this spawn?
+spawn_launch_create_issued() {
+  [ -n "${FM_BACKEND_HERDR_CREATE_ISSUED_FILE:-}" ] && [ -f "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" ] || return 1
+  grep -q '^issued ' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null
+}
+
+# spawn_launch_journal_no_effect <journal>: true only when the journal proves
+# no request of this launch can have had an effect: no request was issued at
+# all, or the only requests were the per-home container's and each answered
+# with exact ids (that shared container is owned and adopted by the placement
+# owner, not this launch). A refused or lost answer never qualifies - no Herdr
+# error code is source-proven to guarantee non-allocation, and an empty label
+# inventory is a hint, not proof - so any other issued request keeps the
+# attempt uncertain until exact-identity cleanup or explicit settlement.
+spawn_launch_journal_no_effect() {  # <journal>
+  local journal=$1 issued home_created
+  [ -f "$journal" ] && [ ! -L "$journal" ] || return 1
+  issued=$(grep -c '^issued ' "$journal" 2>/dev/null || true)
+  [ "${issued:-0}" -gt 0 ] || return 0
+  home_created=$(grep -c '^created-workspace kind=home ' "$journal" 2>/dev/null || true)
+  [ "$(grep -c '^issued home-workspace$' "$journal" 2>/dev/null || true)" = "$issued" ] || return 1
+  [ "${home_created:-0}" = "$issued" ]
+}
+
+# spawn_launch_readiness: record whether the launched harness actually became
+# an agent Herdr recognizes on the exact recorded pane. A delivered Enter is
+# not readiness; only native registration (working|idle|blocked|done) is. The
+# verdict is recorded, never used to fail a launch whose endpoint and record
+# are already published - recovery reconciles an unconfirmed launch. Budget:
+# FM_SPAWN_READY_SECS (default 45s); the fleet's own test harness skips the
+# poll unless a suite sets the budget explicitly, because canned Herdr fakes
+# consume responses in call order.
+spawn_launch_readiness() {
+  local budget deadline raw rc status='' verdict=unconfirmed source='' reason='' state=''
+  local -a fields=()
+  [ -n "$SPAWN_LAUNCH_ID" ] || return 0
+  [ "$SPAWN_LAUNCH_CREATED" = 1 ] || return 0
+  budget=${FM_SPAWN_READY_SECS:-45}
+  if [ "${FM_BACKEND_TEST_HARNESS:-0}" = 1 ] && [ -z "${FM_SPAWN_READY_SECS:-}" ]; then
+    reason="readiness poll skipped under the test harness"
+  elif [ "$BACKEND" = herdr ]; then
+    source=herdr-agent-get
+    deadline=$(( $(date +%s) + budget ))
+    while :; do
+      set +e
+      raw=$(fm_backend_herdr_agent_status_raw "$HERDR_SES" "$HERDR_PANE_ID" "$HERDR_WORKSPACE_ID" "$HERDR_TAB_ID" 2>/dev/null)
+      rc=$?
+      set -e
+      if [ "$rc" -eq 2 ]; then
+        reason="native agent read failed on $HERDR_SES:$HERDR_PANE_ID"
+        break
+      fi
+      case "$raw" in
+        working|idle|blocked|done)
+          verdict=ready
+          status=$raw
+          break
+          ;;
+        '') ;;
+        *) status=$raw ;;
+      esac
+      if [ "$(date +%s)" -ge "$deadline" ]; then
+        reason="no registered agent within ${budget}s"
+        [ -z "$status" ] || reason="$reason (last native status $status)"
+        break
+      fi
+      sleep "${FM_SPAWN_READY_POLL:-1}"
+    done
+  else
+    source="$BACKEND-agent-state"
+    set +e
+    if ! state=$(fm_backend_agent_state "$BACKEND" "$T" 2>/dev/null); then
+      state=unreadable
+    fi
+    set -e
+    if [ "$state" = alive ]; then
+      verdict=ready
+    else
+      reason="agent state $state on $T"
+    fi
+  fi
+  SPAWN_LAUNCH_READINESS=$verdict
+  if [ "$verdict" = ready ]; then
+    fields=(--field "harness=${HARNESS:-unknown}")
+    [ -z "$status" ] || fields+=(--field "readiness_status=$status")
+    spawn_launch_record ready --launch "$SPAWN_LAUNCH_ID" --source "$source" "${fields[@]}" >/dev/null 2>&1 \
+      || echo "warning: task $ID's readiness could not be recorded in $STATE/$ID.launch" >&2
+  else
+    spawn_launch_record unready --launch "$SPAWN_LAUNCH_ID" --reason "$reason" ${source:+--source "$source"} >/dev/null 2>&1 \
+      || echo "warning: task $ID's readiness verdict could not be recorded in $STATE/$ID.launch" >&2
+    echo "warning: task $ID launched but no agent was confirmed on its endpoint ($reason); its launch record stays created until recovery confirms it" >&2
+  fi
+}
+
+# spawn_launch_close_on_abort: the abort trap's outcome. The effect names what
+# is known to remain: none (nothing was created), cleaned (created and its
+# removal confirmed), retained (created and deliberately left with its local
+# copy), or unknown (a create was attempted or a cleanup was unconfirmed).
+# retained and unknown keep the record open with a reconciliation obligation.
+spawn_launch_close_on_abort() {  # <exit-status>
+  local status=$1 effect hint='' out endpoint
+  local -a args=()
+  [ -n "$SPAWN_LAUNCH_ID" ] || return 0
+  [ "$SPAWN_LAUNCH_SUCCESS" != 1 ] || return 0
+  endpoint=${SPAWN_ENDPOINT_TARGET:-${T:-}}
+  if [ "$SPAWN_LAUNCH_CREATED" = 1 ] || [ "$SPAWN_LAUNCH_ADOPTED" = 1 ] || [ -n "$SPAWN_ENDPOINT_TARGET" ] || [ -n "${HERDR_PROJECTION_ABORT_TASK_PANE:-}" ]; then
+    case "$SPAWN_LAUNCH_CLEANUP_RESULT" in
+      cleaned) effect=cleaned ;;
+      unknown)
+        effect=unknown
+        hint="endpoint ${endpoint:-unknown} cleanup unconfirmed"
+        ;;
+      *)
+        effect=retained
+        hint="endpoint ${endpoint:-unknown} retained"
+        [ -z "${WT:-}" ] || hint="$hint; local copy ${WT}"
+        ;;
+    esac
+  elif [ "$SPAWN_LAUNCH_CREATE_ATTEMPTED" = 1 ] && [ "$BACKEND" != herdr ]; then
+    effect=unknown
+    hint="a $BACKEND create call for $W returned no usable identity"
+  elif [ "$SPAWN_LAUNCH_CREATE_ATTEMPTED" = 1 ] && spawn_launch_create_issued; then
+    # The adapter journals the exact moment a create request left for Herdr
+    # and how it was answered. A refusal from its inventory checks (nothing
+    # issued) is a closed failure; an issued request that did not answer with
+    # ids is an obligation whatever Herdr's error said, because no error code
+    # is proven to exclude an allocation and an empty label inventory proves
+    # nothing.
+    if spawn_launch_journal_no_effect "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE"; then
+      effect=none
+      hint="only the per-home container was created ($(grep '^created-workspace kind=home ' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tr '\n' ';' | cut -c1-160)); no request of this launch had another effect"
+    else
+      effect=unknown
+      hint="a Herdr create request for $W was issued and did not answer with ids ($(grep '^issued \|^refused \|^lost \|^hint \|^created-workspace ' "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null | tr '\n' ';' | cut -c1-200)); a refusal or an empty inventory is not proof of no effect - inspect Herdr natively and settle the record with fm-launch-record.py reconcile --verdict manual"
+    fi
+  else
+    effect=none
+  fi
+  [ -z "$SPAWN_LAUNCH_FAIL_HINT" ] || hint="${hint:+$hint; }$SPAWN_LAUNCH_FAIL_HINT"
+  hint=${hint:0:400}
+  args=(--launch "$SPAWN_LAUNCH_ID" --reason "spawn aborted with exit $status" --effect "$effect")
+  [ -z "$hint" ] || args+=(--field "hint=$hint")
+  [ -z "${WT:-}" ] || args+=(--field "worktree=$WT")
+  if out=$(spawn_launch_record fail "${args[@]}" 2>&1); then
+    :
+  else
+    echo "warning: task $ID's launch record could not record the aborted launch (${out:-no detail}); reconcile $STATE/$ID.launch by hand" >&2
+  fi
+}
+
 spawn_fresh_commit_rollback() {
   if fm_backlog_atomic_transition rollback "$STATE/$ID.meta" \
       "$FM_ROOT/bin/fm-busy-event.sh" "$STATE" "$ID" "${BUSY_GEN:-}"; then
@@ -839,6 +1283,9 @@ spawn_abort_cleanup() {
       fi
     fi
   fi
+  if [ "$BACKEND" = herdr ] && [ "$SPAWN_LAUNCH_CREATED" != 1 ]; then
+    spawn_launch_partial_create
+  fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
      && [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" != 1 ]; then
     if ! spawn_herdr_presentation_order_lock_acquire "${HERDR_PROJECTION_ABORT_SESSION:-}"; then
@@ -848,10 +1295,14 @@ spawn_abort_cleanup() {
   fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ]; then
     HERDR_PROJECTION_ABORT_CLEANUP=0
-    fm_backend_herdr_projection_cleanup_exact \
+    if fm_backend_herdr_projection_cleanup_exact \
       "$HERDR_PROJECTION_ABORT_SESSION" \
       "$HERDR_PROJECTION_ABORT_TASK_PANE" \
-      "$HERDR_PROJECTION_ABORT_SEEDED_PANE" || true
+      "$HERDR_PROJECTION_ABORT_SEEDED_PANE"; then
+      SPAWN_LAUNCH_CLEANUP_RESULT=cleaned
+    else
+      SPAWN_LAUNCH_CLEANUP_RESULT=unknown
+    fi
   fi
   if [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" = 1 ]; then
     HERDR_PRESENTATION_ORDER_LOCK_HELD=0
@@ -860,7 +1311,11 @@ spawn_abort_cleanup() {
   if [ "$SPAWN_ENDPOINT_ABORT_CLEANUP" = 1 ]; then
     SPAWN_ENDPOINT_ABORT_CLEANUP=0
     if [ "$SPAWN_ENDPOINT_PROJECTED" != 1 ] && [ -n "$SPAWN_ENDPOINT_TARGET" ]; then
-      fm_backend_kill "$BACKEND" "$SPAWN_ENDPOINT_TARGET" "${ZELLIJ_TAB_ID:-}" "${W:-}" 2>/dev/null || true
+      if fm_backend_kill "$BACKEND" "$SPAWN_ENDPOINT_TARGET" "${ZELLIJ_TAB_ID:-}" "${W:-}" 2>/dev/null; then
+        SPAWN_LAUNCH_CLEANUP_RESULT=cleaned
+      else
+        SPAWN_LAUNCH_CLEANUP_RESULT=unknown
+      fi
     fi
     if [ -n "$SPAWN_ENDPOINT_WORKTREE" ] && command -v treehouse >/dev/null 2>&1; then
       ( cd "$PROJ_ABS" && treehouse return --force "$SPAWN_ENDPOINT_WORKTREE" ) >/dev/null 2>&1 || \
@@ -905,6 +1360,10 @@ spawn_abort_cleanup() {
         fi
       fi
     fi
+  fi
+  spawn_launch_close_on_abort "$status"
+  if [ "$SPAWN_LAUNCH_SUCCESS" = 1 ] || [ "$SPAWN_LAUNCH_CLEANUP_RESULT" = cleaned ]; then
+    [ -z "${FM_BACKEND_HERDR_CREATE_ISSUED_FILE:-}" ] || rm -f "$FM_BACKEND_HERDR_CREATE_ISSUED_FILE" 2>/dev/null || true
   fi
   if [ "$SPAWN_TASK_LOCK_HELD" = 1 ]; then
     SPAWN_TASK_LOCK_HELD=0
@@ -2218,6 +2677,20 @@ if [ "$RELAUNCH" -eq 1 ]; then
   [ "$KIND" = secondmate ] || WT=$RELAUNCH_WT
   WT_TARGET=$T
   SES=${T%%:*}
+  # A relaunch creates no endpoint: it adopts the recorded one, already proven
+  # agent-free above. The new launch is still its own record - intent before
+  # the replacement command is typed, identity adopted from the validated task
+  # record - so a failed relaunch reads as an endpoint retained with no agent
+  # confirmed, never as a running replacement.
+  spawn_launch_intend relaunch || exit 1
+  SPAWN_LAUNCH_ADOPTED=1
+  if [ "$BACKEND" = herdr ]; then
+    spawn_launch_created adopted-record "backend=herdr" "session=${HERDR_SES:-}" \
+      "workspace_id=${HERDR_WORKSPACE_ID:-}" "tab_id=${HERDR_TAB_ID:-}" \
+      "pane_id=${HERDR_PANE_ID:-}" "terminal_id=${HERDR_TERMINAL_ID:-}" || exit 1
+  else
+    spawn_launch_created adopted-record "backend=$BACKEND" "window=$T" || exit 1
+  fi
 else
 case "$BACKEND" in
   tmux)
@@ -2254,13 +2727,27 @@ case "$BACKEND" in
     # it stands up a DIFFERENT home's own workspace by design - so it asks for
     # the per-home container instead of inheriting this launcher's.
     HERDR_LABEL_HOME=$FM_HOME
-    HERDR_LAUNCHER_RELATIONSHIP=launcher-home
+    HERDR_LAUNCHER_RELATIONSHIP='launcher-home'
     if [ "$KIND" = secondmate ]; then
       HERDR_LABEL_HOME=$PROJ_ABS
       HERDR_LAUNCHER_RELATIONSHIP=other-home
     fi
     HERDR_PRESENTATION_JOURNAL=$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")
     HERDR_PROJECTED=0
+    # The Herdr client is proven usable BEFORE the launch intent is recorded, so
+    # a missing or below-floor client refuses with nothing on disk; from here
+    # on every Herdr creation call is preceded by the durable intent, and an
+    # open record from an earlier launcher is settled from native evidence.
+    fm_backend_herdr_version_check || exit 1
+    spawn_launch_intend fresh || exit 1
+    # The adapter's create helpers run inside command substitutions, so they
+    # report "a create request was issued" and the exact ids it returned
+    # through this private note file rather than a variable; the abort trap
+    FM_BACKEND_HERDR_CREATE_ISSUED_FILE="$STATE/.$ID.create-issued"
+    FM_BACKEND_HERDR_CREATE_LAUNCH_ID=$SPAWN_LAUNCH_ID
+    FM_BACKEND_HERDR_CREATE_TASK_ID=$ID
+    spawn_launch_record journal --launch "$SPAWN_LAUNCH_ID" --init || exit 1
+    export FM_BACKEND_HERDR_CREATE_ISSUED_FILE FM_BACKEND_HERDR_CREATE_LAUNCH_ID FM_BACKEND_HERDR_CREATE_TASK_ID
     if [ "$KIND" != secondmate ] && fm_backend_herdr_presentation_enabled "$CONFIG" "$STATE"; then
       HERDR_SES=$(fm_backend_herdr_session)
       HERDR_PARENT_LABEL=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_workspace_label)
@@ -2287,6 +2774,7 @@ case "$BACKEND" in
           exit "$HERDR_RECOVERY_FLAT_STATUS"
         fi
         if [ "${HERDR_RECOVERY_BACKEND:-}" = herdr ]; then
+          SPAWN_LAUNCH_CREATE_ATTEMPTED=1
           set +e
           FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_reclaim_task \
             "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID" "$HERDR_LABEL_HOME" \
@@ -2309,6 +2797,7 @@ case "$BACKEND" in
               ;;
             2)
               spawn_herdr_presentation_order_lock_release
+              spawn_launch_create_issued && exit 1
               [ "${FM_BACKEND_HERDR_PROJECTION_RECLAIM_NATIVE_FAILURE:-0}" = 1 ] && exit 2
               ;;
             *) exit 1 ;;
@@ -2357,6 +2846,7 @@ case "$BACKEND" in
           else
             HERDR_PROJECTION_ID=$(fm_backend_herdr_projection_journal_create "$STATE" "$ID") || exit 1
             HERDR_PROJECTION_LABEL=$(fm_backend_herdr_projection_workspace_label "$ID" "$HERDR_PROJECTION_ID")
+            SPAWN_LAUNCH_CREATE_ATTEMPTED=1
             if ! FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_create_task \
               "$PROJ_ABS" "$HERDR_PROJECTION_LABEL" "$W"; then
               if [ "${FM_BACKEND_HERDR_PROJECTION_CLEANUP_SAFE:-0}" = 1 ]; then
@@ -2401,6 +2891,7 @@ case "$BACKEND" in
       fi
     fi
     if [ "$HERDR_PROJECTED" -ne 1 ]; then
+      SPAWN_LAUNCH_CREATE_ATTEMPTED=1
       HERDR_CONTAINER_RAW=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_container_ensure "$PROJ_ABS" "$HERDR_LAUNCHER_RELATIONSHIP") || exit 1
       # fm_backend_herdr_container_ensure echoes "<session>:<workspace_id>\t<seeded_default_tab_id>"
       # (the second field empty when this call ADOPTED a pre-existing workspace
@@ -2412,7 +2903,10 @@ case "$BACKEND" in
       HERDR_SEEDED_DEFAULT_TAB_ID=${HERDR_CONTAINER_RAW#*$'\t'}
       HERDR_SES=${CONTAINER%%:*}
       HERDR_WORKSPACE_ID=${CONTAINER#*:}
-      HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$PROJ_ABS" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
+      HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$PROJ_ABS" "$HERDR_SEEDED_DEFAULT_TAB_ID") || {
+        spawn_launch_partial_create
+        exit 1
+      }
       read -r HERDR_TAB_ID HERDR_PANE_ID HERDR_TERMINAL_ID <<EOF
 $HERDR_TASK_IDS
 EOF
@@ -2425,6 +2919,9 @@ EOF
     SPAWN_ENDPOINT_ABORT_CLEANUP=1
     SPAWN_ENDPOINT_TARGET=$T
     SPAWN_ENDPOINT_PROJECTED=$HERDR_PROJECTED
+    spawn_launch_created native-response "backend=herdr" "session=$HERDR_SES" \
+      "workspace_id=$HERDR_WORKSPACE_ID" "tab_id=$HERDR_TAB_ID" \
+      "pane_id=$HERDR_PANE_ID" "terminal_id=${HERDR_TERMINAL_ID:-}" || exit 1
     ;;
   zellij)
     ZELLIJ_SES=$(fm_backend_zellij_container_ensure) || exit 1
@@ -3298,6 +3795,7 @@ if [ "$HARNESS" = kimi ]; then
     exit 1
   fi
 fi
+spawn_launch_readiness
 if [ "$KIND" = secondmate ] && [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ]; then
   if ! fm_config_reread_discard_pending "$PROJ_ABS" "$ID" "$FM_HOME"; then
     if fm_config_reread_quarantine_pending "$PROJ_ABS" "$ID" "$FM_HOME"; then
@@ -3345,6 +3843,7 @@ if [ "$SPAWN_BACKLOG_COMMIT_STATUS" -ne 0 ]; then
 fi
 trap - HUP INT TERM
 if [ "$SPAWN_BACKLOG_COMMIT_STATUS" -ne 0 ]; then
+  SPAWN_LAUNCH_FAIL_HINT="backlog In-flight transition failed after launch delivery: ${FM_BACKLOG_TRANSITION_ERROR:-no detail}"
   exit "$SPAWN_BACKLOG_COMMIT_STATUS"
 fi
 fm_lock_release "$SPAWN_META_LOCK"
@@ -3356,9 +3855,14 @@ if [ -n "$SPAWN_DEFERRED_SIGNAL" ]; then
     TERM) SPAWN_DEFERRED_SIGNAL_STATUS=143 ;;
   esac
   echo "error: spawn of $ID was interrupted after launch delivery began; its paired task record and In-flight backlog state were preserved" >&2
+  # The launch itself completed: the record keeps its created or ready phase.
+  SPAWN_LAUNCH_SUCCESS=1
   exit "$SPAWN_DEFERRED_SIGNAL_STATUS"
 fi
 
 SPAWN_DELIVERY=
 [ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
-echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"
+SPAWN_LAUNCH_SUCCESS=1
+SPAWN_LAUNCH_REPORT=
+[ -z "$SPAWN_LAUNCH_ID" ] || SPAWN_LAUNCH_REPORT=" launch=$SPAWN_LAUNCH_ID readiness=$SPAWN_LAUNCH_READINESS"
+echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT$SPAWN_LAUNCH_REPORT"

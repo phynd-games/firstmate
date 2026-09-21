@@ -22,6 +22,9 @@
 #                 "SECONDMATE_LIVENESS: secondmate <id>: skipped: <reason>|respawn failed after <cause>: <reason>",
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
 #                 "HERDR_SUPERVISOR: <why watcher continuity could not be hosted>",
+#                 "LAUNCH_RECONCILE: <subject> launch=<id> phase=<phase> ...": a launch
+#                 record (bin/fm-launch-record.py) whose outcome is unknown or whose
+#                 launcher is gone before it settled; nothing is settled here,
 #                 "FMX: X mode on ..." or "FMX: X mode off ...".
 #          When a RUNNING local secondmate worktree is fast-forwarded to
 #          firstmate's own current default-branch commit, that update is a
@@ -1065,6 +1068,7 @@ manual_install_url() {
       echo "https://herdr.dev"
       ;;
     cursor-agent) echo "https://cursor.com/cli" ;;
+    python3) echo "https://www.python.org/downloads/" ;;
     *) return 1 ;;
   esac
 }
@@ -1083,7 +1087,7 @@ missing_tool_diagnostic() {
 # fm_backend_required_tools (bin/fm-backend.sh). So a herdr/zellij/cmux home is
 # never told tmux is missing, and only orca drops treehouse. A backend value with
 # no verified dependency set is reported before the universal checks continue.
-COMMON_TOOLS="node git gh no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi"
+COMMON_TOOLS="node git gh no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi python3"
 
 materialize_primary_backend() {
   local backend_file="$CONFIG/backend"
@@ -1757,6 +1761,24 @@ detect_local_config() {
     echo "BOOTSTRAP_INFO: tasks-axi available"
   fi
   detect_home_summary_publication
+  detect_launch_records
+}
+
+# A launch record left open with an unknown external effect, or whose launcher
+# died before settling it, is a reconciliation obligation the next launch of
+# that subject settles from native evidence. Surface it once per session start
+# so an interrupted launch is never silent; this reads only, and never settles
+# or removes a record (bin/fm-launch-record.py owns the contract, the launch
+# owners own reconciliation).
+detect_launch_records() {
+  local python line
+  python=${FM_LAUNCH_RECORD_PYTHON:-python3}
+  command -v "$python" >/dev/null 2>&1 || return 0
+  [ -f "$FM_ROOT/bin/fm-launch-record.py" ] || return 0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    echo "LAUNCH_RECONCILE: ${line#subject=}"
+  done < <("$python" "$FM_ROOT/bin/fm-launch-record.py" --state "$STATE" list --reconcile 2>/dev/null || true)
 }
 
 # This home's ledger publication is deliberately best-effort: every lifecycle

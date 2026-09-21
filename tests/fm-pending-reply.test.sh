@@ -1168,6 +1168,37 @@ test_tick_end_to_end_missed_then_escalate() {
   pass "tick end-to-end: miss -> one recovery -> escalate -> durable"
 }
 
+# 13. The wake library's top-level assignments stay contained to each per-correlation
+#     call (bash dynamic scoping through the single seam), re-initialize from the
+#     CALLER's state directory on every call, and leak nothing into a script that
+#     merely sourced this library. Observed through real entry points and real
+#     side effects (the library creates the caller's state directory), not source text.
+test_wake_lib_stays_contained_and_reinitializes_per_call() {
+  local dir out
+  dir=$(mktemp -d "$TMP_ROOT/contain.XXXXXX")
+  # shellcheck disable=SC2016 # the inner bash expands its own variables.
+  out=$(env -u STATE -u FM_WAKE_QUEUE -u FM_WAKE_QUEUE_LOCK -u FM_STATE_OVERRIDE -u FM_HOME \
+    FM_ROOT_OVERRIDE="$ROOT" bash -c '
+      . "$0/bin/fm-pending-reply-lib.sh" || exit 90
+      fm_pending_reply_try_resolve "$1/home-a/state" corr-a >/dev/null 2>&1
+      fm_pending_reply_try_resolve "$1/home-b/state" corr-b >/dev/null 2>&1
+      fm_pending_reply_maybe_escalate "$1/home-a/state" corr-a >/dev/null 2>&1
+      for name in STATE FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK; do
+        if declare -p "$name" >/dev/null 2>&1; then printf "leaked %s=%s\n" "$name" "${!name}"; fi
+      done
+      [ -d "$1/home-a/state" ] && printf "home-a-state-created\n"
+      [ -d "$1/home-b/state" ] && printf "home-b-state-created\n"
+      printf "done\n"
+    ' "$ROOT" "$dir")
+  assert_contains "$out" "done" "the standalone-sourced library probe did not complete"
+  assert_contains "$out" "home-a-state-created" "the first call did not initialize from its own state directory"
+  assert_contains "$out" "home-b-state-created" "the second call did not re-initialize from a different state directory"
+  case "$out" in
+    *leaked*) fail "wake-library globals leaked out of the per-correlation call: $out" ;;
+  esac
+  pass "wake-library initialization stays contained per call and re-initializes from each caller's state directory"
+}
+
 test_remote_repost_waits_for_the_reply_channel() {
   local home state corr hook_log rec lines
   home=$(setup_parent remote-repost)
@@ -1304,6 +1335,9 @@ PY
 
 # --- run --------------------------------------------------------------------
 
+# The wake-library containment proof runs first: it depends on no other case and
+# must execute even when a later pre-existing case in this suite fails.
+test_wake_lib_stays_contained_and_reinitializes_per_call
 test_normal_correlated_reply_resolves_once
 test_completed_turn_no_report_triggers_one_recovery
 test_recovery_attempt_is_never_reinjected

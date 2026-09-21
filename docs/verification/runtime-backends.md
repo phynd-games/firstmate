@@ -6,6 +6,32 @@ This record contains reusable version-scoped evidence for active runtime guarant
 The backend guides own current setup, safety boundaries, and limitations.
 Exact task chronology, branch names, temporary homes, local paths, process ids, thread ids, and delivery transcripts remain in private reports or PR evidence.
 
+## Launch-record native boundary
+
+The launch records ([`../launch-records.md`](../launch-records.md)) rely on four native Herdr facts: creation responses carry exact ids, a plain pane reads `agent_not_found`, a reported agent reads a live status on the exact pane, and a closed pane reads `pane_not_found`.
+The opt-in guard checks them against the installed Herdr inside a helper-provisioned lab session and verifies the default session byte-identical afterwards.
+It also exercises foreground activity, delayed starts, attached children, pending input, and a detached process, then invokes the real spawn owner to verify that a present agent-free pane retains its open launch without native mutation.
+The [operator settlement boundary](../launch-records.md#what-the-obligation-does) owns how those observations constrain recovery.
+
+```sh
+FM_LAUNCH_RECORD_LIVE=1 bash tests/fm-launch-record-herdr-live-e2e.test.sh
+```
+
+Identity and registration verification excerpt, recorded 2026-09-10 on macOS aarch64 with Herdr 0.8.2 (client protocol 20):
+
+```text
+herdr: herdr 0.8.2
+created: workspace=w1 tab=w1:t2 pane=w1:p2 terminal=term_65b1ae8c81d732
+ok - creation responses carry exact workspace, tab, pane, and terminal ids
+ok - a pane with no agent reads agent_not_found (an acknowledged launch is not ready)
+ok - a reported agent reads a live status on the exact pane (readiness positive control)
+ok - the adapter classifies the exact recorded pane alive with an agent and dead without one
+observed: agent-state classifier on a closed pane -> <empty>
+ok - a closed pane reads pane_not_found and the presence classifier reads it dead
+```
+
+The `observed:` line records that `fm_backend_herdr_agent_state` prints nothing (exit 2) for a closed pane on this release, because its target-ready gate needs a present pane; reconciliation therefore reads `fm_backend_herdr_pane_presence_state` first and treats `dead` as a gone endpoint, which is what the guard's last case proves.
+
 ## Herdr-only runtime invariant
 
 Herdr is the sole supported runtime backend (`AGENTS.md` hard rule 6; owner `bin/fm-backend-policy-lib.sh`).

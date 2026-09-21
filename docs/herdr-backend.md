@@ -16,7 +16,7 @@ Prerequisites:
 - Herdr protocol 14 or newer, installed from [herdr.dev](https://herdr.dev).
 - `jq` for JSON responses.
 - The universal harness and toolchain requirements in [`configuration.md`](configuration.md#toolchain).
-- `python3` only for optional protocol-16 presentation-space ordering and native event subscription.
+- The common [Python requirement](../README.md#requirements) also supplies protocol-16 presentation-space ordering and native event subscription.
 
 Herdr is dual-licensed AGPL-3.0-or-later or commercial.
 Firstmate invokes its CLI as a separate process.
@@ -135,12 +135,13 @@ Missing or malformed endpoint identity and missing confirmation machinery are am
 If lock, snapshot, pane identity, or restoration is ambiguous, cleanup warns and preserves the journal for manual inspection.
 
 Recovery is deliberately conservative and presentation-only.
+The [launch reconciliation gate](launch-records.md#what-the-obligation-does) runs before presentation reclaim and can refuse recovery even when the presentation binding passes its checks.
 An existing journal suppresses another projected create.
 Before any recovery mutation, Firstmate holds both the task spawn lock and the named-session presentation lock.
 A same-identity version 2 binding may replace one exact agent-free restart husk in place only when the physical home, session, metadata endpoint, unique token match, workspace shape and labels, parent identity and placement, and non-target focus snapshot all agree.
 The replacement tab and pane are created and verified before the old pane is rechecked and closed, then the journal advances atomically to the replacement endpoint before metadata publication.
 The reclaim path never moves, closes, deletes, or renames a workspace and never touches a parent, sibling, captain, or foreign pane.
-A failed replacement rolls back only the exact response-derived new pane when focus-safe verification permits it.
+A failed replacement rolls back only the exact response-derived new pane when focus-safe verification permits it; an issued create with an unresolved response stops the spawn instead of falling back flat.
 Version 1 journals, dead or missing panes, duplicate or absent tokens, renamed or detached spaces, cross-home mismatches, inconsistent endpoint bindings, active target tabs, and ambiguous identity or focus fall back flat without mutating the old projection when duplicate-agent risk is positively absent.
 A live or unknown recorded or token-matched endpoint refuses duplicate launch.
 
@@ -203,12 +204,17 @@ herdr_pane_id=<pane-id>
 A Herdr pane id contains a colon, so the adapter splits `window=` on the first colon only.
 The recorded pane is the operational fast path.
 Workspace and tab ids support verification and cleanup but are not inferred from mutable labels during normal operation.
+[`launch-records.md`](launch-records.md) owns launch accounting; the adapter's `fm_backend_herdr_create_note` reports create requests and response-derived identities to that owner.
 
 ## Current transport behavior
 
 The adapter starts and polls a named server before workspace, tab, pane, or agent calls.
 Every Herdr invocation goes through `fm_backend_herdr_cli`, which sets the environment and passes an explicit trailing `--session <name>`.
 An environment variable alone is not reliable when another Herdr server is running.
+When the selected named server is not running, the adapter launches it without inherited Firstmate home and directory overrides, harness identity markers, or the supervision-model override.
+Herdr passes its server startup environment to every later pane, so retaining those values could misroute panes for another Firstmate home or harness.
+An already-running server is reused without restart or environment changes.
+Explicit named-session routing and unrelated launch environment remain intact.
 
 Literal text and Enter are separate operations on `fm-send.sh`'s typed plane; ordinary local text steers instead use the durable steering inbox and send only its best-effort constant doorbell through this adapter.
 Spawn-time fixed commands may use Herdr's atomic run primitive.
@@ -265,7 +271,8 @@ No Herdr-specific copy of that protocol exists.
 
 Stopping and restarting a named Herdr server preserves workspace, tab, pane, and label ids, but the underlying harness processes and live agent registrations do not survive.
 A restored same-labeled tab with a missing pane or no registered agent is a husk.
-Create replaces only a confidently dead or no-agent husk, creates the replacement before closing the old tab, and refuses live or unknown states.
+Whether a worker may replace that husk is governed by the [launch settlement boundary](launch-records.md#what-the-obligation-does).
+Once replacement is permitted, the adapter creates the replacement before closing the old tab and refuses live or unknown states.
 This prevents closing the workspace's last tab before a replacement exists.
 
 The generic Herdr agent-liveness probe reuses the same classifier.
@@ -325,6 +332,7 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - Ghost and placeholder recognition uses ANSI de-emphasis when available; an unstyled glyph row carrying trailing non-idle text fails safely to `unknown`.
 - Mid-session secondmate agent-process liveness is not implemented.
 - Only a Herdr pane can host the away-mode supervisor terminal.
+- Lost-create recovery limits are owned by [`launch-records.md`](launch-records.md#limits-stated-plainly).
 
 ## Regression entry points
 

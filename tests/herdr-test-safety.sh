@@ -40,3 +40,16 @@ herdr_refuse_if_default() { # <session>
 herdr_safe_stop_and_delete() { # <session>
   fm_herdr_lab_teardown "$1"
 }
+
+herdr_finish_test() {
+  local status=$1 session=$2
+  trap - EXIT
+  if ! herdr_safe_stop_and_delete "$session"; then
+    printf 'not ok - lab teardown or fleet-state tripwire failed for %s\n' "$session" >&2
+    [ "$status" -ne 0 ] || status=1
+  fi
+  if ! fm_test_cleanup; then
+    [ "$status" -ne 0 ] || status=1
+  fi
+  exit "$status"
+}

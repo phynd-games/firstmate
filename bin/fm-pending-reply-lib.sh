@@ -90,6 +90,20 @@ _FM_PENDING_REPLY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/n
 # shellcheck source=bin/fm-classify-lib.sh
 . "$_FM_PENDING_REPLY_LIB_DIR/fm-classify-lib.sh"
 
+# _fm_pending_reply_wake_lib: the ONE source site for bin/fm-wake-lib.sh in this
+# library. Each per-correlation entry point declares STATE, FM_WAKE_QUEUE and
+# FM_WAKE_QUEUE_LOCK local and then calls this, and bash's dynamic scoping makes
+# the library's top-level assignments land in those caller-local variables
+# exactly as the former inline source did: containment to the call, per-call
+# re-initialization from the caller's state directory, and source order are all
+# unchanged. The seam exists so static analysis follows one edge into that
+# large graph instead of six (bin/fm-teardown.sh's full analysis could not
+# finish within its bound while the graph was re-expanded per site).
+_fm_pending_reply_wake_lib() {
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$_FM_PENDING_REPLY_LIB_DIR/fm-wake-lib.sh"
+}
+
 FM_PENDING_REPLY_SCHEMA='fm-pending-reply.v1'
 FM_PENDING_REPLY_CORR_RE='corr=[A-Fa-f0-9]{16}'
 FM_PENDING_REPLY_GRACE_DEFAULT=120
@@ -354,7 +368,7 @@ fm_pending_reply_confirm_delivery() {  # <state-dir> <corr_id>
   local STATE FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
   STATE=$state
   lock="$state/.pending-reply-$corr.lock"
-  . "$_FM_PENDING_REPLY_LIB_DIR/fm-wake-lib.sh"
+  _fm_pending_reply_wake_lib
   fm_lock_acquire_wait "$lock" || return 1
   _fm_pending_reply_confirm_delivery_locked "$@" || rc=$?
   fm_lock_release "$lock"
@@ -435,7 +449,7 @@ fm_pending_reply_reconcile_delivery() {  # <state-dir> <corr_id>
   local STATE FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
   STATE=$state
   lock="$state/.pending-reply-$corr.lock"
-  . "$_FM_PENDING_REPLY_LIB_DIR/fm-wake-lib.sh"
+  _fm_pending_reply_wake_lib
   fm_lock_acquire_wait "$lock" || return 1
   _fm_pending_reply_reconcile_delivery_locked "$@" || rc=$?
   fm_lock_release "$lock"
@@ -464,7 +478,7 @@ fm_pending_reply_reset_known_undelivered() {  # <state-dir> <corr_id>
   local STATE FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
   STATE=$state
   lock="$state/.pending-reply-$corr.lock"
-  . "$_FM_PENDING_REPLY_LIB_DIR/fm-wake-lib.sh"
+  _fm_pending_reply_wake_lib
   fm_lock_acquire_wait "$lock" || return 1
   _fm_pending_reply_reset_known_undelivered_locked "$@" || rc=$?
   fm_lock_release "$lock"
@@ -584,8 +598,7 @@ fm_pending_reply_try_resolve() {  # <state-dir> <corr_id> [status-file-override]
   local STATE FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
   STATE=$state
   lock="$state/.pending-reply-$corr.lock"
-  # shellcheck source=bin/fm-wake-lib.sh
-  . "$_FM_PENDING_REPLY_LIB_DIR/fm-wake-lib.sh"
+  _fm_pending_reply_wake_lib
   fm_lock_acquire_wait "$lock" || return 1
   _fm_pending_reply_try_resolve_locked "$@" || rc=$?
   fm_lock_release "$lock"
@@ -1064,8 +1077,7 @@ fm_pending_reply_close_escalation() {  # <state-dir> <corr_id>
   local STATE FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
   STATE=$state
   lock="$state/.pending-reply-$corr.lock"
-  # shellcheck source=bin/fm-wake-lib.sh
-  . "$_FM_PENDING_REPLY_LIB_DIR/fm-wake-lib.sh"
+  _fm_pending_reply_wake_lib
   fm_lock_acquire_wait "$lock" || return 1
   _fm_pending_reply_close_escalation_locked "$@" || rc=$?
   fm_lock_release "$lock"
@@ -1130,8 +1142,7 @@ fm_pending_reply_maybe_escalate() {  # <state-dir> <corr_id>
   local STATE FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
   STATE=$state
   lock="$state/.pending-reply-$corr.lock"
-  # shellcheck source=bin/fm-wake-lib.sh
-  . "$_FM_PENDING_REPLY_LIB_DIR/fm-wake-lib.sh"
+  _fm_pending_reply_wake_lib
   fm_lock_acquire_wait "$lock" || return 1
   _fm_pending_reply_maybe_escalate_locked "$@" || rc=$?
   fm_lock_release "$lock"
