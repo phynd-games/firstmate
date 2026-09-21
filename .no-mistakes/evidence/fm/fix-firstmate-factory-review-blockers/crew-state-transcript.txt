@@ -1,0 +1,28 @@
+ISOLATED FIXTURE: semantic busy record plus native zero-run CLI response. Backend reads are stubbed; no live Herdr lifecycle or pipeline operations.
+Input:
+runs: 0 runs yet in this repository
+help[1]: "Run no-mistakes axi run --intent "the user goal" --yes to validate the current branch"
+
+Base commit public state reader:
+state: unknown · source: none · unreadable validation run evidence (not proof of death)
+
+Target commit public state reader:
+state: working · source: pane · harness busy (claude-hook)
+
+Target with idle activity and needs-decision log:
+state: parked · source: status-log · which database?
+
+Target with partial response:
+state: unknown · source: none · unreadable validation run evidence (not proof of death)
+
+Target with empty response:
+state: unknown · source: none · unreadable validation run evidence (not proof of death)
+
+Target with extra response:
+state: unknown · source: none · unreadable validation run evidence (not proof of death)
+
+Target with malformed response:
+state: unknown · source: none · unreadable validation run evidence (not proof of death)
+
+Target with otherwise valid zero-run text but command exit 7:
+state: unknown · source: none · unreadable validation run evidence (not proof of death)

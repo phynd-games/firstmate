@@ -1,0 +1,38 @@
+ISOLATED FIXTURE: one new AGENTS.md file, one hunk; independent authority/documentation/delivery proofs. No live home or forge is used.
+
+Base commit: valid shared evidence rejected (reproduced defect)
+$ /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M325KBN71RPA31F08648T96W/.test-phase-tmp/base/bin/fm-pr-self-review-check.sh task-a no-mistakes
+error: durable findings-first self-review report is unavailable or invalid
+exit: 1
+
+Target commit: the identical report is accepted
+$ /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M325KBN71RPA31F08648T96W/bin/fm-pr-self-review-check.sh task-a no-mistakes
+validated: durable findings-first self-review report for task-a
+exit: 0
+
+Public PR-ready command with isolated forge fixture:
+armed: state/task-a.check.sh
+
+Persisted PR attribution:
+github
+https://github.com/o/r/pull/119
+github.com
+o/r
+119
+
+ISOLATED FIXTURE: three changed paths; authority/delivery share AGENTS.md, documentation cites README.md; complete three-file inventory.
+
+Newline-only counterfactual also accepts this fixture; no independent baseline failure claimed
+$ /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M325KBN71RPA31F08648T96W/.test-phase-tmp/newline-regression/bin/fm-pr-self-review-check.sh task-a no-mistakes
+validated: durable findings-first self-review report for task-a
+exit: 0
+
+Target commit: complete inventory and feasible distinct-file coverage accepted
+$ /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M325KBN71RPA31F08648T96W/bin/fm-pr-self-review-check.sh task-a no-mistakes
+validated: durable findings-first self-review report for task-a
+exit: 0
+
+Negative control: missing docs/setup.md inventory is rejected
+$ /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M325KBN71RPA31F08648T96W/bin/fm-pr-self-review-check.sh task-a no-mistakes
+error: durable findings-first self-review report is unavailable or invalid
+exit: 1
