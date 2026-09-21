@@ -725,11 +725,9 @@ EOF
     return 0
   }
   local line finding_path finding_file finding_line surface_files surface_file review_root
-  local surface_evidence evidence_ref evidence_rest evidence_file evidence_line evidence_side evidence_hash evidence_change_hash evidence_line_hex evidence_before_hex evidence_after_hex evidence_claim evidence_behavior evidence_behavior_hash evidence_hunk_id evidence_hunk_shape hunk_old_count hunk_new_count expected_before_hex expected_after_hex line_content actual_evidence_hash actual_change_hash actual_line_hex surface_review_files surface_evidence_files surface_evidence_refs surface_evidence_hunks changed_path surface_name surface_consequence surface_fix surface_behavior surface_action surface_binding surface_behavior_hash surface_body surface_unaffected_files surface_unaffected_binding surface_unaffected_expected_binding consequence_ref consequence_file consequence_side consequence_hash consequence_change_hash consequence_line_hex consequence_before_hex consequence_after_hex consequence_claim consequence_behavior consequence_behavior_hash consequence_hunk consequence_rest consequence_line fix_ref fix_file fix_side fix_hash fix_change_hash fix_line_hex fix_before_hex fix_after_hex fix_claim fix_behavior fix_action fix_behavior_hash fix_hunk fix_rest fix_line
+  local surface_evidence evidence_ref evidence_rest evidence_file evidence_line evidence_side evidence_hash evidence_change_hash evidence_line_hex evidence_before_hex evidence_after_hex evidence_claim evidence_behavior evidence_behavior_hash evidence_hunk_id evidence_hunk_shape hunk_old_count hunk_new_count expected_before_hex expected_after_hex line_content actual_evidence_hash actual_change_hash actual_line_hex surface_review_files surface_evidence_files changed_path surface_name surface_consequence surface_fix surface_behavior surface_action surface_binding surface_behavior_hash surface_body surface_unaffected_files surface_unaffected_binding surface_unaffected_expected_binding consequence_ref consequence_file consequence_side consequence_hash consequence_change_hash consequence_line_hex consequence_before_hex consequence_after_hex consequence_claim consequence_behavior consequence_behavior_hash consequence_hunk consequence_rest consequence_line fix_ref fix_file fix_side fix_hash fix_change_hash fix_line_hex fix_before_hex fix_after_hex fix_claim fix_behavior fix_action fix_behavior_hash fix_hunk fix_rest fix_line
   surface_review_files=
   surface_evidence_files=
-  surface_evidence_refs=
-  surface_evidence_hunks=
   fm_pr_review_file_valid() {
     local review_file=$1
     for review_root in "$worktree" "$substrate_root"; do
@@ -779,7 +777,7 @@ EOF
       listed=$FM_PR_REVIEW_PATH
       listed=$(fm_pr_review_path_encode "$listed") || return 1
       [ "$listed" = "$encoded_candidate" ] && return 0
-    done < <(printf '%s\n' "$allowed_files" | tr ',' '\n')
+    done < <(printf '%s' "$allowed_files" | tr ',' '\n')
     return 1
   }
   fm_pr_changed_path_valid() {
@@ -1209,25 +1207,25 @@ EOF
     [ "$surface_evidence" = "$evidence_ref sha256=$evidence_hash change-sha256=$evidence_change_hash line-hex=$evidence_line_hex before-hex=$evidence_before_hex after-hex=$evidence_after_hex hunk=$evidence_ref claim=$evidence_claim behavior=$surface_behavior behavior-sha256=$surface_behavior_hash" ] || return 1
     [ "$surface_consequence" = "anchor=$consequence_ref side=$consequence_side sha256=$consequence_hash change-sha256=$evidence_change_hash line-hex=$consequence_line_hex before-hex=$consequence_before_hex after-hex=$consequence_after_hex hunk=$consequence_ref claim=$consequence_claim behavior=$surface_behavior behavior-sha256=$surface_behavior_hash binding=$surface_binding" ] || return 1
     [ "$surface_fix" = "anchor=$fix_ref side=$fix_side sha256=$fix_hash change-sha256=$evidence_change_hash line-hex=$fix_line_hex before-hex=$fix_before_hex after-hex=$fix_after_hex hunk=$fix_ref claim=$fix_claim behavior=$surface_behavior action=$surface_action behavior-sha256=$surface_behavior_hash binding=$surface_binding" ] || return 1
-    surface_evidence_hunks="$surface_evidence_hunks$evidence_hunk_id"$'\n'
     evidence_file=$(fm_pr_review_path_encode "$evidence_file") || return 1
     surface_evidence_files="$surface_evidence_files$evidence_file
-"
-    surface_evidence_refs="$surface_evidence_refs$evidence_ref
 "
     [ "$actual_evidence_hash" = "$evidence_hash" ] || return 1
     [ "$actual_change_hash" = "$evidence_change_hash" ] || return 1
     [ "$actual_line_hex" = "$evidence_line_hex" ] || return 1
   done < <(awk '/^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): / { print }' "$report")
-  local unique_surface_evidence_count unique_surface_evidence_hunk_count required_surface_evidence_count applicable_surface_count
+  local unique_surface_evidence_count required_surface_evidence_count applicable_surface_count
   unique_surface_evidence_count=$(printf '%s\n' "$surface_evidence_files" | LC_ALL=C sort -u | awk 'NF { count++ } END { print count + 0 }') || return 1
-  unique_surface_evidence_hunk_count=$(printf '%s\n' "$surface_evidence_hunks" | LC_ALL=C sort -u | awk 'NF { count++ } END { print count + 0 }') || return 1
   applicable_surface_count=$(printf '%s\n' authority security path failure tests documentation delivery | while IFS= read -r surface_name; do
     fm_pr_review_surface_has_relevant_changed_path "$surface_name" && printf '%s\n' 1
   done | awk '{ count += $1 } END { print count + 0 }') || return 1
   required_surface_evidence_count=$applicable_surface_count
   [ "$required_surface_evidence_count" -le "$actual_changed_path_count" ] || required_surface_evidence_count=$actual_changed_path_count
-  [ "$unique_surface_evidence_hunk_count" -eq "$applicable_surface_count" ] || return 1
+  # Each applicable surface has already supplied independently bound line,
+  # hunk, owner, transition, and behavior evidence above. A single real diff
+  # hunk may truthfully serve multiple applicable owner surfaces, especially
+  # for a genuinely new file, so coverage is bounded by changed paths rather
+  # than requiring physically distinct hunks.
   [ "$required_surface_evidence_count" -le 7 ] || required_surface_evidence_count=7
   [ "$unique_surface_evidence_count" -ge "$required_surface_evidence_count" ] || return 1
   local actual_substrate_head actual_substrate_changed empty_digest

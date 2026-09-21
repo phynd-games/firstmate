@@ -56,6 +56,28 @@ fm_nm_field() {  # <toon-output> <key>
   printf '%s\n' "$1" | sed -n "s/^[[:space:]]*$2:[[:space:]]*\(.*\)/\1/p" | head -1
 }
 
+# 0 when native `no-mistakes axi status` proves that this repository has no
+# validation runs yet. The CLI emits exactly one zero-run line followed by one
+# help line; every other shape remains unreadable evidence for the caller.
+fm_nm_axi_status_no_runs() {  # <axi-status-output>
+  local content=${1-}
+  printf '%s\n' "$content" | awk '
+    NR == 1 {
+      if ($0 != "runs: 0 runs yet in this repository") invalid = 1
+      next
+    }
+    NR == 2 {
+      if ($0 !~ /^help\[[1-9][0-9]*\]: .+$/) invalid = 1
+      help = 1
+      next
+    }
+    { invalid = 1 }
+    END {
+      if (NR != 2 || !help || invalid) exit 1
+    }
+  '
+}
+
 # 0 if run head $2 matches worktree $1's code identity, per the same rule
 # everywhere this attribution is needed:
 #   - missing/empty head: cannot bind; reject

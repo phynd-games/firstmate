@@ -270,6 +270,9 @@ strip_quotes() { fm_nm_strip_quotes "$@"; }
 nm_run() {  # <args...>
   fm_nm_run "$WT" "$NM_TIMEOUT" "$@"
 }
+nm_run_checked() {  # <args...>
+  fm_nm_run_checked "$WT" "$NM_TIMEOUT" "$@"
+}
 
 # Scalar value of a TOON key in the captured run output ($RUN_OUT).
 RUN_OUT=""
@@ -487,8 +490,17 @@ COARSE_STATUS=""
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
-  RUN_OUT=$(nm_run axi status)
-  if [ -n "$RUN_OUT" ]; then
+  RUN_QUERY_STATUS=1
+  RUN_OUT=$(nm_run_checked axi status) && RUN_QUERY_STATUS=0
+  # A successful native zero-run answer is the one supported no-validation
+  # result and may continue to the ordinary pane/status-log sources below.
+  # Empty, malformed, partial, and failed CLI answers are unreadable evidence,
+  # not alternate spellings of "no run".
+  if [ "$RUN_QUERY_STATUS" -ne 0 ] || [ -z "$RUN_OUT" ]; then
+    emit unknown none "unreadable validation run evidence (not proof of death)"
+  elif fm_nm_axi_status_no_runs "$RUN_OUT"; then
+    :
+  else
     fm_vloop_evidence_valid "$RUN_OUT" || emit unknown none "unreadable validation run evidence (not proof of death)"
     run_branch=$(strip_quotes "$(nm_field branch)")
     # Head equality, or the pipeline-owned-active exemption: while the
@@ -502,10 +514,6 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
       # The active-or-most-recent run is for another branch, or its same-branch
       # attribution failed (the CLI is alive and answered) - try the coarse
       # fallback.
-      # Deliberately nested inside `[ -n "$RUN_OUT" ]`: an empty/timed-out
-      # primary call means the CLI itself did not respond, so retrying it
-      # immediately with a second bounded call would just double the wait
-      # for no better answer.
       COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH")
       if [ -n "$COARSE_STATUS" ]; then
         HAVE_RUN=1

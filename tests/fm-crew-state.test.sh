@@ -150,11 +150,17 @@ arm_idle_record() {  # <state-dir> <id>
     --source claude-hook --event stop
 }
 
+zero_run_status() {
+  printf '%s\n' \
+    'runs: 0 runs yet in this repository' \
+    'help[1]: "Run no-mistakes axi run --intent "the user goal" --yes to validate the current branch"'
+}
+
 # Clear the fake-driver vars and (re-)mark them exported, so the per-test plain
 # assignments below stay exported into the fakes without an `export VAR=$(...)`
 # command-substitution assignment (SC2155).
 reset_fakes() {
-  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_AXI_STATUS=$(zero_run_status)
   FM_FAKE_AXI_STATUS_RUN=""
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_BUSY=0
@@ -785,7 +791,7 @@ test_no_run_busy_pane() {
   write_crew_meta "$d/state/feat-h.meta" "$d/wt" "kind=ship" "harness=claude"
   # No matching run anywhere. The busy verdict comes from the crew's own
   # semantic lifecycle record (bin/fm-busy-lib.sh), not from rendered text.
-  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_AXI_STATUS="$(zero_run_status)"
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_BUSY=1
   local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" feat-h)
@@ -807,7 +813,7 @@ test_no_run_footer_text_alone_is_not_working() {
   make_repo_on_branch "$d/wt" fm/feat-h2
   make_fakebin "$d" >/dev/null
   write_crew_meta "$d/state/feat-h2.meta" "$d/wt" "kind=ship" "harness=claude"
-  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_AXI_STATUS="$(zero_run_status)"
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_BUSY=1
   printf 'done: stale completion event\n' > "$d/state/feat-h2.status"
@@ -827,7 +833,7 @@ test_no_run_grok_uses_isolated_fallback() {
   make_repo_on_branch "$d/wt" fm/feat-h3
   make_fakebin "$d" >/dev/null
   write_crew_meta "$d/state/feat-h3.meta" "$d/wt" "kind=ship" "harness=grok"
-  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_AXI_STATUS="$(zero_run_status)"
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_BUSY=1
   FM_FAKE_BUSY_TEXT='Ctrl+c:cancel'
@@ -846,7 +852,7 @@ test_no_run_herdr_unknown_uses_backend_capture() {
   make_fakebin "$d" >/dev/null
   write_crew_meta "$d/state/feat-herdr.meta" "$d/wt" "kind=ship" \
     "harness=claude"
-  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_AXI_STATUS="$(zero_run_status)"
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_HERDR_AGENT_STATUS=working
   local out; out=$(run_crew_state "$d" feat-herdr)
@@ -875,7 +881,7 @@ test_no_run_herdr_idle_agent_status_outranked_by_record() {
   # No run attributable (mirrors a no-mistakes run-step lookup that found no
   # matching row within the configured runs-list window): the crew's semantic
   # busy state is the only remaining signal.
-  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_AXI_STATUS="$(zero_run_status)"
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_HERDR_AGENT_STATUS=idle
   local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" feat-herdr-idle)
@@ -898,7 +904,7 @@ test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle() {
   write_crew_meta "$d/state/feat-herdr-stopped.meta" "$d/wt" "kind=ship" \
     "harness=claude"
   printf 'working: implementing\n' > "$d/state/feat-herdr-stopped.status"
-  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_AXI_STATUS="$(zero_run_status)"
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_HERDR_AGENT_STATUS=idle
   local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" feat-herdr-stopped)
@@ -918,7 +924,7 @@ test_no_run_idle_pane_uses_log() {
   make_fakebin "$d" >/dev/null
   write_crew_meta "$d/state/feat-i.meta" "$d/wt" "kind=ship" "harness=claude"
   printf 'needs-decision: which database?\n' > "$d/state/feat-i.status"
-  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_AXI_STATUS="$(zero_run_status)"
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" feat-i
   local out; out=$(run_crew_state "$d" feat-i)
@@ -934,7 +940,7 @@ test_no_run_idle_pane_uses_keyed_log() {
   make_fakebin "$d" >/dev/null
   write_crew_meta "$d/state/feat-keyed.meta" "$d/wt" "kind=ship" "harness=claude"
   printf 'needs-decision [key=q1]: which database?\n' > "$d/state/feat-keyed.status"
-  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_AXI_STATUS="$(zero_run_status)"
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" feat-keyed
   local out; out=$(run_crew_state "$d" feat-keyed)
@@ -953,7 +959,7 @@ test_no_run_idle_pane_paused() {
   make_fakebin "$d" >/dev/null
   write_crew_meta "$d/state/feat-pause.meta" "$d/wt" "kind=ship" "harness=claude"
   printf 'paused: holding for the upstream tool release\n' > "$d/state/feat-pause.status"
-  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_AXI_STATUS="$(zero_run_status)"
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" feat-pause
   local out; out=$(run_crew_state "$d" feat-pause)
@@ -970,7 +976,7 @@ test_no_run_idle_pane_custom_paused_verb() {
   make_fakebin "$d" >/dev/null
   write_crew_meta "$d/state/feat-custom-pause.meta" "$d/wt" "kind=ship" "harness=claude"
   printf 'awaiting: vendor maintenance window\n' > "$d/state/feat-custom-pause.status"
-  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_AXI_STATUS="$(zero_run_status)"
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" feat-custom-pause
   local out; out=$(FM_CLASSIFY_PAUSED_VERB=awaiting run_crew_state "$d" feat-custom-pause)
@@ -998,7 +1004,7 @@ test_no_run_idle_secondmate_resolved_event_not_state() {
   write_crew_meta "$d/state/mate.meta" "$d/wt" "kind=secondmate" "home=$d/wt"
   printf 'needs-decision [key=race]: pick subscribe order\n' > "$d/state/mate.status"
   printf 'resolved [key=race]: went with subscribe-before-write\n' >> "$d/state/mate.status"
-  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_AXI_STATUS="$(zero_run_status)"
   FM_FAKE_BUSY=0
   local out; out=$(run_crew_state "$d" mate)
   assert_contains "$out" "state: unknown" "resolved-then-idle secondmate is not a spurious run-state"
@@ -1111,8 +1117,9 @@ SH
   start=$SECONDS
   out=$(FM_FAKE_NM_CALLS="$calls_file" PATH="$d/fakebin:$toolbin" FM_HOME="$d" FM_STATE_OVERRIDE="$d/state" FM_CREW_STATE_NM_TIMEOUT=1 "$CREW_STATE" feat-timeout)
   elapsed=$((SECONDS - start))
-  assert_contains "$out" "state: working" "timed-out no-mistakes falls back to pane"
-  assert_contains "$out" "source: pane" "timed-out no-mistakes -> pane source"
+  assert_contains "$out" "state: unknown" "timed-out no-mistakes remains unreadable"
+  assert_contains "$out" "source: none" "timed-out no-mistakes refuses pane fallback"
+  assert_contains "$out" "unreadable validation run evidence" "timed-out no-mistakes names the evidence failure"
   [ "$elapsed" -lt 5 ] || fail "perl timeout did not bound no-mistakes calls (elapsed ${elapsed}s)"
   calls=$(awk 'END { print NR + 0 }' "$calls_file" 2>/dev/null || echo 0)
   [ "$calls" -eq 1 ] || fail "empty no-mistakes status triggered extra lookups ($calls calls)"
@@ -1187,6 +1194,44 @@ test_unreadable_validation_evidence_is_not_worded_as_death() {
   assert_contains "$out" "not proof of death" \
     "unreadable validation evidence must carry the same not-proof-of-death qualifier already used for an unreachable remote endpoint"
   pass "unreadable validation run evidence is worded as inconclusive, never as established death"
+}
+
+test_zero_run_status_requires_exact_successful_native_shape() {
+  reset_fakes
+  local d out
+  d=$(new_case zero-run-contract)
+  make_repo_on_branch "$d/wt" fm/zero-run-contract
+  make_fakebin "$d" >/dev/null
+  write_crew_meta "$d/state/zero-run.meta" "$d/wt" "kind=ship" "harness=claude"
+  local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" zero-run)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" zero-run busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+
+  FM_FAKE_AXI_STATUS=$(zero_run_status)
+  out=$(run_crew_state "$d" zero-run)
+  assert_contains "$out" "state: working" "the native zero-run answer permits ordinary pane state"
+  assert_contains "$out" "source: pane" "the native zero-run answer reaches the pane source"
+
+  FM_FAKE_AXI_STATUS='runs: 0 runs yet in this repository'
+  out=$(run_crew_state "$d" zero-run)
+  assert_contains "$out" "state: unknown" "a partial zero-run answer is not accepted"
+  assert_contains "$out" "source: none" "a partial zero-run answer refuses ordinary fallback"
+
+  FM_FAKE_AXI_STATUS=''
+  out=$(run_crew_state "$d" zero-run)
+  assert_contains "$out" "state: unknown" "empty validation output is not treated as no run"
+  assert_contains "$out" "source: none" "empty validation output refuses ordinary fallback"
+
+  cat > "$d/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'runs: 0 runs yet in this repository' 'help[1]: native help'
+exit 7
+SH
+  chmod +x "$d/fakebin/no-mistakes"
+  out=$(run_crew_state "$d" zero-run)
+  assert_contains "$out" "state: unknown" "a failed validation command is not treated as no run"
+  assert_contains "$out" "source: none" "a failed validation command refuses ordinary fallback"
+  pass "zero-run attribution accepts only the exact successful native answer"
 }
 
 # --- remote secondmate arm ---------------------------------------------------
@@ -1698,6 +1743,7 @@ test_no_timeout_uses_perl_bound
 test_scout_skips_run_lookup
 test_torn_down_worktree
 test_unreadable_validation_evidence_is_not_worded_as_death
+test_zero_run_status_requires_exact_successful_native_shape
 test_remote_alive_with_log_uses_status_log
 test_remote_alive_idle_is_healthy_not_gone
 test_remote_unreachable_is_unknown_remote_not_dead
