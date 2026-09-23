@@ -321,7 +321,7 @@ surface_review_record() {
   case "$surface" in
     authority) behavior=non-authorizing; action=retain-owner ;;
     security) behavior=provenance-bound; action=retain-boundary ;;
-    path) behavior=path-safe; action=retain-validation ;;
+    path) behavior='path-safe'; action=retain-validation ;;
     failure) behavior=fail-closed; action=retain-refusal ;;
     tests) behavior=behavioral; action=retain-regression ;;
     documentation) behavior=contract-aligned; action=retain-contract ;;
@@ -342,7 +342,7 @@ surface_review_single_record() {
   case "$surface" in
     authority) behavior=non-authorizing; action=retain-owner ;;
     security) behavior=provenance-bound; action=retain-boundary ;;
-    path) behavior=path-safe; action=retain-validation ;;
+    path) behavior='path-safe'; action=retain-validation ;;
     failure) behavior=fail-closed; action=retain-refusal ;;
     tests) behavior=behavioral; action=retain-regression ;;
     documentation) behavior=contract-aligned; action=retain-contract ;;
@@ -538,7 +538,7 @@ run_merge_entry() {
 }
 
 test_pr_ready_requires_durable_self_review() {
-  local dir report rc fixture_digest delivery_digest spaced_path comma_path semi_path spaced_digest comma_digest semi_digest
+  local dir report rc fixture_digest delivery_digest spaced_path comma_path semi_path
   dir=$(make_case self-review-required)
   write_task_meta "$dir"
   report="$dir/home/data/task-a/pr-self-review.md"
@@ -1169,6 +1169,60 @@ for surface, record in records.items():
 report.write_text(text, encoding="utf-8")
 PY
   chmod 0600 "$report"
+}
+
+test_pr_ready_accepts_external_rust_surface_owners() {
+  local dir report changed_paths changed_digest source_file tests_file docs_file
+  local source_digest tests_digest docs_digest authority_record security_record path_record
+  local failure_record tests_record documentation_record delivery_record
+  dir=$(make_case external-rust-surface-owners)
+  git -C "$dir/wt" reset --hard -q main
+  source_file=crates/factory-testkit/src/process.rs
+  tests_file=crates/factory-testkit/tests/f06_review.rs
+  docs_file=README.md
+  mkdir -p "$dir/wt/$(dirname "$source_file")" "$dir/wt/$(dirname "$tests_file")"
+  printf '%s\n' 'fixture' 'rust source evidence' > "$dir/wt/$source_file"
+  printf '%s\n' 'fixture' 'rust test evidence' > "$dir/wt/$tests_file"
+  printf '%s\n' 'fixture' 'F06 documentation evidence' > "$dir/wt/$docs_file"
+  git -C "$dir/wt" add crates README.md
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm external-rust-surface-owners
+  write_task_meta "$dir"
+  report="$dir/home/data/task-a/pr-self-review.md"
+  changed_paths=$(git -C "$dir/wt" diff --name-only main HEAD | paste -sd, -)
+  changed_digest=$(sed -n 's/^Changed files: //p' "$report")
+  source_digest=$(self_review_line_digest "$dir" "$source_file")
+  tests_digest=$(self_review_line_digest "$dir" "$tests_file")
+  docs_digest=$(self_review_line_digest "$dir" "$docs_file")
+  authority_record=$(surface_review_single_record_at_line Authority authority "$source_file" 2 "$source_digest" "$(self_review_line_hex "$dir" "$source_file")" "$(surface_change_digest_for_file "$dir" "$source_file")")
+  security_record=$(surface_review_single_record_at_line Security security "$source_file" 2 "$source_digest" "$(self_review_line_hex "$dir" "$source_file")" "$(surface_change_digest_for_file "$dir" "$source_file")")
+  path_record=$(surface_review_single_record_at_line Path path "$source_file" 2 "$source_digest" "$(self_review_line_hex "$dir" "$source_file")" "$(surface_change_digest_for_file "$dir" "$source_file")")
+  failure_record=$(surface_review_single_record_at_line Failure failure "$source_file" 2 "$source_digest" "$(self_review_line_hex "$dir" "$source_file")" "$(surface_change_digest_for_file "$dir" "$source_file")")
+  tests_record=$(surface_review_single_record_at_line Tests tests "$tests_file" 2 "$tests_digest" "$(self_review_line_hex "$dir" "$tests_file")" "$(surface_change_digest_for_file "$dir" "$tests_file")")
+  documentation_record=$(surface_review_single_record_at_line Documentation documentation "$docs_file" 2 "$docs_digest" "$(self_review_line_hex "$dir" "$docs_file")" "$(surface_change_digest_for_file "$dir" "$docs_file")")
+  delivery_record=$(surface_unaffected_record_for_file Delivery delivery "$docs_file" "$changed_digest")
+  python3 - "$report" "$changed_paths" "$authority_record" "$security_record" "$path_record" "$failure_record" "$tests_record" "$documentation_record" "$delivery_record" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+changed_paths = sys.argv[2]
+records = dict(zip(
+    ("Authority", "Security", "Path", "Failure", "Tests", "Documentation", "Delivery"),
+    sys.argv[3:],
+))
+text = report.read_text(encoding="utf-8")
+for surface, record in records.items():
+    if "; scope=unaffected;" not in record:
+        record = re.sub(r"; files=[^;]*;", "; files=" + changed_paths + ";", record, count=1)
+    text = re.sub(rf"(?m)^{surface}: .*", record, text, count=1)
+report.write_text(text, encoding="utf-8")
+PY
+  chmod 0600 "$report"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/122 >/dev/null \
+    || fail "PR-ready path rejected truthful Rust workspace surface evidence"
+  [ -e "$dir/home/state/task-a.check.sh" ] || fail "Rust workspace surface evidence did not publish a runnable poll"
+  pass "PR-ready path accepts truthful Rust workspace source and nested test surface evidence"
 }
 
 test_pr_ready_allows_one_new_file_multiple_surface_coverage() {
@@ -3577,6 +3631,7 @@ fi
 if [ "${1:-}" = --self-review-only ]; then
   test_pr_ready_requires_durable_self_review
   test_pr_ready_tracks_production_surface_ownership
+  test_pr_ready_accepts_external_rust_surface_owners
   test_pr_ready_allows_one_new_file_multiple_surface_coverage
   test_pr_ready_overlapping_owner_coverage
   test_pr_ready_rejects_irrelevant_surface_evidence_and_proves_owner_mutation
@@ -3589,6 +3644,7 @@ fi
 test_parser_matrix
 test_pr_ready_requires_durable_self_review
 test_pr_ready_tracks_production_surface_ownership
+test_pr_ready_accepts_external_rust_surface_owners
 test_pr_ready_allows_one_new_file_multiple_surface_coverage
 test_pr_ready_overlapping_owner_coverage
 test_pr_ready_rejects_irrelevant_surface_evidence_and_proves_owner_mutation
