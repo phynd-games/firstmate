@@ -794,27 +794,27 @@ EOF
     case "$review_surface" in
       authority)
         case "$review_file" in
-          AGENTS.md|.agents/skills/*|bin/fm-brief.sh|bin/fm-spawn.sh|bin/fm-promote.sh|bin/fm-pr-check.sh|bin/fm-merge-local.sh|bin/fm-pr-create.sh|bin/fm-pr-merge.sh|schemas/*) return 0 ;;
+          AGENTS.md|.agents/skills/*|bin/fm-brief.sh|bin/fm-spawn.sh|bin/fm-promote.sh|bin/fm-pr-check.sh|bin/fm-merge-local.sh|bin/fm-pr-create.sh|bin/fm-pr-merge.sh|schemas/*|crates/*/src/*) return 0 ;;
         esac
         ;;
       security)
         case "$review_file" in
-          .agents/skills/*|bin/fm-pr-lib.sh|bin/fm-pr-self-review-check.sh|bin/fm-operational-input.sh|bin/fm-send.sh|bin/fm-message*.sh|bin/fm-remote-*.sh|bin/firstmate_factory/*|schemas/*) return 0 ;;
+          .agents/skills/*|bin/fm-pr-lib.sh|bin/fm-pr-self-review-check.sh|bin/fm-operational-input.sh|bin/fm-send.sh|bin/fm-message*.sh|bin/fm-remote-*.sh|bin/firstmate_factory/*|schemas/*|crates/*/src/*) return 0 ;;
         esac
         ;;
       path)
         case "$review_file" in
-          bin/fm-pr-lib.sh|bin/fm-review-diff.sh|bin/fm-spawn.sh|bin/fm-pr-check.sh|bin/fm-pr-create.sh|bin/fm-pr-self-review-check.sh|bin/fm-merge-local.sh|bin/fm-operational-input.sh|bin/fm-send.sh|schemas/*) return 0 ;;
+          bin/fm-pr-lib.sh|bin/fm-review-diff.sh|bin/fm-spawn.sh|bin/fm-pr-check.sh|bin/fm-pr-create.sh|bin/fm-pr-self-review-check.sh|bin/fm-merge-local.sh|bin/fm-operational-input.sh|bin/fm-send.sh|schemas/*|crates/*/src/*) return 0 ;;
         esac
         ;;
       failure)
         case "$review_file" in
-          bin/*|schemas/*) return 0 ;;
+          bin/*|schemas/*|crates/*/src/*) return 0 ;;
         esac
         ;;
       tests)
         case "$review_file" in
-          bin/fm-test*.sh|tests/*) return 0 ;;
+          bin/fm-test*.sh|tests/*|crates/*/tests/*) return 0 ;;
         esac
         ;;
       documentation)
