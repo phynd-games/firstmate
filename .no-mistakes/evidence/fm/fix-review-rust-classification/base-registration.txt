@@ -1,0 +1,8 @@
+Scenario: base checker with identical external Rust review fixture
+Boundary: real checker/report validation/local publication; GitHub responses and supervisor authorization are fixture stubs. No real PR is created.
+
+$ /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M369P2YMSNTWJHHRQXX8EB8H/.test-phase-tmp/base/bin/fm-pr-check.sh task-a https://github.com/o/r/pull/122
+error: durable findings-first self-review report is unavailable or invalid
+exit=1
+No PR poll published.
+not ok - PR-ready path rejected truthful Rust workspace surface evidence

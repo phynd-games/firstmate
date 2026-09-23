@@ -1,0 +1,59 @@
+Scenario: target checker with identical external Rust review fixture
+Boundary: real checker/report validation/local publication; GitHub responses and supervisor authorization are fixture stubs. No real PR is created.
+
+$ /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M369P2YMSNTWJHHRQXX8EB8H/bin/fm-pr-check.sh task-a https://github.com/o/r/pull/122
+armed: state/task-a.check.sh
+exit=0
+Persisted PR poll identity:
+github
+https://github.com/o/r/pull/122
+github.com
+o/r
+122
+Persisted review head binding:
+pr=https://github.com/o/r/pull/122
+pr_head=ef3a8e2bcfc5eb1d30f51c86eff73ebcd6ab5b0c
+ok - PR-ready path accepts truthful Rust workspace source and nested test surface evidence
+
+Reviewed changed paths:
+README.md
+crates/factory-testkit/src/process.rs
+crates/factory-testkit/tests/f06_review.rs
+
+$ fm-pr-self-review-check.sh task-a no-mistakes
+validated: durable findings-first self-review report for task-a
+
+$ bash published-task-a.check.sh (GitHub fixture reports MERGED)
+merged
+
+Negative case: missing report
+
+$ /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M369P2YMSNTWJHHRQXX8EB8H/bin/fm-pr-check.sh task-a https://github.com/o/r/pull/122
+error: durable findings-first self-review report is unavailable or invalid
+exit=1
+Persisted PR poll identity:
+github
+https://github.com/o/r/pull/122
+github.com
+o/r
+122
+Persisted review head binding:
+pr=https://github.com/o/r/pull/122
+pr_head=ef3a8e2bcfc5eb1d30f51c86eff73ebcd6ab5b0c
+Existing registration preserved unchanged.
+
+Negative case: claim Rust authority surface is unaffected
+
+$ /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M369P2YMSNTWJHHRQXX8EB8H/bin/fm-pr-check.sh task-a https://github.com/o/r/pull/122
+error: durable findings-first self-review report is unavailable or invalid
+exit=1
+Persisted PR poll identity:
+github
+https://github.com/o/r/pull/122
+github.com
+o/r
+122
+Persisted review head binding:
+pr=https://github.com/o/r/pull/122
+pr_head=ef3a8e2bcfc5eb1d30f51c86eff73ebcd6ab5b0c
+Existing registration preserved unchanged.
