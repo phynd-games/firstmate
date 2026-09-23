@@ -442,8 +442,10 @@ fm_pr_substrate_launch_sha() {
   [ -d "$data/$id" ] && [ ! -L "$data/$id" ] || return 1
   brief="$data/$id/brief.md"
   [ -f "$brief" ] && [ ! -L "$brief" ] || return 1
+  # shellcheck disable=SC2016 # Backticks match literal Markdown delimiters.
   count=$(grep -c '^- Firstmate substrate launch SHA: `\([0-9a-f][0-9a-f]*\)`$' "$brief" || true)
   [ "$count" = 1 ] || return 1
+  # shellcheck disable=SC2016 # Backticks match literal Markdown delimiters.
   value=$(sed -n 's/^- Firstmate substrate launch SHA: `\([0-9a-f][0-9a-f]*\)`$/\1/p' "$brief")
   fm_pr_head_valid "$value" || return 1
   printf '%s\n' "$value"
@@ -452,8 +454,10 @@ fm_pr_substrate_launch_sha() {
 fm_pr_substrate_root_from_brief() {
   local brief=$1 root count actual_root git_root
   [ -f "$brief" ] && [ ! -L "$brief" ] || return 1
+  # shellcheck disable=SC2016 # Backticks match literal Markdown delimiters.
   count=$(grep -c '^- Firstmate substrate root: `.*`$' "$brief" || true)
   [ "$count" = 1 ] || return 1
+  # shellcheck disable=SC2016 # Backticks match literal Markdown delimiters.
   root=$(sed -n 's/^- Firstmate substrate root: `\(.*\)`$/\1/p' "$brief")
   case "$root" in
     /*) ;;
@@ -486,7 +490,7 @@ fm_pr_review_path_encode() {
 
 fm_pr_self_review_report_valid() {
   local data=$1 id=$2 expected_head=${3-} worktree=${4-} substrate_root=${5-} expected_base_ref=${6-} expected_base_sha=${7-} expected_substrate_base=${8-}
-  local report data_device parsed target_repository base_ref base_sha head_sha merge_base_sha changed_files tree_status
+  local report data_device parsed target_repository base_ref base_sha head_sha merge_base_sha changed_files _tree_status
   local substrate_base_sha substrate_head_sha substrate_changed_files
   [ -n "$worktree" ] && [ -d "$worktree" ] && [ ! -L "$worktree" ] || return 1
   [ -n "$substrate_root" ] && [ -d "$substrate_root" ] && [ ! -L "$substrate_root" ] || return 1
@@ -664,7 +668,7 @@ fm_pr_self_review_report_valid() {
       return parts[6] ~ /^binding=[0-9a-f]+$/ && length(parts[6]) == 72
     }
   ' "$report") || return 1
-  IFS="$(printf '\t')" read -r target_repository base_ref base_sha head_sha merge_base_sha changed_files tree_status \
+  IFS="$(printf '\t')" read -r target_repository base_ref base_sha head_sha merge_base_sha changed_files _tree_status \
     substrate_base_sha substrate_head_sha substrate_changed_files substrate_no_diff <<EOF
 $parsed
 EOF
@@ -724,7 +728,7 @@ EOF
     return 0
   }
   local line finding_path finding_file finding_line surface_files surface_file review_root
-  local surface_evidence evidence_ref evidence_rest evidence_file evidence_line evidence_side evidence_hash evidence_change_hash evidence_line_hex evidence_before_hex evidence_after_hex evidence_claim evidence_behavior evidence_behavior_hash evidence_hunk_id evidence_hunk_shape hunk_old_count hunk_new_count expected_before_hex expected_after_hex line_content actual_evidence_hash actual_change_hash actual_line_hex surface_review_files surface_evidence_files changed_path surface_name surface_consequence surface_fix surface_behavior surface_action surface_binding surface_behavior_hash surface_body surface_unaffected_files surface_unaffected_binding surface_unaffected_expected_binding consequence_ref consequence_file consequence_side consequence_hash consequence_change_hash consequence_line_hex consequence_before_hex consequence_after_hex consequence_claim consequence_behavior consequence_behavior_hash consequence_hunk consequence_rest consequence_line fix_ref fix_file fix_side fix_hash fix_change_hash fix_line_hex fix_before_hex fix_after_hex fix_claim fix_behavior fix_action fix_behavior_hash fix_hunk fix_rest fix_line
+  local surface_evidence evidence_ref evidence_rest evidence_file evidence_line evidence_side evidence_hash evidence_change_hash evidence_line_hex evidence_before_hex evidence_after_hex evidence_claim evidence_behavior evidence_behavior_hash evidence_hunk_id evidence_hunk_shape hunk_old_count hunk_new_count expected_before_hex expected_after_hex actual_evidence_hash actual_change_hash actual_line_hex surface_review_files surface_evidence_files changed_path surface_name surface_consequence surface_fix surface_behavior surface_action surface_binding surface_behavior_hash surface_body surface_unaffected_files surface_unaffected_binding surface_unaffected_expected_binding consequence_ref consequence_file consequence_side consequence_hash consequence_change_hash consequence_line_hex consequence_before_hex consequence_after_hex consequence_claim consequence_behavior consequence_behavior_hash consequence_hunk consequence_rest consequence_line fix_ref fix_file fix_side fix_hash fix_change_hash fix_line_hex fix_before_hex fix_after_hex fix_claim fix_behavior fix_action fix_behavior_hash fix_hunk fix_rest fix_line
   surface_review_files=
   surface_evidence_files=
   fm_pr_review_file_valid() {
@@ -986,7 +990,7 @@ EOF
     case "$surface_name" in
       authority) surface_behavior=non-authorizing; surface_action=retain-owner ;;
       security) surface_behavior=provenance-bound; surface_action=retain-boundary ;;
-      path) surface_behavior=path-safe; surface_action=retain-validation ;;
+      path) surface_behavior='path-safe'; surface_action=retain-validation ;;
       failure) surface_behavior=fail-closed; surface_action=retain-refusal ;;
       tests) surface_behavior=behavioral; surface_action=retain-regression ;;
       documentation) surface_behavior=contract-aligned; surface_action=retain-contract ;;
@@ -1144,7 +1148,7 @@ EOF
       *[!0-9a-f]*) return 1 ;;
     esac
     case "$evidence_before_hex$evidence_after_hex$consequence_before_hex$consequence_after_hex$fix_before_hex$fix_after_hex" in
-      *[!0-9a-fnone]*) return 1 ;;
+      *[!0-9a-fno]*) return 1 ;;
     esac
     [ "${#consequence_behavior_hash}" -eq 64 ] || return 1
     [ "${#fix_behavior_hash}" -eq 64 ] || return 1

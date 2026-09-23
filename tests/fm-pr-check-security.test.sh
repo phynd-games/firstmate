@@ -321,7 +321,7 @@ surface_review_record() {
   case "$surface" in
     authority) behavior=non-authorizing; action=retain-owner ;;
     security) behavior=provenance-bound; action=retain-boundary ;;
-    path) behavior=path-safe; action=retain-validation ;;
+    path) behavior='path-safe'; action=retain-validation ;;
     failure) behavior=fail-closed; action=retain-refusal ;;
     tests) behavior=behavioral; action=retain-regression ;;
     documentation) behavior=contract-aligned; action=retain-contract ;;
@@ -342,7 +342,7 @@ surface_review_single_record() {
   case "$surface" in
     authority) behavior=non-authorizing; action=retain-owner ;;
     security) behavior=provenance-bound; action=retain-boundary ;;
-    path) behavior=path-safe; action=retain-validation ;;
+    path) behavior='path-safe'; action=retain-validation ;;
     failure) behavior=fail-closed; action=retain-refusal ;;
     tests) behavior=behavioral; action=retain-regression ;;
     documentation) behavior=contract-aligned; action=retain-contract ;;
@@ -538,7 +538,7 @@ run_merge_entry() {
 }
 
 test_pr_ready_requires_durable_self_review() {
-  local dir report rc fixture_digest delivery_digest spaced_path comma_path semi_path spaced_digest comma_digest semi_digest
+  local dir report rc fixture_digest delivery_digest spaced_path comma_path semi_path
   dir=$(make_case self-review-required)
   write_task_meta "$dir"
   report="$dir/home/data/task-a/pr-self-review.md"
