@@ -71,7 +71,8 @@ The seven surface file lists must collectively cover every target-project change
 The surface evidence references must cover the maximum number of distinct changed files achievable by assigning one eligible owner file to each applicable surface, so overlapping owner classes cannot impose an impossible distinct-file requirement.
 Shared evidence does not relax the complete changed-path inventory or any per-surface proof.
 Deleted files may use the exact referenced line from the merge-base blob.
-Each surface evidence line must also fall within a changed hunk for its referenced path, and its path must belong to the shared validator's dedicated owner class for that surface; evidence from another surface's owner cannot satisfy the claim.
+Each surface evidence line must also fall within a changed hunk for its referenced path, and its path must belong to that surface's owner class as defined by [`fm_pr_review_surface_owner_path_valid` in `bin/fm-pr-lib.sh`](../../../bin/fm-pr-lib.sh), including its classification of external Rust workspace source and nested test paths.
+Evidence from another surface's owner cannot satisfy the claim.
 The verification section must contain at least one non-empty `Command:` field and one non-empty `Result:` field.
 
 1. `Findings` with severity, `path:line`, evidence, consequence, and required fix for each issue.
