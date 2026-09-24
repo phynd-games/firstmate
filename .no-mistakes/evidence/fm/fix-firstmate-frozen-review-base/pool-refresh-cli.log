@@ -1,0 +1,20 @@
+Focused pool-refresh CLI evidence. Real Git and fm-spawn; runtime commands use existing test doubles.
+Initial invocation lacked the repository test runner fixture configuration and refused before exercising the resolver. Repeated with the isolated legacy test configuration used by bin/fm-test-run.sh; all four selected tests passed. The unreachable-origin refusal below is expected negative coverage.
+Selected tests: test_stale_pool_base_refreshes_before_branching, test_full_branch_ref_uses_private_remote_tracking_ref, test_unreachable_origin_refuses_stale_pool_base, test_cached_approved_remote_is_preserved.
+
+REFUSED: neither FM_BACKEND nor /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-spawn-pool-base-freshen.tMwHR8/current-base/home/config/backend declares no backend identity, but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. Declare Herdr explicitly: write exactly 'herdr' as the first non-empty line of /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-spawn-pool-base-freshen.tMwHR8/current-base/home/config/backend (bin/fm-setup-phynd.sh writes it), or export FM_BACKEND=herdr for one launch, then prove the runtime with 'herdr status --json'. Runtime markers present but never used for selection: TMUX.
+not ok - spawn should refresh a stale pooled worktree: expected exit 0, got 1
+# observed spawn: spawned pool-current-base-r1 harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-pool-current-base-r1 worktree=/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-spawn-pool-base-freshen.4fFOJp/current-base/pool
+# observed base: HEAD=6a02ed32b07a08eff36782bd326b0d149c4ee444 origin/main=6a02ed32b07a08eff36782bd326b0d149c4ee444 advanced-main=must survive a newly spawned branch
+ok - a stale pooled worktree refreshes to current origin/main before a crew branch is created
+ok - full approved branch refs normalize to private remote-tracking state
+warning: /Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-spawn-pool-base-freshen.4fFOJp/unreachable-origin/home/data/pool-unreachable-origin-r2/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+fatal: '/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-spawn-pool-base-freshen.4fFOJp/unreachable-origin/missing-origin.git' does not appear to be a git repository
+fatal: Could not read from remote repository.
+
+Please make sure you have the correct access rights
+and the repository exists.
+error: approved base 'main' does not resolve to its recorded SHA for pooled worktree '/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-spawn-pool-base-freshen.4fFOJp/unreachable-origin/pool'
+# observed unreachable-origin refusal: error: approved base 'main' does not resolve to its recorded SHA for pooled worktree '/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-spawn-pool-base-freshen.4fFOJp/unreachable-origin/pool'
+ok - an unreachable origin refuses a potentially stale pooled worktree
+ok - cached remote approvals survive upstream advancement and offline launch

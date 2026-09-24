@@ -1,0 +1,387 @@
+Actual Firstmate CLI, isolated real Git repositories; forge responses and guard are test doubles. No live PR was created.
+Target: d23d9c958f4ac5d8aa43b31ff2fa724f8e07d03a
+Baseline: 11cef9f0d8dc416f5aa17f0c29508689d657d776
+
+Scenario: advance-past-frozen
+$ fm-pr-check.sh task-a https://github.com/o/r/pull/201
+Before fix: exit=1
+error: durable findings-first self-review report is unavailable or invalid
+Target exit=0
+armed: state/task-a.check.sh
+Persisted task approval and PR identity:
+review_base_ref=origin/main
+review_base_sha=46796eff88810fc4cdaa829b1f783fee7f30a279
+pr=https://github.com/o/r/pull/201
+pr_head=3e42ea994d7555ebfdfc345e03d7f81d7276e170
+Refs before:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/advance-past-frozen/upstream.git
+refs/heads/fm/task-a 3e42ea994d7555ebfdfc345e03d7f81d7276e170
+refs/heads/main 673088ab3cfe264dba84185c29618cf1d63bd139
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/advance-past-frozen/wt
+refs/heads/fm/task-a 3e42ea994d7555ebfdfc345e03d7f81d7276e170
+refs/heads/main 46796eff88810fc4cdaa829b1f783fee7f30a279
+refs/remotes/origin/HEAD 3e42ea994d7555ebfdfc345e03d7f81d7276e170
+refs/remotes/origin/fm/task-a 3e42ea994d7555ebfdfc345e03d7f81d7276e170
+refs/remotes/origin/main 673088ab3cfe264dba84185c29618cf1d63bd139
+Refs after:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/advance-past-frozen/upstream.git
+refs/heads/fm/task-a 3e42ea994d7555ebfdfc345e03d7f81d7276e170
+refs/heads/main 673088ab3cfe264dba84185c29618cf1d63bd139
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/advance-past-frozen/wt
+refs/heads/fm/task-a 3e42ea994d7555ebfdfc345e03d7f81d7276e170
+refs/heads/main 46796eff88810fc4cdaa829b1f783fee7f30a279
+refs/remotes/origin/HEAD 3e42ea994d7555ebfdfc345e03d7f81d7276e170
+refs/remotes/origin/fm/task-a 3e42ea994d7555ebfdfc345e03d7f81d7276e170
+refs/remotes/origin/main 673088ab3cfe264dba84185c29618cf1d63bd139
+
+Scenario: commit-shaped-base
+$ fm-pr-check.sh task-a https://github.com/o/r/pull/205
+Target exit=1
+error: PR-ready task metadata has no verifiable destination branch
+Persisted task approval and PR identity:
+review_base_ref=badb9df374d572ab5b66471898654a51a42f7561
+review_base_sha=badb9df374d572ab5b66471898654a51a42f7561
+Refs before:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-base/upstream.git
+refs/heads/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/heads/main badb9df374d572ab5b66471898654a51a42f7561
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-base/wt
+refs/heads/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/heads/main badb9df374d572ab5b66471898654a51a42f7561
+refs/remotes/origin/HEAD f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/remotes/origin/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/remotes/origin/main badb9df374d572ab5b66471898654a51a42f7561
+Refs after:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-base/upstream.git
+refs/heads/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/heads/main badb9df374d572ab5b66471898654a51a42f7561
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-base/wt
+refs/heads/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/heads/main badb9df374d572ab5b66471898654a51a42f7561
+refs/remotes/origin/HEAD f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/remotes/origin/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/remotes/origin/main badb9df374d572ab5b66471898654a51a42f7561
+
+Scenario: commit-shaped-base
+$ fm-pr-check.sh task-a https://github.com/o/r/pull/205 --bind-destination main
+Target exit=0
+armed: state/task-a.check.sh
+Persisted task approval and PR identity:
+review_base_ref=badb9df374d572ab5b66471898654a51a42f7561
+review_base_sha=badb9df374d572ab5b66471898654a51a42f7561
+review_destination_branch=main
+pr=https://github.com/o/r/pull/205
+pr_head=f081844d0fac81e88dc3301c950c04f2b5566daa
+Refs before:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-base/upstream.git
+refs/heads/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/heads/main badb9df374d572ab5b66471898654a51a42f7561
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-base/wt
+refs/heads/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/heads/main badb9df374d572ab5b66471898654a51a42f7561
+refs/remotes/origin/HEAD f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/remotes/origin/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/remotes/origin/main badb9df374d572ab5b66471898654a51a42f7561
+Refs after:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-base/upstream.git
+refs/heads/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/heads/main badb9df374d572ab5b66471898654a51a42f7561
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-base/wt
+refs/heads/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/heads/main badb9df374d572ab5b66471898654a51a42f7561
+refs/remotes/origin/HEAD f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/remotes/origin/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/remotes/origin/main badb9df374d572ab5b66471898654a51a42f7561
+
+Scenario: commit-shaped-base
+$ fm-pr-check.sh task-a https://github.com/o/r/pull/205
+Target exit=0
+armed: state/task-a.check.sh
+Persisted task approval and PR identity:
+review_base_ref=badb9df374d572ab5b66471898654a51a42f7561
+review_base_sha=badb9df374d572ab5b66471898654a51a42f7561
+review_destination_branch=main
+pr=https://github.com/o/r/pull/205
+pr_head=f081844d0fac81e88dc3301c950c04f2b5566daa
+Refs before:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-base/upstream.git
+refs/heads/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/heads/main badb9df374d572ab5b66471898654a51a42f7561
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-base/wt
+refs/heads/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/heads/main badb9df374d572ab5b66471898654a51a42f7561
+refs/remotes/origin/HEAD f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/remotes/origin/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/remotes/origin/main badb9df374d572ab5b66471898654a51a42f7561
+Refs after:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-base/upstream.git
+refs/heads/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/heads/main badb9df374d572ab5b66471898654a51a42f7561
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-base/wt
+refs/heads/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/heads/main badb9df374d572ab5b66471898654a51a42f7561
+refs/remotes/origin/HEAD f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/remotes/origin/fm/task-a f081844d0fac81e88dc3301c950c04f2b5566daa
+refs/remotes/origin/main badb9df374d572ab5b66471898654a51a42f7561
+
+Scenario: older-ancestor
+$ fm-pr-check.sh task-a https://github.com/o/r/pull/202
+Target exit=1
+error: durable findings-first self-review report is unavailable or invalid
+Persisted task approval and PR identity:
+review_base_ref=main
+review_base_sha=c3de22e3a22abc05537ef4fc8df4f5fdd5f260a4
+Refs before:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/older-ancestor/upstream.git
+refs/heads/fm/task-a 2865c821548da10d7bc98523302f33457efbf2af
+refs/heads/main 0f1eec74ad5d96eb0e283cc2a40bed3e6a1c687a
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/older-ancestor/wt
+refs/heads/fm/task-a 2865c821548da10d7bc98523302f33457efbf2af
+refs/heads/main c3de22e3a22abc05537ef4fc8df4f5fdd5f260a4
+refs/remotes/origin/HEAD 2865c821548da10d7bc98523302f33457efbf2af
+refs/remotes/origin/fm/task-a 2865c821548da10d7bc98523302f33457efbf2af
+refs/remotes/origin/main 0f1eec74ad5d96eb0e283cc2a40bed3e6a1c687a
+Refs after:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/older-ancestor/upstream.git
+refs/heads/fm/task-a 2865c821548da10d7bc98523302f33457efbf2af
+refs/heads/main 0f1eec74ad5d96eb0e283cc2a40bed3e6a1c687a
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/older-ancestor/wt
+refs/heads/fm/task-a 2865c821548da10d7bc98523302f33457efbf2af
+refs/heads/main c3de22e3a22abc05537ef4fc8df4f5fdd5f260a4
+refs/remotes/origin/HEAD 2865c821548da10d7bc98523302f33457efbf2af
+refs/remotes/origin/fm/task-a 2865c821548da10d7bc98523302f33457efbf2af
+refs/remotes/origin/main 0f1eec74ad5d96eb0e283cc2a40bed3e6a1c687a
+
+Scenario: unrelated-history
+$ fm-pr-check.sh task-a https://github.com/o/r/pull/203
+Target exit=1
+error: durable findings-first self-review report is unavailable or invalid
+Persisted task approval and PR identity:
+review_base_ref=main
+review_base_sha=4aa4ea165d47f62cce6c8c447a9fa6a63a6757d9
+Refs before:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/unrelated-history/upstream.git
+refs/heads/fm/task-a 3df0998f50fc83eb7d1d2bc734fb7deb29ec773d
+refs/heads/main ea57a4bed144995e6b35312b0cc6c130d34a80b2
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/unrelated-history/wt
+refs/heads/divergent-side 4aa4ea165d47f62cce6c8c447a9fa6a63a6757d9
+refs/heads/fm/task-a 3df0998f50fc83eb7d1d2bc734fb7deb29ec773d
+refs/heads/main ea57a4bed144995e6b35312b0cc6c130d34a80b2
+refs/remotes/origin/HEAD 3df0998f50fc83eb7d1d2bc734fb7deb29ec773d
+refs/remotes/origin/fm/task-a 3df0998f50fc83eb7d1d2bc734fb7deb29ec773d
+refs/remotes/origin/main ea57a4bed144995e6b35312b0cc6c130d34a80b2
+Refs after:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/unrelated-history/upstream.git
+refs/heads/fm/task-a 3df0998f50fc83eb7d1d2bc734fb7deb29ec773d
+refs/heads/main ea57a4bed144995e6b35312b0cc6c130d34a80b2
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/unrelated-history/wt
+refs/heads/divergent-side 4aa4ea165d47f62cce6c8c447a9fa6a63a6757d9
+refs/heads/fm/task-a 3df0998f50fc83eb7d1d2bc734fb7deb29ec773d
+refs/heads/main ea57a4bed144995e6b35312b0cc6c130d34a80b2
+refs/remotes/origin/HEAD 3df0998f50fc83eb7d1d2bc734fb7deb29ec773d
+refs/remotes/origin/fm/task-a 3df0998f50fc83eb7d1d2bc734fb7deb29ec773d
+refs/remotes/origin/main ea57a4bed144995e6b35312b0cc6c130d34a80b2
+
+Scenario: two-branches
+$ fm-pr-check.sh task-a https://github.com/o/r/pull/204
+Target exit=0
+armed: state/task-a.check.sh
+Persisted task approval and PR identity:
+review_base_ref=main
+review_base_sha=a485d7534c8a4c0a8e1a89d4f02a5746327b9101
+pr=https://github.com/o/r/pull/204
+pr_head=71764c31ab7510fddad004e29f35c1ff9aaa589f
+Refs before:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/two-branches/upstream.git
+refs/heads/fm/task-a 71764c31ab7510fddad004e29f35c1ff9aaa589f
+refs/heads/main a485d7534c8a4c0a8e1a89d4f02a5746327b9101
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/two-branches/wt
+refs/heads/fm/task-a 71764c31ab7510fddad004e29f35c1ff9aaa589f
+refs/heads/fm/task-b 9f47bfd86c941d4736523fe35482ec1ab329a9a7
+refs/heads/main 9f47bfd86c941d4736523fe35482ec1ab329a9a7
+refs/remotes/origin/HEAD 71764c31ab7510fddad004e29f35c1ff9aaa589f
+refs/remotes/origin/fm/task-a 71764c31ab7510fddad004e29f35c1ff9aaa589f
+refs/remotes/origin/main a485d7534c8a4c0a8e1a89d4f02a5746327b9101
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/two-branches/wt-b
+refs/heads/fm/task-a 71764c31ab7510fddad004e29f35c1ff9aaa589f
+refs/heads/fm/task-b 9f47bfd86c941d4736523fe35482ec1ab329a9a7
+refs/heads/main 9f47bfd86c941d4736523fe35482ec1ab329a9a7
+refs/remotes/origin/HEAD 71764c31ab7510fddad004e29f35c1ff9aaa589f
+refs/remotes/origin/fm/task-a 71764c31ab7510fddad004e29f35c1ff9aaa589f
+refs/remotes/origin/main a485d7534c8a4c0a8e1a89d4f02a5746327b9101
+Refs after:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/two-branches/upstream.git
+refs/heads/fm/task-a 71764c31ab7510fddad004e29f35c1ff9aaa589f
+refs/heads/main a485d7534c8a4c0a8e1a89d4f02a5746327b9101
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/two-branches/wt
+refs/heads/fm/task-a 71764c31ab7510fddad004e29f35c1ff9aaa589f
+refs/heads/fm/task-b 9f47bfd86c941d4736523fe35482ec1ab329a9a7
+refs/heads/main 9f47bfd86c941d4736523fe35482ec1ab329a9a7
+refs/remotes/origin/HEAD 71764c31ab7510fddad004e29f35c1ff9aaa589f
+refs/remotes/origin/fm/task-a 71764c31ab7510fddad004e29f35c1ff9aaa589f
+refs/remotes/origin/main a485d7534c8a4c0a8e1a89d4f02a5746327b9101
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/two-branches/wt-b
+refs/heads/fm/task-a 71764c31ab7510fddad004e29f35c1ff9aaa589f
+refs/heads/fm/task-b 9f47bfd86c941d4736523fe35482ec1ab329a9a7
+refs/heads/main 9f47bfd86c941d4736523fe35482ec1ab329a9a7
+refs/remotes/origin/HEAD 71764c31ab7510fddad004e29f35c1ff9aaa589f
+refs/remotes/origin/fm/task-a 71764c31ab7510fddad004e29f35c1ff9aaa589f
+refs/remotes/origin/main a485d7534c8a4c0a8e1a89d4f02a5746327b9101
+
+Scenario: commit-shaped-negatives
+$ fm-pr-check.sh task-a https://github.com/o/r/pull/206 --bind-destination does-not-exist
+Target exit=1
+error: --bind-destination contradicts the approved base or does not name a real branch containing it
+Persisted task approval and PR identity:
+review_base_ref=c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+review_base_sha=c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+Refs before:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-negatives/upstream.git
+refs/heads/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/heads/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-negatives/wt
+refs/heads/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/heads/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+refs/remotes/origin/HEAD 128080885f6505d560896366d7f5369c2b468dba
+refs/remotes/origin/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/remotes/origin/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+Refs after:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-negatives/upstream.git
+refs/heads/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/heads/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-negatives/wt
+refs/heads/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/heads/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+refs/remotes/origin/HEAD 128080885f6505d560896366d7f5369c2b468dba
+refs/remotes/origin/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/remotes/origin/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+
+Scenario: commit-shaped-negatives
+$ fm-pr-check.sh task-a https://github.com/o/r/pull/206 --bind-destination unrelated-branch
+Target exit=1
+error: --bind-destination contradicts the approved base or does not name a real branch containing it
+Persisted task approval and PR identity:
+review_base_ref=c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+review_base_sha=c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+Refs before:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-negatives/upstream.git
+refs/heads/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/heads/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-negatives/wt
+refs/heads/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/heads/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+refs/heads/unrelated-branch 2347a54f251540330b7c765341e4148ef2eacb67
+refs/remotes/origin/HEAD 128080885f6505d560896366d7f5369c2b468dba
+refs/remotes/origin/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/remotes/origin/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+Refs after:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-negatives/upstream.git
+refs/heads/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/heads/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-negatives/wt
+refs/heads/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/heads/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+refs/heads/unrelated-branch 2347a54f251540330b7c765341e4148ef2eacb67
+refs/remotes/origin/HEAD 128080885f6505d560896366d7f5369c2b468dba
+refs/remotes/origin/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/remotes/origin/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+
+Scenario: commit-shaped-negatives
+$ fm-pr-check.sh task-a https://github.com/o/r/pull/206 --bind-destination other-target
+Target exit=1
+error: --bind-destination contradicts the approved base or does not name a real branch containing it
+Persisted task approval and PR identity:
+review_base_ref=main
+review_base_sha=c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+Refs before:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-negatives/upstream.git
+refs/heads/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/heads/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-negatives/wt
+refs/heads/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/heads/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+refs/heads/other-target c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+refs/heads/unrelated-branch 2347a54f251540330b7c765341e4148ef2eacb67
+refs/remotes/origin/HEAD 128080885f6505d560896366d7f5369c2b468dba
+refs/remotes/origin/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/remotes/origin/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+Refs after:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-negatives/upstream.git
+refs/heads/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/heads/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-negatives/wt
+refs/heads/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/heads/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+refs/heads/other-target c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+refs/heads/unrelated-branch 2347a54f251540330b7c765341e4148ef2eacb67
+refs/remotes/origin/HEAD 128080885f6505d560896366d7f5369c2b468dba
+refs/remotes/origin/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/remotes/origin/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+
+Scenario: commit-shaped-negatives
+$ fm-pr-check.sh task-a https://github.com/o/r/pull/206
+Target exit=1
+error: PR-ready task metadata has no verifiable destination branch
+Persisted task approval and PR identity:
+review_base_ref=main
+review_base_sha=c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+review_destination_branch=other-target
+Refs before:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-negatives/upstream.git
+refs/heads/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/heads/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-negatives/wt
+refs/heads/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/heads/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+refs/heads/other-target c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+refs/heads/unrelated-branch 2347a54f251540330b7c765341e4148ef2eacb67
+refs/remotes/origin/HEAD 128080885f6505d560896366d7f5369c2b468dba
+refs/remotes/origin/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/remotes/origin/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+Refs after:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-negatives/upstream.git
+refs/heads/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/heads/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/commit-shaped-negatives/wt
+refs/heads/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/heads/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+refs/heads/other-target c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+refs/heads/unrelated-branch 2347a54f251540330b7c765341e4148ef2eacb67
+refs/remotes/origin/HEAD 128080885f6505d560896366d7f5369c2b468dba
+refs/remotes/origin/fm/task-a 128080885f6505d560896366d7f5369c2b468dba
+refs/remotes/origin/main c15668949dad3d18e1743b48dd8e6dcf396d2d2f
+
+Scenario: direct-pr-commit-shaped
+$ fm-pr-create.sh task-a --title accepted
+Target exit=0
+validated: durable findings-first self-review report for task-a
+Persisted task approval and PR identity:
+review_base_ref=aecfc97a7a0f9f1183a9a4f71ea76d7d42b30d48
+review_base_sha=aecfc97a7a0f9f1183a9a4f71ea76d7d42b30d48
+review_destination_branch=main
+Forge CLI invocations (test double):
+pr create --repo o/r --head fm/task-a --base main --title accepted
+Refs before:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/direct-pr-commit-shaped/upstream.git
+refs/heads/fm/task-a 22c2cfbc8e87755b83f3600b2298e0fd9640fce7
+refs/heads/main aecfc97a7a0f9f1183a9a4f71ea76d7d42b30d48
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/direct-pr-commit-shaped/wt
+refs/heads/fm/task-a 22c2cfbc8e87755b83f3600b2298e0fd9640fce7
+refs/heads/main aecfc97a7a0f9f1183a9a4f71ea76d7d42b30d48
+refs/remotes/origin/HEAD 22c2cfbc8e87755b83f3600b2298e0fd9640fce7
+refs/remotes/origin/fm/task-a 22c2cfbc8e87755b83f3600b2298e0fd9640fce7
+refs/remotes/origin/main aecfc97a7a0f9f1183a9a4f71ea76d7d42b30d48
+Refs after:
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/direct-pr-commit-shaped/upstream.git
+refs/heads/fm/task-a 22c2cfbc8e87755b83f3600b2298e0fd9640fce7
+refs/heads/main aecfc97a7a0f9f1183a9a4f71ea76d7d42b30d48
+/Users/criz/.no-mistakes/worktrees/da589fef49ee/01M38DKZ1HDFHH6KMP6KNXZ01D/.test-validation/tmp/fm-pr-check-security.wAa9Lr/direct-pr-commit-shaped/wt
+refs/heads/fm/task-a 22c2cfbc8e87755b83f3600b2298e0fd9640fce7
+refs/heads/main aecfc97a7a0f9f1183a9a4f71ea76d7d42b30d48
+refs/remotes/origin/HEAD 22c2cfbc8e87755b83f3600b2298e0fd9640fce7
+refs/remotes/origin/fm/task-a 22c2cfbc8e87755b83f3600b2298e0fd9640fce7
+refs/remotes/origin/main aecfc97a7a0f9f1183a9a4f71ea76d7d42b30d48
+
+Local-only CLI refuses the advanced default:
+REFUSED: main has advanced beyond the approved review base de7591ced9ec8ec8a7b5c13815d5b20d4f73afa3.
+Reconcile fm/local-stale with the current main, then run fm-merge-local.sh local-stale --reconcile and complete a new self-review before retrying.
