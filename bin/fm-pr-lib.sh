@@ -455,8 +455,8 @@ fm_pr_review_destination_from_meta() {
 }
 
 # Single owner of "is <candidate> a real, provably-bound destination for this
-# frozen review": normalize its syntax, confirm refs/remotes/origin/<candidate>
-# resolves to a real commit in worktree (repository/branch existence proof), and
+# frozen review": validate its canonical branch name, confirm refs/heads/<candidate>
+# or refs/remotes/origin/<candidate> resolves to a real commit in the worktree, and
 # confirm base_sha is that commit's ancestor-or-equal (ancestry proof, tying the
 # candidate to this exact frozen identity rather than to any branch merely named).
 # Used both to re-verify an already-bound review_destination_branch on every read
@@ -474,7 +474,7 @@ fm_pr_review_destination_branch_verify() {
 # The one read-path owner for "what forge branch does this task's frozen review
 # actually target." A destination is never guessed from review_base_ref's shape:
 # it is either a real branch review_base_ref itself resolves to (existence proof
-# only - review_base_ref's own identity was already ancestor-proven elsewhere), or
+# only - review_base_ref's own identity is ancestor-proven separately), or
 # an operator-bound review_destination_branch, re-verified in full every read via
 # fm_pr_review_destination_branch_verify. If both are present and disagree, that
 # is a contradiction, not a preference.

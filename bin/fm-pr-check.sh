@@ -7,12 +7,20 @@
 # including a merge request on a self-hosted GitLab instance.
 # Usage: fm-pr-check.sh <task-id> <pr-url> [--bind-destination <branch>]
 # --bind-destination is a narrow, operator-only reconciliation for a task whose
-# approved base has no branch form of its own (a frozen commit SHA). It is
-# verified against real repository state (the branch must exist and the approved
-# base must be its ancestor-or-equal) and against this run's live forge PR/MR base
+# approved base has no branch form of its own (a frozen commit SHA).
+# Supply the explicitly authorized destination, never an inferred default branch.
+# A bare branch name, origin/<branch>, refs/heads/<branch>, or
+# refs/remotes/origin/<branch> is accepted; use refs/heads/<branch> when the
+# literal branch name itself starts with one of those prefixes.
+# It is verified against local repository state (a local or cached origin branch
+# must contain the approved base) and against this run's live forge PR/MR base
 # exactly like every other destination, and is persisted as
 # review_destination_branch= in task metadata only after every other check in
 # this script already passed. It is never invoked by a crewmate brief.
+# Later checks and fm-pr-create.sh re-verify the stored binding; a disagreement
+# with a directly resolvable approved branch refuses instead of overriding it.
+# These PR validation paths do not fetch or change Git refs, and binding leaves
+# review_base_ref/review_base_sha untouched.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
