@@ -395,7 +395,7 @@ surface_review_single_record_at_line() {
     "$label" "$surface" "$file" "$reference" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$reference" "$digest" "$line_hex" "$behavior" "$behavior_digest" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$before_hex" "$after_hex" "$behavior" "$behavior_digest" "$binding" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$reference" "$digest" "$line_hex" "$behavior" "$action" "$behavior_digest" "$binding"
 }
 
-write_self_review_report() {  # <home> <id> [<worktree>]
+write_self_review_report() {  # <home> <id> [<worktree>] [<base>]
   local home=$1 id=$2 worktree=${3-} report case_dir target_repository target_head base_head merge_base_sha substrate_root substrate_head empty_digest changed_digest
   local authority_digest security_digest path_digest failure_digest tests_digest documentation_digest delivery_digest
   local authority_old_digest security_old_digest path_old_digest failure_old_digest tests_old_digest documentation_old_digest delivery_old_digest
@@ -407,7 +407,7 @@ write_self_review_report() {  # <home> <id> [<worktree>]
   [ -n "$worktree" ] || worktree="$case_dir/wt"
   target_repository=$(cd "$worktree" && pwd -P)
   target_head=$(git -C "$worktree" rev-parse HEAD)
-  base_head=$(git -C "$worktree" rev-parse main)
+  base_head=$(git -C "$worktree" rev-parse "${4:-main}")
   merge_base_sha=$(git -C "$worktree" merge-base "$base_head" "$target_head")
   changed_digest=$(git -C "$worktree" diff --name-status "$merge_base_sha" "$target_head" | fm_pr_sha256_stream)
   authority_digest=$(self_review_line_digest "$case_dir" bin/fm-pr-check.sh)
@@ -3690,6 +3690,60 @@ test_pr_ready_survives_independent_advance_past_frozen_base() {
   pass "a normally advancing default branch no longer strands an already-approved self-review"
 }
 
+test_pr_ready_binds_cached_remote_past_stale_local_branch() {
+  local dir stale frozen entry rc
+  dir=$(make_frozen_case stale-local-destination)
+  stale=$(git -C "$dir/wt" rev-parse main)
+  git clone -q --branch main "$dir/upstream.git" "$dir/other"
+  printf 'independent advance\n' > "$dir/other/independent.txt"
+  git -C "$dir/other" add independent.txt
+  git -C "$dir/other" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm independent-advance
+  git -C "$dir/other" push -q origin main
+  git -C "$dir/wt" -c "url.$dir/upstream.git.insteadOf=https://github.com/o/r.git" fetch -q origin main \
+    || fail "could not refresh the destination fixture"
+  frozen=$(git -C "$dir/wt" rev-parse refs/remotes/origin/main)
+  [ "$frozen" != "$stale" ] || fail "cached remote did not advance"
+  [ "$(git -C "$dir/wt" rev-parse refs/heads/main)" = "$stale" ] || fail "local branch did not remain stale"
+  git -C "$dir/wt" merge-base --is-ancestor "$stale" "$frozen" || fail "remote advance lost local history"
+  git -C "$dir/wt" rebase -q --onto "$frozen" main fm/task-a || fail "could not prepare the reviewed branch"
+  write_task_meta "$dir"
+  sed -i.bak -e "s/^review_base_ref=main\$/review_base_ref=$frozen/" \
+    -e "s/^review_base_sha=$stale\$/review_base_sha=$frozen/" "$dir/home/state/task-a.meta"
+  write_self_review_report "$dir/home" task-a "$dir/wt" "$frozen"
+  sed -i.bak "s/^Base ref: main\$/Base ref: $frozen/" "$dir/home/data/task-a/pr-self-review.md"
+
+  run_frozen_entry check "$dir" task-a https://github.com/o/r/pull/210 --bind-destination main \
+    >/dev/null 2> "$dir/bind.err" || fail "stale local branch masked the cached destination: $(cat "$dir/bind.err")"
+  grep -qxF 'review_destination_branch=main' "$dir/home/state/task-a.meta" || fail "destination was not persisted"
+  run_frozen_entry check "$dir" task-a https://github.com/o/r/pull/210 \
+    >/dev/null 2> "$dir/consume.err" || fail "cached destination failed re-verification: $(cat "$dir/consume.err")"
+  sed -i.bak 's/^mode=no-mistakes$/mode=direct-PR/' "$dir/home/state/task-a.meta"
+  run_frozen_entry create "$dir" task-a --title accepted >/dev/null \
+    || fail "direct creation rejected the cached destination"
+  grep -qxF 'pr create --repo o/r --head fm/task-a --base main --title accepted' "$dir/gh-axi.log" \
+    || fail "direct creation did not use the verified destination"
+  grep -qxF "review_base_sha=$frozen" "$dir/home/state/task-a.meta" || fail "binding changed the frozen baseline"
+
+  git -C "$dir/wt" update-ref -d refs/remotes/origin/main
+  cp "$dir/home/state/task-a.meta" "$dir/before.meta"
+  : > "$dir/gh-axi.log"
+  for entry in check create; do
+    set +e
+    if [ "$entry" = check ]; then
+      run_frozen_entry check "$dir" task-a https://github.com/o/r/pull/210 > "$dir/out" 2> "$dir/err"
+    else
+      run_frozen_entry create "$dir" task-a --title refused > "$dir/out" 2> "$dir/err"
+    fi
+    rc=$?
+    set -e
+    [ "$rc" -ne 0 ] || fail "$entry accepted a destination with no candidate containing the approved SHA"
+    grep -qF 'no verifiable destination branch' "$dir/err" || fail "$entry refused for the wrong reason"
+    cmp -s "$dir/before.meta" "$dir/home/state/task-a.meta" || fail "$entry changed the binding on refusal"
+    [ ! -s "$dir/gh-axi.log" ] || fail "$entry reached the forge without a valid candidate"
+  done
+  pass "binding and both consumers consider cached remote ancestry past a stale local branch"
+}
+
 test_pr_ready_rejects_substituted_older_ancestor() {
   local dir older frozen before_refs rc
   dir=$(make_frozen_case older-ancestor)
@@ -4010,6 +4064,7 @@ test_review_base_resolve_accepts_local_ancestor_without_origin() {
 
 if [ "${1:-}" = --frozen-base-only ]; then
   test_pr_ready_survives_independent_advance_past_frozen_base
+  test_pr_ready_binds_cached_remote_past_stale_local_branch
   test_pr_ready_rejects_substituted_older_ancestor
   test_pr_ready_rejects_unrelated_history_base
   test_pr_ready_two_independent_branches_preserve_each_others_baseline
@@ -4067,6 +4122,7 @@ test_retirement_refuses_replacement_and_nonterminal_results
 test_retirement_queue_failure_and_receipt_tampering
 test_gitlab_merged_poll_retires
 test_pr_ready_survives_independent_advance_past_frozen_base
+test_pr_ready_binds_cached_remote_past_stale_local_branch
 test_pr_ready_rejects_substituted_older_ancestor
 test_pr_ready_rejects_unrelated_history_base
 test_pr_ready_two_independent_branches_preserve_each_others_baseline

@@ -429,9 +429,19 @@ fm_pr_review_base_branch() {
 # remote-tracking branch), which is what fm_pr_review_destination_branch below
 # does.
 fm_pr_review_branch_exists() {
-  local worktree=$1 branch=$2
-  git -C "$worktree" rev-parse --verify --quiet "refs/heads/$branch^{commit}" 2>/dev/null \
-    || git -C "$worktree" rev-parse --verify --quiet "refs/remotes/origin/$branch^{commit}" 2>/dev/null
+  local worktree=$1 branch=$2 base_sha=${3-} ref resolved
+  if [ -n "$base_sha" ]; then
+    git -C "$worktree" cat-file -e "$base_sha^{commit}" 2>/dev/null || return 1
+  fi
+  for ref in "refs/heads/$branch" "refs/remotes/origin/$branch"; do
+    resolved=$(git -C "$worktree" rev-parse --verify --quiet "$ref^{commit}" 2>/dev/null) || continue
+    if [ -n "$base_sha" ]; then
+      git -C "$worktree" merge-base --is-ancestor "$base_sha" "$resolved" 2>/dev/null || continue
+    fi
+    printf '%s\n' "$resolved"
+    return 0
+  done
+  return 1
 }
 
 fm_pr_review_destination_from_meta() {
@@ -455,10 +465,9 @@ fm_pr_review_destination_from_meta() {
 fm_pr_review_destination_branch_verify() {
   local worktree=$1 base_sha=$2 candidate=$3 branch resolved
   branch=$(fm_pr_review_base_branch "$candidate" canonical) || return 1
-  resolved=$(fm_pr_review_branch_exists "$worktree" "$branch") || return 1
+  [ -n "$base_sha" ] || return 1
+  resolved=$(fm_pr_review_branch_exists "$worktree" "$branch" "$base_sha") || return 1
   [ -n "$resolved" ] || return 1
-  git -C "$worktree" cat-file -e "$base_sha^{commit}" 2>/dev/null || return 1
-  git -C "$worktree" merge-base --is-ancestor "$base_sha" "$resolved" 2>/dev/null || return 1
   printf '%s\n' "$branch"
 }
 
