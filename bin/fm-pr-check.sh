@@ -5,7 +5,14 @@
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
 # including a merge request on a self-hosted GitLab instance.
-# Usage: fm-pr-check.sh <task-id> <pr-url>
+# Usage: fm-pr-check.sh <task-id> <pr-url> [--bind-destination <branch>]
+# --bind-destination is a narrow, operator-only reconciliation for a task whose
+# approved base has no branch form of its own (a frozen commit SHA). It is
+# verified against real repository state (the branch must exist and the approved
+# base must be its ancestor-or-equal) and against this run's live forge PR/MR base
+# exactly like every other destination, and is persisted as
+# review_destination_branch= in task metadata only after every other check in
+# this script already passed. It is never invoked by a crewmate brief.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,10 +29,16 @@ SUBSTRATE_ROOT=
 # shellcheck source=bin/fm-lease-lib.sh
 . "$SCRIPT_DIR/fm-lease-lib.sh"
 
-if [ "$#" -ne 2 ]; then
-  echo "error: invalid PR check request" >&2
-  exit 2
-fi
+BIND_DESTINATION=
+case "$#" in
+  2) ;;
+  4)
+    [ "$3" = --bind-destination ] || { echo "error: invalid PR check request" >&2; exit 2; }
+    BIND_DESTINATION=$4
+    [ -n "$BIND_DESTINATION" ] || { echo "error: invalid PR check request" >&2; exit 2; }
+    ;;
+  *) echo "error: invalid PR check request" >&2; exit 2 ;;
+esac
 ID=$1
 RAW_URL=$2
 if ! fm_pr_task_id_valid "$ID" || ! fm_pr_url_parse "$RAW_URL"; then
@@ -110,10 +123,6 @@ REVIEW_BASE=$(fm_pr_review_base_from_meta "$META" || true)
 IFS="$(printf '\t')" read -r REVIEW_BASE_REF REVIEW_BASE_SHA <<EOF
 $REVIEW_BASE
 EOF
-REVIEW_BASE_BRANCH=$(fm_pr_review_base_branch "$REVIEW_BASE_REF") || {
-  echo "error: PR-ready task metadata has no branch-shaped approved target base" >&2
-  exit 1
-}
 WT=$(grep '^worktree=' "$META" | cut -d= -f2- || true)
 [ -n "$WT" ] && [ -d "$WT" ] && [ ! -L "$WT" ] && command -v git >/dev/null 2>&1 || {
   echo "error: PR-ready task worktree is unavailable" >&2
@@ -123,6 +132,17 @@ fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH" || {
   echo "error: PR-ready URL does not identify the reviewed repository" >&2
   exit 1
 }
+if [ -n "$BIND_DESTINATION" ]; then
+  REVIEW_BASE_BRANCH=$(fm_pr_review_destination_branch_verify "$WT" "$REVIEW_BASE_SHA" "$BIND_DESTINATION") || {
+    echo "error: --bind-destination does not name a real branch containing the approved base" >&2
+    exit 1
+  }
+else
+  REVIEW_BASE_BRANCH=$(fm_pr_review_destination_branch "$WT" "$REVIEW_BASE_REF" "$REVIEW_BASE_SHA" "$META") || {
+    echo "error: PR-ready task metadata has no verifiable destination branch" >&2
+    exit 1
+  }
+fi
 REVIEW_HEAD=$(git -C "$WT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
 fm_pr_head_valid "$REVIEW_HEAD" || {
   echo "error: PR-ready task worktree has no valid HEAD" >&2
@@ -228,9 +248,21 @@ META_TMP=$(mktemp "$STATE/.fm-pr-meta.XXXXXX") || exit 1
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
     pr=*|pr_head=*) ;;
+    review_destination_branch=*)
+      if [ -z "$BIND_DESTINATION" ]; then
+        printf '%s\n' "$line" >> "$META_TMP" || exit 1
+      fi
+      ;;
     *) printf '%s\n' "$line" >> "$META_TMP" || exit 1 ;;
   esac
 done < "$META"
+# review_destination_branch is persisted only here, after every other check in
+# this script has already passed for this exact run (durable self-review report
+# validity, forge PR head/base match, and the existence+ancestry proof above).
+# It is written before pr=/pr_head= deliberately: fm_pr_metadata_identity_parse
+# requires pr= (and an immediately following pr_head=) to be the last fields in
+# the file, so nothing may be appended after them.
+[ -z "$BIND_DESTINATION" ] || printf 'review_destination_branch=%s\n' "$REVIEW_BASE_BRANCH" >> "$META_TMP" || exit 1
 printf 'pr=%s\n' "$URL" >> "$META_TMP" || exit 1
 [ -z "$PR_HEAD" ] || printf 'pr_head=%s\n' "$PR_HEAD" >> "$META_TMP" || exit 1
 chmod 0600 "$META_TMP" || exit 1

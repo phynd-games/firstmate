@@ -415,6 +415,76 @@ fm_pr_review_base_branch() {
   printf '%s\n' "$branch"
 }
 
+# fm_pr_review_base_branch only normalizes syntax: its catch-all accepts a bare
+# commit SHA as "branch-shaped" too, since a hex-named branch is legal Git syntax
+# and shape can never prove which one a given ref actually is. Success from it is
+# therefore never treated as proof of a real destination on its own; every caller
+# that needs one continues to an actual existence proof (a real local or
+# remote-tracking branch), which is what fm_pr_review_destination_branch below
+# does.
+fm_pr_review_branch_exists() {
+  local worktree=$1 branch=$2
+  git -C "$worktree" rev-parse --verify --quiet "refs/heads/$branch^{commit}" 2>/dev/null \
+    || git -C "$worktree" rev-parse --verify --quiet "refs/remotes/origin/$branch^{commit}" 2>/dev/null
+}
+
+fm_pr_review_destination_from_meta() {
+  local meta=$1 count value
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  count=$(grep -c '^review_destination_branch=' "$meta" || true)
+  [ "$count" -le 1 ] || return 1
+  [ "$count" = 1 ] || return 1
+  value=$(sed -n 's/^review_destination_branch=//p' "$meta")
+  fm_pr_review_base_branch "$value"
+}
+
+# Single owner of "is <candidate> a real, provably-bound destination for this
+# frozen review": normalize its syntax, confirm refs/remotes/origin/<candidate>
+# resolves to a real commit in worktree (repository/branch existence proof), and
+# confirm base_sha is that commit's ancestor-or-equal (ancestry proof, tying the
+# candidate to this exact frozen identity rather than to any branch merely named).
+# Used both to re-verify an already-bound review_destination_branch on every read
+# and, identically, to verify an operator-supplied --bind-destination candidate
+# before fm-pr-check.sh ever persists it.
+fm_pr_review_destination_branch_verify() {
+  local worktree=$1 base_sha=$2 candidate=$3 branch resolved
+  branch=$(fm_pr_review_base_branch "$candidate") || return 1
+  resolved=$(fm_pr_review_branch_exists "$worktree" "$branch") || return 1
+  [ -n "$resolved" ] || return 1
+  git -C "$worktree" cat-file -e "$base_sha^{commit}" 2>/dev/null || return 1
+  git -C "$worktree" merge-base --is-ancestor "$base_sha" "$resolved" 2>/dev/null || return 1
+  printf '%s\n' "$branch"
+}
+
+# The one read-path owner for "what forge branch does this task's frozen review
+# actually target." A destination is never guessed from review_base_ref's shape:
+# it is either a real branch review_base_ref itself resolves to (existence proof
+# only - review_base_ref's own identity was already ancestor-proven elsewhere), or
+# an operator-bound review_destination_branch, re-verified in full every read via
+# fm_pr_review_destination_branch_verify. If both are present and disagree, that
+# is a contradiction, not a preference.
+fm_pr_review_destination_branch() {
+  local worktree=$1 base_ref=$2 base_sha=$3 meta=$4
+  local direct_branch direct_resolved bound_source bound_branch
+  direct_branch=$(fm_pr_review_base_branch "$base_ref" 2>/dev/null || true)
+  if [ -n "$direct_branch" ]; then
+    direct_resolved=$(fm_pr_review_branch_exists "$worktree" "$direct_branch" || true)
+    [ -n "$direct_resolved" ] || direct_branch=
+  fi
+  bound_source=$(fm_pr_review_destination_from_meta "$meta" 2>/dev/null || true)
+  bound_branch=
+  [ -z "$bound_source" ] \
+    || bound_branch=$(fm_pr_review_destination_branch_verify "$worktree" "$base_sha" "$bound_source" 2>/dev/null || true)
+  if [ -n "$direct_branch" ] && [ -n "$bound_branch" ]; then
+    [ "$direct_branch" = "$bound_branch" ] || return 1
+    printf '%s\n' "$direct_branch"
+    return 0
+  fi
+  [ -n "$direct_branch" ] && { printf '%s\n' "$direct_branch"; return 0; }
+  [ -n "$bound_branch" ] && { printf '%s\n' "$bound_branch"; return 0; }
+  return 1
+}
+
 fm_pr_review_base_resolve() {
   local worktree=$1 approved_ref=$2 approved_sha=$3 branch remote_ref resolved
   [ -d "$worktree" ] && [ ! -L "$worktree" ] || return 1
@@ -427,11 +497,18 @@ fm_pr_review_base_resolve() {
   branch=$(fm_pr_review_base_branch "$approved_ref") || return 1
   remote_ref="refs/remotes/origin/$branch"
   resolved=$(git -C "$worktree" rev-parse --verify --quiet "$remote_ref^{commit}" 2>/dev/null || true)
-  if [ "$resolved" != "$approved_sha" ]; then
+  # A normally advancing branch is not a stale approval: the approved SHA only
+  # needs to still be a real, reachable ancestor of the branch's current tip, not
+  # the tip itself. A fetch is attempted only when local knowledge does not
+  # already prove that, so an already-satisfied approval never re-fetches.
+  if [ -z "$resolved" ] \
+    || ! git -C "$worktree" cat-file -e "$approved_sha^{commit}" 2>/dev/null \
+    || ! git -C "$worktree" merge-base --is-ancestor "$approved_sha" "$resolved" 2>/dev/null; then
     git -C "$worktree" fetch --quiet origin "+refs/heads/$branch:$remote_ref" || return 1
     resolved=$(git -C "$worktree" rev-parse --verify --quiet "$remote_ref^{commit}" 2>/dev/null) || return 1
+    git -C "$worktree" cat-file -e "$approved_sha^{commit}" 2>/dev/null || return 1
+    git -C "$worktree" merge-base --is-ancestor "$approved_sha" "$resolved" 2>/dev/null || return 1
   fi
-  [ "$resolved" = "$approved_sha" ] || return 1
   printf 'origin/%s\n' "$branch"
 }
 
@@ -682,8 +759,17 @@ EOF
   [ "$head_sha" = "$actual_head" ] || return 1
   [ -n "$expected_base_ref" ] && [ "$base_ref" = "$expected_base_ref" ] || return 1
   [ -n "$expected_base_sha" ] && [ "$base_sha" = "$expected_base_sha" ] || return 1
+  # base_ref may be a branch label that has advanced normally since this review
+  # was frozen (an independent, unrelated merge landing on it is expected, not a
+  # tampering signal). The exact-equality checks just above already pin base_sha
+  # to this task's one approved value, so what remains to prove here is only that
+  # base_ref still names something real and that the frozen base_sha is still a
+  # genuine ancestor-or-equal of it, never that the label stopped moving.
   resolved_base=$(git -C "$worktree" rev-parse --verify "$base_ref^{commit}" 2>/dev/null) || return 1
-  [ "$base_sha" = "$resolved_base" ] || return 1
+  git -C "$worktree" cat-file -e "$base_sha^{commit}" 2>/dev/null || return 1
+  if [ "$base_sha" != "$resolved_base" ]; then
+    git -C "$worktree" merge-base --is-ancestor "$base_sha" "$resolved_base" 2>/dev/null || return 1
+  fi
   actual_merge_base=$(git -C "$worktree" merge-base "$base_sha" "$head_sha" 2>/dev/null) || return 1
   [ "$merge_base_sha" = "$actual_merge_base" ] || return 1
   actual_changed_files=$(git -C "$worktree" diff --name-status "$merge_base_sha" "$head_sha" | fm_pr_sha256_stream) || return 1

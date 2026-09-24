@@ -395,8 +395,8 @@ surface_review_single_record_at_line() {
     "$label" "$surface" "$file" "$reference" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$reference" "$digest" "$line_hex" "$behavior" "$behavior_digest" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$before_hex" "$after_hex" "$behavior" "$behavior_digest" "$binding" "$reference" "$side" "$digest" "$change_digest" "$line_hex" "$before_hex" "$after_hex" "$reference" "$reference" "$digest" "$line_hex" "$behavior" "$action" "$behavior_digest" "$binding"
 }
 
-write_self_review_report() {
-  local home=$1 id=$2 report case_dir target_repository target_head base_head merge_base_sha substrate_root substrate_head empty_digest changed_digest
+write_self_review_report() {  # <home> <id> [<worktree>]
+  local home=$1 id=$2 worktree=${3-} report case_dir target_repository target_head base_head merge_base_sha substrate_root substrate_head empty_digest changed_digest
   local authority_digest security_digest path_digest failure_digest tests_digest documentation_digest delivery_digest
   local authority_old_digest security_old_digest path_old_digest failure_old_digest tests_old_digest documentation_old_digest delivery_old_digest
   local authority_line_hex security_line_hex path_line_hex failure_line_hex tests_line_hex documentation_line_hex delivery_line_hex
@@ -404,11 +404,12 @@ write_self_review_report() {
   local authority_change_digest security_change_digest path_change_digest failure_change_digest tests_change_digest documentation_change_digest delivery_change_digest
   report="$home/data/$id/pr-self-review.md"
   case_dir=$(cd "$home/.." && pwd)
-  target_repository=$(cd "$case_dir/wt" && pwd -P)
-  target_head=$(git -C "$case_dir/wt" rev-parse HEAD)
-  base_head=$(git -C "$case_dir/wt" rev-parse main)
-  merge_base_sha=$(git -C "$case_dir/wt" merge-base "$base_head" "$target_head")
-  changed_digest=$(git -C "$case_dir/wt" diff --name-status "$merge_base_sha" "$target_head" | fm_pr_sha256_stream)
+  [ -n "$worktree" ] || worktree="$case_dir/wt"
+  target_repository=$(cd "$worktree" && pwd -P)
+  target_head=$(git -C "$worktree" rev-parse HEAD)
+  base_head=$(git -C "$worktree" rev-parse main)
+  merge_base_sha=$(git -C "$worktree" merge-base "$base_head" "$target_head")
+  changed_digest=$(git -C "$worktree" diff --name-status "$merge_base_sha" "$target_head" | fm_pr_sha256_stream)
   authority_digest=$(self_review_line_digest "$case_dir" bin/fm-pr-check.sh)
   security_digest=$(self_review_line_digest "$case_dir" bin/fm-pr-lib.sh)
   path_digest=$(self_review_line_digest "$case_dir" bin/fm-pr-self-review-check.sh)
@@ -492,6 +493,10 @@ write_poll_meta() {
   fm_write_meta "$state/$id.meta" \
     "window=fm-$id" \
     "pr=$url"
+}
+
+capture_all_refs() {  # <repo>
+  git -C "$1" for-each-ref --format='%(refname) %(objectname)'
 }
 
 
@@ -3623,6 +3628,250 @@ test_gitlab_merged_poll_retires() {
   pass "GitHub and GitLab exact merged results share one retirement path"
 }
 
+# --- Frozen review base vs. moving forge destination (fix-firstmate-frozen-review-base) ---
+#
+# A shared firstmate checkout's knowledge of a branch (main, here, for these
+# fixtures) is not a separate remote to fetch from: worktrees of the same repo
+# share refs directly, so an "independent advance" is modeled by committing
+# through a second real worktree of the same repository, exactly the way an
+# unrelated task's own merge would land in the one physical checkout every task
+# worktree shares. No ref is ever rewound or force-pushed by any fixture below.
+
+test_pr_ready_survives_independent_advance_past_frozen_base() {
+  local dir frozen advanced before_refs
+  dir=$(make_case advance-past-frozen)
+  write_task_meta "$dir"
+  frozen=$(git -C "$dir/wt" rev-parse main)
+
+  git -C "$dir/wt" worktree add -q "$dir/other" main
+  printf 'independent change\n' > "$dir/other/independent.txt"
+  git -C "$dir/other" add independent.txt
+  git -C "$dir/other" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm independent-advance
+  advanced=$(git -C "$dir/other" rev-parse HEAD)
+  git -C "$dir/wt" worktree remove --force "$dir/other"
+
+  [ "$advanced" != "$frozen" ] || fail "fixture did not prove main advanced past the frozen review base"
+  [ "$(git -C "$dir/wt" rev-parse main)" = "$advanced" ] \
+    || fail "fixture's independent advance did not reach the shared repository"
+
+  before_refs=$(capture_all_refs "$dir/wt")
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/201 >/dev/null 2> "$dir/stderr" \
+    || fail "an independently advanced default branch stranded an already-frozen self-review: $(cat "$dir/stderr")"
+  [ -e "$dir/home/state/task-a.check.sh" ] || fail "surviving an independent advance did not arm a PR poll"
+  [ "$(capture_all_refs "$dir/wt")" = "$before_refs" ] \
+    || fail "a successful PR-ready check mutated a ref in the reviewed repository"
+  grep -qxF "review_base_sha=$frozen" "$dir/home/state/task-a.meta" \
+    || fail "the frozen review base was silently moved to the advanced tip"
+  pass "a normally advancing default branch no longer strands an already-approved self-review"
+}
+
+test_pr_ready_rejects_substituted_older_ancestor() {
+  local dir older frozen before_refs rc
+  dir=$(make_case older-ancestor)
+  older=$(git -C "$dir/wt" rev-parse main)
+  git -C "$dir/wt" checkout -q main
+  printf 'second commit on main\n' >> "$dir/wt/fixture.txt"
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qam second-main-commit
+  git -C "$dir/wt" checkout -q fm/task-a
+  write_task_meta "$dir"
+  frozen=$(git -C "$dir/wt" rev-parse main)
+  [ "$frozen" != "$older" ] || fail "fixture did not create a genuine older ancestor"
+
+  # A real, genuine ancestor of the destination's current tip - but not this
+  # task's actual pinned approval. Only the untouched exact-equality gate
+  # (report base_sha vs. task metadata's review_base_sha) may catch this; ancestor
+  # tolerance must never be read as "any ancestor is acceptable."
+  sed -i.bak "s/^Base SHA: $frozen\$/Base SHA: $older/" "$dir/home/data/task-a/pr-self-review.md"
+  rm -f "$dir/home/data/task-a/pr-self-review.md.bak"
+
+  before_refs=$(capture_all_refs "$dir/wt")
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/202 >/dev/null 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a report claiming a real-but-wrong older ancestor as its base was accepted"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "a substituted-older-ancestor report armed a poll"
+  [ "$(capture_all_refs "$dir/wt")" = "$before_refs" ] \
+    || fail "a refused PR-ready check mutated a ref in the reviewed repository"
+  grep -qxF "review_base_sha=$frozen" "$dir/home/state/task-a.meta" \
+    || fail "a refused check mutated the pinned approved base"
+  pass "a real but wrongly-substituted older ancestor is refused by the exact-equality gate"
+}
+
+test_pr_ready_rejects_unrelated_history_base() {
+  local dir divergent_sha before_refs rc
+  dir=$(make_case unrelated-history)
+  git -C "$dir/wt" checkout -q main
+  git -C "$dir/wt" checkout -q -b divergent-side
+  printf 'divergent side commit\n' >> "$dir/wt/fixture.txt"
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qam divergent-side-commit
+  divergent_sha=$(git -C "$dir/wt" rev-parse HEAD)
+  git -C "$dir/wt" checkout -q fm/task-a
+
+  fm_write_meta "$dir/home/state/task-a.meta" \
+    'window=firstmate:fm-task-a' "worktree=$dir/wt" 'review_base_ref=main' \
+    "review_base_sha=$divergent_sha" 'kind=ship' 'mode=no-mistakes'
+  write_self_review_report "$dir/home" task-a
+  sed -i.bak "s/^Base SHA: .*/Base SHA: $divergent_sha/" "$dir/home/data/task-a/pr-self-review.md"
+  rm -f "$dir/home/data/task-a/pr-self-review.md.bak"
+
+  before_refs=$(capture_all_refs "$dir/wt")
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/203 >/dev/null 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a base SHA unrelated to the destination's history was accepted"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "an unrelated-history base armed a poll"
+  [ "$(capture_all_refs "$dir/wt")" = "$before_refs" ] \
+    || fail "a refused PR-ready check mutated a ref in the reviewed repository"
+  pass "a base SHA that is real but not an ancestor of the destination branch is refused"
+}
+
+test_pr_ready_two_independent_branches_preserve_each_others_baseline() {
+  local dir base_a base_b
+  dir=$(make_case two-branches)
+  write_task_meta "$dir" task-a
+  base_a=$(git -C "$dir/wt" rev-parse main)
+
+  git -C "$dir/wt" worktree add -q "$dir/wt-b" -b fm/task-b main
+  printf 'task b change\n' > "$dir/wt-b/task-b.txt"
+  git -C "$dir/wt-b" add task-b.txt
+  git -C "$dir/wt-b" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm task-b-change
+  mkdir -p "$dir/home/data/task-b"
+  printf '%s\n' "- Firstmate substrate root: \`$dir/substrate\`" \
+    "- Firstmate substrate launch SHA: \`$(git -C "$dir/substrate" rev-parse HEAD)\`" \
+    > "$dir/home/data/task-b/brief.md"
+  fm_write_meta "$dir/home/state/task-b.meta" \
+    'window=firstmate:fm-task-b' "worktree=$dir/wt-b" "project=$dir/project" \
+    'review_base_ref=main' "review_base_sha=$base_a" 'kind=ship' 'mode=no-mistakes'
+  write_self_review_report "$dir/home" task-b "$dir/wt-b"
+
+  # task-b's own real merge lands on main: a genuine independent advance, shared
+  # by every worktree of this one repository, task-a's included.
+  git -C "$dir/wt-b" checkout -q main
+  git -C "$dir/wt-b" merge --no-edit -q fm/task-b
+  base_b=$(git -C "$dir/wt-b" rev-parse main)
+  [ "$base_b" != "$base_a" ] || fail "fixture did not advance main via task-b's own merge"
+  [ "$(git -C "$dir/wt" rev-parse main)" = "$base_b" ] \
+    || fail "task-b's merge did not reach the shared repository task-a's worktree also sees"
+
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/204 >/dev/null 2> "$dir/stderr-a" \
+    || fail "landing task-b stranded task-a's already-approved baseline: $(cat "$dir/stderr-a")"
+  [ -e "$dir/home/state/task-a.check.sh" ] || fail "task-a's poll was not armed after task-b's independent merge"
+  grep -qxF "review_base_sha=$base_a" "$dir/home/state/task-a.meta" \
+    || fail "task-a's frozen base was disturbed by task-b landing"
+  pass "landing one branch's real merge does not strand another branch's already-approved baseline"
+}
+
+test_pr_ready_commit_shaped_base_requires_and_consumes_bound_destination() {
+  local dir base_sha before_refs rc
+  dir=$(make_case commit-shaped-base)
+  write_task_meta "$dir"
+  base_sha=$(git -C "$dir/wt" rev-parse main)
+  sed -i.bak "s/^review_base_ref=main\$/review_base_ref=$base_sha/" "$dir/home/state/task-a.meta"
+  rm -f "$dir/home/state/task-a.meta.bak"
+  sed -i.bak "s/^Base ref: main\$/Base ref: $base_sha/" "$dir/home/data/task-a/pr-self-review.md"
+  rm -f "$dir/home/data/task-a/pr-self-review.md.bak"
+
+  before_refs=$(capture_all_refs "$dir/wt")
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/205 >/dev/null 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a commit-shaped review base was accepted with no bound destination"
+  grep -qF 'no verifiable destination branch' "$dir/stderr" \
+    || fail "the ambiguous-destination refusal was not explicit"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "an unbound commit-shaped base armed a poll"
+  [ "$(capture_all_refs "$dir/wt")" = "$before_refs" ] \
+    || fail "a refused destination check mutated a ref in the reviewed repository"
+  assert_no_grep 'review_destination_branch=' "$dir/home/state/task-a.meta" \
+    "a refused bind attempt persisted a destination"
+
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/205 --bind-destination main >/dev/null 2> "$dir/stderr-bind" \
+    || fail "--bind-destination was refused for a real branch containing the approved base: $(cat "$dir/stderr-bind")"
+  [ -e "$dir/home/state/task-a.check.sh" ] || fail "a successful --bind-destination run did not arm a poll"
+  grep -qxF "review_destination_branch=main" "$dir/home/state/task-a.meta" \
+    || fail "--bind-destination did not persist the verified destination"
+
+  rm -f "$dir/home/state/task-a.check.sh" "$dir/home/state/task-a.pr-poll" "$dir/home/state/task-a.pr-poll-registration"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/205 >/dev/null 2> "$dir/stderr-ordinary" \
+    || fail "an ordinary run did not consume the already-bound destination: $(cat "$dir/stderr-ordinary")"
+  [ -e "$dir/home/state/task-a.check.sh" ] || fail "the ordinary re-run after binding did not arm a poll"
+  pass "a commit-shaped review base refuses until an explicitly verified destination is bound, then every later run consumes it"
+}
+
+test_pr_ready_bind_destination_rejects_unverifiable_or_contradictory() {
+  local dir base_sha rc
+  dir=$(make_case commit-shaped-negatives)
+  write_task_meta "$dir"
+  base_sha=$(git -C "$dir/wt" rev-parse main)
+  sed -i.bak "s/^review_base_ref=main\$/review_base_ref=$base_sha/" "$dir/home/state/task-a.meta"
+  rm -f "$dir/home/state/task-a.meta.bak"
+  sed -i.bak "s/^Base ref: main\$/Base ref: $base_sha/" "$dir/home/data/task-a/pr-self-review.md"
+  rm -f "$dir/home/data/task-a/pr-self-review.md.bak"
+
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/206 --bind-destination does-not-exist \
+    >/dev/null 2> "$dir/stderr-missing"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "--bind-destination accepted a branch that does not exist"
+  assert_no_grep 'review_destination_branch=' "$dir/home/state/task-a.meta" \
+    "a nonexistent-branch bind attempt persisted a destination"
+
+  git -C "$dir/wt" checkout -q --orphan unrelated-branch
+  git -C "$dir/wt" rm -rf -q . >/dev/null 2>&1 || true
+  printf 'unrelated root\n' > "$dir/wt/unrelated.txt"
+  git -C "$dir/wt" add unrelated.txt
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm unrelated-root
+  git -C "$dir/wt" checkout -q fm/task-a
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/206 --bind-destination unrelated-branch \
+    >/dev/null 2> "$dir/stderr-unrelated"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "--bind-destination accepted a real branch that does not contain the approved base as an ancestor"
+  assert_no_grep 'review_destination_branch=' "$dir/home/state/task-a.meta" \
+    "an ancestry-failing bind attempt persisted a destination"
+
+  # A contradiction: review_base_ref itself is branch-shaped and directly
+  # resolvable (main), but a separately bound review_destination_branch names a
+  # different, independently-verifiable real branch. Neither is preferred.
+  git -C "$dir/wt" branch other-target main
+  sed -i.bak "s/^review_base_ref=$base_sha\$/review_base_ref=main/" "$dir/home/state/task-a.meta"
+  rm -f "$dir/home/state/task-a.meta.bak"
+  printf 'review_destination_branch=other-target\n' >> "$dir/home/state/task-a.meta"
+  sed -i.bak "s/^Base ref: $base_sha\$/Base ref: main/" "$dir/home/data/task-a/pr-self-review.md"
+  rm -f "$dir/home/data/task-a/pr-self-review.md.bak"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/206 >/dev/null 2> "$dir/stderr-contradiction"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a real direct branch and a disagreeing bound destination were not treated as a contradiction"
+  pass "an unverifiable or contradictory destination is refused, never guessed"
+}
+
+test_direct_pr_creation_consumes_bound_destination_for_commit_shaped_base() {
+  local dir base_sha
+  dir=$(make_case direct-pr-commit-shaped)
+  fm_write_meta "$dir/home/state/task-a.meta" \
+    'window=firstmate:fm-task-a' "worktree=$dir/wt" 'kind=ship' 'mode=direct-PR'
+  git -C "$dir/wt" checkout -q fm/task-a
+  base_sha=$(git -C "$dir/wt" rev-parse main)
+  sed -i.bak "s/^kind=ship\$/kind=ship\nreview_base_ref=$base_sha\nreview_base_sha=$base_sha\nreview_destination_branch=main/" \
+    "$dir/home/state/task-a.meta"
+  rm -f "$dir/home/state/task-a.meta.bak"
+  write_self_review_report "$dir/home" task-a
+  sed -i.bak "s/^Base ref: main\$/Base ref: $base_sha/" "$dir/home/data/task-a/pr-self-review.md"
+  rm -f "$dir/home/data/task-a/pr-self-review.md.bak"
+
+  run_create_entry "$dir" task-a --title accepted >/dev/null \
+    || fail "direct PR creation rejected a commit-shaped base with an already-bound destination"
+  grep -qxF "pr create --repo o/r --head fm/task-a --base main --title accepted" "$dir/gh-axi.log" \
+    || fail "direct PR creation did not use the bound destination as the forge base"
+  pass "direct PR creation consumes and re-verifies an already-bound destination for a commit-shaped base"
+}
+
 if [ "${1:-}" = --overlapping-owners-only ]; then
   test_pr_ready_overlapping_owner_coverage
   exit 0
@@ -3667,6 +3916,13 @@ test_external_merge_transition_retires_only_terminal_poll
 test_retirement_refuses_replacement_and_nonterminal_results
 test_retirement_queue_failure_and_receipt_tampering
 test_gitlab_merged_poll_retires
+test_pr_ready_survives_independent_advance_past_frozen_base
+test_pr_ready_rejects_substituted_older_ancestor
+test_pr_ready_rejects_unrelated_history_base
+test_pr_ready_two_independent_branches_preserve_each_others_baseline
+test_pr_ready_commit_shaped_base_requires_and_consumes_bound_destination
+test_pr_ready_bind_destination_rejects_unverifiable_or_contradictory
+test_direct_pr_creation_consumes_bound_destination_for_commit_shaped_base
 test_invalid_entrypoints_have_zero_side_effects
 test_valid_recording_and_merge_derivation
 test_rejected_metacharacter_bytes_are_inert
