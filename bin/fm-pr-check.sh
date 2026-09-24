@@ -133,8 +133,12 @@ fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH" || {
   exit 1
 }
 if [ -n "$BIND_DESTINATION" ]; then
-  REVIEW_BASE_BRANCH=$(fm_pr_review_destination_branch_verify "$WT" "$REVIEW_BASE_SHA" "$BIND_DESTINATION") || {
-    echo "error: --bind-destination does not name a real branch containing the approved base" >&2
+  BIND_DESTINATION=$(fm_pr_review_base_branch "$BIND_DESTINATION") || {
+    echo "error: --bind-destination has invalid branch syntax" >&2
+    exit 1
+  }
+  REVIEW_BASE_BRANCH=$(fm_pr_review_destination_branch "$WT" "$REVIEW_BASE_REF" "$REVIEW_BASE_SHA" "$META" "$BIND_DESTINATION") || {
+    echo "error: --bind-destination contradicts the approved base or does not name a real branch containing it" >&2
     exit 1
   }
 else

@@ -401,13 +401,19 @@ EOF
 }
 
 fm_pr_review_base_branch() {
-  local ref=${1-} branch
-  case "$ref" in
-    origin/*) branch=${ref#origin/} ;;
-    refs/remotes/origin/*) branch=${ref#refs/remotes/origin/} ;;
-    refs/heads/*) branch=${ref#refs/heads/} ;;
-    refs/*) return 1 ;;
-    *) branch=$ref ;;
+  local ref=${1-} mode=${2:-ref} branch
+  case "$mode" in
+    canonical) branch=$ref ;;
+    ref)
+      case "$ref" in
+        origin/*) branch=${ref#origin/} ;;
+        refs/remotes/origin/*) branch=${ref#refs/remotes/origin/} ;;
+        refs/heads/*) branch=${ref#refs/heads/} ;;
+        refs/*) return 1 ;;
+        *) branch=$ref ;;
+      esac
+      ;;
+    *) return 1 ;;
   esac
   case "$branch" in
     ''|[-.]*|*..*|*@\{*|*[!A-Za-z0-9._/-]*) return 1 ;;
@@ -433,9 +439,9 @@ fm_pr_review_destination_from_meta() {
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
   count=$(grep -c '^review_destination_branch=' "$meta" || true)
   [ "$count" -le 1 ] || return 1
-  [ "$count" = 1 ] || return 1
+  [ "$count" = 1 ] || return 2
   value=$(sed -n 's/^review_destination_branch=//p' "$meta")
-  fm_pr_review_base_branch "$value"
+  fm_pr_review_base_branch "$value" canonical
 }
 
 # Single owner of "is <candidate> a real, provably-bound destination for this
@@ -448,7 +454,7 @@ fm_pr_review_destination_from_meta() {
 # before fm-pr-check.sh ever persists it.
 fm_pr_review_destination_branch_verify() {
   local worktree=$1 base_sha=$2 candidate=$3 branch resolved
-  branch=$(fm_pr_review_base_branch "$candidate") || return 1
+  branch=$(fm_pr_review_base_branch "$candidate" canonical) || return 1
   resolved=$(fm_pr_review_branch_exists "$worktree" "$branch") || return 1
   [ -n "$resolved" ] || return 1
   git -C "$worktree" cat-file -e "$base_sha^{commit}" 2>/dev/null || return 1
@@ -465,16 +471,26 @@ fm_pr_review_destination_branch_verify() {
 # is a contradiction, not a preference.
 fm_pr_review_destination_branch() {
   local worktree=$1 base_ref=$2 base_sha=$3 meta=$4
-  local direct_branch direct_resolved bound_source bound_branch
+  local direct_branch direct_resolved bound_source bound_branch status
+  local candidate=${5-}
   direct_branch=$(fm_pr_review_base_branch "$base_ref" 2>/dev/null || true)
   if [ -n "$direct_branch" ]; then
     direct_resolved=$(fm_pr_review_branch_exists "$worktree" "$direct_branch" || true)
     [ -n "$direct_resolved" ] || direct_branch=
   fi
-  bound_source=$(fm_pr_review_destination_from_meta "$meta" 2>/dev/null || true)
+  if [ -n "$candidate" ]; then
+    bound_source=$candidate
+  elif bound_source=$(fm_pr_review_destination_from_meta "$meta" 2>/dev/null); then
+    :
+  else
+    status=$?
+    [ "$status" = 2 ] || return 1
+    bound_source=
+  fi
   bound_branch=
-  [ -z "$bound_source" ] \
-    || bound_branch=$(fm_pr_review_destination_branch_verify "$worktree" "$base_sha" "$bound_source" 2>/dev/null || true)
+  if [ -n "$bound_source" ]; then
+    bound_branch=$(fm_pr_review_destination_branch_verify "$worktree" "$base_sha" "$bound_source") || return 1
+  fi
   if [ -n "$direct_branch" ] && [ -n "$bound_branch" ]; then
     [ "$direct_branch" = "$bound_branch" ] || return 1
     printf '%s\n' "$direct_branch"
@@ -490,7 +506,9 @@ fm_pr_review_base_resolve() {
   [ -d "$worktree" ] && [ ! -L "$worktree" ] || return 1
   fm_pr_head_valid "$approved_sha" || return 1
   resolved=$(git -C "$worktree" rev-parse --verify --quiet "$approved_ref^{commit}" 2>/dev/null || true)
-  if [ "$resolved" = "$approved_sha" ]; then
+  if [ -n "$resolved" ] \
+    && git -C "$worktree" cat-file -e "$approved_sha^{commit}" 2>/dev/null \
+    && git -C "$worktree" merge-base --is-ancestor "$approved_sha" "$resolved" 2>/dev/null; then
     printf '%s\n' "$approved_ref"
     return 0
   fi
