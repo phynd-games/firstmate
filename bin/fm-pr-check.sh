@@ -132,10 +132,10 @@ IFS="$(printf '\t')" read -r REVIEW_BASE_REF REVIEW_BASE_SHA <<EOF
 $REVIEW_BASE
 EOF
 WT=$(grep '^worktree=' "$META" | cut -d= -f2- || true)
-[ -n "$WT" ] && [ -d "$WT" ] && [ ! -L "$WT" ] && command -v git >/dev/null 2>&1 || {
+if ! { [ -n "$WT" ] && [ -d "$WT" ] && [ ! -L "$WT" ] && command -v git >/dev/null 2>&1; }; then
   echo "error: PR-ready task worktree is unavailable" >&2
   exit 1
-}
+fi
 fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH" || {
   echo "error: PR-ready URL does not identify the reviewed repository" >&2
   exit 1
@@ -229,27 +229,27 @@ fm_pr_head_valid "$REMOTE_HEAD" && [ "$REMOTE_HEAD" = "$REVIEW_HEAD" ] || {
 PR_HEAD=$REMOTE_HEAD
 
 FINAL_REVIEW_HEAD=$(git -C "$WT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
-[ "$FINAL_REVIEW_HEAD" = "$REVIEW_HEAD" ] \
+if ! { [ "$FINAL_REVIEW_HEAD" = "$REVIEW_HEAD" ] \
   && [ "$(fm_pr_sha256 "$REPORT")" = "$REPORT_HASH" ] \
   && [ "$(git -C "$SUBSTRATE_ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)" = "$SUBSTRATE_HEAD" ] \
   && [ -z "$(git -C "$SUBSTRATE_ROOT" status --porcelain 2>/dev/null)" ] \
-  && fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH" || {
+  && fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH"; }; then
   echo "error: reviewed PR-ready inputs changed before publication" >&2
   exit 1
-}
+fi
 
 fm_pr_poll_prepare "$STATE" "$ID" "$PROVIDER" "$URL" "$HOST" "$PROJECT_PATH" "$NUMBER" "$SCRIPT_DIR/fm-pr-poll.sh" \
   || { echo "error: could not prepare PR poll" >&2; exit 1; }
 
 FINAL_REVIEW_HEAD=$(git -C "$WT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
-[ "$FINAL_REVIEW_HEAD" = "$REVIEW_HEAD" ] \
+if ! { [ "$FINAL_REVIEW_HEAD" = "$REVIEW_HEAD" ] \
   && [ "$(fm_pr_sha256 "$REPORT")" = "$REPORT_HASH" ] \
   && [ "$(git -C "$SUBSTRATE_ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)" = "$SUBSTRATE_HEAD" ] \
   && [ -z "$(git -C "$SUBSTRATE_ROOT" status --porcelain 2>/dev/null)" ] \
-  && fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH" || {
+  && fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH"; }; then
   echo "error: reviewed PR-ready inputs changed before publication" >&2
   exit 1
-}
+fi
 
 [ -f "$META" ] && [ ! -L "$META" ] && [ "$(fm_pr_file_link_count "$META")" = 1 ] \
   || { echo "error: task metadata is unavailable" >&2; exit 1; }
