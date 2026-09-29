@@ -1,0 +1,10 @@
+Command: /bin/bash bin/fm-pr-self-review-check.sh task-a no-mistakes
+Shell: macOS /bin/bash 3.2.57
+Changed paths: 3676 (3675 deleted JSON paths plus AGENTS.md)
+Report bytes: 102998
+Elapsed seconds: 324.270
+od invocations: 7380
+Exit: 0
+stdout:
+validated: durable findings-first self-review report for task-a
+stderr:

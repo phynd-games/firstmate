@@ -1,0 +1,3 @@
+31 changed paths; linear regression budget: 30 * 6 + 100 = 280 od invocations.
+original: exit=0; elapsed=39.442s; od calls=778; output=validated: durable findings-first self-review report for task-a
+optimized: exit=0; elapsed=9.210s; od calls=90; output=validated: durable findings-first self-review report for task-a

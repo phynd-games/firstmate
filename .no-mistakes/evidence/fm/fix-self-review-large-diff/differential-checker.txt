@@ -1,0 +1,46 @@
+Original: 844e04e; optimized: 59be001; both invoked through fm-pr-self-review-check.sh using Bash 3.2.
+valid-raw: original exit=0, optimized exit=0; output=validated: durable findings-first self-review report for task-a
+valid-hex: original exit=0, optimized exit=0; output=validated: durable findings-first self-review report for task-a
+mixed: original exit=0, optimized exit=0; output=validated: durable findings-first self-review report for task-a
+duplicates: original exit=0, optimized exit=0; output=validated: durable findings-first self-review report for task-a
+reordered: original exit=0, optimized exit=0; output=validated: durable findings-first self-review report for task-a
+omitted: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+unchanged: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+odd-hex: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+uppercase-hex: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+empty-hex: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+nonhex: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+absolute: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+dotdot: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+dot: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+empty-entry: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+space: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+comma-hex: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+nul: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+newline: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+tab: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+semicolon: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+colon: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+backslash: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+utf8: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+Base SHA-zero: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+Base SHA-bad: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+Head SHA-zero: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+Head SHA-bad: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+Merge-base SHA-zero: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+Merge-base SHA-bad: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+Changed files-zero: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+Changed files-bad: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+Substrate base SHA-zero: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+Substrate base SHA-bad: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+Substrate head SHA-zero: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+Substrate head SHA-bad: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+Substrate changed files-zero: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+Substrate changed files-bad: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+missing-base-ref: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+bad-task: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+bad-version: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+bad-repository: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+incomplete: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+dirty: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid
+oversize: original exit=1, optimized exit=1; output=error: durable findings-first self-review report is unavailable or invalid

@@ -1,0 +1,20 @@
+Public checker command: bin/fm-pr-self-review-check.sh task-a no-mistakes
+101 changed paths; od invocations:      230
+
+Scenario: valid
+validated: durable findings-first self-review report for task-a
+
+Scenario: omitted-path
+error: durable findings-first self-review report is unavailable or invalid
+
+Scenario: unchanged-file-listed
+error: durable findings-first self-review report is unavailable or invalid
+
+Scenario: malformed-hex
+error: durable findings-first self-review report is unavailable or invalid
+
+Scenario: head-forged
+error: durable findings-first self-review report is unavailable or invalid
+
+Scenario: squeezed od path (refused)
+error: durable findings-first self-review report is unavailable or invalid
