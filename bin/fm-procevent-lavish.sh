@@ -557,10 +557,10 @@ cmd_terminal() {
   return 1
 }
 
-# Whether a completed result carries any queued content block at all. The
-# published response frames content as a top-level `prompts[N]{...}:` or
-# `feedback[N]{...}:` header whose rows are INDENTED, so this anchors on column
-# zero: an indented payload line is captain-supplied text and must never be able
+# Whether a completed result carries any queued content block at all. Header
+# recognition uses lavish_header in LAVISH_PERL_PARSER above, the shared owner
+# for both response frames. It anchors on column zero: an indented payload line
+# is captain-supplied text and must never be able
 # to forge - or, here, to hide behind - a content header. Any recognized block
 # is content regardless of its declared count, while a malformed top-level
 # prompts or feedback header makes the result indeterminate.

@@ -873,8 +873,9 @@ EOF
     return 1
   }
   # Membership is tested against canonical tokens (the exact fm_pr_review_path_encode form
-  # of each syntax-validated path). Every list is canonicalized once, then compared as
-  # sorted sets, so cost stays linear in the changed-path count instead of quadratic.
+  # of each syntax-validated path). Cached lists and sorted-set coverage checks
+  # avoid decoding and re-encoding a surface list once per changed path; sorting
+  # still has its own cost, so linear encoding work is not a linear runtime bound.
   fm_pr_review_files_canonical() {  # <comma-separated list> [check]
     local list=$1 check=${2-} entry canon memo_at=0
     while [ "$memo_at" -lt "$canon_memo_count" ]; do
