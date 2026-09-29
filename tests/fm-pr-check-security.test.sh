@@ -1585,6 +1585,137 @@ PY
   pass "PR-ready path requires explicit scope for unrelated surfaces"
 }
 
+make_large_diff_case() {  # <name> <changed-path-count>: N deleted paths outside every owner class plus one new AGENTS.md
+  local name=$1 count=$2 dir i
+  dir=$(make_case "$name")
+  git -C "$dir/wt" checkout -q main
+  mkdir -p "$dir/wt/apps/large" "$dir/wt/keep"
+  i=0
+  while [ "$i" -lt "$count" ]; do
+    printf 'fixture %s\n' "$i" > "$dir/wt/apps/large/case-$i.json"
+    i=$((i + 1))
+  done
+  printf 'kept\n' > "$dir/wt/keep/unchanged.txt"
+  git -C "$dir/wt" add apps keep
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm large-base
+  git -C "$dir/wt" checkout -q -B fm/task-a
+  git -C "$dir/wt" rm -rq apps
+  printf '%s\n' 'fixture' '# shared authority and delivery instructions' > "$dir/wt/AGENTS.md"
+  git -C "$dir/wt" add AGENTS.md
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm large-change
+  printf '%s\n' "$dir"
+}
+
+write_large_diff_surface_report() {  # <dir> <comma-separated tests-surface files>
+  local dir=$1 tests_files=$2 report changed_digest first_file agents_digest agents_hex agents_change
+  write_task_meta "$dir"
+  report="$dir/home/data/task-a/pr-self-review.md"
+  changed_digest=$(sed -n 's/^Changed files: //p' "$report")
+  first_file=${tests_files%%,*}
+  agents_digest=$(self_review_line_digest "$dir" AGENTS.md)
+  agents_hex=$(self_review_line_hex "$dir" AGENTS.md)
+  agents_change=$(surface_change_digest_for_file "$dir" AGENTS.md)
+  python3 - "$report" \
+    "$(surface_review_single_record_at_line Authority authority AGENTS.md 2 "$agents_digest" "$agents_hex" "$agents_change")" \
+    "$(surface_unaffected_record_for_file Security security "$first_file" "$changed_digest")" \
+    "$(surface_unaffected_record_for_file Path path "$first_file" "$changed_digest")" \
+    "$(surface_unaffected_record_for_file Failure failure "$first_file" "$changed_digest")" \
+    "$(surface_unaffected_record_for_file Tests tests "$tests_files" "$changed_digest")" \
+    "$(surface_review_single_record_at_line Documentation documentation AGENTS.md 2 "$agents_digest" "$agents_hex" "$agents_change")" \
+    "$(surface_review_single_record_at_line Delivery delivery AGENTS.md 2 "$agents_digest" "$agents_hex" "$agents_change")" <<'PY'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+records = dict(zip(
+    ("Authority", "Security", "Path", "Failure", "Tests", "Documentation", "Delivery"),
+    sys.argv[2:9],
+))
+text = report.read_text(encoding="utf-8")
+for surface, record in records.items():
+    text = re.sub(rf"(?m)^{surface}: .*", lambda _m, record=record: record, text, count=1)
+report.write_text(text, encoding="utf-8")
+PY
+  chmod 0600 "$report"
+}
+
+large_diff_tests_files() {  # <dir>: every changed path except AGENTS.md, comma-separated
+  git -C "$1/wt" diff --name-only main HEAD | grep -vx AGENTS.md | paste -sd, -
+}
+
+run_large_diff_check() {  # <dir> [<shim-dir>]: the real checker, optionally with a counting shim first on PATH
+  local dir=$1 shim=${2-}
+  FM_HOME="$dir/home" PATH="${shim:+$shim:}$PATH" "$SELF_REVIEW_CHECK" task-a no-mistakes
+}
+
+test_pr_ready_large_diff_is_linear_and_keeps_refusals() {
+  local dir count shim od_calls files without_last variant
+  count=100
+  dir=$(make_large_diff_case large-diff "$count")
+  files=$(large_diff_tests_files "$dir")
+  write_large_diff_surface_report "$dir" "$files"
+  # A counting od shim measures the work without a wall-clock threshold: the checker used to
+  # re-decode and re-encode every listed path once per changed path (quadratic spawns).
+  shim="$dir/shim"
+  mkdir -p "$shim"
+  cat > "$shim/od" <<SH
+#!/bin/sh
+printf x >> "\$FM_TEST_OD_COUNT"
+exec $(command -v od) "\$@"
+SH
+  chmod +x "$shim/od"
+  : > "$dir/od-count"
+  FM_TEST_OD_COUNT="$dir/od-count" run_large_diff_check "$dir" "$shim" > "$dir/valid.out" 2> "$dir/valid.err" \
+    || fail "large-diff self-review was rejected: $(cat "$dir/valid.err")"
+  od_calls=$(wc -c < "$dir/od-count" | tr -d '[:space:]')
+  [ "$od_calls" -le $((count * 6 + 100)) ] \
+    || fail "large-diff validation ran od $od_calls times for $count changed paths (expected linear)"
+  # Same diff, each refusal the validator must keep at scale.
+  cp "$dir/home/data/task-a/pr-self-review.md" "$dir/valid-report.md"
+  without_last=${files%,*}
+  for variant in omitted-path unchanged-file-listed malformed-hex head-forged; do
+    cp "$dir/valid-report.md" "$dir/home/data/task-a/pr-self-review.md"
+    case "$variant" in
+      omitted-path) write_large_diff_surface_report "$dir" "$without_last" ;;
+      unchanged-file-listed) write_large_diff_surface_report "$dir" "$files,keep/unchanged.txt" ;;
+      malformed-hex) write_large_diff_surface_report "$dir" "hex:abc,$files" ;;
+      head-forged) sed -i.bak "s/^Head SHA: .*/Head SHA: $(printf '0%.0s' $(seq 1 40))/" "$dir/home/data/task-a/pr-self-review.md" && rm -f "$dir/home/data/task-a/pr-self-review.md.bak" ;;
+    esac
+    if run_large_diff_check "$dir" > "$dir/$variant.out" 2> "$dir/$variant.err"; then
+      fail "large-diff validation accepted $variant"
+    fi
+    grep -qF 'durable findings-first self-review report is unavailable or invalid' "$dir/$variant.err" \
+      || fail "$variant was refused outside the report validator: $(cat "$dir/$variant.err")"
+  done
+  cp "$dir/valid-report.md" "$dir/home/data/task-a/pr-self-review.md"
+  run_large_diff_check "$dir" > /dev/null 2>&1 || fail "large-diff report no longer validates after refusal cases"
+  pass "PR-ready validation does linear work on a large diff and keeps omitted, unchanged, malformed and forged refusals"
+}
+
+test_pr_ready_refuses_path_whose_encoding_od_squeezes() {
+  local dir long_name
+  long_name=$(printf 'a%.0s' $(seq 1 64)).json
+  dir=$(make_large_diff_case squeezed-path 3)
+  git -C "$dir/wt" checkout -q main
+  mkdir -p "$dir/wt/apps/large"
+  printf 'x\n' > "$dir/wt/apps/large/$long_name"
+  git -C "$dir/wt" add apps
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm squeeze-base
+  git -C "$dir/wt" checkout -q -B fm/task-a
+  git -C "$dir/wt" rm -rq apps
+  printf '%s\n' 'fixture' '# shared authority and delivery instructions' > "$dir/wt/AGENTS.md"
+  git -C "$dir/wt" add AGENTS.md
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm squeeze-change
+  write_large_diff_surface_report "$dir" "$(large_diff_tests_files "$dir")"
+  if run_large_diff_check "$dir" > "$dir/squeeze.out" 2> "$dir/squeeze.err"; then
+    fail "a changed path with a repeated 32-byte run was accepted"
+  fi
+  grep -qF 'durable findings-first self-review report is unavailable or invalid' "$dir/squeeze.err" \
+    || fail "squeezed path was refused outside the report validator: $(cat "$dir/squeeze.err")"
+  pass "PR-ready validation keeps refusing a changed path whose od encoding is squeezed (current behavior, unchanged)"
+}
+
 test_local_landing_refuses_advanced_default_after_review() {
   local dir fake_root base_head task_head advanced_head rc
   dir="$TMP_ROOT/local-landing-stale-base"
@@ -4105,6 +4236,8 @@ test_pr_ready_rejects_irrelevant_surface_evidence_and_proves_owner_mutation
 test_pr_ready_rejects_unrelated_small_diff_surface_evidence
 test_pr_ready_rejects_multiple_lines_from_one_hunk
 test_pr_ready_requires_unaffected_scope_for_unrelated_surface_evidence
+test_pr_ready_large_diff_is_linear_and_keeps_refusals
+test_pr_ready_refuses_path_whose_encoding_od_squeezes
 test_local_landing_refuses_advanced_default_after_review
 test_pr_check_rejects_local_only_remote_delivery
 test_direct_pr_creation_requires_self_review
