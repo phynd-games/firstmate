@@ -519,6 +519,7 @@ if [ "\${FM_WATCH_HANDLING_SUCCESSOR:-0}" != 1 ] && [ -e "$dir/episode-pending" 
 fi
 while :; do
   touch "$state/.last-watcher-beat"
+  if [ "\${FM_WATCH_HANDLING_SUCCESSOR:-0}" = 1 ] && [ -e "$dir/silent-crash" ]; then rm -f "$dir/silent-crash"; exit 4; fi
   if [ "\${FM_WATCH_HANDLING_SUCCESSOR:-0}" = 1 ] && [ -e "$dir/crash-wake" ]; then cat "$dir/crash-wake"; rm -f "$dir/crash-wake"; exit 3; fi
   if [ -e "$dir/wake-now" ]; then cat "$dir/wake-now"; rm -f "$dir/wake-now"; exit 0; fi
   sleep 0.1
@@ -651,6 +652,32 @@ EOF
     || daemon_loop_fail "the failed drain did not swap the handling successor for a plain arm"
   daemon_loop_stop
   pass "a failed drain swaps the handling successor for a plain arm so the retained wakes are retried"
+}
+
+test_daemon_rearms_after_a_silent_successor_crash_mid_drain() {
+  local dir state bindir fb daemon_pid
+  daemon_loop_fixture daemon-silent-successor-crash
+  cat > "$bindir/fm-wake-drain.sh" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = --ack-through ]; then printf 'ack %s\n' "\$2" >> "$dir/events"; rm -f "$dir/episode-pending"; exit 0; fi
+: > "$dir/episode-pending"
+for i in 1 2 3 4; do printf '1\t%s\tsignal\ttask-%s.status\tsignal: $state/task-%s.status\n' "\$i" "\$i" "\$i"; done
+printf 'WAKE_ACK_REQUIRED: retry --ack-through 4 --recovery-generation gen\n' >&2
+EOF
+  chmod +x "$bindir/fm-wake-drain.sh"
+  printf 'signal: %s/task-1.status\n' "$state" > "$dir/wake-now"
+  daemon_loop_start
+
+  wait_until 100 starts_at_least 2 || daemon_loop_fail "no handling successor was armed"
+  : > "$dir/silent-crash"
+  wait_until 100 starts_at_least 3 || daemon_loop_fail "a silent successor crash was not re-armed"
+  ! events_have '^ack ' || daemon_loop_fail "the silent crash was only noticed after the drain ended"
+  [ "$(live_handling_successors)" = 1 ] || daemon_loop_fail "polling did not resume after the silent crash"
+  wait_until 300 events_have '^ack 4$' || daemon_loop_fail "the drain did not finish after successor recovery"
+  grep -q "watcher exited rc=4 mid-drain reason=''; counted as a crash" "$state/.supervise-daemon.log" \
+    || daemon_loop_fail "the silent successor exit was not crash-counted"
+  daemon_loop_stop
+  pass "the daemon reaps and re-arms a silent successor crash during a slow drain"
 }
 
 test_missing_status_stale_is_acknowledged_without_diagnostic() {
@@ -2977,6 +3004,7 @@ test_slow_multi_row_drain_stays_live_and_acks_once_after_routing
 test_coalesced_signal_rows_are_retained_when_their_routing_fails
 test_daemon_keeps_a_live_successor_through_a_slow_distinct_payload_drain
 test_daemon_retries_a_failed_drain_through_a_resurfacing_plain_arm
+test_daemon_rearms_after_a_silent_successor_crash_mid_drain
 test_missing_status_stale_is_acknowledged_without_diagnostic
 test_transient_unreadable_signal_recovers_without_advancing
 test_permission_recovery_reclassifies_catchall_status

@@ -1489,7 +1489,10 @@ handle_durable_wakes() {  # <watcher-reason> <state>
     handle_wake "$payload" "$state" || failed=1
     # Keep escalation flushes and stale rechecks on cadence while a long drain
     # routes, so a slow classification never starves the rest of the daemon.
-    if [ -n "$DRAIN_PULSE" ]; then "$DRAIN_PULSE" "$state" || true; fi
+    if [ -n "$DRAIN_PULSE" ] && ! "$DRAIN_PULSE" "$state"; then
+      failed=1
+      break
+    fi
   done < "$out"
   [ "$coalesced" -eq 0 ] || log "coalesced $coalesced repeated durable wake rows in one drain"
   if [ "$handled" -eq 0 ]; then handle_wake "$fallback_reason" "$state" || failed=1; fi
@@ -1743,33 +1746,34 @@ fm_super_main() {
     WATCHER_PID=$!
   }
 
-  # Per-row drain pulse. The watcher is one-shot under afk, so a successor that
-  # closes on a fresh wake mid-drain is reaped here and replaced at once: its
-  # rows carry sequences above the pending acknowledgement and stay durable, and
-  # DRAIN_REWAKE_REASON makes the loop drain them right after this pass. An exit
-  # with no wake on stdout is left untouched for the main loop's crash logic; a
-  # nonzero exit that did print a wake is counted as a crash and logged, never
-  # treated as clean, while its possible rows are still drained.
   DRAIN_REWAKE_REASON=""
   drain_pulse() {  # <state>
     local woke wake_rc
     housekeeping_tick "$1"
-    [ -n "${WATCHER_PID:-}" ] && ! kill -0 "$WATCHER_PID" 2>/dev/null || return 0
-    [ -n "${CUR_TMP:-}" ] && [ -e "$CUR_TMP" ] || return 0
-    woke=$(<"$CUR_TMP")
-    is_wake_reason "$woke" || return 0
+    if [ -n "${WATCHER_PID:-}" ] && kill -0 "$WATCHER_PID" 2>/dev/null; then return 0; fi
+    if [ -z "${WATCHER_PID:-}" ]; then
+      start_watcher handling
+      return $?
+    fi
     if wait "$WATCHER_PID" 2>/dev/null; then wake_rc=0; else wake_rc=$?; fi
+    woke=""
+    if [ -n "${CUR_TMP:-}" ] && [ -e "$CUR_TMP" ]; then woke=$(<"$CUR_TMP"); fi
     rm -f "$CUR_TMP" 2>/dev/null || true
     CUR_TMP=""
     WATCHER_PID=""
-    DRAIN_REWAKE_REASON=$woke
-    if [ "$wake_rc" -ne 0 ]; then
+    if is_wake_reason "$woke"; then
+      DRAIN_REWAKE_REASON=$woke
+    fi
+    if ! is_wake_reason "$woke"; then
+      record_crash
+      log "watcher exited rc=$wake_rc mid-drain reason='$woke'; counted as a crash, successor re-armed"
+    elif [ "$wake_rc" -ne 0 ]; then
       record_crash
       log "watcher exited rc=$wake_rc mid-drain with wake '$woke'; counted as a crash, successor re-armed"
     else
       log "wake during drain; successor re-armed: $woke"
     fi
-    start_watcher handling || true
+    start_watcher handling
   }
 
   local rc reason
@@ -1832,27 +1836,30 @@ fm_super_main() {
         # drain. A successor that closes mid-drain is re-armed by drain_pulse;
         # rows it queues carry higher sequences than the acknowledgement covers.
         WATCHER_PID=""
-        start_watcher handling || log "warn: successor watcher did not start before draining; retrying after"
         DRAIN_PULSE=drain_pulse
-        while :; do
-          DRAIN_REWAKE_REASON=""
-          if ! handle_durable_wakes "$reason" "$STATE"; then
-            log "durable wake handling was not acknowledged; restarting for recovery"
-            # A handling successor never re-presents the retained rows, so swap
-            # it for a plain arm whose recovery resurface retries them.
-            if [ -n "${WATCHER_PID:-}" ]; then
-              kill "$WATCHER_PID" 2>/dev/null || true
-              wait "$WATCHER_PID" 2>/dev/null || true
-              [ -z "${CUR_TMP:-}" ] || rm -f "$CUR_TMP" 2>/dev/null || true
-              CUR_TMP=""
-              WATCHER_PID=""
+        if ! start_watcher handling; then
+          log "warn: successor watcher did not start before draining; retaining wakes for recovery"
+        else
+          while :; do
+            DRAIN_REWAKE_REASON=""
+            if ! handle_durable_wakes "$reason" "$STATE"; then
+              log "durable wake handling was not acknowledged; restarting for recovery"
+              # A handling successor never re-presents the retained rows, so swap
+              # it for a plain arm whose recovery resurface retries them.
+              if [ -n "${WATCHER_PID:-}" ]; then
+                kill "$WATCHER_PID" 2>/dev/null || true
+                wait "$WATCHER_PID" 2>/dev/null || true
+                [ -z "${CUR_TMP:-}" ] || rm -f "$CUR_TMP" 2>/dev/null || true
+                CUR_TMP=""
+                WATCHER_PID=""
+              fi
+              break
             fi
-            break
-          fi
-          [ -n "$DRAIN_REWAKE_REASON" ] || break
-          reason=$DRAIN_REWAKE_REASON
-          log "draining wakes queued during the previous pass: $reason"
-        done
+            [ -n "$DRAIN_REWAKE_REASON" ] || break
+            reason=$DRAIN_REWAKE_REASON
+            log "draining wakes queued during the previous pass: $reason"
+          done
+        fi
         DRAIN_PULSE=
         trim_log
       fi
