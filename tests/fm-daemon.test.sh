@@ -9,6 +9,8 @@ set -u
 
 # shellcheck source=tests/wake-helpers.sh
 . "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh"
+# shellcheck source=tests/launch-fake-herdr.sh
+. "$(dirname "${BASH_SOURCE[0]}")/launch-fake-herdr.sh"
 
 DAEMON="$ROOT/bin/fm-supervise-daemon.sh"
 AFK_START="$ROOT/bin/fm-afk-start.sh"
@@ -24,6 +26,28 @@ fi
 TMP_ROOT=$(fm_test_tmproot fm-daemon-tests)
 FM_DAEMON_PRIMARY_HARNESS=claude
 export FM_DAEMON_PRIMARY_HARNESS
+
+test_afk_start_preflight_verifies_the_native_terminal_identity() {
+  local dir fb rc
+  dir=$(make_supercase afk-start-terminal-identity); fb=$(make_fake_herdr "$dir")
+  mkdir -p "$dir/fake"
+  cat > "$dir/fake/state.json" <<'EOF'
+{"workspaces":[{"workspace_id":"w1","label":"captain","focused":true,"active_tab_id":"w1:t1"}],"tabs":[{"tab_id":"w1:t1","label":"1","workspace_id":"w1","pane_id":"w1:p1","focused":true,"cwd":"/"}],"agent_status":{},"next":2}
+EOF
+  afk_preflight() {  # <terminal-id-or-empty>
+    env PATH="$fb:$PATH" FM_FAKE_HERDR_STATE="$dir/fake/state.json" FM_HERDR_LOG="$dir/herdr.log" \
+      FM_STATE_OVERRIDE="$dir/state" FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=default:w1:p1 \
+      HERDR_WORKSPACE_ID=w1 HERDR_TAB_ID=w1:t1 HERDR_TERMINAL_ID="$1" \
+      bash -c ". '$AFK_START'; fm_afk_start_preflight" >/dev/null 2>&1
+  }
+
+  afk_preflight term_w1:p1 || fail "the verified native terminal identity was refused by the afk launch preflight"
+  if afk_preflight ''; then rc=0; else rc=$?; fi
+  [ "$rc" -ne 0 ] || fail "a missing terminal identity passed the afk launch preflight"
+  if afk_preflight term_w1:p9; then rc=0; else rc=$?; fi
+  [ "$rc" -ne 0 ] || fail "a wrong terminal identity passed the afk launch preflight"
+  pass "afk launch preflight verifies the native terminal and still refuses a missing or wrong one"
+}
 
 test_afk_start_refuses_when_flag_cannot_be_written() {
   local dir state out status
@@ -388,6 +412,245 @@ EOF
     || fail "a failed wake prevented later batch entries from being accounted"
   [ ! -e "$dir/acked" ] || fail "a partially handled durable batch was acknowledged"
   pass "classification failure retains the complete durable wake batch"
+}
+
+test_slow_multi_row_drain_stays_live_and_acks_once_after_routing() {
+  local dir state fakebin events sent_at acked_at
+  dir=$(make_supercase durable-slow-drain); state="$dir/state"; fakebin="$dir/daemon-bin"; events="$dir/events"
+  mkdir -p "$fakebin"
+  # Six signal rows, one per signalled file, all carrying the same whole-fleet
+  # reason (the shape a real watcher close queues), plus two distinct checks.
+  cat > "$fakebin/fm-wake-drain.sh" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = --ack-through ]; then printf 'ack %s %s %s\n' "\$2" "\$3" "\$4" >> "$events"; exit 0; fi
+for n in 1 2 3 4 5 6; do printf '1\t%s\tsignal\tfile-%s.status\tsignal: fleet-wide reason\n' "\$n" "\$n"; done
+printf '1\t7\tsignal\tother.status\tsignal: a different reason\n'
+printf '1\t8\tcheck\tpr-poll\tcheck: pr merged\n1\t9\tcheck\tpr-poll-2\tcheck: pr merged\n'
+printf 'WAKE_ACK_REQUIRED: retry --ack-through 9 --recovery-generation gen\n' >&2
+EOF
+  chmod +x "$fakebin/fm-wake-drain.sh"
+  # An escalation already older than its batch window is waiting to be delivered.
+  printf 'waiting digest item\n' > "$state/.subsuper-escalations"
+  printf '%s\n' "$(( $(date +%s) - 1000 ))" > "$state/.subsuper-escalations.since"
+  touch -t 202001010000 "$state/.subsuper-last-housekeep"
+  (
+    FM_DAEMON_DIR="$fakebin"
+    FM_HOUSEKEEPING_TICK=1
+    FM_ESCALATE_BATCH_SECS=1
+    # Each classification is slow, as the live fleet's was.
+    handle_wake() { sleep 1; printf 'route %s\n' "$1" >> "$events"; }
+    # shellcheck disable=SC2329 # invoked by the sourced daemon's escalate_flush
+    inject_msg() { printf 'flush-delivered\n' >> "$events"; return 0; }
+    DRAIN_PULSE=housekeeping_tick
+    handle_durable_wakes fallback "$state"
+  ) || fail "a slow multi-row durable drain was not acknowledged"
+
+  [ "$(grep -c '^route signal: fleet-wide reason$' "$events")" = 1 ] \
+    || fail "the repeated whole-fleet signal payload was classified more than once: $(cat "$events")"
+  [ "$(grep -c '^route signal: a different reason$' "$events")" = 1 ] \
+    || fail "a distinct signal payload was not classified exactly once: $(cat "$events")"
+  [ "$(grep -c '^route check: pr merged$' "$events")" = 2 ] \
+    || fail "check rows must each be routed, never coalesced: $(cat "$events")"
+  grep -q '^flush-delivered$' "$events" \
+    || fail "the buffered escalation was not delivered while the drain was still routing: $(cat "$events")"
+  [ "$(grep -c '^ack ' "$events")" = 1 ] || fail "the drain did not acknowledge exactly once: $(cat "$events")"
+  grep -q '^ack 9 --recovery-generation gen$' "$events" \
+    || fail "the acknowledgement lost its whole-snapshot sequence or generation: $(cat "$events")"
+  sent_at=$(grep -n '^flush-delivered$' "$events" | head -1 | cut -d: -f1)
+  acked_at=$(grep -n '^ack ' "$events" | cut -d: -f1)
+  [ "$sent_at" -lt "$acked_at" ] || fail "escalation delivery waited for the end of the drain"
+  [ "$(grep -n '^route check: pr merged$' "$events" | tail -1 | cut -d: -f1)" -lt "$acked_at" ] \
+    || fail "the acknowledgement was issued before every row was routed"
+  pass "a slow multi-row drain routes each distinct wake once, keeps escalation live, and acks once after routing"
+}
+
+test_coalesced_signal_rows_are_retained_when_their_routing_fails() {
+  local dir state fakebin events
+  dir=$(make_supercase durable-coalesced-failure); state="$dir/state"; fakebin="$dir/daemon-bin"; events="$dir/events"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/fm-wake-drain.sh" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = --ack-through ]; then printf 'ack\n' >> "$events"; exit 0; fi
+printf '1\t1\tsignal\ta.status\tsignal: shared\n1\t2\tsignal\tb.status\tsignal: shared\n'
+printf 'WAKE_ACK_REQUIRED: retry --ack-through 2 --recovery-generation gen\n' >&2
+EOF
+  chmod +x "$fakebin/fm-wake-drain.sh"
+  (
+    FM_DAEMON_DIR="$fakebin"
+    handle_wake() { printf 'route\n' >> "$events"; return 1; }
+    ! handle_durable_wakes fallback "$state" 2>/dev/null
+  ) || fail "a coalesced cohort whose routing failed was acknowledged"
+  [ "$(grep -c '^route$' "$events")" = 1 ] || fail "the shared payload was not routed exactly once"
+  [ "$(grep -c '^ack$' "$events")" = 0 ] || fail "failed routing of a coalesced cohort reached the acknowledgement"
+  pass "failed routing of a coalesced signal cohort retains every durable row"
+}
+
+# Real daemon main loop over a copy of bin/ with a stand-in one-shot watcher and
+# a stand-in drain, on the shared fake Herdr. Sets dir, state, bindir, fb, and
+# the stop/fail/wait helpers; the caller writes its own fm-wake-drain.sh.
+daemon_loop_fixture() {  # <case-name>
+  local i
+  daemon_pid=''
+  dir=$(make_supercase "$1"); state="$dir/state"; bindir="$dir/bin"
+  fb=$(make_fake_herdr "$dir")
+  mkdir -p "$dir/fake" "$bindir"
+  cp -R "$ROOT/bin/." "$bindir/"
+  cat > "$dir/fake/state.json" <<'EOF'
+{"workspaces":[{"workspace_id":"w1","label":"captain","focused":true,"active_tab_id":"w1:t1"}],"tabs":[{"tab_id":"w1:t1","label":"1","workspace_id":"w1","pane_id":"w1:p1","focused":true,"cwd":"/"}],"agent_status":{},"next":2}
+EOF
+  for i in 1 2 3 4 9; do printf 'working: routine %s\n' "$i" > "$state/task-$i.status"; done
+  # Every classification reads a status size; make each read slow so a drain of
+  # distinct payloads takes seconds, as the live fleet's did.
+  cat > "$dir/slow-size" <<'EOF'
+#!/usr/bin/env bash
+sleep 0.7
+LC_ALL=C stat -f '%z' "$1" 2>/dev/null || LC_ALL=C stat -c '%s' "$1"
+EOF
+  chmod +x "$dir/slow-size"
+  # Like the real watcher under afk it is one-shot: it prints a wake reason and
+  # exits. A plain start during a pending recovery episode resurfaces and exits
+  # at once; a handling successor polls (the contract
+  # tests/fm-watch-recovery-loop.test.sh pins against the real fm-watch.sh).
+  cat > "$bindir/fm-watch.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s handling=%s\n' "\$\$" "\${FM_WATCH_HANDLING_SUCCESSOR:-0}" >> "$dir/watcher-starts"
+if [ "\${FM_WATCH_HANDLING_SUCCESSOR:-0}" != 1 ] && [ -e "$dir/episode-pending" ]; then
+  printf 'check: rearm-resurface\n'; exit 0
+fi
+while :; do
+  touch "$state/.last-watcher-beat"
+  if [ "\${FM_WATCH_HANDLING_SUCCESSOR:-0}" = 1 ] && [ -e "$dir/crash-wake" ]; then cat "$dir/crash-wake"; rm -f "$dir/crash-wake"; exit 3; fi
+  if [ -e "$dir/wake-now" ]; then cat "$dir/wake-now"; rm -f "$dir/wake-now"; exit 0; fi
+  sleep 0.1
+done
+EOF
+  chmod +x "$bindir/fm-watch.sh"
+  : > "$dir/events"
+}
+
+daemon_loop_start() {
+  PATH="$fb:$PATH" FM_FAKE_HERDR_STATE="$dir/fake/state.json" FM_HERDR_LOG="$dir/herdr.log" \
+    FM_STATE_OVERRIDE="$state" FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=default:w1:p1 \
+    HERDR_WORKSPACE_ID=w1 HERDR_TAB_ID=w1:t1 HERDR_TERMINAL_ID=term_w1:p1 \
+    FM_STATUS_SIZE_READER="$dir/slow-size" FM_HOUSEKEEPING_TICK=1 \
+    "$bindir/fm-supervise-daemon.sh" > "$dir/daemon.out" 2>&1 &
+  daemon_pid=$!
+}
+
+daemon_loop_stop() {
+  [ -z "$daemon_pid" ] || { kill -TERM "$daemon_pid" 2>/dev/null || true; wait "$daemon_pid" 2>/dev/null || true; }
+  daemon_pid=''
+}
+
+daemon_loop_fail() {
+  daemon_loop_stop
+  fail "$1 (events: $(tr '\n' ',' < "$dir/events" 2>/dev/null); watcher starts: $(tr '\n' ',' < "$dir/watcher-starts" 2>/dev/null); log: $(tail -5 "$state/.supervise-daemon.log" 2>/dev/null | tr '\n' '|'))"
+}
+
+wait_until() {  # <tenths-of-seconds> <command...>
+  local tries=$1 _; shift
+  for _ in $(seq 1 "$tries"); do "$@" && return 0; sleep 0.1; done
+  return 1
+}
+
+events_have() { grep -q "$1" "$dir/events" 2>/dev/null; }
+starts_at_least() { [ "$(wc -l < "$dir/watcher-starts" 2>/dev/null | tr -d ' ')" -ge "$1" ] 2>/dev/null; }
+
+live_handling_successors() {
+  local n=0 p h
+  while read -r p h; do
+    [ "$h" = handling=1 ] && kill -0 "$p" 2>/dev/null && n=$((n + 1))
+  done < "$dir/watcher-starts"
+  printf '%s' "$n"
+}
+
+test_daemon_keeps_a_live_successor_through_a_slow_distinct_payload_drain() {
+  local dir state bindir fb daemon_pid
+  daemon_loop_fixture daemon-slow-distinct-drain
+  # Pass 1 presents four DISTINCT signal payloads, pass 2 the row the mid-drain
+  # wake queued above pass 1's acknowledgement.
+  cat > "$bindir/fm-wake-drain.sh" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = --ack-through ]; then printf 'ack %s\n' "\$2" >> "$dir/events"; rm -f "$dir/episode-pending"; exit 0; fi
+n=\$(( \$(cat "$dir/drain-count" 2>/dev/null || echo 0) + 1 )); printf '%s\n' "\$n" > "$dir/drain-count"
+printf 'drain %s\n' "\$n" >> "$dir/events"
+: > "$dir/episode-pending"
+if [ "\$n" = 1 ]; then
+  for i in 1 2 3 4; do printf '1\t%s\tsignal\ttask-%s.status\tsignal: $state/task-%s.status\n' "\$i" "\$i" "\$i"; done
+  printf 'WAKE_ACK_REQUIRED: retry --ack-through 4 --recovery-generation gen\n' >&2
+else
+  printf '1\t9\tsignal\ttask-9.status\tsignal: $state/task-9.status\n'
+  printf 'WAKE_ACK_REQUIRED: retry --ack-through 9 --recovery-generation gen\n' >&2
+fi
+EOF
+  chmod +x "$bindir/fm-wake-drain.sh"
+  printf 'signal: %s/task-1.status\n' "$state" > "$dir/wake-now"
+  daemon_loop_start
+
+  # The first watcher's wake starts a drain. A handling successor must already
+  # be polling while that drain is still routing - not merely "a watcher pid".
+  wait_until 100 events_have '^drain 1$' || daemon_loop_fail "the daemon never began draining the first wake"
+  wait_until 30 starts_at_least 2 || daemon_loop_fail "no successor watcher was armed for the drain"
+  ! events_have '^ack ' || daemon_loop_fail "the drain finished before the live-successor check could run"
+  [ "$(live_handling_successors)" = 1 ] \
+    || daemon_loop_fail "no live handling successor was polling during the slow drain"
+  [ "$(_file_age "$state/.last-watcher-beat")" -le 2 ] \
+    || daemon_loop_fail "the liveness beat went stale during the slow drain"
+
+  # A wake closes that one-shot successor mid-drain. Polling must resume before
+  # the drain ends, and the row it queued must be drained after this pass.
+  printf 'signal: %s/task-9.status\n' "$state" > "$dir/wake-now"
+  wait_until 100 starts_at_least 3 || daemon_loop_fail "the successor that closed mid-drain was not re-armed"
+  ! events_have '^ack ' || daemon_loop_fail "the successor was only re-armed after the drain ended"
+  [ "$(live_handling_successors)" = 1 ] || daemon_loop_fail "polling was not live again right after the mid-drain wake"
+
+  wait_until 300 events_have '^ack 9$' || daemon_loop_fail "the wake queued during the drain was never drained"
+  [ "$(tr '\n' ' ' < "$dir/events")" = 'drain 1 ack 4 drain 2 ack 9 ' ] \
+    || daemon_loop_fail "drain passes and acknowledgements were not one pass per generation in order"
+  grep -q 'wake during drain; successor re-armed' "$state/.supervise-daemon.log" \
+    || daemon_loop_fail "the mid-drain re-arm was not recorded"
+  [ "$(live_handling_successors)" = 1 ] || daemon_loop_fail "exactly one polling successor must remain after the drains"
+  daemon_loop_stop
+  pass "the daemon keeps a polling successor through a slow distinct-payload drain, re-arms it mid-drain, and drains what it queued"
+}
+
+test_daemon_retries_a_failed_drain_through_a_resurfacing_plain_arm() {
+  local dir state bindir fb daemon_pid
+  daemon_loop_fixture daemon-failed-drain-retry
+  # The escalation buffer is a directory, so routing the check row fails and the
+  # drain must not be acknowledged; the stand-in drain presents it again.
+  mkdir "$state/.subsuper-escalations"
+  cat > "$bindir/fm-wake-drain.sh" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = --ack-through ]; then printf 'ack %s\n' "\$2" >> "$dir/events"; rm -f "$dir/episode-pending"; exit 0; fi
+n=\$(( \$(cat "$dir/drain-count" 2>/dev/null || echo 0) + 1 )); printf '%s\n' "\$n" > "$dir/drain-count"
+printf 'drain %s\n' "\$n" >> "$dir/events"
+: > "$dir/episode-pending"
+printf '1\t1\tsignal\ttask-1.status\tsignal: $state/task-1.status\n1\t2\tcheck\tpr-poll\tcheck: pr merged\n'
+printf 'WAKE_ACK_REQUIRED: retry --ack-through 2 --recovery-generation gen\n' >&2
+EOF
+  chmod +x "$bindir/fm-wake-drain.sh"
+  printf 'signal: %s/task-1.status\n' "$state" > "$dir/wake-now"
+  # The handling successor closes with a wake on stdout but a NONZERO exit while
+  # the slow first row routes; that must be counted as a crash, not a clean wake.
+  printf 'signal: %s/task-9.status\n' "$state" > "$dir/crash-wake"
+  daemon_loop_start
+
+  wait_until 100 grep -qs 'not acknowledged' "$state/.supervise-daemon.log" \
+    || daemon_loop_fail "the failed drain was not reported as unacknowledged"
+  ! events_have '^ack ' || daemon_loop_fail "a drain whose routing failed was acknowledged"
+  rmdir "$state/.subsuper-escalations"
+  # Only a plain arm resurfaces the retained rows; a surviving handling
+  # successor would leave them stranded until some unrelated wake.
+  wait_until 100 events_have '^ack 2$' || daemon_loop_fail "the retained wake was never re-presented after the failed drain"
+  grep -q 'watcher exited rc=3 mid-drain with wake' "$state/.supervise-daemon.log" \
+    || daemon_loop_fail "a nonzero watcher exit carrying a wake was treated as clean"
+  [ "$(grep -c '^ack ' "$dir/events")" = 1 ] && [ "$(grep -c '^drain ' "$dir/events")" -ge 2 ] \
+    || daemon_loop_fail "the retry was not a further drain pass followed by exactly one acknowledgement"
+  grep -q 'handling=0' "$dir/watcher-starts" \
+    || daemon_loop_fail "the failed drain did not swap the handling successor for a plain arm"
+  daemon_loop_stop
+  pass "a failed drain swaps the handling successor for a plain arm so the retained wakes are retried"
 }
 
 test_missing_status_stale_is_acknowledged_without_diagnostic() {
@@ -2697,6 +2960,7 @@ test_tmux_composer_state_bordered_and_agent_rows_are_empty
 test_tmux_composer_state_requires_matching_box_borders
 test_pane_input_pending_preserves_bright_placeholder_like_draft
 test_classify_signal_dedup_against_scan
+test_afk_start_preflight_verifies_the_native_terminal_identity
 test_classify_signal_skips_turn_end_markers
 test_classify_signal_survives_a_later_routine_append
 test_classification_commits_its_captured_endpoint
@@ -2709,6 +2973,10 @@ test_catchall_advances_routine_then_surfaces_append
 test_escalation_buffer_failure_retains_wake_and_position
 test_catchall_buffer_failure_preserves_position
 test_durable_wake_failure_retains_entire_batch
+test_slow_multi_row_drain_stays_live_and_acks_once_after_routing
+test_coalesced_signal_rows_are_retained_when_their_routing_fails
+test_daemon_keeps_a_live_successor_through_a_slow_distinct_payload_drain
+test_daemon_retries_a_failed_drain_through_a_resurfacing_plain_arm
 test_missing_status_stale_is_acknowledged_without_diagnostic
 test_transient_unreadable_signal_recovers_without_advancing
 test_permission_recovery_reclassifies_catchall_status
