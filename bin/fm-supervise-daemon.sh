@@ -95,6 +95,10 @@
 #                                   digests; 0 = flush immediately (default 90)
 #          FM_HEARTBEAT_SCAN_SECS   cadence for the catch-all status scan
 #                                   (default 300)
+#          FM_AFK_WATCHER_PATH      optional absolute path of the fm-watch.sh the
+#                                   daemon launches (default: this code root's);
+#                                   refused at startup unless it is an absolute
+#                                   executable file
 #          FM_HOUSEKEEPING_TICK     seconds between housekeeping passes while
 #                                   the watcher is mid-cycle (default 15)
 #          FM_BUSY_REGEX            optional rendered busy-signature override
@@ -1577,8 +1581,22 @@ fm_super_main() {
     exit 1
   fi
 
-  if [ ! -x "$WATCH" ]; then
-    echo "error: watcher not found or not executable: $WATCH" >&2
+  # Optional explicit watcher: a daemon run from one code root may launch another
+  # root's byte-identical fm-watch.sh so the watcher's own lock identity names the
+  # canonical path its health checks compare against. Only the launch path
+  # changes; the default stays this code root's watcher.
+  if [ -n "${FM_AFK_WATCHER_PATH:-}" ]; then
+    case "$FM_AFK_WATCHER_PATH" in
+      /*) WATCH="$FM_AFK_WATCHER_PATH" ;;
+      *)
+        echo "error: FM_AFK_WATCHER_PATH must be an absolute path: $FM_AFK_WATCHER_PATH" >&2
+        release_inherited_claim
+        exit 1
+        ;;
+    esac
+  fi
+  if [ ! -f "$WATCH" ] || [ ! -x "$WATCH" ]; then
+    echo "error: watcher not found or not an executable file: $WATCH" >&2
     release_inherited_claim
     exit 1
   fi

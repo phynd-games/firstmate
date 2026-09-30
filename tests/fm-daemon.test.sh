@@ -529,12 +529,16 @@ EOF
   : > "$dir/events"
 }
 
-daemon_loop_start() {
-  PATH="$fb:$PATH" FM_FAKE_HERDR_STATE="$dir/fake/state.json" FM_HERDR_LOG="$dir/herdr.log" \
+daemon_loop_exec() {  # [VAR=value...] - run the fixture daemon in the foreground
+  env PATH="$fb:$PATH" FM_FAKE_HERDR_STATE="$dir/fake/state.json" FM_HERDR_LOG="$dir/herdr.log" \
     FM_STATE_OVERRIDE="$state" FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=default:w1:p1 \
     HERDR_WORKSPACE_ID=w1 HERDR_TAB_ID=w1:t1 HERDR_TERMINAL_ID=term_w1:p1 \
     FM_STATUS_SIZE_READER="$dir/slow-size" FM_HOUSEKEEPING_TICK=1 \
-    "$bindir/fm-supervise-daemon.sh" > "$dir/daemon.out" 2>&1 &
+    "$@" "$bindir/fm-supervise-daemon.sh"
+}
+
+daemon_loop_start() {  # [VAR=value...]
+  daemon_loop_exec "$@" > "$dir/daemon.out" 2>&1 &
   daemon_pid=$!
 }
 
@@ -545,7 +549,7 @@ daemon_loop_stop() {
 
 daemon_loop_fail() {
   daemon_loop_stop
-  fail "$1 (events: $(tr '\n' ',' < "$dir/events" 2>/dev/null); watcher starts: $(tr '\n' ',' < "$dir/watcher-starts" 2>/dev/null); log: $(tail -5 "$state/.supervise-daemon.log" 2>/dev/null | tr '\n' '|'))"
+  fail "$1 (events: $(tr '\n' ',' < "$dir/events" 2>/dev/null); watcher starts: $(tr '\n' ',' < "$dir/watcher-starts" 2>/dev/null); log: $(tail -5 "$state/.supervise-daemon.log" 2>/dev/null | tr '\n' '|'); daemon output: $(tail -3 "$dir/daemon.out" 2>/dev/null | tr '\n' '|'))"
 }
 
 wait_until() {  # <tenths-of-seconds> <command...>
@@ -561,7 +565,7 @@ live_handling_successors() {
   local n=0 p h
   while read -r p h; do
     [ "$h" = handling=1 ] && kill -0 "$p" 2>/dev/null && n=$((n + 1))
-  done < "$dir/watcher-starts"
+  done < <(cat "$dir/watcher-starts" 2>/dev/null)
   printf '%s' "$n"
 }
 
@@ -678,6 +682,43 @@ EOF
     || daemon_loop_fail "the silent successor exit was not crash-counted"
   daemon_loop_stop
   pass "the daemon reaps and re-arms a silent successor crash during a slow drain"
+}
+
+test_daemon_launches_only_an_explicit_absolute_executable_watcher_path() {
+  local dir state bindir fb daemon_pid alt bad out rc
+  daemon_loop_fixture daemon-explicit-watcher-path
+  alt="$dir/primary/bin/fm-watch.sh"
+  mkdir -p "$dir/primary/bin"
+  cat > "$alt" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$0" >> "$dir/alt-watcher-starts"
+while :; do touch "$state/.last-watcher-beat"; sleep 0.1; done
+EOF
+  chmod +x "$alt"
+
+  daemon_loop_start FM_AFK_WATCHER_PATH="$alt"
+  wait_until 100 test -s "$dir/alt-watcher-starts" || daemon_loop_fail "the explicit watcher path was never launched"
+  [ "$(head -1 "$dir/alt-watcher-starts")" = "$alt" ] || daemon_loop_fail "the daemon did not run the exact explicit watcher path"
+  [ ! -s "$dir/watcher-starts" ] || daemon_loop_fail "the default code-root watcher ran despite the explicit path"
+  daemon_loop_stop
+
+  # Anything but an absolute executable file refuses startup and runs no watcher.
+  : > "$dir/not-executable"
+  for bad in bin/fm-watch.sh "$dir/missing-watcher" "$dir/not-executable" "$dir/primary/bin"; do
+    rm -f "$dir/watcher-starts" "$dir/alt-watcher-starts"
+    if out=$(daemon_loop_exec FM_AFK_WATCHER_PATH="$bad" 2>&1); then rc=0; else rc=$?; fi
+    [ "$rc" -ne 0 ] || daemon_loop_fail "daemon startup accepted the invalid watcher path '$bad'"
+    case "$out" in *"error:"*) ;; *) daemon_loop_fail "invalid watcher path '$bad' was refused without a diagnostic: $out" ;; esac
+    [ ! -e "$dir/watcher-starts" ] && [ ! -e "$dir/alt-watcher-starts" ] \
+      || daemon_loop_fail "a watcher ran after the invalid path '$bad' was refused"
+  done
+
+  # Default behavior is unchanged: without the option the code root's watcher runs.
+  printf 'signal: %s/task-1.status\n' "$state" > "$dir/wake-now"
+  daemon_loop_start
+  wait_until 100 starts_at_least 1 || daemon_loop_fail "the default code-root watcher was not launched"
+  daemon_loop_stop
+  pass "the daemon launches an explicit absolute executable watcher path, refuses any other, and defaults to its code root"
 }
 
 test_missing_status_stale_is_acknowledged_without_diagnostic() {
@@ -3005,6 +3046,7 @@ test_coalesced_signal_rows_are_retained_when_their_routing_fails
 test_daemon_keeps_a_live_successor_through_a_slow_distinct_payload_drain
 test_daemon_retries_a_failed_drain_through_a_resurfacing_plain_arm
 test_daemon_rearms_after_a_silent_successor_crash_mid_drain
+test_daemon_launches_only_an_explicit_absolute_executable_watcher_path
 test_missing_status_stale_is_acknowledged_without_diagnostic
 test_transient_unreadable_signal_recovers_without_advancing
 test_permission_recovery_reclassifies_catchall_status
