@@ -530,10 +530,17 @@ EOF
 }
 
 daemon_loop_exec() {  # [VAR=value...] - run the fixture daemon in the foreground
-  env PATH="$fb:$PATH" FM_FAKE_HERDR_STATE="$dir/fake/state.json" FM_HERDR_LOG="$dir/herdr.log" \
-    FM_STATE_OVERRIDE="$state" FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=default:w1:p1 \
-    HERDR_WORKSPACE_ID=w1 HERDR_TAB_ID=w1:t1 HERDR_TERMINAL_ID=term_w1:p1 \
-    FM_STATUS_SIZE_READER="$dir/slow-size" FM_HOUSEKEEPING_TICK=1 \
+  local -a daemon_env
+  daemon_env=(PATH="$fb:$PATH" FM_FAKE_HERDR_STATE="$dir/fake/state.json" FM_HERDR_LOG="$dir/herdr.log"
+    FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=default:w1:p1
+    HERDR_WORKSPACE_ID=w1 HERDR_TAB_ID=w1:t1 HERDR_TERMINAL_ID=term_w1:p1
+    FM_STATUS_SIZE_READER="$dir/slow-size" FM_HOUSEKEEPING_TICK=1)
+  if [ "${DAEMON_LOOP_RESOLVE_HOME:-0}" = 1 ]; then
+    daemon_env+=(FM_HOME="$dir/daemon-home")
+  else
+    daemon_env+=(FM_STATE_OVERRIDE="$state")
+  fi
+  env -u DAEMON_LOOP_RESOLVE_HOME "${daemon_env[@]}" \
     "$@" "$bindir/fm-supervise-daemon.sh"
 }
 
@@ -685,22 +692,30 @@ EOF
 }
 
 test_daemon_launches_only_an_explicit_absolute_executable_watcher_path() {
-  local dir state bindir fb daemon_pid alt bad out rc
+  local dir state bindir fb daemon_pid alt bad out rc old_state
   daemon_loop_fixture daemon-explicit-watcher-path
+  old_state=$state
+  mkdir -p "$dir/daemon-home"
+  cp -R "$old_state" "$dir/daemon-home/state"
+  state="$dir/daemon-home/state"
   alt="$dir/primary/bin/fm-watch.sh"
   mkdir -p "$dir/primary/bin"
   cat > "$alt" <<EOF
 #!/usr/bin/env bash
-printf '%s\n' "\$0" >> "$dir/alt-watcher-starts"
-while :; do touch "$state/.last-watcher-beat"; sleep 0.1; done
+printf '%s|%s|%s\n' "\$0" "\${FM_HOME:-}" "\${FM_STATE_OVERRIDE:-}" >> "$dir/alt-watcher-starts"
+while :; do touch "\$FM_STATE_OVERRIDE/.last-watcher-beat"; sleep 0.1; done
 EOF
   chmod +x "$alt"
 
-  daemon_loop_start FM_AFK_WATCHER_PATH="$alt"
+  DAEMON_LOOP_RESOLVE_HOME=1 daemon_loop_start FM_AFK_WATCHER_PATH="$alt"
   wait_until 100 test -s "$dir/alt-watcher-starts" || daemon_loop_fail "the explicit watcher path was never launched"
-  [ "$(head -1 "$dir/alt-watcher-starts")" = "$alt" ] || daemon_loop_fail "the daemon did not run the exact explicit watcher path"
+  [ "$(head -1 "$dir/alt-watcher-starts")" = "$alt|$dir/daemon-home|$state" ] \
+    || daemon_loop_fail "the explicit watcher did not inherit the daemon's resolved home and state"
+  wait_until 100 test -e "$state/.last-watcher-beat" || daemon_loop_fail "the explicit watcher did not poll the daemon's state"
+  [ ! -e "$dir/primary/state/.last-watcher-beat" ] || daemon_loop_fail "the explicit watcher polled its own code root's state"
   [ ! -s "$dir/watcher-starts" ] || daemon_loop_fail "the default code-root watcher ran despite the explicit path"
   daemon_loop_stop
+  state=$old_state
 
   # Anything but an absolute executable file refuses startup and runs no watcher.
   : > "$dir/not-executable"

@@ -1757,9 +1757,9 @@ fm_super_main() {
   start_watcher() {  # [handling]
     CUR_TMP=$(mktemp "${TMPDIR:-/tmp}/fm-watch.XXXXXX") || { log "error: mktemp failed; retrying in 5s"; sleep 5; return 1; }
     if [ "${1:-}" = handling ]; then
-      FM_WATCH_HANDLING_SUCCESSOR=1 "$WATCH" >"$CUR_TMP" 2>>"$WATCH_ERR" &
+      FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_WATCH_HANDLING_SUCCESSOR=1 "$WATCH" >"$CUR_TMP" 2>>"$WATCH_ERR" &
     else
-      "$WATCH" >"$CUR_TMP" 2>>"$WATCH_ERR" &
+      FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" "$WATCH" >"$CUR_TMP" 2>>"$WATCH_ERR" &
     fi
     WATCHER_PID=$!
   }
