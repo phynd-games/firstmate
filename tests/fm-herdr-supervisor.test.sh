@@ -1760,10 +1760,38 @@ PY
     assert_grep "$2" "$HD/state/.herdr-supervisor-alarm" "$1 refusal does not name its missing proof"
     pass "$1 keeps the degraded binding quarantined without any close or create"
   }
+  expect_normal_refused() {  # <name> <generation>
+    out=$(run_supervisor "$HD" "$FAKEBIN" ensure 2>&1) && fail "$1 permitted replacement: $out"
+    [ "$(record_field "$HD" generation)" = "$2" ] || fail "$1 cleared or replaced the binding"
+    [ "$(snapshot_calls)" = "$creates_before" ] || fail "$1 created a replacement workspace"
+    [ "$(grep -c . "$HD/fakestate/closed-workspaces" 2>/dev/null || true)" = "$closed_before" ] || fail "$1 closed a workspace"
+    pass "$1 stays on normal reconciliation without any clear, close, or create"
+  }
 
   # The diagnostic no longer blames an unreadable current server for a blank binding.
   replace_server; reuse_workspace
   : > "$HD/launch-x"; rm -f "$HD/launch-x"
+
+  # Negative: a normal binding with only one blank identity field is not the
+  # exceptional degraded shape, even when every launch-record proof exists.
+  python3 - "$HD/state/.launch-herdr-supervisor" "$HD/state/.herdr-supervisor" <<'PY'
+import json, sys
+lp, rp = sys.argv[1:3]
+l = json.load(open(lp))["launch"]
+home = [x.split("=", 1)[1] for x in open(rp).read().splitlines() if x.startswith("fm_home=")][0]
+i = l["identity"]
+open(rp, "w").write("version=1\ngeneration=%s\nfm_home=%s\nherdr_session=%s\nherdr_socket=%s/fakestate/herdr.sock\nherdr_socket_identity=%s\nworkspace=%s\ntab=%s\npane=%s\nterminal_id=\ncleanup_state=open\nestablished_at=1\nestablish_reason=pending-cleanup\nmode=quarantine\n" % (l["fields"]["generation"], home, i["session"], home, i["socket_identity"], i["workspace_id"], i["tab_id"], i["pane_id"]))
+PY
+  expect_normal_refused "a normal binding with one blank identity field" "$old_generation"
+  cp "$HD/binding-degraded" "$HD/state/.herdr-supervisor" 2>/dev/null || degrade
+
+  # Negative: all blank identity fields with a real generation still belong to
+  # normal reconciliation and cannot use launch-record settlement.
+  sed "s/^generation=unknown$/generation=$old_generation/" "$HD/state/.herdr-supervisor" > "$HD/state/.herdr-supervisor.new"
+  mv "$HD/state/.herdr-supervisor.new" "$HD/state/.herdr-supervisor"
+  expect_normal_refused "an all-blank binding with a nonunknown generation" "$old_generation"
+  degrade
+
   # Negative: the launch record is not one unsettled created launch.
   python3 - "$HD/state/.launch-herdr-supervisor" <<'PY'
 import json, sys

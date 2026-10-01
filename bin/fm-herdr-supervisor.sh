@@ -1878,8 +1878,22 @@ degraded_binding_settle_locked() {
   local established_at reason loop_pid loop_identity current panes target tmp facts
   DEGRADED_GONE_REASON=
   [ -f "$RECORD" ] && [ ! -e "$PENDING" ] || return 2
-  [ -z "$(record_get herdr_session || printf '')" ] || [ -z "$(record_get herdr_socket_identity || printf '')" ] \
-    || [ -z "$(record_get workspace || printf '')" ] || [ -z "$(record_get pane || printf '')" ] || return 2
+  awk -F= '
+    $1 == "generation" { generation_count++; generation = $2 }
+    $1 == "mode" { mode_count++; mode = $2 }
+    $1 == "cleanup_state" { cleanup_count++; cleanup = $2 }
+    $1 == "herdr_session" || $1 == "herdr_socket" || $1 == "herdr_socket_identity" \
+      || $1 == "workspace" || $1 == "tab" || $1 == "pane" || $1 == "terminal_id" {
+      identity_count[$1]++
+      identity_value[$1] = $2
+    }
+    END {
+      if (generation_count != 1 || generation != "unknown" || mode_count != 1 || mode != "quarantine" \
+          || cleanup_count != 1 || cleanup != "open") exit 1
+      split("herdr_session herdr_socket herdr_socket_identity workspace tab pane terminal_id", keys, " ")
+      for (i in keys) if (identity_count[keys[i]] != 1 || identity_value[keys[i]] != "") exit 1
+    }
+  ' "$RECORD" || return 2
   launch_json=$(fm_launch_record show --helper herdr-supervisor --json 2>/dev/null) || {
     DEGRADED_GONE_REASON="the degraded binding has no readable retained helper launch record"
     return 1
