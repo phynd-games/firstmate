@@ -158,6 +158,12 @@ case "${1:-}" in
           "$(cat "$S/pane-workspace" 2>/dev/null || echo wZ)"
         exit 0
         ;;
+      list)
+        # The replacement server's pane inventory for a workspace (readable or not).
+        if [ -f "$S/pane-list-response" ]; then cat "$S/pane-list-response"; exit 0; fi
+        printf '{"id":"cli:pane:list","result":{"panes":[]}}\n'
+        exit 0
+        ;;
       process-info)
         pane=""
         for i in $(seq 1 $#); do
@@ -1696,10 +1702,125 @@ pass "an unknown or contradictory Herdr pane is never healthy"
 stop_loop "$HOME9"
 
 # =============================================================================
+# 10b. A binding degraded to a blank quarantine (generation unknown, no pending
+#      cleanup) is settled from the exact retained launch record, bookkeeping
+#      only: a reused workspace id survives, and anything unproven stays put.
+# =============================================================================
+degraded_binding_test() (
+  HD=$(new_home degraded-binding)
+  trap 'stop_loop "$HD"' EXIT
+  cat > "$HD/arm.sh" <<'SH'
+#!/usr/bin/env bash
+: > "$FM_HOME/arm-entered"
+exec sleep 300
+SH
+  chmod +x "$HD/arm.sh"
+  fm_write_meta "$HD/state/deg-task.meta" "window=firstmate:fm-deg-task"
+  run_supervisor "$HD" "$FAKEBIN" ensure >/dev/null 2>&1 || fail "establish failed for the degraded-binding case"
+  wait_for 10 test -e "$HD/arm-entered" || fail "the loop never armed"
+  old_generation=$(record_field "$HD" generation)
+  stop_loop "$HD"
+  wait_for 10 test ! -e "$HD/state/.supervision-claim.lock" || fail "the old loop did not release its claim"
+
+  # Fixture: the production shape - a blank unknown-generation quarantine written
+  # 38s after an unsettled, never-ready native-response launch; no pending file.
+  degrade() {  # rebuild the degraded state from the launch record
+    python3 - "$HD/state/.launch-herdr-supervisor" "$HD/state/.herdr-supervisor" <<'PY'
+import json, sys, datetime
+lp, rp = sys.argv[1:3]
+d = json.load(open(lp))
+l = d["launch"]
+l["phase"] = "created"; l["readiness"] = {}; l["outcome"] = {}
+l["history"] = [h for h in l["history"] if h["event"] in ("intended", "created")]
+json.dump(d, open(lp, "w"))
+ts = l["created_at"].split(".")[0] + "Z"
+epoch = int(datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp())
+home = [x.split("=", 1)[1] for x in open(rp).read().splitlines() if x.startswith("fm_home=")][0]
+open(rp, "w").write("version=1\ngeneration=unknown\nfm_home=%s\nherdr_session=\nherdr_socket=\nherdr_socket_identity=\nworkspace=\ntab=\npane=\nterminal_id=\ncleanup_state=open\nestablished_at=%d\nestablish_reason=pending-cleanup\nmode=quarantine\n" % (home, epoch + 38))
+PY
+    rm -f "$HD/state/.herdr-supervisor-pending-cleanup"
+  }
+  replace_server() { printf '%s\n' "$HD/fakestate/restarted.sock" > "$HD/fakestate/socket"; }
+  reuse_workspace() {  # the replacement server's wZ is another workspace
+    printf '%s\n' '{"id":"fm-workspace-control","result":{"workspaces":[{"workspace_id":"wZ","label":"a-worker"}]}}' > "$HD/fakestate/list-response"
+    : > "$HD/fakestate/server-restarted-empty"
+  }
+  snapshot_calls() { grep -c $'^workspace\x1fcreate\x1f' "$HD/fakestate/calls.log"; }
+  degrade
+  cp "$HD/state/.launch-herdr-supervisor" "$HD/launch-degraded"
+  closed_before=$(grep -c . "$HD/fakestate/closed-workspaces" 2>/dev/null || true)
+  creates_before=$(snapshot_calls)
+  expect_refused() {  # <name> <reason-fragment>
+    out=$(run_supervisor "$HD" "$FAKEBIN" ensure 2>&1) && fail "$1 permitted settlement: $out"
+    [ "$(record_field "$HD" generation)" = unknown ] || fail "$1 changed the degraded binding"
+    [ "$(record_field "$HD" mode)" = quarantine ] || fail "$1 did not keep the binding quarantined"
+    [ ! -e "$HD/state/.herdr-supervisor-quarantine.$old_generation" ] || fail "$1 wrote settlement evidence"
+    [ "$(snapshot_calls)" = "$creates_before" ] || fail "$1 created a replacement workspace"
+    [ "$(grep -c . "$HD/fakestate/closed-workspaces" 2>/dev/null || true)" = "$closed_before" ] || fail "$1 closed a workspace"
+    assert_grep "$2" "$HD/state/.herdr-supervisor-alarm" "$1 refusal does not name its missing proof"
+    pass "$1 keeps the degraded binding quarantined without any close or create"
+  }
+
+  # The diagnostic no longer blames an unreadable current server for a blank binding.
+  replace_server; reuse_workspace
+  : > "$HD/launch-x"; rm -f "$HD/launch-x"
+  # Negative: the launch record is not one unsettled created launch.
+  python3 - "$HD/state/.launch-herdr-supervisor" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["launch"]["phase"] = "ready"; json.dump(d, open(sys.argv[1], "w"))
+PY
+  expect_refused "an ambiguous launch record" "not one unsettled native-response create"
+  cp "$HD/launch-degraded" "$HD/state/.launch-herdr-supervisor"
+
+  # Negative: the binding was written long after the launch, so it is not provably from it.
+  cp "$HD/state/.herdr-supervisor" "$HD/binding-degraded"
+  sed 's/^established_at=\(.*\)$/established_at=\1/' "$HD/binding-degraded" | awk -F= '$1=="established_at"{print "established_at=" $2+7200; next} {print}' > "$HD/state/.herdr-supervisor"
+  expect_refused "a binding not provably written from the launch" "not provably written from launch"
+  cp "$HD/binding-degraded" "$HD/state/.herdr-supervisor"
+
+  # Negative: a live record naming another generation is ambiguous provenance.
+  printf 'generation=some-other-generation\nloop_pid=1\nloop_identity=x\n' > "$HD/state/.herdr-supervisor-live"
+  expect_refused "a live record of another generation" "names a different generation"
+  rm -f "$HD/state/.herdr-supervisor-live"
+
+  # Negative: the server was not replaced (same socket identity).
+  rm -f "$HD/fakestate/socket"
+  expect_refused "an unchanged server socket" "still the current one"
+  replace_server
+
+  # Negative: the recorded pane still answers on the current server.
+  rm -f "$HD/fakestate/server-restarted-empty"
+  expect_refused "a recorded pane that still answers" "still answers for the launch's pane wZ:p1"
+  : > "$HD/fakestate/server-restarted-empty"
+
+  # Negative: the reused workspace's pane inventory still carries the recorded terminal.
+  printf '%s\n' '{"result":{"panes":[{"pane_id":"wZ:p7","terminal_id":"termZ"}]}}' > "$HD/fakestate/pane-list-response"
+  expect_refused "a workspace still carrying the recorded terminal" "still carries the launch's pane or terminal"
+
+  # Negative: the reused workspace's pane inventory is unreadable.
+  printf '{broken\n' > "$HD/fakestate/pane-list-response"
+  expect_refused "an unreadable workspace pane inventory" "unreadable or still carries"
+
+  # Positive: every fact holds and wZ is a reused id for another workspace.
+  printf '%s\n' '{"result":{"panes":[{"pane_id":"wZ:p7","terminal_id":"termOTHER"}]}}' > "$HD/fakestate/pane-list-response"
+  out=$(run_supervisor "$HD" "$FAKEBIN" ensure 2>&1) || fail "a fully proved degraded binding was not settled: $out"
+  assert_contains "$out" "herdr-supervisor: started" "settlement did not let a fresh generation start"
+  [ "$(record_field "$HD" generation)" != unknown ] && [ "$(record_field "$HD" generation)" != "$old_generation" ] \
+    || fail "the replacement generation was not fresh"
+  assert_grep 'mode=retired' "$HD/state/.herdr-supervisor-quarantine.$old_generation" "no retired evidence was kept for the settled launch"
+  assert_grep "workspace=wZ" "$HD/state/.herdr-supervisor-quarantine.$old_generation" "the evidence lacks the launch identity"
+  [ "$(grep -c . "$HD/fakestate/closed-workspaces" 2>/dev/null || true)" = "$closed_before" ] \
+    || fail "settling a degraded binding closed a workspace, including the reused id"
+  pass "a fully proved degraded binding is settled as bookkeeping only; the reused workspace id is never closed"
+)
+
+# =============================================================================
 # 10. A Herdr server restart changes the session socket and invalidates the
 #     old binding without authorizing close through the replacement server.
 # =============================================================================
 server_restart_test
+
+degraded_binding_test
 
 # =============================================================================
 # 10b. A live record left behind by a superseded generation is never healthy.
