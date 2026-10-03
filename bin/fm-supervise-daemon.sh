@@ -95,6 +95,10 @@
 #                                   digests; 0 = flush immediately (default 90)
 #          FM_HEARTBEAT_SCAN_SECS   cadence for the catch-all status scan
 #                                   (default 300)
+#          FM_AFK_WATCHER_PATH      optional absolute path of the fm-watch.sh the
+#                                   daemon launches (default: this code root's);
+#                                   refused at startup unless it is an absolute
+#                                   executable file
 #          FM_HOUSEKEEPING_TICK     seconds between housekeeping passes while
 #                                   the watcher is mid-cycle (default 15)
 #          FM_BUSY_REGEX            optional rendered busy-signature override
@@ -1301,6 +1305,14 @@ is_wake_reason() {  # <reason>
   return 1
 }
 
+# Gated housekeeping, shared by the idle loop and the per-row drain pulse.
+housekeeping_tick() {  # <state>
+  if [ "$(_file_age "$1/.subsuper-last-housekeep")" -ge "${FM_HOUSEKEEPING_TICK:-$HOUSEKEEPING_TICK_DEFAULT}" ]; then
+    _now > "$1/.subsuper-last-housekeep"
+    housekeeping "$1"
+  fi
+}
+
 # --- dispatch one wake reason to self-handle or escalate --------------------
 # Side effects: logging, marker records, escalation buffer appends.
 handle_wake() {  # <reason> <state>
@@ -1441,9 +1453,13 @@ handle_wake() {  # <reason> <state>
   [ "$classification_failed" -eq 0 ]
 }
 
+# Name of a function handle_durable_wakes calls with <state> after routing each
+# row. fm_super_main points it at its gated housekeeping tick; unset elsewhere.
+DRAIN_PULSE=
+
 handle_durable_wakes() {  # <watcher-reason> <state>
   local fallback_reason=$1 state=$2 out err tab epoch sequence kind key payload rest
-  local handled=0 failed=0 ack_through ack_generation
+  local handled=0 failed=0 ack_through ack_generation routed='' routed_key coalesced=0
   out=$(mktemp "$state/.subsuper-wake-drain.XXXXXX") || return 1
   err=$(mktemp "$state/.subsuper-wake-drain.XXXXXX") || { rm -f "$out"; return 1; }
   if ! "$FM_DAEMON_DIR/fm-wake-drain.sh" > "$out" 2> "$err"; then
@@ -1452,14 +1468,37 @@ handle_durable_wakes() {  # <watcher-reason> <state>
     return 1
   fi
 
+  # One watcher close can queue a row per signalled file, each carrying the same
+  # whole-fleet reason. Routing is cursor-idempotent, so the first classification
+  # of a payload commits every position the repeats would, and re-running it per
+  # row is what starved polling for minutes. Skip a repeat of an already-routed
+  # signal payload; it still counts as handled and stays covered by the one ack.
+  # A status append landing mid-drain is not lost: it is a new watcher signal.
   tab=$(printf '\t')
   while IFS="$tab" read -r epoch sequence kind key payload rest; do
     case "$epoch" in ''|*[!0-9]*) continue ;; esac
     case "$sequence" in ''|*[!0-9]*) continue ;; esac
     case "$kind" in signal|stale|check|heartbeat) ;; *) continue ;; esac
-    handle_wake "$payload" "$state" || failed=1
     handled=$((handled + 1))
+    # Only signal rows coalesce: their classification depends solely on the
+    # payload and the cursors. A check always escalates and a stale payload
+    # carries its own escalation count, so those rows each stand.
+    if [ "$kind" = signal ]; then
+      routed_key=$(_hash_text "$payload")
+      if [ -n "$routed_key" ]; then
+        case "$routed" in *" $routed_key "*) coalesced=$((coalesced + 1)); continue ;; esac
+        routed="$routed $routed_key "
+      fi
+    fi
+    handle_wake "$payload" "$state" || failed=1
+    # Keep escalation flushes and stale rechecks on cadence while a long drain
+    # routes, so a slow classification never starves the rest of the daemon.
+    if [ -n "$DRAIN_PULSE" ] && ! "$DRAIN_PULSE" "$state"; then
+      failed=1
+      break
+    fi
   done < "$out"
+  [ "$coalesced" -eq 0 ] || log "coalesced $coalesced repeated durable wake rows in one drain"
   if [ "$handled" -eq 0 ]; then handle_wake "$fallback_reason" "$state" || failed=1; fi
 
   ack_through=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err" | tail -1)
@@ -1542,8 +1581,22 @@ fm_super_main() {
     exit 1
   fi
 
-  if [ ! -x "$WATCH" ]; then
-    echo "error: watcher not found or not executable: $WATCH" >&2
+  # Optional explicit watcher: a daemon run from one code root may launch another
+  # root's byte-identical fm-watch.sh so the watcher's own lock identity names the
+  # canonical path its health checks compare against. Only the launch path
+  # changes; the default stays this code root's watcher.
+  if [ -n "${FM_AFK_WATCHER_PATH:-}" ]; then
+    case "$FM_AFK_WATCHER_PATH" in
+      /*) WATCH="$FM_AFK_WATCHER_PATH" ;;
+      *)
+        echo "error: FM_AFK_WATCHER_PATH must be an absolute path: $FM_AFK_WATCHER_PATH" >&2
+        release_inherited_claim
+        exit 1
+        ;;
+    esac
+  fi
+  if [ ! -f "$WATCH" ] || [ ! -x "$WATCH" ]; then
+    echo "error: watcher not found or not an executable file: $WATCH" >&2
     release_inherited_claim
     exit 1
   fi
@@ -1698,10 +1751,47 @@ fm_super_main() {
     fi
   }
 
-  start_watcher() {
+  # A "handling" successor is armed while a drain is still routing, so it must
+  # not re-announce the pending recovery episode (fm-watch.sh: a plain start
+  # would print check: rearm-resurface and exit at once, leaving no poller).
+  start_watcher() {  # [handling]
     CUR_TMP=$(mktemp "${TMPDIR:-/tmp}/fm-watch.XXXXXX") || { log "error: mktemp failed; retrying in 5s"; sleep 5; return 1; }
-    "$WATCH" >"$CUR_TMP" 2>>"$WATCH_ERR" &
+    if [ "${1:-}" = handling ]; then
+      FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_WATCH_HANDLING_SUCCESSOR=1 "$WATCH" >"$CUR_TMP" 2>>"$WATCH_ERR" &
+    else
+      FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" "$WATCH" >"$CUR_TMP" 2>>"$WATCH_ERR" &
+    fi
     WATCHER_PID=$!
+  }
+
+  DRAIN_REWAKE_REASON=""
+  drain_pulse() {  # <state>
+    local woke wake_rc
+    housekeeping_tick "$1"
+    if [ -n "${WATCHER_PID:-}" ] && kill -0 "$WATCHER_PID" 2>/dev/null; then return 0; fi
+    if [ -z "${WATCHER_PID:-}" ]; then
+      start_watcher handling
+      return $?
+    fi
+    if wait "$WATCHER_PID" 2>/dev/null; then wake_rc=0; else wake_rc=$?; fi
+    woke=""
+    if [ -n "${CUR_TMP:-}" ] && [ -e "$CUR_TMP" ]; then woke=$(<"$CUR_TMP"); fi
+    rm -f "$CUR_TMP" 2>/dev/null || true
+    CUR_TMP=""
+    WATCHER_PID=""
+    if is_wake_reason "$woke"; then
+      DRAIN_REWAKE_REASON=$woke
+    fi
+    if ! is_wake_reason "$woke"; then
+      record_crash
+      log "watcher exited rc=$wake_rc mid-drain reason='$woke'; counted as a crash, successor re-armed"
+    elif [ "$wake_rc" -ne 0 ]; then
+      record_crash
+      log "watcher exited rc=$wake_rc mid-drain with wake '$woke'; counted as a crash, successor re-armed"
+    else
+      log "wake during drain; successor re-armed: $woke"
+    fi
+    start_watcher handling
   }
 
   local rc reason
@@ -1759,12 +1849,39 @@ fm_super_main() {
           continue
         fi
         log "wake: $reason"
-        if ! handle_durable_wakes "$reason" "$STATE"; then
-          log "durable wake handling was not acknowledged; restarting for recovery"
+        # Arm the successor BEFORE routing the durable wakes, as the Pi and
+        # OpenCode adapters do, so polling and the liveness beat survive a slow
+        # drain. A successor that closes mid-drain is re-armed by drain_pulse;
+        # rows it queues carry higher sequences than the acknowledgement covers.
+        WATCHER_PID=""
+        DRAIN_PULSE=drain_pulse
+        if ! start_watcher handling; then
+          log "warn: successor watcher did not start before draining; retaining wakes for recovery"
+        else
+          while :; do
+            DRAIN_REWAKE_REASON=""
+            if ! handle_durable_wakes "$reason" "$STATE"; then
+              log "durable wake handling was not acknowledged; restarting for recovery"
+              # A handling successor never re-presents the retained rows, so swap
+              # it for a plain arm whose recovery resurface retries them.
+              if [ -n "${WATCHER_PID:-}" ]; then
+                kill "$WATCHER_PID" 2>/dev/null || true
+                wait "$WATCHER_PID" 2>/dev/null || true
+                [ -z "${CUR_TMP:-}" ] || rm -f "$CUR_TMP" 2>/dev/null || true
+                CUR_TMP=""
+                WATCHER_PID=""
+              fi
+              break
+            fi
+            [ -n "$DRAIN_REWAKE_REASON" ] || break
+            reason=$DRAIN_REWAKE_REASON
+            log "draining wakes queued during the previous pass: $reason"
+          done
         fi
+        DRAIN_PULSE=
         trim_log
       fi
-      start_watcher || continue
+      [ -n "${WATCHER_PID:-}" ] || { start_watcher || continue; }
     fi
 
     # --- one housekeeping tick (gated to HOUSEKEEPING_TICK), then poll -------
@@ -1773,10 +1890,7 @@ fm_super_main() {
     # enough that batch flushes, stale rechecks, and the catch-all scan fire on
     # cadence. Gating keeps a large fleet cheap between ticks.
     sleep 1
-    if [ "$(_file_age "$STATE/.subsuper-last-housekeep")" -ge "${FM_HOUSEKEEPING_TICK:-$HOUSEKEEPING_TICK_DEFAULT}" ]; then
-      _now > "$STATE/.subsuper-last-housekeep"
-      housekeeping "$STATE"
-    fi
+    housekeeping_tick "$STATE"
   done
 }
 
