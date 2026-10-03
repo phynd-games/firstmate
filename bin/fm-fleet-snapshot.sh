@@ -2206,6 +2206,17 @@ if [ "$OUTPUT_MODE" = stamp ]; then
   exit 0
 fi
 
+# The home summary document carries no freshness stamp, so it skips the stamp's
+# filesystem walks and per-task endpoint reads entirely. Those cost a large share
+# of the producer's runtime and nothing consumes them here.
+if [ "$OUTPUT_MODE" = secondmate-home-summary ]; then
+  BACKLOG_JSON=$(backlog_json) || { echo "fm-fleet-snapshot: backlog read failed" >&2; exit 1; }
+  TASKS_JSON=$(task_json_lines) || { echo "fm-fleet-snapshot: task snapshot failed" >&2; exit 1; }
+  secondmate_home_summary_json "$BACKLOG_JSON" "$TASKS_JSON" \
+    || { echo "fm-fleet-snapshot: secondmate home summary failed" >&2; exit 1; }
+  exit 0
+fi
+
 # Resolved once, then fingerprinted BEFORE the first record read below.
 collector_stamp_inputs \
   || { echo "fm-fleet-snapshot: freshness inputs failed" >&2; exit 1; }
@@ -2223,12 +2234,6 @@ FRESHNESS_LOCAL_AFTER=$(collector_local_stamp) \
 FRESHNESS_TORN=false
 if [ "$FRESHNESS_LOCAL_BEFORE" != "$FRESHNESS_LOCAL_AFTER" ]; then
   FRESHNESS_TORN=true
-fi
-
-if [ "$OUTPUT_MODE" = secondmate-home-summary ]; then
-  secondmate_home_summary_json "$BACKLOG_JSON" "$TASKS_JSON" \
-    || { echo "fm-fleet-snapshot: secondmate home summary failed" >&2; exit 1; }
-  exit 0
 fi
 
 linked_report_paths=$(printf '%s' "$TASKS_JSON" | jq -r '[.[]

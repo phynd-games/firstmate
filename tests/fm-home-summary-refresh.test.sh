@@ -126,6 +126,30 @@ jq -e --arg home "$HOME_DIR" --arg now "$NOW_ONE" --argjson epoch "$EPOCH_ONE" '
 ' "$HOME_DIR/state/home-summary.json" >/dev/null \
   || fail "initial ledger did not expose the extended producer schema"
 
+# The home summary document carries no freshness stamp, so producing it must not
+# pay for one. The stamp's post-stamp test delay is the observable: the summary
+# ignores it, while the full snapshot still takes the stamp and honors it.
+stamp_start=$(date +%s)
+FM_SNAPSHOT_TEST_DELAY_AFTER_STAMP=20 run_producer "$NOW_ONE" "$EPOCH_ONE" \
+  > "$TMP_ROOT/summary-nostamp.json" 2> "$TMP_ROOT/summary-nostamp.err" \
+  || fail "home summary producer failed under the stamp delay hook"
+[ $(( $(date +%s) - stamp_start )) -lt 15 ] \
+  || fail "home summary producer waited on the freshness stamp it never publishes"
+jq -e '.schema == "fm-secondmate-home-summary.v1"' "$TMP_ROOT/summary-nostamp.json" >/dev/null \
+  || fail "home summary producer did not emit the summary document"
+stamp_start=$(date +%s)
+PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$HOME_DIR" \
+  FM_SNAPSHOT_NOW="$NOW_ONE" FM_SNAPSHOT_NOW_EPOCH="$EPOCH_ONE" \
+  FM_SNAPSHOT_TEST_DELAY_AFTER_STAMP=3 "$SNAPSHOT" --json \
+  > "$TMP_ROOT/full-stamp.json" 2> "$TMP_ROOT/full-stamp.err" \
+  || fail "full snapshot failed under the stamp delay hook"
+[ $(( $(date +%s) - stamp_start )) -ge 2 ] \
+  || fail "full snapshot no longer takes the freshness stamp before its reads"
+jq -e '(.freshness.stamp | type) == "string" and (.freshness.stamp | length) > 0' \
+  "$TMP_ROOT/full-stamp.json" >/dev/null \
+  || fail "full snapshot lost its freshness stamp"
+pass "home summary skips the unused freshness stamp and the full snapshot keeps it"
+
 PATH="$FAKEBIN:$PATH" \
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$HOME_DIR" \
   FM_SNAPSHOT_NOW="$NOW_TWO" FM_SNAPSHOT_NOW_EPOCH="$EPOCH_TWO" \
