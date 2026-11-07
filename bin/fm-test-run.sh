@@ -592,6 +592,7 @@ tests/fm-subagent-pretool-check.test.sh 1066
 tests/fm-supervision-events.test.sh 1431
 tests/fm-tangle-guard.test.sh 8364
 tests/fm-task-delivery.test.sh 2414
+tests/fm-teardown-retire-gone-endpoint.test.sh 19400
 tests/fm-teardown.test.sh 87400
 tests/fm-test-fixture-cleanup.test.sh 532
 tests/fm-test-fixtures.test.sh 1045

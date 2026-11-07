@@ -73,10 +73,23 @@
 # releases its durable treehouse lease so the pool slot is freed,
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
-# Usage: fm-teardown.sh <task-id> [--force]
+# Usage: fm-teardown.sh <task-id> [--force] [--retire-gone-endpoint]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
 #   when the captain has explicitly said to discard the work.
+#   --retire-gone-endpoint retires a Herdr task whose recorded terminal is
+#   provably gone while Herdr itself is healthy (docs/herdr-backend.md "Retiring
+#   a task whose terminal is gone"). It changes nothing about the landed-work,
+#   dirty-copy, scout, or --force gates, which still run first and still refuse
+#   without --force. It only replaces the endpoint identity check and the pane
+#   close: fm_backend_herdr_recorded_terminal_gone must prove, before any change
+#   and again before any record is removed, that the pane answers pane_not_found
+#   or answers as a replacement terminal and no pane in the session carries the
+#   recorded terminal id. A recorded terminal that is still present, a same-id
+#   pane under another workspace or tab, and any unhealthy answer refuse with
+#   every record preserved. No pane is ever closed in this mode, because a
+#   replacement terminal is not this task's, and the presentation journal stays
+#   quarantined. Not accepted for secondmates or non-Herdr records.
 #
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
@@ -209,7 +222,14 @@ if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   exit 2
 fi
 ID=$1
-FORCE=${2:-}
+FORCE=
+RETIRE_GONE_ENDPOINT=0
+for teardown_arg in "${@:2}"; do
+  case "$teardown_arg" in
+    --retire-gone-endpoint) RETIRE_GONE_ENDPOINT=1 ;;
+    *) [ -n "$FORCE" ] || FORCE=$teardown_arg ;;
+  esac
+done
 fm_backlog_directory_present "$STATE" "state directory" || {
   echo "error: teardown refused: $FM_BACKLOG_TRANSITION_ERROR" >&2
   exit 1
@@ -295,6 +315,10 @@ fm_backlog_record_present "$META" "task record" "$STATE" || {
 }
 TEARDOWN_META_KIND=$(fm_meta_get "$META" kind)
 [ -n "$TEARDOWN_META_KIND" ] || TEARDOWN_META_KIND=ship
+if [ "$RETIRE_GONE_ENDPOINT" = 1 ] && [ "$TEARDOWN_META_KIND" = secondmate ]; then
+  echo "REFUSED: --retire-gone-endpoint does not apply to secondmate $ID; retire it through secondmate-provisioning" >&2
+  exit 1
+fi
 TEARDOWN_CLEANUP_RECOVERY=$(fm_meta_get "$META" cleanup_recovery)
 TEARDOWN_META_SPAWN_GEN=
 TEARDOWN_BACKLOG_APPLIES=0
@@ -770,9 +794,15 @@ fi
 # This is the first cleanup authorization check. It is metadata-only and must
 # complete before fm-guard, a backend command, file removal, branch deletion,
 # worktree return, registry change, or process termination can run.
-fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
+validate_endpoint_arg=
+[ "$RETIRE_GONE_ENDPOINT" != 1 ] || validate_endpoint_arg=allow-absent-herdr-pane
+fm_backend_validate_task_endpoint "$META" "$ID" "$validate_endpoint_arg" || exit 1
 BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET
+if [ "$RETIRE_GONE_ENDPOINT" = 1 ] && [ "$BACKEND" != herdr ]; then
+  echo "REFUSED: --retire-gone-endpoint applies only to Herdr task records; $ID records backend ${BACKEND:-none}" >&2
+  exit 1
+fi
 if [ "$BACKEND" = herdr ]; then
   fm_backend_herdr_capability_preflight "teardown task $ID" "${T%%:*}" || exit $?
 fi
@@ -2421,6 +2451,28 @@ teardown_herdr_require_prerequisites() {  # <task-id>
   fi
 }
 
+# teardown_herdr_prove_terminal_gone: the --retire-gone-endpoint proof, run
+# once before any change and once more before any record is removed. Reads the
+# identity validated from the task's own record; refuses with every durable
+# record preserved unless fm_backend_herdr_recorded_terminal_gone answers 0.
+teardown_herdr_prove_terminal_gone() {  # <task-id> <stage>
+  local task_id=$1 stage=$2 proof_rc=0
+  teardown_herdr_require_prerequisites "$task_id" "${FM_BACKEND_HERDR_EXPECTED_TARGET%%:*}" || return $?
+  fm_backend_herdr_recorded_terminal_gone "${FM_BACKEND_HERDR_EXPECTED_TARGET%%:*}" \
+    "${FM_BACKEND_HERDR_EXPECTED_WORKSPACE_ID:-}" "${FM_BACKEND_HERDR_EXPECTED_TAB_ID:-}" \
+    "${FM_BACKEND_HERDR_EXPECTED_TARGET#*:}" "${FM_BACKEND_HERDR_EXPECTED_TERMINAL_ID:-}" || proof_rc=$?
+  case "$proof_rc" in
+    0) return 0 ;;
+    1)
+      echo "REFUSED: task $task_id still has its recorded Herdr terminal ($stage); --retire-gone-endpoint only retires a terminal that is gone - use plain teardown. Task state is preserved." >&2
+      ;;
+    *)
+      echo "REFUSED: task $task_id's recorded Herdr terminal could not be proven gone ($stage): Herdr answered unhealthy, malformed, or mismatched in a way that is not a replaced or missing terminal. Repair Herdr (verify with 'herdr status --json') or inspect the pane by hand. Task state is preserved." >&2
+      ;;
+  esac
+  return 1
+}
+
 teardown_herdr_preflight_target() {  # <target> <task-id>
   local target=$1 task_id=$2 session pane presence presence_rc=0 lock_path verified_lock_path lock_session held_path attempt
   session=${target%%:*}
@@ -2777,7 +2829,13 @@ fi
 TEARDOWN_HERDR_SESSION=
 TEARDOWN_HERDR_PANE=
 if [ "$BACKEND" = herdr ]; then
-  teardown_herdr_preflight_target "$T" "$ID" || exit 1
+  if [ "$RETIRE_GONE_ENDPOINT" = 1 ]; then
+    # No pane is closed in this mode, so there is no presentation lock to take:
+    # the proof stands in for the identity preflight.
+    teardown_herdr_prove_terminal_gone "$ID" "before cleanup" || exit 1
+  else
+    teardown_herdr_preflight_target "$T" "$ID" || exit 1
+  fi
   fm_backend_herdr_parse_target "$T" || exit 1
   TEARDOWN_HERDR_SESSION=$FM_BACKEND_HERDR_SESSION
   TEARDOWN_HERDR_PANE=$FM_BACKEND_HERDR_PANE
@@ -2871,7 +2929,7 @@ HERDR_PRESENTATION_RETIRE_CANDIDATE=0
 HERDR_PRESENTATION_SESSION=
 HERDR_PRESENTATION_TAB=
 HERDR_PRESENTATION_PANE=
-if [ "$BACKEND" = herdr ] \
+if [ "$BACKEND" = herdr ] && [ "$RETIRE_GONE_ENDPOINT" != 1 ] \
    && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
   fm_backend_source herdr || true
   HERDR_PRESENTATION_SESSION=$(meta_value "$META" herdr_session)
@@ -2909,6 +2967,8 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   else
     echo "warning: herdr presentation focus lock unavailable; refusing a concurrent focus-unsafe pane close" >&2
   fi
+elif [ "$BACKEND" = herdr ] && [ "$RETIRE_GONE_ENDPOINT" = 1 ]; then
+  echo "note: $ID's recorded Herdr terminal is gone; closing no pane (any pane at $T now belongs to a replacement terminal)" >&2
 elif [ "$BACKEND" = herdr ]; then
   if teardown_herdr_session_lock_held "$TEARDOWN_HERDR_SESSION"; then
     # shellcheck disable=SC2034 # read by the sourced herdr adapter (fm_backend_herdr_kill and the focus-preserving projected close) as prior_lock_held
@@ -2958,7 +3018,12 @@ fi
 # the locked close. Only a structured not-found proves the pane gone; unknown
 # presence, missing or malformed endpoint identity, and missing confirmation
 # machinery all refuse.
-if [ "$BACKEND" = herdr ]; then
+if [ "$BACKEND" = herdr ] && [ "$RETIRE_GONE_ENDPOINT" = 1 ]; then
+  teardown_herdr_prove_terminal_gone "$ID" "before record removal" || {
+    echo "error: retaining every durable task record for $ID" >&2
+    exit 1
+  }
+elif [ "$BACKEND" = herdr ]; then
   if ! declare -F fm_backend_herdr_endpoint_confirmed_gone >/dev/null 2>&1; then
     echo "error: herdr endpoint confirmation is unavailable for $ID; retaining every durable task record" >&2
     exit 1
