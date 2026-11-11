@@ -528,8 +528,13 @@ fm_backend_endpoint_atom_valid() {  # <value>
   esac
 }
 
-fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
-  local meta=$1 id=$2 backend_count backend window worktree project binding_count binding terminal
+# The optional third argument allow-absent-herdr-pane accepts a Herdr pane that
+# answers a structured pane_not_found instead of refusing it as a missing
+# identity; only teardown's --retire-gone-endpoint path passes it, and it then
+# owns the proof that the recorded terminal is gone. A pane that exists but
+# mismatches still refuses.
+fm_backend_validate_task_endpoint() {  # <meta-file> <task-id> [allow-absent-herdr-pane]
+  local meta=$1 id=$2 allow_absent=${3:-} backend_count backend window worktree project binding_count binding terminal
   local session pane recorded_session workspace tab worktree_id surface identity_rc
   FM_BACKEND_VALIDATED_BACKEND=
   FM_BACKEND_VALIDATED_TARGET=
@@ -670,9 +675,11 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
         case "$identity_rc" in
           0) ;;
           1)
-            fm_backend_policy_refuse "task $id endpoint record (Herdr target identity)" herdr \
-              "The recorded Herdr pane is missing or no longer matches its workspace and tab identity. Repair the endpoint metadata or explicitly migrate the task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
-            return 1
+            if [ "$allow_absent" != allow-absent-herdr-pane ]; then
+              fm_backend_policy_refuse "task $id endpoint record (Herdr target identity)" herdr \
+                "The recorded Herdr pane is missing or no longer matches its workspace and tab identity. Repair the endpoint metadata or explicitly migrate the task record through docs/configuration.md \"Legacy task records\". Task state is preserved."
+              return 1
+            fi
             ;;
           *)
             fm_backend_policy_refuse "task $id endpoint record (Herdr target identity)" herdr \

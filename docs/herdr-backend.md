@@ -199,6 +199,7 @@ herdr_session=<session>
 herdr_workspace_id=<workspace-id>
 herdr_tab_id=<tab-id>
 herdr_pane_id=<pane-id>
+herdr_terminal_id=<terminal-id>
 ```
 
 A Herdr pane id contains a colon, so the adapter splits `window=` on the first colon only.
@@ -282,6 +283,24 @@ Unlike tmux process-name inspection, native registration can classify Pi without
 The session-start sweep uses this probe.
 Mid-session secondmate agent-process liveness is not implemented because idle secondmates are deliberately exempt from stale-pane escalation and need a separate periodic identity signal.
 
+## Retiring a task whose terminal is gone
+
+After a server restart a task's recorded workspace, tab, and pane ids can survive while the pane hosts a replacement terminal.
+Plain `bin/fm-teardown.sh` refuses that task, because the recorded terminal id no longer matches the pane.
+`bin/fm-teardown.sh <task-id> --retire-gone-endpoint` retires such a task without weakening that check for any other shape.
+
+The mode accepts the task only when Herdr is healthy and the recorded terminal is proven absent from the whole session.
+Either `pane get` answers a structured `pane_not_found`, or it answers the same pane id under the same workspace and tab with a different terminal id.
+In both cases a session-wide `pane list` must also show no pane carrying the recorded terminal id.
+A pane that still carries the recorded terminal, a recorded terminal found on another pane, a different workspace or tab, and any unhealthy or malformed answer all refuse and leave every task record intact.
+`fm_backend_herdr_recorded_terminal_gone` owns the proof, and teardown repeats it immediately before removing records.
+
+The mode closes no pane, because the pane id no longer belongs to the task.
+It is refused for secondmates and for non-Herdr records.
+The landed-work and uncommitted-work gates and the `--force` discard authority behave exactly as in plain teardown.
+Once the proof holds, teardown returns the isolated copy, removes the task's state records, and closes its backlog item as usual.
+A presentation journal for the task stays quarantined for the session-start sweep rather than being used to close anything.
+
 ## Push events and polling fallback
 
 Protocol 16 can subscribe to `pane.agent_status_changed` over one bounded Unix-socket reader.
@@ -338,6 +357,7 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 
 ```sh
 tests/fm-backend-herdr.test.sh
+tests/fm-teardown-retire-gone-endpoint.test.sh
 tests/fm-composer-lib.test.sh
 tests/fm-herdr-submit-confirm-live-e2e.test.sh
 tests/fm-herdr-session-cleanup.test.sh

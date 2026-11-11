@@ -19,3 +19,4 @@ config/*
 !config/fresh/
 !config/fresh/config.json
 !config/starship.toml
+graft/.cache/

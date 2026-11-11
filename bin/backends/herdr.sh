@@ -2553,6 +2553,52 @@ fm_backend_herdr_pane_presence_state() {  # <session> <pane_id> <workspace> <tab
   esac
 }
 
+# fm_backend_herdr_recorded_terminal_gone: prove the exact terminal a task
+# recorded no longer exists anywhere in its named session. Read-only; the
+# only caller is teardown's opt-in --retire-gone-endpoint path.
+#   0  proven gone: `pane get` answers pane_not_found, or answers the same
+#      pane under the same workspace and tab with a DIFFERENT terminal id (a
+#      replacement terminal, as after a server restart), AND a whole-session
+#      `pane list` names no pane carrying the recorded terminal id.
+#   1  the recorded terminal is still present (any pane answers with it).
+#   2  not provable: unhealthy or malformed answers, a same-id pane under a
+#      different workspace or tab, or a pane list entry without a terminal id.
+# Nothing here weakens fm_backend_herdr_pane_get_checked: a pane that exists
+# and mismatches only by terminal id is the single shape this accepts.
+fm_backend_herdr_recorded_terminal_gone() {  # <session> <workspace> <tab> <pane> <terminal>
+  local session=$1 workspace=$2 tab=$3 pane=$4 terminal=$5
+  local out get_rc=0 verdict list_out
+  [ -n "$session" ] && [ -n "$workspace" ] && [ -n "$tab" ] && [ -n "$pane" ] && [ -n "$terminal" ] || return 2
+  out=$(fm_backend_herdr_pane_get_checked "$session" "$workspace" "$tab" "$pane" 1) || get_rc=$?
+  case "$get_rc" in
+    0)
+      verdict=$(printf '%s' "$out" | jq -r --arg terminal "$terminal" '
+        if .result.pane.terminal_id == $terminal then "present" else "replaced" end' 2>/dev/null) || return 2
+      [ "$verdict" = replaced ] || return 1
+      ;;
+    1) ;;
+    *) return 2 ;;
+  esac
+  if list_out=$(fm_backend_herdr_cli "$session" pane list 2>&1); then
+    :
+  else
+    return 2
+  fi
+  verdict=$(printf '%s' "$list_out" | jq -r --arg terminal "$terminal" '
+    if ((.result.panes | type) == "array"
+      and all(.result.panes[]; (. | type) == "object"
+        and (.pane_id | type) == "string"
+        and (.terminal_id | type) == "string"
+        and (.terminal_id | length) > 0))
+    then (if any(.result.panes[]; .terminal_id == $terminal) then "present" else "absent" end)
+    else "unproven" end' 2>/dev/null) || return 2
+  case "$verdict" in
+    absent) return 0 ;;
+    present) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
 fm_backend_herdr_workspace_presence_state() {  # <session> <workspace_id>
   local session=$1 workspace_id=$2 out matches cli_rc=0
   if out=$(fm_backend_herdr_cli "$session" workspace list 2>&1); then
