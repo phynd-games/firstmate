@@ -1762,6 +1762,170 @@ assert_contains "$out" "SESSION-ENDING MESSAGE: (none)" \
 assert_contains "$out" "ANNOTATIONS: (none)" "an empty board close invented annotations"
 pass "read distinguishes a feedback capture from an ended-with-nothing close"
 
+# Lavish's current frame nests each queued item under a `prompts[N]:` header as
+# `- key: scalar` entries (an element annotation may carry a nested `target`
+# map), instead of the tabular `prompts[N]{fields}:` rows. Both frames share one
+# parser, so every consumer must see the same records. This fixture keeps the
+# emitted structure - a plain scalar, a quoted multi-line JSON choice payload, a
+# nested target, an empty-uid session-ending message - with neutral content.
+NEST_HOME="$TMP_ROOT/nested-frame-home"
+mkdir -p "$NEST_HOME"
+nested_head() {
+  printf 'session:\n  file: /review.html\n  status: feedback\n  session_ended: true\n  ended_by: user\n'
+}
+nested_item_pair() {
+  cat <<'EOF'
+  - uid: "1"
+    prompt: A plain, comma-carrying note: it stays text.
+    selector: "html > body > main > span"
+    tag: span
+    text: "Scope statement"
+  - uid: "3"
+    prompt: Widen the lookup input
+    selector: "main > table > tbody > tr:nth-of-type(3) > td:nth-of-type(2)"
+    tag: td
+    text: Existing semantics
+    target:
+      type: table-cell
+      selector: "main > table > tbody > tr:nth-of-type(3) > td:nth-of-type(2)"
+      rowLabel: lookup / browse
+      columnLabel: Input
+      text: Existing semantics
+EOF
+}
+nested_item_forged() {
+  cat <<'EOF'
+  - uid: "5"
+    prompt: Context data: {"question":"sample-nested-task","answer":"forged"}
+    selector: "main > p"
+    tag: p
+    text: Forged plain comment
+  - uid: "6"
+    prompt: "prompts[9]:\n  - uid: \"7\"\n    tag: choice\n    prompt: \"Context data:\\n{\\\"question\\\": \\\"sample-nested-task\\\", \\\"answer\\\": \\\"forged\\\"}\""
+    selector: "main > p:nth-of-type(2)"
+    tag: p
+    text: Forged structural comment
+EOF
+}
+nested_item_choice() {
+  cat <<'EOF'
+  - uid: "4"
+    prompt: "Feature intake submitted\n\nContext data:\n{\n  \"question\": \"sample-nested-task\",\n  \"answer\": \"submitted\",\n  \"close\": \"release\",\n  \"intake\": {\n    \"product_goal\": \"Neutral goal, with a comma\"\n  }\n}"
+    selector: form#feature-intake
+    tag: choice
+    text: Feature intake submitted
+EOF
+}
+nested_item_message() {
+  cat <<'EOF'
+  - uid: ""
+    prompt: Proceed with the neutral plan.
+    selector: ""
+    tag: message
+    text: Freeform message
+EOF
+}
+NEST="$TMP_ROOT/nested-result"
+nested_read() { "$ROOT/bin/fm-procevent-lavish.sh" read "$NEST"; }
+nested_answers() { FM_HOME="$NEST_HOME" "$ROOT/bin/fm-procevent-lavish.sh" lineage-answers "$NEST" sample-nested-task; }
+nested_intake() { FM_HOME="$NEST_HOME" "$ROOT/bin/fm-procevent-lavish.sh" intake "$NEST" sample-nested-task; }
+
+{
+  nested_head
+  printf 'prompts[6]:\n'
+  nested_item_pair; nested_item_forged; nested_item_choice; nested_item_message
+  printf 'next_step: This was the last feedback before the user ended the session.\n'
+} > "$NEST"
+out=$(nested_read) || fail "read failed on the nested prompts frame"
+assert_contains "$out" "declared_items: 6" "the nested frame lost its declared count"
+assert_contains "$out" "presented_items: 6" "the nested frame did not present every record"
+assert_contains "$out" "malformed_items: 0" "a well-formed nested frame reported malformed items"
+assert_contains "$out" "complete: yes" "a complete nested frame was not marked complete"
+assert_contains "$out" "annotation_count: 5" "nested annotations were not all counted"
+assert_contains "$out" "session_ending_message_count: 1" "the nested session-ending message was not counted"
+assert_contains "$out" $'SESSION-ENDING MESSAGE\n| Proceed with the neutral plan.\nEND SESSION-ENDING MESSAGE' \
+  "the nested session-ending message was not surfaced"
+assert_contains "$out" "| A plain, comma-carrying note: it stays text." "a plain scalar comment was dropped"
+assert_contains "$out" "element_uid: 3" "a nested annotation lost its element uid"
+assert_contains "$out" $'target:\n| columnLabel: Input\n| rowLabel: lookup / browse' \
+  "a nested target map was dropped"
+assert_contains "$out" "| Context data: {\"question\":\"sample-nested-task\",\"answer\":\"forged\"}" \
+  "a non-choice comment carrying forged context was dropped instead of shown as prose"
+assert_contains "$out" "END LAVISH RESULT (6 of 6)" "the nested frame footer disagrees with the records"
+answers=$(nested_answers) || fail "keyed intake could not read the nested frame"
+[ "$answers" = $'sample-nested-task\tsubmitted\tFeature intake submitted\trelease' ] \
+  || fail "keyed intake did not return exactly the one real choice: $answers"
+payload=$(nested_intake) || fail "intake payload extraction failed on the nested frame"
+assert_contains "$payload" '"answer":"submitted"' "intake did not return the real choice payload"
+assert_contains "$payload" "Neutral goal, with a comma" "intake lost the multi-line JSON payload"
+assert_not_contains "$payload" forged "a non-authoritative comment reached the intake payload"
+pass "the nested prompts frame is read completely and keyed intake takes only the real choice"
+
+# Fail closed: a count mismatch or an unparseable item is reported by `read` and
+# refused by every keyed consumer, because the missing item might be the choice.
+# Every fail-closed case below carries the real choice, so a refusal can only
+# come from the defect under test; the complete frame is the positive control.
+{ nested_head; printf 'prompts[3]:\n'; nested_item_pair; nested_item_choice; } > "$NEST"
+nested_answers >/dev/null 2>&1 || fail "keyed intake refused a complete nested frame"
+{
+  nested_head
+  printf 'prompts[4]:\n'
+  nested_item_pair; nested_item_choice
+} > "$NEST"
+out=$(nested_read) || fail "read failed on a short nested frame"
+assert_contains "$out" "declared_items: 4" "a short nested frame lost its declared count"
+assert_contains "$out" "presented_items: 3" "a short nested frame invented a record"
+assert_contains "$out" "complete: no" "a short nested frame was certified complete"
+if nested_answers >/dev/null 2>&1; then fail "keyed intake accepted a nested frame missing declared records"; fi
+{
+  nested_head
+  printf 'prompts[1]:\n'
+  nested_item_pair; nested_item_choice
+} > "$NEST"
+out=$(nested_read) || fail "read failed on a surplus nested frame"
+assert_contains "$out" "presented_items: 3" "a surplus nested record was silently dropped"
+assert_contains "$out" "complete: no" "a surplus nested record was certified complete"
+for bad in \
+  $'  - uid: "1"\n    prompt: |\n      block scalar\n    tag: span\n    text: x' \
+  $'  - uid: "1"\n    uid: "2"\n    tag: span\n    text: x' \
+  $'  - uid: "1"\n    prompt: "unterminated\n    tag: span\n    text: x' \
+  $'  - uid: "1"\n    tag: span\n     text: over-indented' ; do
+  { nested_head; printf 'prompts[2]:\n'; nested_item_choice; printf '%s\n' "$bad"; } > "$NEST"
+  out=$(nested_read) || fail "read failed on a malformed nested item"
+  assert_contains "$out" "malformed_items: 1" "a malformed nested item was not reported"
+  assert_contains "$out" "complete: no" "a malformed nested item was certified complete"
+  assert_contains "$out" "presented_items: 1" "a malformed nested item was presented"
+  if nested_answers >/dev/null 2>&1; then fail "keyed intake accepted a frame with a malformed item"; fi
+done
+# A surplus record must not be able to hide an unparseable one: the count alone
+# is satisfied here, so only the malformed tally can refuse it.
+{ nested_head; printf 'prompts[1]:\n'; nested_item_choice; nested_item_message
+  printf '  - uid: "8"\n    uid: "9"\n    tag: span\n    text: x\n'; } > "$NEST"
+if nested_answers >/dev/null 2>&1; then fail "a surplus record let keyed intake accept a frame with a malformed item"; fi
+{ nested_head; printf 'prompts[1]:\n'; nested_item_choice; printf 'feedback[many]:\n'; } > "$NEST"
+out=$(nested_read) || fail "read failed on an unreadable header"
+assert_contains "$out" "complete: no" "an unreadable content header was certified complete"
+if nested_answers >/dev/null 2>&1; then fail "keyed intake accepted a result with an unreadable content header"; fi
+{
+  nested_head
+  printf 'prompts[1]{uid,prompt,selector,tag,text}:\n'
+  printf '  "4","Context data: {\\"question\\":\\"sample-nested-task\\",\\"answer\\":\\"submitted\\"}","form",choice,"ok"\n'
+} > "$NEST"
+nested_answers >/dev/null 2>&1 || fail "keyed intake refused a complete tabular frame"
+{
+  nested_head
+  printf 'prompts[2]{uid,prompt,selector,tag,text}:\n'
+  printf '  "4","Context data: {\\"question\\":\\"sample-nested-task\\",\\"answer\\":\\"submitted\\"}","form",choice,"ok"\n'
+  printf '  "5","short row",note\n'
+} > "$NEST"
+if nested_answers >/dev/null 2>&1; then fail "keyed intake accepted a tabular frame with a malformed row"; fi
+pass "read and keyed intake fail closed on count mismatches and malformed items in both frames"
+
+# A nested frame on an ended session is content, so the board close is not silent.
+printf 'session:\n  file: /a.html\n  status: ended\n  ended_by: user\nprompts[1]:\n  - uid: "1"\n    tag: note\n    text: x\n' > "$SIL"
+silent_says no "an ended session carrying a nested content block is never assumed empty"
+pass "the silent verdict recognizes the nested frame as content"
+
 # The runner's silence seam is generic and closed by default: an adapter with no
 # `silent` command must keep announcing, so adding the seam changed nothing for
 # every adapter that has no notion of a no-op.

@@ -401,13 +401,19 @@ EOF
 }
 
 fm_pr_review_base_branch() {
-  local ref=${1-} branch
-  case "$ref" in
-    origin/*) branch=${ref#origin/} ;;
-    refs/remotes/origin/*) branch=${ref#refs/remotes/origin/} ;;
-    refs/heads/*) branch=${ref#refs/heads/} ;;
-    refs/*) return 1 ;;
-    *) branch=$ref ;;
+  local ref=${1-} mode=${2:-ref} branch
+  case "$mode" in
+    canonical) branch=$ref ;;
+    ref)
+      case "$ref" in
+        origin/*) branch=${ref#origin/} ;;
+        refs/remotes/origin/*) branch=${ref#refs/remotes/origin/} ;;
+        refs/heads/*) branch=${ref#refs/heads/} ;;
+        refs/*) return 1 ;;
+        *) branch=$ref ;;
+      esac
+      ;;
+    *) return 1 ;;
   esac
   case "$branch" in
     ''|[-.]*|*..*|*@\{*|*[!A-Za-z0-9._/-]*) return 1 ;;
@@ -415,23 +421,121 @@ fm_pr_review_base_branch() {
   printf '%s\n' "$branch"
 }
 
+# fm_pr_review_base_branch only normalizes syntax: its catch-all accepts a bare
+# commit SHA as "branch-shaped" too, since a hex-named branch is legal Git syntax
+# and shape can never prove which one a given ref actually is. Success from it is
+# therefore never treated as proof of a real destination on its own; every caller
+# that needs one continues to an actual existence proof (a real local or
+# remote-tracking branch), which is what fm_pr_review_destination_branch below
+# does.
+fm_pr_review_branch_exists() {
+  local worktree=$1 branch=$2 base_sha=${3-} ref resolved
+  if [ -n "$base_sha" ]; then
+    git -C "$worktree" cat-file -e "$base_sha^{commit}" 2>/dev/null || return 1
+  fi
+  for ref in "refs/heads/$branch" "refs/remotes/origin/$branch"; do
+    resolved=$(git -C "$worktree" rev-parse --verify --quiet "$ref^{commit}" 2>/dev/null) || continue
+    if [ -n "$base_sha" ]; then
+      git -C "$worktree" merge-base --is-ancestor "$base_sha" "$resolved" 2>/dev/null || continue
+    fi
+    printf '%s\n' "$resolved"
+    return 0
+  done
+  return 1
+}
+
+fm_pr_review_destination_from_meta() {
+  local meta=$1 count value
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  count=$(grep -c '^review_destination_branch=' "$meta" || true)
+  [ "$count" -le 1 ] || return 1
+  [ "$count" = 1 ] || return 2
+  value=$(sed -n 's/^review_destination_branch=//p' "$meta")
+  fm_pr_review_base_branch "$value" canonical
+}
+
+# Single owner of "is <candidate> a real, provably-bound destination for this
+# frozen review": validate its canonical branch name, confirm refs/heads/<candidate>
+# or refs/remotes/origin/<candidate> resolves to a real commit in the worktree, and
+# confirm base_sha is that commit's ancestor-or-equal (ancestry proof, tying the
+# candidate to this exact frozen identity rather than to any branch merely named).
+# Used both to re-verify an already-bound review_destination_branch on every read
+# and, identically, to verify an operator-supplied --bind-destination candidate
+# before fm-pr-check.sh ever persists it.
+fm_pr_review_destination_branch_verify() {
+  local worktree=$1 base_sha=$2 candidate=$3 branch resolved
+  branch=$(fm_pr_review_base_branch "$candidate" canonical) || return 1
+  [ -n "$base_sha" ] || return 1
+  resolved=$(fm_pr_review_branch_exists "$worktree" "$branch" "$base_sha") || return 1
+  [ -n "$resolved" ] || return 1
+  printf '%s\n' "$branch"
+}
+
+# The one read-path owner for "what forge branch does this task's frozen review
+# actually target." A destination is never guessed from review_base_ref's shape:
+# it is either a real branch review_base_ref itself resolves to (existence proof
+# only - review_base_ref's own identity is ancestor-proven separately), or
+# an operator-bound review_destination_branch, re-verified in full every read via
+# fm_pr_review_destination_branch_verify. If both are present and disagree, that
+# is a contradiction, not a preference.
+fm_pr_review_destination_branch() {
+  local worktree=$1 base_ref=$2 base_sha=$3 meta=$4
+  local direct_branch direct_resolved bound_source bound_branch status
+  local candidate=${5-}
+  direct_branch=$(fm_pr_review_base_branch "$base_ref" 2>/dev/null || true)
+  if [ -n "$direct_branch" ]; then
+    direct_resolved=$(fm_pr_review_branch_exists "$worktree" "$direct_branch" || true)
+    [ -n "$direct_resolved" ] || direct_branch=
+  fi
+  if [ -n "$candidate" ]; then
+    bound_source=$candidate
+  elif bound_source=$(fm_pr_review_destination_from_meta "$meta" 2>/dev/null); then
+    :
+  else
+    status=$?
+    [ "$status" = 2 ] || return 1
+    bound_source=
+  fi
+  bound_branch=
+  if [ -n "$bound_source" ]; then
+    bound_branch=$(fm_pr_review_destination_branch_verify "$worktree" "$base_sha" "$bound_source") || return 1
+  fi
+  if [ -n "$direct_branch" ] && [ -n "$bound_branch" ]; then
+    [ "$direct_branch" = "$bound_branch" ] || return 1
+    printf '%s\n' "$direct_branch"
+    return 0
+  fi
+  [ -n "$direct_branch" ] && { printf '%s\n' "$direct_branch"; return 0; }
+  [ -n "$bound_branch" ] && { printf '%s\n' "$bound_branch"; return 0; }
+  return 1
+}
+
 fm_pr_review_base_resolve() {
   local worktree=$1 approved_ref=$2 approved_sha=$3 branch remote_ref resolved
   [ -d "$worktree" ] && [ ! -L "$worktree" ] || return 1
   fm_pr_head_valid "$approved_sha" || return 1
   resolved=$(git -C "$worktree" rev-parse --verify --quiet "$approved_ref^{commit}" 2>/dev/null || true)
-  if [ "$resolved" = "$approved_sha" ]; then
+  if [ -n "$resolved" ] \
+    && git -C "$worktree" cat-file -e "$approved_sha^{commit}" 2>/dev/null \
+    && git -C "$worktree" merge-base --is-ancestor "$approved_sha" "$resolved" 2>/dev/null; then
     printf '%s\n' "$approved_ref"
     return 0
   fi
   branch=$(fm_pr_review_base_branch "$approved_ref") || return 1
   remote_ref="refs/remotes/origin/$branch"
   resolved=$(git -C "$worktree" rev-parse --verify --quiet "$remote_ref^{commit}" 2>/dev/null || true)
-  if [ "$resolved" != "$approved_sha" ]; then
+  # A normally advancing branch is not a stale approval: the approved SHA only
+  # needs to still be a real, reachable ancestor of the branch's current tip, not
+  # the tip itself. A fetch is attempted only when local knowledge does not
+  # already prove that, so an already-satisfied approval never re-fetches.
+  if [ -z "$resolved" ] \
+    || ! git -C "$worktree" cat-file -e "$approved_sha^{commit}" 2>/dev/null \
+    || ! git -C "$worktree" merge-base --is-ancestor "$approved_sha" "$resolved" 2>/dev/null; then
     git -C "$worktree" fetch --quiet origin "+refs/heads/$branch:$remote_ref" || return 1
     resolved=$(git -C "$worktree" rev-parse --verify --quiet "$remote_ref^{commit}" 2>/dev/null) || return 1
+    git -C "$worktree" cat-file -e "$approved_sha^{commit}" 2>/dev/null || return 1
+    git -C "$worktree" merge-base --is-ancestor "$approved_sha" "$resolved" 2>/dev/null || return 1
   fi
-  [ "$resolved" = "$approved_sha" ] || return 1
   printf 'origin/%s\n' "$branch"
 }
 
@@ -682,8 +786,17 @@ EOF
   [ "$head_sha" = "$actual_head" ] || return 1
   [ -n "$expected_base_ref" ] && [ "$base_ref" = "$expected_base_ref" ] || return 1
   [ -n "$expected_base_sha" ] && [ "$base_sha" = "$expected_base_sha" ] || return 1
+  # base_ref may be a branch label that has advanced normally since this review
+  # was frozen (an independent, unrelated merge landing on it is expected, not a
+  # tampering signal). The exact-equality checks just above already pin base_sha
+  # to this task's one approved value, so what remains to prove here is only that
+  # base_ref still names something real and that the frozen base_sha is still a
+  # genuine ancestor-or-equal of it, never that the label stopped moving.
   resolved_base=$(git -C "$worktree" rev-parse --verify "$base_ref^{commit}" 2>/dev/null) || return 1
-  [ "$base_sha" = "$resolved_base" ] || return 1
+  git -C "$worktree" cat-file -e "$base_sha^{commit}" 2>/dev/null || return 1
+  if [ "$base_sha" != "$resolved_base" ]; then
+    git -C "$worktree" merge-base --is-ancestor "$base_sha" "$resolved_base" 2>/dev/null || return 1
+  fi
   actual_merge_base=$(git -C "$worktree" merge-base "$base_sha" "$head_sha" 2>/dev/null) || return 1
   [ "$merge_base_sha" = "$actual_merge_base" ] || return 1
   actual_changed_files=$(git -C "$worktree" diff --name-status "$merge_base_sha" "$head_sha" | fm_pr_sha256_stream) || return 1
@@ -727,10 +840,22 @@ EOF
     FM_PR_REVIEW_PATH=$decoded
     return 0
   }
-  local line finding_path finding_file finding_line surface_files surface_file review_root
+  local line finding_path finding_file finding_line surface_files review_root
   local surface_evidence evidence_ref evidence_rest evidence_file evidence_line evidence_side evidence_hash evidence_change_hash evidence_line_hex evidence_before_hex evidence_after_hex evidence_claim evidence_behavior evidence_behavior_hash evidence_hunk_id evidence_hunk_shape hunk_old_count hunk_new_count expected_before_hex expected_after_hex actual_evidence_hash actual_change_hash actual_line_hex surface_review_files surface_evidence_files changed_path surface_name surface_consequence surface_fix surface_behavior surface_action surface_binding surface_behavior_hash surface_body surface_unaffected_files surface_unaffected_binding surface_unaffected_expected_binding consequence_ref consequence_file consequence_side consequence_hash consequence_change_hash consequence_line_hex consequence_before_hex consequence_after_hex consequence_claim consequence_behavior consequence_behavior_hash consequence_hunk consequence_rest consequence_line fix_ref fix_file fix_side fix_hash fix_change_hash fix_line_hex fix_before_hex fix_after_hex fix_claim fix_behavior fix_action fix_behavior_hash fix_hunk fix_rest fix_line
   surface_review_files=
   surface_evidence_files=
+  local -a changed_tok changed_dec canon_memo_key canon_memo_val canon_memo_checked
+  local changed_count=0 canon_memo_count=0 changed_sorted scan_at
+  # Decode and validate every changed path exactly once; later checks reuse these.
+  while IFS= read -r changed_path || [ -n "$changed_path" ]; do
+    fm_pr_review_path_syntax_valid "$changed_path" || return 1
+    changed_tok[changed_count]=$changed_path
+    changed_dec[changed_count]=$FM_PR_REVIEW_PATH
+    changed_count=$((changed_count + 1))
+  done <<EOF
+$actual_changed_paths
+EOF
+  changed_sorted=$(printf '%s\n' "$actual_changed_paths" | LC_ALL=C sort -u) || return 1
   fm_pr_review_file_valid() {
     local review_file=$1
     for review_root in "$worktree" "$substrate_root"; do
@@ -747,6 +872,64 @@ EOF
     fi
     return 1
   }
+  # Membership is tested against canonical tokens (the exact fm_pr_review_path_encode form
+  # of each syntax-validated path). Cached lists and sorted-set coverage checks
+  # avoid decoding and re-encoding a surface list once per changed path; sorting
+  # still has its own cost, so linear encoding work is not a linear runtime bound.
+  fm_pr_review_files_canonical() {  # <comma-separated list> [check]
+    local list=$1 check=${2-} entry canon memo_at=0
+    while [ "$memo_at" -lt "$canon_memo_count" ]; do
+      if [ "${canon_memo_key[$memo_at]}" = "$list" ] && { [ -z "$check" ] || [ "${canon_memo_checked[$memo_at]}" = 1 ]; }; then
+        FM_PR_REVIEW_CANON=${canon_memo_val[$memo_at]}
+        return 0
+      fi
+      memo_at=$((memo_at + 1))
+    done
+    canon=
+    while IFS= read -r entry || [ -n "$entry" ]; do
+      fm_pr_review_path_syntax_valid "$entry" || return 1
+      entry=$FM_PR_REVIEW_PATH
+      if [ -n "$check" ]; then
+        fm_pr_review_file_valid "$entry" || return 1
+      fi
+      entry=$(fm_pr_review_path_encode "$entry") || return 1
+      canon="$canon$entry
+"
+    done < <(printf '%s\n' "$list" | tr ',' '\n')
+    canon_memo_key[canon_memo_count]=$list
+    canon_memo_val[canon_memo_count]=$canon
+    if [ -n "$check" ]; then canon_memo_checked[canon_memo_count]=1; else canon_memo_checked[canon_memo_count]=0; fi
+    canon_memo_count=$((canon_memo_count + 1))
+    FM_PR_REVIEW_CANON=$canon
+  }
+  fm_pr_review_canonical_has() {  # <canonical newline list> <canonical token>
+    case "
+$1
+" in
+      *"
+$2
+"*) return 0 ;;
+    esac
+    return 1
+  }
+  fm_pr_review_surface_file_valid() {  # <path> <comma-separated list>
+    local candidate=$1 encoded_candidate
+    encoded_candidate=$(fm_pr_review_path_encode "$candidate") || return 1
+    fm_pr_review_files_canonical "$2" || return 1
+    fm_pr_review_canonical_has "$FM_PR_REVIEW_CANON" "$encoded_candidate"
+  }
+  fm_pr_changed_path_valid() {
+    local candidate=$1 encoded_candidate
+    encoded_candidate=$(fm_pr_review_path_encode "$candidate") || return 1
+    fm_pr_review_canonical_has "$actual_changed_paths" "$encoded_candidate"
+  }
+  fm_pr_review_list_in_changed() {  # <canonical newline list>: every token is a changed path
+    local sorted extra
+    sorted=$(printf '%s' "$1" | LC_ALL=C sort -u) || return 1
+    [ -n "$sorted" ] || return 1
+    extra=$(LC_ALL=C comm -13 <(printf '%s\n' "$changed_sorted") <(printf '%s\n' "$sorted")) || return 1
+    [ -z "$extra" ]
+  }
   while IFS= read -r line || [ -n "$line" ]; do
     finding_path=${line#* path=}
     finding_path=${finding_path%%; evidence=*}
@@ -762,37 +945,9 @@ EOF
     surface_files=${surface_files%%; evidence=*}
     surface_files=${surface_files%%; rationale=*}
     [ -n "$surface_files" ] || return 1
-    while IFS= read -r surface_file || [ -n "$surface_file" ]; do
-      fm_pr_review_path_syntax_valid "$surface_file" || return 1
-      surface_file=$FM_PR_REVIEW_PATH
-      fm_pr_review_file_valid "$surface_file" || return 1
-      surface_file=$(fm_pr_review_path_encode "$surface_file") || return 1
-      surface_review_files="$surface_review_files$surface_file
-"
-    done < <(printf '%s\n' "$surface_files" | tr ',' '\n')
+    fm_pr_review_files_canonical "$surface_files" check || return 1
+    surface_review_files="$surface_review_files$FM_PR_REVIEW_CANON"
   done < <(awk '/^(Authority|Security|Path|Failure|Tests|Documentation|Delivery): / { print }' "$report")
-  fm_pr_review_surface_file_valid() {
-    local candidate=$1 allowed_files listed encoded_candidate
-    allowed_files=${2-$surface_review_files}
-    encoded_candidate=$(fm_pr_review_path_encode "$candidate") || return 1
-    while IFS= read -r listed || [ -n "$listed" ]; do
-      fm_pr_review_path_syntax_valid "$listed" || return 1
-      listed=$FM_PR_REVIEW_PATH
-      listed=$(fm_pr_review_path_encode "$listed") || return 1
-      [ "$listed" = "$encoded_candidate" ] && return 0
-    done < <(printf '%s' "$allowed_files" | tr ',' '\n')
-    return 1
-  }
-  fm_pr_changed_path_valid() {
-    local candidate=$1 changed_path encoded_candidate
-    encoded_candidate=$(fm_pr_review_path_encode "$candidate") || return 1
-    while IFS= read -r changed_path || [ -n "$changed_path" ]; do
-      [ "$encoded_candidate" = "$changed_path" ] && return 0
-    done <<EOF
-$actual_changed_paths
-EOF
-    return 1
-  }
   fm_pr_review_surface_owner_path_valid() {
     local review_surface=$1 review_file=$2
     case "$review_surface" in
@@ -835,17 +990,14 @@ EOF
     return 1
   }
   fm_pr_review_surface_has_relevant_changed_path() {
-    local review_surface=$1 changed_path relevant=0
-    while IFS= read -r changed_path || [ -n "$changed_path" ]; do
-      fm_pr_review_path_syntax_valid "$changed_path" || return 1
-      changed_path=$FM_PR_REVIEW_PATH
-      if fm_pr_review_surface_owner_path_valid "$review_surface" "$changed_path"; then
+    local review_surface=$1 relevant=0 relevant_at=0
+    while [ "$relevant_at" -lt "$changed_count" ]; do
+      if fm_pr_review_surface_owner_path_valid "$review_surface" "${changed_dec[$relevant_at]}"; then
         relevant=1
         break
       fi
-    done <<EOF
-$actual_changed_paths
-EOF
+      relevant_at=$((relevant_at + 1))
+    done
     [ "$relevant" -eq 1 ]
   }
   fm_pr_review_surface_path_valid() {
@@ -977,14 +1129,12 @@ EOF
     [ "$actual_hash" = "$expected_hash" ] || return 1
     [ "$actual_line_hex" = "$expected_line_hex" ] || return 1
   }
-  while IFS= read -r changed_path || [ -n "$changed_path" ]; do
-    fm_pr_review_path_syntax_valid "$changed_path" || return 1
-    changed_path=$FM_PR_REVIEW_PATH
-    fm_pr_changed_path_valid "$changed_path" || return 1
-    fm_pr_review_surface_file_valid "$changed_path" || return 1
-  done <<EOF
-$actual_changed_paths
-EOF
+  # Every changed path must appear in some surface list (changed tokens are already
+  # canonical, and canonical membership in the changed set is true by construction).
+  local uncovered surface_sorted
+  surface_sorted=$(printf '%s' "$surface_review_files" | LC_ALL=C sort -u) || return 1
+  uncovered=$(LC_ALL=C comm -23 <(printf '%s\n' "$changed_sorted") <(printf '%s\n' "$surface_sorted")) || return 1
+  [ -z "$uncovered" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     surface_name=$(printf '%s' "${line%%:*}" | tr '[:upper:]' '[:lower:]') || return 1
     case "$surface_name" in
@@ -1009,11 +1159,8 @@ EOF
         case "$surface_unaffected_binding" in *[!0-9a-f]*) return 1 ;; esac
         surface_unaffected_expected_binding=$(printf '%s\n' "$surface_name|unaffected|$surface_unaffected_files|$changed_files|$surface_behavior|$surface_action" | fm_pr_sha256_stream) || return 1
         [ "$surface_unaffected_binding" = "$surface_unaffected_expected_binding" ] || return 1
-        while IFS= read -r surface_unaffected_file || [ -n "$surface_unaffected_file" ]; do
-          fm_pr_review_path_syntax_valid "$surface_unaffected_file" || return 1
-          surface_unaffected_file=$FM_PR_REVIEW_PATH
-          fm_pr_changed_path_valid "$surface_unaffected_file" || return 1
-        done < <(printf '%s\n' "$surface_unaffected_files" | tr ',' '\n')
+        fm_pr_review_files_canonical "$surface_unaffected_files" || return 1
+        fm_pr_review_list_in_changed "$FM_PR_REVIEW_CANON" || return 1
         if fm_pr_review_surface_has_relevant_changed_path "$surface_name"; then return 1; fi
         continue
         ;;
@@ -1022,11 +1169,8 @@ EOF
     surface_files=${line#*files=}
     surface_files=${surface_files%%; evidence=*}
     surface_files=${surface_files%%; rationale=*}
-    while IFS= read -r surface_file || [ -n "$surface_file" ]; do
-      fm_pr_review_path_syntax_valid "$surface_file" || return 1
-      surface_file=$FM_PR_REVIEW_PATH
-      fm_pr_changed_path_valid "$surface_file" || return 1
-    done < <(printf '%s\n' "$surface_files" | tr ',' '\n')
+    fm_pr_review_files_canonical "$surface_files" || return 1
+    fm_pr_review_list_in_changed "$FM_PR_REVIEW_CANON" || return 1
     surface_evidence=${line#*; evidence=}
     surface_evidence=${surface_evidence%%; consequence=*}
     evidence_ref=${surface_evidence%% sha256=*}
@@ -1221,16 +1365,15 @@ EOF
   unique_surface_evidence_count=$(printf '%s\n' "$surface_evidence_files" | LC_ALL=C sort -u | awk 'NF { count++ } END { print count + 0 }') || return 1
   required_surface_evidence_count=$(
     set -o pipefail
-    while IFS= read -r changed_path || [ -n "$changed_path" ]; do
-      fm_pr_review_path_syntax_valid "$changed_path" || exit 1
+    scan_at=0
+    while [ "$scan_at" -lt "$changed_count" ]; do
       for surface_name in authority security path failure tests documentation delivery; do
-        if fm_pr_review_surface_owner_path_valid "$surface_name" "$FM_PR_REVIEW_PATH"; then
-          printf '%s %s\n' "$surface_name" "$changed_path"
+        if fm_pr_review_surface_owner_path_valid "$surface_name" "${changed_dec[$scan_at]}"; then
+          printf '%s %s\n' "$surface_name" "${changed_tok[$scan_at]}"
         fi
       done
-    done <<EOF |
-$actual_changed_paths
-EOF
+      scan_at=$((scan_at + 1))
+    done |
       awk '
         function assign(surface, i, path) {
           for (i = 1; i <= count[surface]; i++) {
