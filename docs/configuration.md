@@ -904,6 +904,7 @@ FM_PENDING_REPLY_GRACE_SECS=120   # seconds after marked-request delivery before
 # sub-supervisor (bin/fm-supervise-daemon.sh); presence-gated via /afk
 FM_SUPERVISOR_BACKEND=             # optional supervisor pane backend override; must be herdr, otherwise discovered only from HERDR_ENV/HERDR_PANE_ID (no tmux fallback)
 FM_SUPERVISOR_TARGET=              # optional supervisor pane target override; herdr <session>:<pane-id>, otherwise composed from HERDR_SESSION/HERDR_PANE_ID
+FM_AFK_WATCHER_PATH=             # optional absolute path of the fm-watch.sh the away daemon launches instead of its own code root's; startup refuses a relative, missing, or non-executable path
 FM_INJECT_SKIP=heartbeat           # |-prefixes force-self-handled bypassing classification; empty disables
 FM_ESCALATE_BATCH_SECS=90          # buffer window for batched escalation digests; 0 = flush immediately
 FM_MAX_DEFER_SECS=300              # max buffered escalation age before retry plus wedge alarm; 0 disables
