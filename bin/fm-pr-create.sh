@@ -95,8 +95,8 @@ REVIEW_BASE=$(fm_pr_review_base_from_meta "$META") || {
 IFS="$(printf '\t')" read -r REVIEW_BASE_REF REVIEW_BASE_SHA <<EOF
 $REVIEW_BASE
 EOF
-REVIEW_BASE_BRANCH=$(fm_pr_review_base_branch "$REVIEW_BASE_REF") || {
-  echo "error: direct PR task has no branch-shaped approved target base" >&2
+REVIEW_BASE_BRANCH=$(fm_pr_review_destination_branch "$WT" "$REVIEW_BASE_REF" "$REVIEW_BASE_SHA" "$META") || {
+  echo "error: direct PR task has no verifiable destination branch" >&2
   exit 1
 }
 [ "$FM_PR_REMOTE_PROVIDER" = github ] || {

@@ -5,7 +5,22 @@
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
 # including a merge request on a self-hosted GitLab instance.
-# Usage: fm-pr-check.sh <task-id> <pr-url>
+# Usage: fm-pr-check.sh <task-id> <pr-url> [--bind-destination <branch>]
+# --bind-destination is a narrow, operator-only reconciliation for a task whose
+# approved base has no branch form of its own (a frozen commit SHA).
+# Supply the explicitly authorized destination, never an inferred default branch.
+# A bare branch name, origin/<branch>, refs/heads/<branch>, or
+# refs/remotes/origin/<branch> is accepted; use refs/heads/<branch> when the
+# literal branch name itself starts with one of those prefixes.
+# It is verified against local repository state (a local or cached origin branch
+# must contain the approved base) and against this run's live forge PR/MR base
+# exactly like every other destination, and is persisted as
+# review_destination_branch= in task metadata only after every other check in
+# this script already passed. It is never invoked by a crewmate brief.
+# Later checks and fm-pr-create.sh re-verify the stored binding; a disagreement
+# with a directly resolvable approved branch refuses instead of overriding it.
+# These PR validation paths do not fetch or change Git refs, and binding leaves
+# review_base_ref/review_base_sha untouched.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,10 +37,16 @@ SUBSTRATE_ROOT=
 # shellcheck source=bin/fm-lease-lib.sh
 . "$SCRIPT_DIR/fm-lease-lib.sh"
 
-if [ "$#" -ne 2 ]; then
-  echo "error: invalid PR check request" >&2
-  exit 2
-fi
+BIND_DESTINATION=
+case "$#" in
+  2) ;;
+  4)
+    [ "$3" = --bind-destination ] || { echo "error: invalid PR check request" >&2; exit 2; }
+    BIND_DESTINATION=$4
+    [ -n "$BIND_DESTINATION" ] || { echo "error: invalid PR check request" >&2; exit 2; }
+    ;;
+  *) echo "error: invalid PR check request" >&2; exit 2 ;;
+esac
 ID=$1
 RAW_URL=$2
 if ! fm_pr_task_id_valid "$ID" || ! fm_pr_url_parse "$RAW_URL"; then
@@ -110,19 +131,30 @@ REVIEW_BASE=$(fm_pr_review_base_from_meta "$META" || true)
 IFS="$(printf '\t')" read -r REVIEW_BASE_REF REVIEW_BASE_SHA <<EOF
 $REVIEW_BASE
 EOF
-REVIEW_BASE_BRANCH=$(fm_pr_review_base_branch "$REVIEW_BASE_REF") || {
-  echo "error: PR-ready task metadata has no branch-shaped approved target base" >&2
-  exit 1
-}
 WT=$(grep '^worktree=' "$META" | cut -d= -f2- || true)
-[ -n "$WT" ] && [ -d "$WT" ] && [ ! -L "$WT" ] && command -v git >/dev/null 2>&1 || {
+if ! { [ -n "$WT" ] && [ -d "$WT" ] && [ ! -L "$WT" ] && command -v git >/dev/null 2>&1; }; then
   echo "error: PR-ready task worktree is unavailable" >&2
   exit 1
-}
+fi
 fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH" || {
   echo "error: PR-ready URL does not identify the reviewed repository" >&2
   exit 1
 }
+if [ -n "$BIND_DESTINATION" ]; then
+  BIND_DESTINATION=$(fm_pr_review_base_branch "$BIND_DESTINATION") || {
+    echo "error: --bind-destination has invalid branch syntax" >&2
+    exit 1
+  }
+  REVIEW_BASE_BRANCH=$(fm_pr_review_destination_branch "$WT" "$REVIEW_BASE_REF" "$REVIEW_BASE_SHA" "$META" "$BIND_DESTINATION") || {
+    echo "error: --bind-destination contradicts the approved base or does not name a real branch containing it" >&2
+    exit 1
+  }
+else
+  REVIEW_BASE_BRANCH=$(fm_pr_review_destination_branch "$WT" "$REVIEW_BASE_REF" "$REVIEW_BASE_SHA" "$META") || {
+    echo "error: PR-ready task metadata has no verifiable destination branch" >&2
+    exit 1
+  }
+fi
 REVIEW_HEAD=$(git -C "$WT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
 fm_pr_head_valid "$REVIEW_HEAD" || {
   echo "error: PR-ready task worktree has no valid HEAD" >&2
@@ -197,27 +229,27 @@ fm_pr_head_valid "$REMOTE_HEAD" && [ "$REMOTE_HEAD" = "$REVIEW_HEAD" ] || {
 PR_HEAD=$REMOTE_HEAD
 
 FINAL_REVIEW_HEAD=$(git -C "$WT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
-[ "$FINAL_REVIEW_HEAD" = "$REVIEW_HEAD" ] \
+if ! { [ "$FINAL_REVIEW_HEAD" = "$REVIEW_HEAD" ] \
   && [ "$(fm_pr_sha256 "$REPORT")" = "$REPORT_HASH" ] \
   && [ "$(git -C "$SUBSTRATE_ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)" = "$SUBSTRATE_HEAD" ] \
   && [ -z "$(git -C "$SUBSTRATE_ROOT" status --porcelain 2>/dev/null)" ] \
-  && fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH" || {
+  && fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH"; }; then
   echo "error: reviewed PR-ready inputs changed before publication" >&2
   exit 1
-}
+fi
 
 fm_pr_poll_prepare "$STATE" "$ID" "$PROVIDER" "$URL" "$HOST" "$PROJECT_PATH" "$NUMBER" "$SCRIPT_DIR/fm-pr-poll.sh" \
   || { echo "error: could not prepare PR poll" >&2; exit 1; }
 
 FINAL_REVIEW_HEAD=$(git -C "$WT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
-[ "$FINAL_REVIEW_HEAD" = "$REVIEW_HEAD" ] \
+if ! { [ "$FINAL_REVIEW_HEAD" = "$REVIEW_HEAD" ] \
   && [ "$(fm_pr_sha256 "$REPORT")" = "$REPORT_HASH" ] \
   && [ "$(git -C "$SUBSTRATE_ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)" = "$SUBSTRATE_HEAD" ] \
   && [ -z "$(git -C "$SUBSTRATE_ROOT" status --porcelain 2>/dev/null)" ] \
-  && fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH" || {
+  && fm_pr_git_remote_matches "$WT" "$PROVIDER" "$HOST" "$PROJECT_PATH"; }; then
   echo "error: reviewed PR-ready inputs changed before publication" >&2
   exit 1
-}
+fi
 
 [ -f "$META" ] && [ ! -L "$META" ] && [ "$(fm_pr_file_link_count "$META")" = 1 ] \
   || { echo "error: task metadata is unavailable" >&2; exit 1; }
@@ -228,9 +260,21 @@ META_TMP=$(mktemp "$STATE/.fm-pr-meta.XXXXXX") || exit 1
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
     pr=*|pr_head=*) ;;
+    review_destination_branch=*)
+      if [ -z "$BIND_DESTINATION" ]; then
+        printf '%s\n' "$line" >> "$META_TMP" || exit 1
+      fi
+      ;;
     *) printf '%s\n' "$line" >> "$META_TMP" || exit 1 ;;
   esac
 done < "$META"
+# review_destination_branch is persisted only here, after every other check in
+# this script has already passed for this exact run (durable self-review report
+# validity, forge PR head/base match, and the existence+ancestry proof above).
+# It is written before pr=/pr_head= deliberately: fm_pr_metadata_identity_parse
+# requires pr= (and an immediately following pr_head=) to be the last fields in
+# the file, so nothing may be appended after them.
+[ -z "$BIND_DESTINATION" ] || printf 'review_destination_branch=%s\n' "$REVIEW_BASE_BRANCH" >> "$META_TMP" || exit 1
 printf 'pr=%s\n' "$URL" >> "$META_TMP" || exit 1
 [ -z "$PR_HEAD" ] || printf 'pr_head=%s\n' "$PR_HEAD" >> "$META_TMP" || exit 1
 chmod 0600 "$META_TMP" || exit 1
