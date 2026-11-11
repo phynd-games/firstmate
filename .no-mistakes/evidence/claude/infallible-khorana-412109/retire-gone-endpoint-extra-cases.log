@@ -1,0 +1,36 @@
+--- unhealthy server: rc=1
+REFUSED: task task-x1 endpoint identity resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr session capability check failed. Repair Herdr, then verify the named session with 'herdr status --json'.
+ok - unhealthy Herdr server refuses and preserves records
+--- same pane id under a different tab: rc=1
+REFUSED: task task-x1 endpoint record (Herdr target identity) resolves 'herdr', but Herdr is the sole supported Firstmate runtime backend and no tmux, zellij, orca, cmux, auto-detected, or default fallback exists. The native Herdr pane identity check failed. Repair Herdr, then verify with 'herdr status --json'. Task state is preserved.
+ok - same pane id under a different tab refuses and preserves records
+--- success transcript: rc=0
+[stdout]
+/private/var/folders/tj/v9x_1zz90tz__h2y0wptbrd00000gn/T/fm-teardown-retire-gone-endpoint.TnnIJW/transcript/project: already current
+teardown task-x1 complete (window default:wG:pQ, worktree /private/var/folders/tj/v9x_1zz90tz__h2y0wptbrd00000gn/T/fm-teardown-retire-gone-endpoint.TnnIJW/transcript/wt)
+Backlog: task-x1 is closed in /private/var/folders/tj/v9x_1zz90tz__h2y0wptbrd00000gn/T/fm-teardown-retire-gone-endpoint.TnnIJW/transcript/data/backlog.md. Run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+[stderr]
+note: task-x1's recorded Herdr terminal is gone; closing no pane (any pane at default:wG:pQ now belongs to a replacement terminal)
+[herdr calls]
+status --json
+status --json --session default
+session list --json --session default
+pane get wG:pQ --session default
+status --json
+status --json --session default
+session list --json --session default
+status --json
+status --json --session default
+session list --json --session default
+pane get wG:pQ --session default
+pane list --session default
+status --json
+status --json --session default
+session list --json --session default
+pane get wG:pQ --session default
+pane list --session default
+status --json
+status --json --session default
+session list --json --session default
+[state dir]
+home-summary.json

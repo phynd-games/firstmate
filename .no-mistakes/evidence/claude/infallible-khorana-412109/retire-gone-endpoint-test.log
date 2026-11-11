@@ -1,0 +1,8 @@
+ok - a pane id that now hosts a replacement terminal retires without closing it
+ok - a structurally missing pane retires when no pane carries the recorded terminal
+ok - plain teardown without the flag still refuses a replaced terminal
+ok - every unproven or contradicting terminal shape refuses and preserves the records
+ok - unlanded work refuses without --force and retires with it
+ok - a secondmate record refuses the retire
+ok - a non-Herdr record refuses the retire
+ok - a terminal that reappears before record removal refuses and keeps the durable records
