@@ -21,6 +21,7 @@
 #   (k) unlanded work with --force                       -> RETIRE
 #   (l) secondmate record                                -> REFUSE
 #   (m) non-Herdr record                                 -> REFUSE
+#   (n) recorded terminal reappears before record removal -> REFUSE, records kept
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -32,7 +33,8 @@ TMP_ROOT=$(fm_test_tmproot fm-teardown-retire-gone-endpoint)
 
 # Build a sandbox with a project clone, a task worktree, a Herdr-recorded meta
 # (including the recorded terminal id), a seeded backlog, and a fake herdr whose
-# answers are chosen per run through FM_FAKE_PANE_MODE and FM_FAKE_LIST_MODE.
+# answers are chosen per run through FM_FAKE_PANE_MODE and FM_FAKE_LIST_MODE;
+# FM_FAKE_LIST_MODE_LATER replaces the list answer after the first pane list.
 make_case() {  # <name> [mode] [kind]
   local name=$1 mode=${2:-no-mistakes} kind=${3:-ship} case_dir fakebin
   case_dir="$TMP_ROOT/$name"
@@ -70,6 +72,10 @@ set -u
 printf '%s\n' "\$*" >> "\${FM_FAKE_HERDR_LOG:?}"
 pane_mode=\${FM_FAKE_PANE_MODE:-replaced}
 list_mode=\${FM_FAKE_LIST_MODE:-clean}
+if [ -n "\${FM_FAKE_LIST_MODE_LATER:-}" ] \\
+  && [ "\$(grep -c '^pane list' "\$FM_FAKE_HERDR_LOG")" -gt 1 ]; then
+  list_mode=\$FM_FAKE_LIST_MODE_LATER
+fi
 case "\${1:-} \${2:-}" in
   "workspace list")
     printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"wH","active_tab_id":"wH:t1","focused":true},{"workspace_id":"wG","active_tab_id":"wG:tQ","focused":false}]}}'
@@ -178,7 +184,7 @@ assert_retired() {  # <label> <case-dir>
   [ ! -e "$case_dir/state/task-x1.meta" ] || fail "$label: the task metadata survived the retire"
   [ ! -e "$case_dir/state/task-x1.status" ] || fail "$label: the task status record survived the retire"
   [ ! -e "$case_dir/state/task-x1.turn-ended" ] || fail "$label: the turn-end record survived the retire"
-  [ "$(backlog_row_state "$case_dir")" = done ] \
+  [ "$(backlog_row_state "$case_dir")" = "done" ] \
     || fail "$label: the backlog item was not closed (state: $(backlog_row_state "$case_dir"))"
   [ ! -e "$case_dir/closed.log" ] || fail "$label: a pane close was issued for a terminal that is not the task's"
   if grep -q '^pane close' "$case_dir/herdr.log"; then
@@ -298,6 +304,26 @@ test_non_herdr_record_refuses() {
   pass "a non-Herdr record refuses the retire"
 }
 
+test_second_proof_refusal_keeps_durable_records() {
+  local case_dir rc=0
+  case_dir=$(make_case second-proof)
+  FM_FAKE_PANE_MODE=replaced FM_FAKE_LIST_MODE=clean FM_FAKE_LIST_MODE_LATER=has-recorded \
+    run_teardown "$case_dir" --retire-gone-endpoint || rc=$?
+  [ "$rc" -ne 0 ] || fail "second-proof: the retire succeeded after the recorded terminal reappeared"
+  [ "$(grep -c '^pane list' "$case_dir/herdr.log")" -ge 2 ] \
+    || fail "second-proof: the proof was not repeated before record removal"
+  grep -q "before record removal" "$case_dir/stderr" \
+    || fail "second-proof: the refusal did not come from the second proof: $(cat "$case_dir/stderr")"
+  [ -e "$case_dir/state/task-x1.meta" ] || fail "second-proof: the refusal erased the task metadata"
+  [ -e "$case_dir/state/task-x1.status" ] || fail "second-proof: the refusal erased the task status record"
+  [ -e "$case_dir/state/task-x1.turn-ended" ] || fail "second-proof: the refusal erased the turn-end record"
+  [ ! -e "$case_dir/closed.log" ] || fail "second-proof: the refusal still closed a pane"
+  if grep -q "teardown task-x1 complete" "$case_dir/stdout"; then
+    fail "second-proof: the refusal still reported cleanup complete"
+  fi
+  pass "a terminal that reappears before record removal refuses and keeps the durable records"
+}
+
 test_replaced_terminal_is_retired_without_closing_any_pane
 test_pane_not_found_is_retired
 test_plain_teardown_still_refuses_a_replaced_terminal
@@ -305,3 +331,4 @@ test_refusal_matrix_preserves_records
 test_unlanded_work_refuses_without_force_and_retires_with_it
 test_secondmate_record_refuses
 test_non_herdr_record_refuses
+test_second_proof_refusal_keeps_durable_records
