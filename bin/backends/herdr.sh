@@ -2567,38 +2567,18 @@ fm_backend_herdr_pane_presence_state() {  # <session> <pane_id> <workspace> <tab
 # and mismatches only by terminal id is the single shape this accepts.
 fm_backend_herdr_recorded_terminal_gone() {  # <session> <workspace> <tab> <pane> <terminal>
   local session=$1 workspace=$2 tab=$3 pane=$4 terminal=$5
-  local out code cli_rc=0 verdict list_out
+  local out get_rc=0 verdict list_out
   [ -n "$session" ] && [ -n "$workspace" ] && [ -n "$tab" ] && [ -n "$pane" ] && [ -n "$terminal" ] || return 2
-  if out=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>&1); then
-    cli_rc=0
-  else
-    cli_rc=$?
-  fi
-  printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1 || return 2
-  code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null) || return 2
-  if [ -n "$code" ]; then
-    [ "$cli_rc" -ne 0 ] && [ "$code" = pane_not_found ] || return 2
-  else
-    [ "$cli_rc" -eq 0 ] || return 2
-    verdict=$(printf '%s' "$out" | jq -r \
-      --arg workspace "$workspace" --arg tab "$tab" --arg pane "$pane" --arg terminal "$terminal" '
-      if ((.result.pane | type) == "object"
-        and (.result.pane.pane_id | type) == "string"
-        and (.result.pane.workspace_id | type) == "string"
-        and (.result.pane.tab_id | type) == "string"
-        and (.result.pane.terminal_id | type) == "string"
-        and (.result.pane.terminal_id | length) > 0
-        and .result.pane.pane_id == $pane
-        and .result.pane.workspace_id == $workspace
-        and .result.pane.tab_id == $tab)
-      then (if .result.pane.terminal_id == $terminal then "present" else "replaced" end)
-      else "unproven" end' 2>/dev/null) || return 2
-    case "$verdict" in
-      replaced) ;;
-      present) return 1 ;;
-      *) return 2 ;;
-    esac
-  fi
+  out=$(fm_backend_herdr_pane_get_checked "$session" "$workspace" "$tab" "$pane" 1) || get_rc=$?
+  case "$get_rc" in
+    0)
+      verdict=$(printf '%s' "$out" | jq -r --arg terminal "$terminal" '
+        if .result.pane.terminal_id == $terminal then "present" else "replaced" end' 2>/dev/null) || return 2
+      [ "$verdict" = replaced ] || return 1
+      ;;
+    1) ;;
+    *) return 2 ;;
+  esac
   if list_out=$(fm_backend_herdr_cli "$session" pane list 2>&1); then
     :
   else
