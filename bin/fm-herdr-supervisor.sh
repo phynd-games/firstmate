@@ -1758,6 +1758,12 @@ recorded_server_instance_gone() {
   socket_identity=$(record_get herdr_socket_identity || printf '')
   workspace=$(record_get workspace || printf '')
   pane=$(record_get pane || printf '')
+  # recorded_herdr_identity_matches returns before herdr_identity when the binding
+  # has blank fields, so resolve the current identity here; a blank prior binding
+  # must be reported as such, never as an unreadable current server.
+  if [ -z "$HS_SESSION" ] || [ -z "$HS_SOCKET" ] || [ -z "$HS_SOCKET_IDENTITY" ]; then
+    herdr_identity >/dev/null 2>&1 || true
+  fi
   [ -n "$HS_SESSION" ] && [ -n "$HS_SOCKET" ] && [ -n "$HS_SOCKET_IDENTITY" ] || {
     HS_SERVER_GONE_REASON="the current Herdr server identity could not be read"
     return 1
@@ -1853,12 +1859,175 @@ retire_gone_generation_locked() {  # <facts>
   ledger_append server-gone "retired generation=$generation: $1 resource=$target"
 }
 
+# degraded_binding_settle_locked: a binding record whose identity fields are blank
+# (an interrupted establish left it quarantined as generation unknown) with no
+# pending-cleanup can never pass recorded_server_instance_gone, which has nothing
+# to prove against, and no retire path can settle it either. The exact retained
+# helper launch record still holds the complete native-response identity, so it
+# is the only prior authority accepted, and only when its provenance is unique
+# and unambiguous. The prior endpoint must then be proved gone natively (dead or
+# absent loop, replaced server socket, recorded pane and terminal absent), which
+# also holds when the replacement server reused the workspace id for another
+# workspace. Settlement is bookkeeping ONLY: nothing is ever closed through any
+# server, so a reused workspace and its panes survive. Anything unknown or
+# ambiguous returns 1 and leaves the binding quarantined. Returns 2 when the
+# binding is not degraded or a pending-cleanup exists, so the normal path decides.
+DEGRADED_GONE_REASON=
+degraded_binding_settle_locked() {
+  local launch_json launch_out launch_rc fields id generation session socket_identity workspace tab pane terminal created_epoch
+  local established_at reason loop_pid loop_identity current panes target tmp facts
+  DEGRADED_GONE_REASON=
+  [ -f "$RECORD" ] && [ ! -e "$PENDING" ] || return 2
+  awk -F= '
+    $1 == "generation" { generation_count++; generation = $2 }
+    $1 == "mode" { mode_count++; mode = $2 }
+    $1 == "cleanup_state" { cleanup_count++; cleanup = $2 }
+    $1 == "herdr_session" || $1 == "herdr_socket" || $1 == "herdr_socket_identity" \
+      || $1 == "workspace" || $1 == "tab" || $1 == "pane" || $1 == "terminal_id" {
+      identity_count[$1]++
+      identity_value[$1] = $2
+    }
+    END {
+      if (generation_count != 1 || generation != "unknown" || mode_count != 1 || mode != "quarantine" \
+          || cleanup_count != 1 || cleanup != "open") exit 1
+      split("herdr_session herdr_socket herdr_socket_identity workspace tab pane terminal_id", keys, " ")
+      for (i in keys) if (identity_count[keys[i]] != 1 || identity_value[keys[i]] != "") exit 1
+    }
+  ' "$RECORD" || return 2
+  launch_json=$(fm_launch_record show --helper herdr-supervisor --json 2>/dev/null) || {
+    DEGRADED_GONE_REASON="the degraded binding has no readable retained helper launch record"
+    return 1
+  }
+  fields=$(printf '%s' "$launch_json" | jq -r '
+    .launch as $l
+    | if ($l.owner == "fm-herdr-supervisor.sh" and $l.phase == "created" and (($l.outcome // {}) | length) == 0
+          and $l.identity_source == "native-response" and $l.identity.backend == "herdr")
+      then [$l.id, $l.fields.generation, $l.identity.session, $l.identity.socket_identity,
+            $l.identity.workspace_id, $l.identity.tab_id, $l.identity.pane_id, $l.identity.terminal_id,
+            ($l.created_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601 | tostring)] | join("\u001f")
+      else empty end' 2>/dev/null) || fields=
+  IFS=$'\037' read -r id generation session socket_identity workspace tab pane terminal created_epoch <<EOF
+$fields
+EOF
+  for reason in "$id" "$session" "$socket_identity" "$workspace" "$tab" "$pane" "$terminal"; do
+    case "$reason" in ''|*[[:space:]]*) fields=; break ;; esac
+  done
+  case "$generation" in ''|*[!A-Za-z0-9._-]*) fields= ;; esac
+  case "$created_epoch" in ''|*[!0-9]*) fields= ;; esac
+  [ -n "$fields" ] || {
+    DEGRADED_GONE_REASON="the retained helper launch record is not one unsettled native-response create with a complete identity"
+    return 1
+  }
+  launch_out=$(fm_launch_record check --helper herdr-supervisor 2>/dev/null)
+  launch_rc=$?
+  [ "$launch_rc" -eq 3 ] && [ "$(printf '%s\n' "$launch_out" | sed -n 's/^field.generation=//p')" = "$generation" ] || {
+    DEGRADED_GONE_REASON="the retained helper launch is not the single open launch for generation $generation"
+    return 1
+  }
+  established_at=$(record_get established_at || printf '')
+  case "$established_at" in ''|*[!0-9]*) established_at= ;; esac
+  [ "$(record_get establish_reason || printf '')" = pending-cleanup ] && [ "$(record_get fm_home || printf '')" = "$FM_HOME" ] \
+    && [ -n "$established_at" ] && [ "$established_at" -ge "$created_epoch" ] && [ $((established_at - created_epoch)) -le 3600 ] || {
+    DEGRADED_GONE_REASON="the degraded binding was not provably written from launch $id (home, reason, or timing differs)"
+    return 1
+  }
+  if [ -e "$LIVE" ]; then
+    [ "$(live_get generation || printf '')" = "$generation" ] || {
+      DEGRADED_GONE_REASON="the supervisor live record names a different generation than launch $id"
+      return 1
+    }
+    loop_pid=$(live_get loop_pid || printf '')
+    loop_identity=$(live_get loop_identity || printf '')
+    case "$loop_pid" in
+      ''|*[!0-9]*)
+        DEGRADED_GONE_REASON="the supervisor live record names no readable loop pid"
+        return 1
+        ;;
+    esac
+    if fm_pid_alive "$loop_pid"; then
+      current=$(fm_pid_identity "$loop_pid" 2>/dev/null || printf '')
+      if [ -z "$loop_identity" ] || [ -z "$current" ] || [ "$current" = "$loop_identity" ]; then
+        DEGRADED_GONE_REASON="the prior supervisor loop process $loop_pid is still alive under its recorded identity"
+        return 1
+      fi
+    fi
+  fi
+  herdr_identity >/dev/null 2>&1 && [ "$HS_SESSION" = "$session" ] || {
+    DEGRADED_GONE_REASON="the current Herdr server identity could not be read for the launch's session $session"
+    return 1
+  }
+  [ "$HS_SOCKET_IDENTITY" != "$socket_identity" ] || {
+    DEGRADED_GONE_REASON="the launch's server socket identity $socket_identity is still the current one, so the prior server instance is still serving"
+    return 1
+  }
+  FM_BACKEND_HERDR_CALL_TIMEOUT="$HERDR_CALL_TIMEOUT" \
+    fm_backend_herdr_pane_get_checked "$HS_SESSION" '' '' "$pane" 1 >/dev/null 2>&1
+  case $? in
+    1) ;;
+    0)
+      DEGRADED_GONE_REASON="the current Herdr server still answers for the launch's pane $pane"
+      return 1
+      ;;
+    *)
+      DEGRADED_GONE_REASON="the current Herdr server's response for the launch's pane $pane does not prove native absence"
+      return 1
+      ;;
+  esac
+  if ! workspace_absent_on_verified_server "$HS_SOCKET" "$HS_SOCKET_IDENTITY" "$workspace"; then
+    # The workspace id is listed or the inventory is unreadable. A reused id is
+    # acceptable only when its own pane inventory readably lacks the recorded
+    # pane and terminal; then it belongs to another workspace and is never closed.
+    panes=$(hs_herdr "$HS_SESSION" pane list --workspace "$workspace" 2>/dev/null) || panes=
+    printf '%s' "$panes" | jq -se --arg pane "$pane" --arg terminal "$terminal" '
+      length == 1 and (.[0].result.panes | type == "array")
+      and all(.[0].result.panes[]; (.pane_id | type == "string") and (.terminal_id | type == "string"))
+      and all(.[0].result.panes[]; .pane_id != $pane and .terminal_id != $terminal)
+    ' >/dev/null 2>&1 || {
+      DEGRADED_GONE_REASON="workspace $workspace is listed and its native pane inventory is unreadable or still carries the launch's pane or terminal"
+      return 1
+    }
+  fi
+  facts="launch $id generation $generation: loop dead or absent; server socket identity $socket_identity replaced by $HS_SOCKET_IDENTITY; recorded pane $pane and terminal $terminal absent natively; workspace $workspace not closed"
+  target="$QUARANTINE_PREFIX.$generation"
+  tmp="$target.tmp.${BASHPID:-$$}"
+  if ! {
+    printf 'version=1\ngeneration=%s\nfm_home=%s\nherdr_session=%s\nherdr_socket_identity=%s\n' "$generation" "$FM_HOME" "$session" "$socket_identity"
+    printf 'workspace=%s\ntab=%s\npane=%s\nterminal_id=%s\ncleanup_state=closed\nmode=retired\n' "$workspace" "$tab" "$pane" "$terminal"
+    printf 'retired_reason=%s\n' "$(ledger_clean_field "degraded binding settled: $facts")"
+  } > "$tmp" 2>/dev/null || ! chmod 600 "$tmp" 2>/dev/null || ! mv -f "$tmp" "$target" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    DEGRADED_GONE_REASON="the settlement evidence for launch $id could not be written"
+    return 1
+  fi
+  cleanup_receipt_put "$target" exit || {
+    DEGRADED_GONE_REASON="the cleanup receipt for launch $id could not be written"
+    return 1
+  }
+  record_clear || {
+    DEGRADED_GONE_REASON="the degraded binding could not be cleared after settlement evidence was written"
+    return 1
+  }
+  launcher_clear
+  rm -f "$HEARTBEAT" 2>/dev/null || true
+  ledger_append server-gone "settled degraded binding: $facts resource=$target"
+  return 0
+}
+
 reconcile_previous_locked() {
   local old_generation rc
   [ -f "$RECORD" ] || return 0
   old_generation=$(record_get generation || printf unknown)
   ledger_append replace-required "retiring unhealthy generation=$old_generation before replacement"
   if ! recorded_herdr_identity_matches; then
+    degraded_binding_settle_locked
+    case $? in
+      0) return 0 ;;
+      1)
+        record_set_mode quarantine || true
+        escalate "the degraded Herdr binding remains unresolved (${DEGRADED_GONE_REASON:-unknown}); replacement is blocked"
+        return 1
+        ;;
+    esac
     if recorded_server_instance_gone; then
       if retire_gone_generation_locked "$HS_SERVER_GONE_FACTS"; then
         return 0
