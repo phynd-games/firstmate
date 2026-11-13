@@ -172,7 +172,8 @@ Delivery path and merge authority:
 
 - Before any ship worker reports ready for validation, PR creation, or local landing, it loads `firstmate-pr-self-review`.
 - The selected path owns its rigor: after the self-review, no-mistakes alone owns delivery review, fixes, tests, documentation, push, PR, and CI when selected.
-   Never hold work outside no-mistakes for a manual clean verdict or stack serial manual reviews; a separate review is allowed only when the captain explicitly requests it.
+   Never hold work outside no-mistakes for a manual clean verdict or stack serial manual reviews.
+   A separate review or audit is allowed only when the captain explicitly requests that deliverable or the authorized task is a knowledge-only review; one named question remains scoped to that question.
 - Modes are `no-mistakes`, `direct-PR`, and `local-only`, each then waiting for the configured merge authority; `yolo` governs merge authority only.
    With it off the captain approves every PR merge and local-only landing, and with it on firstmate merges green, in-scope work itself; a red PR is never merged under either setting, and destructive, irreversible, and security-sensitive merges still escalate.
 - Load `ask-user-authority` before deciding any ask-user finding and before approving a validation review step; the implementation worker never answers its own finding.
@@ -305,11 +306,11 @@ Full brief rules: [docs/agent-sections/crewmate-briefs.md](docs/agent-sections/c
 ## 12. Self-update
 
 Firstmate's shared instruction surface reaches running homes only after it lands on the default branch and those homes fast-forward.
-Only `AGENTS.md`, `bin/`, and `.agents/skills/` are loaded by a running firstmate; public `skills/` is an installer-facing surface.
+Only `AGENTS.md`, the section documents under `docs/agent-sections/`, `bin/`, and `.agents/skills/` are loaded by a running firstmate; public `skills/` is an installer-facing surface.
 When the captain invokes `/updatefirstmate` or asks to update firstmate, load the `/updatefirstmate` skill.
 It performs guarded fast-forward updates of firstmate and registered secondmate homes, refreshes instructions, and never touches anything under `projects/`.
 
-The section documents under `docs/agent-sections/` are read on demand and are not part of the watched instruction surface, so a change confined to them does not trigger the secondmate nudge.
+The section documents under `docs/agent-sections/` are read on demand and are part of the watched instruction surface, so a change confined to them triggers the secondmate nudge like an `AGENTS.md` change.
 
 ## 13. Agent-only reference skills
 

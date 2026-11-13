@@ -176,6 +176,38 @@ test_ff_current() {
   pass "T2 current: an already-current home is a no-op and reports no instruction change"
 }
 
+# --- T2b: section docs - docs/agent-sections/ is watched, other docs are not -
+test_ff_section_docs_are_instruction_surface() {
+  local w c1 base
+  w=$(new_world ff-section-docs)
+  c1=$(head_of "$w/main")
+  git -C "$w/main" worktree add -q --detach "$w/sm" "$c1"
+  mkdir -p "$w/main/docs/agent-sections"
+  printf 'rules\n' > "$w/main/docs/agent-sections/task-lifecycle.md"
+  git -C "$w/main" add -A
+  git -C "$w/main" commit -qm section-doc
+  base=$(primary_head_commit "$w/main")
+
+  run_ff "$w/sm" "$base"
+
+  [ "$FF_STATUS" = updated ] || fail "FF_STATUS: expected updated, got '$FF_STATUS'"
+  [ "$FF_INSTR" = docs/agent-sections ] \
+    || fail "a section-doc-only change must be an instruction change, got FF_INSTR='$FF_INSTR'"
+
+  c1=$(head_of "$w/main")
+  git -C "$w/main" worktree add -q --detach "$w/sm2" "$c1"
+  printf 'guide\n' > "$w/main/docs/setup.md"
+  git -C "$w/main" add -A
+  git -C "$w/main" commit -qm other-doc
+  base=$(primary_head_commit "$w/main")
+
+  run_ff "$w/sm2" "$base"
+
+  [ "$FF_STATUS" = updated ] || fail "FF_STATUS: expected updated, got '$FF_STATUS'"
+  [ -z "$FF_INSTR" ] || fail "an unrelated docs change must not be an instruction change, got FF_INSTR='$FF_INSTR'"
+  pass "T2b section docs: a docs/agent-sections change is an instruction change, other docs are not"
+}
+
 # --- T3: dirty - a home with uncommitted edits is skipped, edit preserved ----
 test_ff_dirty() {
   local w c1 base before
@@ -877,6 +909,7 @@ test_seed_marker_does_not_mask_real_dirt() {
 
 test_ff_updated
 test_ff_current
+test_ff_section_docs_are_instruction_surface
 test_ff_dirty
 test_scratchpad2_does_not_dirty_home
 test_ff_diverged
