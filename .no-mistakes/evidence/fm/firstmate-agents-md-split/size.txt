@@ -1,0 +1,12 @@
+AGENTS.md before: 87181 bytes (~21795 tokens)
+AGENTS.md after:  42229 bytes (~10557 tokens)
+docs/agent-sections/backlog-contract.md classified
+docs/agent-sections/crewmate-briefs.md classified
+docs/agent-sections/escalation-etiquette.md classified
+docs/agent-sections/harness-dispatch.md classified
+docs/agent-sections/layout-and-state.md classified
+docs/agent-sections/projects-and-knowledge.md classified
+docs/agent-sections/relay.md classified
+docs/agent-sections/session-start-digest.md classified
+docs/agent-sections/supervision-detail.md classified
+docs/agent-sections/task-lifecycle.md classified

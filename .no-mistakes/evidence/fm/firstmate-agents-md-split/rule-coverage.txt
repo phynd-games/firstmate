@@ -1,0 +1,7 @@
+base non-blank lines: 567
+base lines with no verbatim home in AGENTS.md + docs/agent-sections: 5
+  base L244: Dispatch only on Herdr, the one backend `fm-spawn` validates as spawn-capable under hard rule 6; an explicit per-spawn `--backend` may only restate `herdr` and is passed only under that exact task's o
+  base L352: Drive a worker's lifecycle through `bin/fm-control.sh <task-id> interrupt|exit|relaunch`, which owns the per-runtime mechanics, verifies each action, and never tears down or discards anything ([`docs/
+  base L372: `yolo` governs merge authority only: with it off, the captain approves every PR merge and every local-only landing; with it on, firstmate merges green, in-scope work itself, subject in both cases to [
+  base L409: A captain instruction to merge supplies authority under [Captain instruction precedence](#captain-instruction-precedence); otherwise the [delivery-path merge defaults](#selected-delivery-path-and-merg
+  base L580: Only `AGENTS.md`, `bin/`, and `.agents/skills/` are loaded by a running firstmate; public `skills/` is an installer-facing surface.

@@ -1,0 +1,10 @@
+ok - PR-ready path requires a private durable findings-first self-review
+ok - PR-ready path derives applicability from production surface ownership
+ok - PR-ready path accepts truthful Rust workspace source and nested test surface evidence
+ok - PR-ready path accepts one genuine new-file hunk for multiple applicable surfaces
+ok - PR-ready path treats docs/agent-sections as an authority and delivery owner and relevant changed path
+ok - overlapping owners retain maximum feasible file coverage, exact subject, inventory, and surface proofs
+ok - irrelevant owner evidence is rejected, and a source mutation demonstrates that the negative guard is load-bearing
+ok - PR-ready path binds small-diff evidence to applicable surfaces
+ok - PR-ready path requires distinct diff hunks, not merely distinct line references
+ok - PR-ready path requires explicit scope for unrelated surfaces
