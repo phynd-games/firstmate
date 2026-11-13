@@ -29,22 +29,6 @@
         "command": "\"$CURSOR_PROJECT_DIR\"/bin/fm-cd-pretool-check.sh --cursor",
         "timeout": 10
       }
-    ],
-    "postToolUse": [
-      {
-        "matcher": "Read|Grep|Glob|Search|Shell",
-        "command": "node \"/Users/lukewaters/.no-mistakes/worktrees/85cb06183d48/01M79NQ8AV6KS9RRY8D06RC32V/.cursor/hooks/graft-hooks.cjs\" cursor-post-tool"
-      }
-    ],
-    "afterMCPExecution": [
-      {
-        "command": "node \"/Users/lukewaters/.no-mistakes/worktrees/85cb06183d48/01M79NQ8AV6KS9RRY8D06RC32V/.cursor/hooks/graft-hooks.cjs\" cursor-mcp"
-      }
-    ],
-    "sessionEnd": [
-      {
-        "command": "node \"/Users/lukewaters/.no-mistakes/worktrees/85cb06183d48/01M79NQ8AV6KS9RRY8D06RC32V/.cursor/hooks/graft-hooks.cjs\" cursor-session-end"
-      }
     ]
   }
 }
