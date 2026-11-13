@@ -23,6 +23,7 @@ Before writing a new fact anywhere in this repo, ask where it belongs, in this o
    If yes: `AGENTS.md`, inline.
 2. Does the agent need it only in a nameable situation - a spawn, a recovery, a specific wake type, a specific lifecycle step?
    If yes: an agent-only skill under `.agents/skills/`, plus a one-line trigger pointer left inline in `AGENTS.md` (usually section 13).
+   Reference detail for an `AGENTS.md` section that is not a loadable procedure belongs in that section's document under `docs/agent-sections/`, with its Rules and a link left inline.
 3. Is it public product, setup, or user/operator reference?
    If yes: the surface classified for that audience in [`docs/documentation-audiences.md`](../../../docs/documentation-audiences.md), limited to current behavior, setup, supported limits, stable invariants, concise rationale, and current verification entry points.
 4. Is it contributor/maintainer architecture?

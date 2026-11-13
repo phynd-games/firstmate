@@ -1238,6 +1238,71 @@ test_pr_ready_allows_one_new_file_multiple_surface_coverage() {
   pass "PR-ready path accepts one genuine new-file hunk for multiple applicable surfaces"
 }
 
+test_pr_ready_treats_agent_section_docs_as_authority_and_delivery_owners() {
+  local dir report doc changed_digest doc_digest doc_line_hex doc_change_digest surface label
+  local authority_record delivery_record documentation_record security_record path_record failure_record tests_record
+  dir=$(make_case agent-section-owner)
+  git -C "$dir/wt" reset --hard -q main
+  doc=docs/agent-sections/task-lifecycle.md
+  mkdir -p "$dir/wt/docs/agent-sections"
+  printf '%s\n' 'fixture' '- Merge authority and delivery-mode rules.' > "$dir/wt/$doc"
+  git -C "$dir/wt" add "$doc"
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm agent-section-doc
+  write_task_meta "$dir"
+  report="$dir/home/data/task-a/pr-self-review.md"
+  changed_digest=$(sed -n 's/^Changed files: //p' "$report")
+  doc_digest=$(self_review_line_digest "$dir" "$doc")
+  doc_line_hex=$(self_review_line_hex "$dir" "$doc")
+  doc_change_digest=$(surface_change_digest_for_file "$dir" "$doc")
+  authority_record=$(surface_review_single_record_at_line Authority authority "$doc" 2 "$doc_digest" "$doc_line_hex" "$doc_change_digest")
+  delivery_record=$(surface_review_single_record_at_line Delivery delivery "$doc" 2 "$doc_digest" "$doc_line_hex" "$doc_change_digest")
+  documentation_record=$(surface_review_single_record_at_line Documentation documentation "$doc" 2 "$doc_digest" "$doc_line_hex" "$doc_change_digest")
+  security_record=$(surface_unaffected_record_for_file Security security "$doc" "$changed_digest")
+  path_record=$(surface_unaffected_record_for_file Path path "$doc" "$changed_digest")
+  failure_record=$(surface_unaffected_record_for_file Failure failure "$doc" "$changed_digest")
+  tests_record=$(surface_unaffected_record_for_file Tests tests "$doc" "$changed_digest")
+  python3 - "$report" "$authority_record" "$security_record" "$path_record" "$failure_record" "$tests_record" "$documentation_record" "$delivery_record" <<'PY2'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+records = dict(zip(
+    ("Authority", "Security", "Path", "Failure", "Tests", "Documentation", "Delivery"),
+    sys.argv[2:9],
+))
+text = report.read_text(encoding="utf-8")
+for surface, record in records.items():
+    text = re.sub(rf"(?m)^{surface}: .*", lambda _match, record=record: record, text, count=1)
+report.write_text(text, encoding="utf-8")
+PY2
+  chmod 0600 "$report"
+  FM_HOME="$dir/home" "$SELF_REVIEW_CHECK" task-a no-mistakes > "$dir/valid.out" 2> "$dir/valid.err" \
+    || fail "self-review check rejected $doc as authority and delivery owner evidence: $(cat "$dir/valid.err")"
+  cp "$report" "$dir/valid-report.md"
+  for surface in authority delivery; do
+    case "$surface" in
+      authority) label=Authority ;;
+      delivery) label=Delivery ;;
+    esac
+    cp "$dir/valid-report.md" "$report"
+    python3 - "$report" "$label" "$(surface_unaffected_record_for_file "$label" "$surface" "$doc" "$changed_digest")" <<'PY2'
+import pathlib
+import re
+import sys
+
+report = pathlib.Path(sys.argv[1])
+text = report.read_text(encoding="utf-8")
+report.write_text(re.sub(rf"(?m)^{sys.argv[2]}: .*", lambda _match: sys.argv[3], text, count=1), encoding="utf-8")
+PY2
+    chmod 0600 "$report"
+    if FM_HOME="$dir/home" "$SELF_REVIEW_CHECK" task-a no-mistakes > "$dir/unaffected.out" 2> "$dir/unaffected.err"; then
+      fail "self-review check accepted $surface scope=unaffected although $doc changed"
+    fi
+  done
+  pass "PR-ready path treats docs/agent-sections as an authority and delivery owner and relevant changed path"
+}
+
 test_pr_ready_overlapping_owner_coverage() {
   local dir report documentation_file variant bad_record
   dir=$(make_case overlapping-owner-coverage)
@@ -3633,6 +3698,7 @@ if [ "${1:-}" = --self-review-only ]; then
   test_pr_ready_tracks_production_surface_ownership
   test_pr_ready_accepts_external_rust_surface_owners
   test_pr_ready_allows_one_new_file_multiple_surface_coverage
+  test_pr_ready_treats_agent_section_docs_as_authority_and_delivery_owners
   test_pr_ready_overlapping_owner_coverage
   test_pr_ready_rejects_irrelevant_surface_evidence_and_proves_owner_mutation
   test_pr_ready_rejects_unrelated_small_diff_surface_evidence
@@ -3646,6 +3712,7 @@ test_pr_ready_requires_durable_self_review
 test_pr_ready_tracks_production_surface_ownership
 test_pr_ready_accepts_external_rust_surface_owners
 test_pr_ready_allows_one_new_file_multiple_surface_coverage
+test_pr_ready_treats_agent_section_docs_as_authority_and_delivery_owners
 test_pr_ready_overlapping_owner_coverage
 test_pr_ready_rejects_irrelevant_surface_evidence_and_proves_owner_mutation
 test_pr_ready_rejects_unrelated_small_diff_surface_evidence

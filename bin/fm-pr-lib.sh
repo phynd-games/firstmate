@@ -798,7 +798,7 @@ EOF
     case "$review_surface" in
       authority)
         case "$review_file" in
-          AGENTS.md|.agents/skills/*|bin/fm-brief.sh|bin/fm-spawn.sh|bin/fm-promote.sh|bin/fm-pr-check.sh|bin/fm-merge-local.sh|bin/fm-pr-create.sh|bin/fm-pr-merge.sh|schemas/*|crates/*/src/*) return 0 ;;
+          AGENTS.md|docs/agent-sections/*|.agents/skills/*|bin/fm-brief.sh|bin/fm-spawn.sh|bin/fm-promote.sh|bin/fm-pr-check.sh|bin/fm-merge-local.sh|bin/fm-pr-create.sh|bin/fm-pr-merge.sh|schemas/*|crates/*/src/*) return 0 ;;
         esac
         ;;
       security)
@@ -828,7 +828,7 @@ EOF
         ;;
       delivery)
         case "$review_file" in
-          AGENTS.md|.github/workflows/*|bin/fm-brief.sh|bin/fm-spawn.sh|bin/fm-promote.sh|bin/fm-pr-check.sh|bin/fm-pr-create.sh|bin/fm-pr-merge.sh|bin/fm-merge-local.sh) return 0 ;;
+          AGENTS.md|docs/agent-sections/*|.github/workflows/*|bin/fm-brief.sh|bin/fm-spawn.sh|bin/fm-promote.sh|bin/fm-pr-check.sh|bin/fm-pr-create.sh|bin/fm-pr-merge.sh|bin/fm-merge-local.sh) return 0 ;;
         esac
         ;;
     esac

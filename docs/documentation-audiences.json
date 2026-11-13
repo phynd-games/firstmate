@@ -370,6 +370,46 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/agent-sections/backlog-contract.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "docs/agent-sections/crewmate-briefs.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "docs/agent-sections/escalation-etiquette.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "docs/agent-sections/harness-dispatch.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "docs/agent-sections/layout-and-state.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "docs/agent-sections/projects-and-knowledge.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "docs/agent-sections/relay.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "docs/agent-sections/session-start-digest.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "docs/agent-sections/supervision-detail.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "docs/agent-sections/task-lifecycle.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": "docs/architecture.md",
       "audience": "maintainer-architecture"
     },

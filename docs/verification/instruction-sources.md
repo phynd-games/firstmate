@@ -13,6 +13,7 @@ Verified 2026-08-31 on macOS with Claude Code 2.1.251, Pi 0.84.4, Herdr 0.8.2, a
 `.claude/skills` and `.grok/skills` are tracked symlinks to `../.agents/skills`.
 
 `AGENTS.md` is the only Firstmate policy source.
+Its numbered sections keep their Rules inline and link their full detail in `docs/agent-sections/`, which an agent reaches only through those links.
 
 `CLAUDE.md` is a two-line real file using Claude Code's supported `@AGENTS.md` import.
 
